@@ -1,12 +1,11 @@
 from setuptools import find_packages
 from setuptools import setup
-from pip._internal.req import parse_requirements
 
 with open('README.md', 'r') as readme_file:
     readme = readme_file.read()
 
-install_reqs = parse_requirements('requirements.txt', session=False)
-requirements = [str(ir.requirement) for ir in install_reqs]
+with open('requirements.txt', 'r') as f:
+    requirements = [line.strip() for line in f if line.strip() and not line.startswith('#')]
 
 setup(
     name='pynipper-ng',
