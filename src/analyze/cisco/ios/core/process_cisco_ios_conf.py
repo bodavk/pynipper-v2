@@ -2,6 +2,7 @@ import array
 import importlib
 import pkgutil
 
+from src.devices.common.base_parser import BaseDeviceParser
 from .. import plugins as plugs
 
 
@@ -36,7 +37,7 @@ def _classesinmodule(module):
     ]
 
 
-def process_cisco_ios_conf(filename: str) -> dict:
+def process_cisco_ios_conf(parser: BaseDeviceParser) -> dict:
     issues = {}
     i = []
     idx = 0
@@ -44,7 +45,7 @@ def process_cisco_ios_conf(filename: str) -> dict:
     for module in _import_modules():
         for module_class in _classesinmodule(module):
             m = module_class()
-            m.analyze(filename)
+            m.analyze(parser)
             i = m.get_issues()
             issues = _generate_section(i, issues, idx)
             idx += 1

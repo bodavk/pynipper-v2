@@ -1,0 +1,59 @@
+{
+    "data": {
+        "date": "2026-09-07 21:26:02.049985",
+        "device-type": "IOS_ROUTER",
+        "hostname": "retail"
+    },
+    "security-audit": {
+        "2.0.0. HyperText Transport Protocol Service": {
+            "ease": "Network packet and password sniffing tools are widely available on the Internet. Once authentication credentials have been captured it is trivial to use the credentials to log in using the captured credentials.",
+            "impact": "An attacker who was able to monitor network traffic could capture authentication credentials.",
+            "observation": "Recent Cisco IOS-based devices support web-based administration using the HTTP protocol. Cisco web-based administration facilities can sometimes be basic but they do provide a simple method of administering remote devices. However, HTTP is a clear-text protocol and is vulnerable to various packet-capture techniques.",
+            "recommendation": "It is recommended that, if not required, the HTTP service be disabled. If a remote method of access to the device is required, consider using HTTPS or SSH. The encrypted HTTPS and SSH services may require a firmware or hardware upgrade. The HTTP service can be disabled with the following IOS command: no ip http server. If it is not possible to upgrade the device to use the encrypted HTTPS or SSH services, additional security can be configured.",
+            "title": "HyperText Transport Protocol Service"
+        },
+        "2.0.1. ACL restrict for HTTP service": {
+            "ease": "Network packet and password sniffing tools are widely available on the Internet. Once authentication credentials have been captured it is trivial to use the credentials to log in using the captured credentials. Furthermore, it may be possible for an attacker to masquerade as the administrators host in order to bypass configured network access restrictions.",
+            "impact": "An attacker who was able to monitor network traffic could capture authentication credentials. This issue is made more serious with the enable password being used for authentication as this would give the attacker full administrative access to the device with the captured credentials. This issue is mitigated slightly by employing an access list to restrict network access to the device.",
+            "observation": "The HTTP service was not configured with an access-list to restrict network access to the device.",
+            "recommendation": "If you can't disable HTTP, an access list can be configured to restrict access to the device. An access list can be specified with the following command:ip http access-class <access-list-number>",
+            "title": "ACL restrict for HTTP service"
+        },
+        "2.0.2. Authentication mode to HTTP service": {
+            "ease": "Network packet and password sniffing tools are widely available on the Internet. Once authentication credentials have been captured it is trivial to use the credentials to log in using the captured credentials. Furthermore, it may be possible for an attacker to masquerade as the administrators host in order to bypass configured network access restrictions.",
+            "impact": "An attacker who was able to monitor network traffic could capture authentication credentials. This issue is made more serious if no authentication is required or if it uses insecure methods. This issue is mitigated slightly by employing an access list to restrict network access to the device.",
+            "observation": "The HTTP service was not configured with an authentication method.",
+            "recommendation": "If you can't disable HTTP, the authentication method can be changed using the following command (where the authentication method is either local, enable, tacacs or aaa): ip http authentication <authentication-method>",
+            "title": "Authentication mode to HTTP service"
+        },
+        "2.1.0. SSH Protocol Version": {
+            "ease": "Although vulnerabilities are widely known, exploiting the vulnerabilities in the SSH protocol can be difficult.",
+            "impact": "An attacker who was able to intercept SSH protocol version 1 traffic would be able to perform a man-in-the-middle style attack. The attacker could then capture network traffic and possibly authentication credentials.",
+            "observation": "The SSH service is commonly used for encrypted command-based remote device management. There are multiple SSH protocol versions and SSH servers will often support multiple versions to maintain backwards compatibility. Although flaws have been identified in implementations of version 2 of the SSH protocol, fundamental flaws exist in SSH protocol version 1.",
+            "recommendation": "When SSH protocol version 2 support is configured on Cisco IOS devices, support for version 1 will be disabled. This can be configured with the following command: ip ssh version 2",
+            "title": "SSH Protocol Version"
+        },
+        "2.1.1. SSH retries misconfiguration": {
+            "ease": "This issue improve the hardening of passwords in the network device.",
+            "impact": "Set a retries number allows to reduce the bruteforce and dictionary attacks. If a retry number is defined, the attacker can not test with an user multiple passwords.",
+            "observation": "The SSH service must have a defined number of retries, the recommended is between 0 and 5.",
+            "recommendation": "This can be configured with the following command: ip ssh authentication-retries <retry-number>.",
+            "title": "SSH retries misconfiguration"
+        },
+        "2.1.2. SSH timeout misconfiguration": {
+            "ease": "This issue only increase the device management security, it is not exploitable.",
+            "impact": "Set a timeout allows disable not used or malicious sessions in background.",
+            "observation": "The SSH service must have a defined timeout between 0 and 60 seconds.",
+            "recommendation": "This can be configured with the following command: ip ssh time-out <timeout-in-seconds>.",
+            "title": "SSH timeout misconfiguration"
+        },
+        "2.1.3. SSH source-interface enabled": {
+            "ease": "This issue only increase the device management security, it is not exploitable, but it reduce bruteforce attacks.",
+            "impact": "To reduce bruteforce attacks is usefull have a set of source interfaces, logged and filtered, to access to SSH device management.",
+            "observation": "The SSH service must have a controlated set of source interfaces to manage the device",
+            "recommendation": "This can be configured with the following command: ip ssh source-interface <interface> ",
+            "title": "SSH source-interface enabled"
+        }
+    },
+    "vulnerabilities": []
+}

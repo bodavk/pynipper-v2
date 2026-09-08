@@ -2,6 +2,8 @@
 
 from ..core.base_plugin import GenericPlugin
 from ..issue.cisco_ios_issue import CiscoIOSIssue
+from src.devices.common.base_parser import BaseDeviceParser
+
 
 class PluginSSH(GenericPlugin):
 
@@ -10,11 +12,11 @@ class PluginSSH(GenericPlugin):
 
     # If the device has ssh configured -> true
 
-    def _has_cisco_ios_ssh(self, filename: str) -> bool:
-        parser = self.parse_cisco_ios_config_file(filename)
-        transport_disable = parser.find_objects("transport input none")
-        ssh_disable = parser.find_objects("no transport input ssh")
-        ssh_ip_disable = parser.find_objects("no ip ssh")
+    def _has_cisco_ios_ssh(self, parser: BaseDeviceParser) -> bool:
+        cisco_parser = parser.get_raw_config()
+        transport_disable = cisco_parser.find_objects("transport input none")
+        ssh_disable = cisco_parser.find_objects("no transport input ssh")
+        ssh_ip_disable = cisco_parser.find_objects("no ip ssh")
         if (len(transport_disable) > 0 or len(ssh_disable) > 0 or len(ssh_ip_disable) > 0):
             return False
         else:
@@ -22,9 +24,9 @@ class PluginSSH(GenericPlugin):
 
     # Number of ssh version
 
-    def _get_cisco_ios_ssh_version(self, filename: str) -> str:
-        parser = self.parse_cisco_ios_config_file(filename)
-        ssh_version = parser.find_objects("ip ssh version")
+    def _get_cisco_ios_ssh_version(self, parser: BaseDeviceParser) -> str:
+        cisco_parser = parser.get_raw_config()
+        ssh_version = cisco_parser.find_objects("ip ssh version")
         if (len(ssh_version) > 0):
             version = ssh_version[0].re_match_typed(
                 r'^ip ssh version\s+(\S+)', default='')
@@ -32,8 +34,8 @@ class PluginSSH(GenericPlugin):
         else:
             return ""
 
-    def get_cisco_ios_ssh(self, filename: str):
-        if (not self._has_cisco_ios_ssh(filename) or self._get_cisco_ios_ssh_version(filename) == "" or self._get_cisco_ios_ssh_version(filename) != "2"):
+    def get_cisco_ios_ssh(self, parser: BaseDeviceParser):
+        if (not self._has_cisco_ios_ssh(parser) or self._get_cisco_ios_ssh_version(parser) == "" or self._get_cisco_ios_ssh_version(parser) != "2"):
             return CiscoIOSIssue(
                 "SSH Protocol Version",
                 "The SSH service is commonly used for encrypted command-based remote device management. There are multiple SSH protocol versions and SSH servers will often support multiple versions to maintain backwards compatibility. Although flaws have been identified in implementations of version 2 of the SSH protocol, fundamental flaws exist in SSH protocol version 1.",  # noqa: E501
@@ -45,9 +47,9 @@ class PluginSSH(GenericPlugin):
 
     # Number of max. retries configured to login with ssh
 
-    def _get_cisco_ios_ssh_retries(self, filename: str) -> str:
-        parser = self.parse_cisco_ios_config_file(filename)
-        retries = parser.find_objects("ip ssh authentication-retries")
+    def _get_cisco_ios_ssh_retries(self, parser: BaseDeviceParser) -> str:
+        cisco_parser = parser.get_raw_config()
+        retries = cisco_parser.find_objects("ip ssh authentication-retries")
         if (len(retries) > 0):
             max_retries = retries[0].re_match_typed(
                 r'^ip ssh authentication-retries\s+(\S+)', default='')
@@ -55,9 +57,9 @@ class PluginSSH(GenericPlugin):
         else:
             return ""
 
-    def get_cisco_ios_ssh_reties(self, filename: str):
-        retries = self._get_cisco_ios_ssh_retries(filename)
-        if (retries == "" or retries > 5):
+    def get_cisco_ios_ssh_reties(self, parser: BaseDeviceParser):
+        retries = self._get_cisco_ios_ssh_retries(parser)
+        if (retries == "" or int(retries) > 5):
             return CiscoIOSIssue(
                 "SSH retries misconfiguration",
                 "The SSH service must have a defined number of retries, the recommended is between 0 and 5.",
@@ -69,9 +71,9 @@ class PluginSSH(GenericPlugin):
 
     # Number of seconds of ssh timeout
 
-    def _get_cisco_ios_ssh_timeout(self, filename: str) -> int:
-        parser = self.parse_cisco_ios_config_file(filename)
-        timeout = parser.find_objects("ip ssh time-out")
+    def _get_cisco_ios_ssh_timeout(self, parser: BaseDeviceParser) -> int:
+        cisco_parser = parser.get_raw_config()
+        timeout = cisco_parser.find_objects("ip ssh time-out")
         if (len(timeout) > 0):
             seconds = timeout[0].re_match_typed(
                 r'^ip ssh time-out\s+(\S+)', default='')
@@ -79,8 +81,8 @@ class PluginSSH(GenericPlugin):
         else:
             return 0
 
-    def get_cisco_ios_ssh_timeout(self, filename: str):
-        timeout = self._get_cisco_ios_ssh_timeout(filename)
+    def get_cisco_ios_ssh_timeout(self, parser: BaseDeviceParser):
+        timeout = self._get_cisco_ios_ssh_timeout(parser)
         if (timeout == 0 or timeout > 120):
             return CiscoIOSIssue(
                 "SSH timeout misconfiguration",
@@ -93,9 +95,9 @@ class PluginSSH(GenericPlugin):
 
     # Get the source interface
 
-    def _get_cisco_ios_ssh_interface(self, filename: str) -> str:
-        parser = self.parse_cisco_ios_config_file(filename)
-        src_interface = parser.find_objects("ip ssh source-interface")
+    def _get_cisco_ios_ssh_interface(self, parser: BaseDeviceParser) -> str:
+        cisco_parser = parser.get_raw_config()
+        src_interface = cisco_parser.find_objects("ip ssh source-interface")
         if (len(src_interface) > 0):
             interface = src_interface[0].re_match_typed(
                 r'^ip ssh source-interface\s+(\S+)', default='')
@@ -103,8 +105,8 @@ class PluginSSH(GenericPlugin):
         else:
             return ""
 
-    def get_cisco_ios_ssh_interface(self, filename: str):
-        if (self._get_cisco_ios_ssh_interface(filename) == ""):
+    def get_cisco_ios_ssh_interface(self, parser: BaseDeviceParser):
+        if (self._get_cisco_ios_ssh_interface(parser) == ""):
             return CiscoIOSIssue(
                 "SSH source-interface enabled",
                 "The SSH service must have a controlated set of source interfaces to manage the device",
@@ -114,13 +116,13 @@ class PluginSSH(GenericPlugin):
             )
         return None
 
-    def analyze(self, config_file) -> None:
+    def analyze(self, parser: BaseDeviceParser) -> None:
         issues = []
 
-        issues.append(self.get_cisco_ios_ssh(config_file))
-        issues.append(self.get_cisco_ios_ssh_reties(config_file))
-        issues.append(self.get_cisco_ios_ssh_timeout(config_file))
-        issues.append(self.get_cisco_ios_ssh_interface(config_file))
+        issues.append(self.get_cisco_ios_ssh(parser))
+        issues.append(self.get_cisco_ios_ssh_reties(parser))
+        issues.append(self.get_cisco_ios_ssh_timeout(parser))
+        issues.append(self.get_cisco_ios_ssh_interface(parser))
 
         for issue in issues:
             if issue is not None:

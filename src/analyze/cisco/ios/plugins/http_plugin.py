@@ -1,6 +1,7 @@
 
 from ..core.base_plugin import GenericPlugin
 from ..issue.cisco_ios_issue import CiscoIOSIssue
+from src.devices.common.base_parser import BaseDeviceParser
 
 
 class PluginHTTP(GenericPlugin):
@@ -10,10 +11,10 @@ class PluginHTTP(GenericPlugin):
 
     # If the device has http configured -> true
 
-    def _has_http(self, filename: str) -> bool:
-        parser = self.parse_cisco_ios_config_file(filename)
-        http_enable = parser.find_objects("ip http server")
-        http_disable = parser.find_objects("no ip http server")
+    def _has_http(self, parser: BaseDeviceParser) -> bool:
+        cisco_parser = parser.get_raw_config()
+        http_enable = cisco_parser.find_objects("ip http server")
+        http_disable = cisco_parser.find_objects("no ip http server")
         if (len(http_enable) > 0):
             return True
         elif (len(http_disable) > 0):
@@ -21,8 +22,8 @@ class PluginHTTP(GenericPlugin):
         else:
             return True  # by default IOS Cisco devices has HTTP
 
-    def get_cisco_ios_http(self, filename: str):
-        if (self._has_http(filename)):
+    def get_cisco_ios_http(self, parser: BaseDeviceParser):
+        if (self._has_http(parser)):
             return CiscoIOSIssue(
                 "HyperText Transport Protocol Service",
                 "Recent Cisco IOS-based devices support web-based administration using the HTTP protocol. Cisco web-based administration facilities can sometimes be basic but they do provide a simple method of administering remote devices. However, HTTP is a clear-text protocol and is vulnerable to various packet-capture techniques.",  # noqa: E501
@@ -34,9 +35,9 @@ class PluginHTTP(GenericPlugin):
 
     # Number of access list should be used to restrict access to HTTP server
 
-    def _get_cisco_ios_http_access_list(self, filename: str):
-        parser = self.parse_cisco_ios_config_file(filename)
-        access_list = parser.find_objects("ip http access-class")
+    def _get_cisco_ios_http_access_list(self, parser: BaseDeviceParser):
+        cisco_parser = parser.get_raw_config()
+        access_list = cisco_parser.find_objects("ip http access-class")
         if (len(access_list) > 0):
             num = access_list[0].re_match_typed(
                 r'^ip http access-class\s+(\S+)', default='')
@@ -44,8 +45,8 @@ class PluginHTTP(GenericPlugin):
         else:
             return None
 
-    def get_cisco_ios_http_access_list(self, filename: str):
-        if (self._get_cisco_ios_http_access_list(filename) is None):
+    def get_cisco_ios_http_access_list(self, parser: BaseDeviceParser):
+        if (self._get_cisco_ios_http_access_list(parser) is None):
             return CiscoIOSIssue(
                 "ACL restrict for HTTP service",
                 "The HTTP service was not configured with an access-list to restrict network access to the device.",
@@ -57,9 +58,9 @@ class PluginHTTP(GenericPlugin):
 
     # Kind of auth in HTTP server
 
-    def _get_cisco_ios_http_auth(self, filename: str) -> str:
-        parser = self.parse_cisco_ios_config_file(filename)
-        timeout = parser.find_objects("ip http auth")
+    def _get_cisco_ios_http_auth(self, parser: BaseDeviceParser) -> str:
+        cisco_parser = parser.get_raw_config()
+        timeout = cisco_parser.find_objects("ip http auth")
         if (len(timeout) > 0):
             auth_type = timeout[0].re_match_typed(
                 r'^ip http auth(entication)?\s+(\S+)', default='')
@@ -67,23 +68,23 @@ class PluginHTTP(GenericPlugin):
         else:
             return ""
 
-    def get_cisco_ios_http_auth(self, filename: str):
-        if (self._get_cisco_ios_http_auth(filename) == ""):
+    def get_cisco_ios_http_auth(self, parser: BaseDeviceParser):
+        if (self._get_cisco_ios_http_auth(parser) == ""):
             return CiscoIOSIssue(
                 "Authentication mode to HTTP service",
-                "The HTTP service was not configured with an access-list to restrict network access to the device.",
-                "An attacker who was able to monitor network traffic could capture authentication credentials. This issue is made more serious with the enable password being used for authentication as this would give the attacker full administrative access to the device with the captured credentials. This issue is mitigated slightly by employing an access list to restrict network access to the device.",  # noqa: E501
+                "The HTTP service was not configured with an authentication method.",
+                "An attacker who was able to monitor network traffic could capture authentication credentials. This issue is made more serious if no authentication is required or if it uses insecure methods. This issue is mitigated slightly by employing an access list to restrict network access to the device.",  # noqa: E501
                 "Network packet and password sniffing tools are widely available on the Internet. Once authentication credentials have been captured it is trivial to use the credentials to log in using the captured credentials. Furthermore, it may be possible for an attacker to masquerade as the administrators host in order to bypass configured network access restrictions.",  # noqa: E501
                 "If you can't disable HTTP, the authentication method can be changed using the following command (where the authentication method is either local, enable, tacacs or aaa): ip http authentication <authentication-method>"  # noqa: E501
             )
         return None
 
-    def analyze(self, config_file) -> None:
+    def analyze(self, parser: BaseDeviceParser) -> None:
         issues = []
 
-        issues.append(self.get_cisco_ios_http(config_file))
-        issues.append(self.get_cisco_ios_http_access_list(config_file))
-        issues.append(self.get_cisco_ios_http_auth(config_file))
+        issues.append(self.get_cisco_ios_http(parser))
+        issues.append(self.get_cisco_ios_http_access_list(parser))
+        issues.append(self.get_cisco_ios_http_auth(parser))
 
         for issue in issues:
             if issue is not None:

@@ -1,0 +1,4 @@
+component_type,name,file_path,device_scope,has_tests,compliance_mapping_present,notes
+parser,Cisco IOS Parser,src\analyze\cisco\ios\cisco_parser\parse_config.py,"Cisco IOS (Router, Switch, Catalyst)",no,no,Basic parsing of global settings and services.
+plugin,PluginHTTP,src\analyze\cisco\ios\plugins\http_plugin.py,Cisco IOS,no,no,Checks HTTP server enablement and basic security.
+plugin,PluginSSH,src\analyze\cisco\ios\plugins\ssh_plugin.py,Cisco IOS,no,no,Checks SSH version and timeout settings.

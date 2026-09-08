@@ -18,6 +18,9 @@ class CiscoIOSIssue:
         return("")
 
     def __dict__(self):
+        return self.to_dict()
+
+    def to_dict(self):
         d = {}
         d['title'] = self.title
         d['observation'] = self.observation

@@ -1,0 +1,24 @@
+{
+    "data": {
+        "date": "2026-09-08 22:54:34.594394",
+        "device-type": "CHECKPOINT_FW1",
+        "hostname": "checkpoint-device"
+    },
+    "security-audit": {
+        "3.0.0. Insecure Object Definition": {
+            "ease": "High \u2014 Increases attack surface.",
+            "impact": "Allows traffic from any source/to any destination, violating the principle of least privilege.",
+            "observation": "Found an object definition using 'any', which is overly permissive.",
+            "recommendation": "Restrict object definitions to specific IP ranges or subnets.",
+            "title": "Insecure Object Definition"
+        },
+        "3.0.1. Broad Filter Rule Detected": {
+            "ease": "Critical \u2014 Allows immediate access/attack vector.",
+            "impact": "Allows unrestricted traffic through the firewall.",
+            "observation": "Found a filter rule with 'accept' action and 'any' object.",
+            "recommendation": "Restrict the filter rule to specific source/destination objects.",
+            "title": "Broad Filter Rule Detected"
+        }
+    },
+    "vulnerabilities": []
+}

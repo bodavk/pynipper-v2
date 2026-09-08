@@ -72,7 +72,7 @@ def _generate_json_report(filename: str, issues: dict, vulns: array, data: dict)
         indent=4,
         sort_keys=True,
         default=lambda x: x.__str__() if isinstance(
-            x, datetime.datetime) else x.__dict__()
+            x, datetime.datetime) else x.to_dict()
     )
 
     json_file.write(json_text)

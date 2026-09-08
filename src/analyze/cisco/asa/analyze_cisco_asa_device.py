@@ -1,19 +1,15 @@
-
 import os
-
 from src.devices import get_parser
-from .api.cisco_ios_vulns_service import get_api_vulnerabilities
-from .core.process_cisco_ios_conf import process_cisco_ios_conf
-
+from .core.process_cisco_asa_conf import process_cisco_asa_conf
 from ....report.report import generate_report
 from ....error.files_errors import PynipperConfigurationFileNotFound
 
 
-def analyze_cisco_device(device, input_filename, output_filename, output_type, configuration, online):
+def analyze_cisco_asa_device(device, input_filename, output_filename, output_type, configuration, online):
 
-    print("[1/4] Initializing pynipper-ng")
+    print("[1/4] Initializing pynipper-ng (Cisco ASA)")
     
-    # Instantiate pluggable parser
+    # Instantiate pluggable ASA parser
     parser = get_parser(device, input_filename)
     
     version_cisco_device = parser.get_version()
@@ -22,13 +18,13 @@ def analyze_cisco_device(device, input_filename, output_filename, output_type, c
             "ERROR: Pynipper configuration file doesn't exists"
         )
 
-    # Get vulns by Cisco API
-    print("[2/4] Fetching Cisco API information")
-    vulns = get_api_vulnerabilities(configuration, version_cisco_device, online)
+    # In modern networks, ASA vulnerabilities scan is done offline/mocked unless API keys are present
+    print("[2/4] Fetching Cisco API information for ASA")
+    vulns = []  # Empty for ASA by default
 
-    # Get Cisco report missconfigurations
-    print("[3/4] Checking missconfiguration vulnerabilities")
-    issues = process_cisco_ios_conf(parser)
+    # Get ASA report misconfigurations
+    print("[3/4] Checking misconfiguration vulnerabilities")
+    issues = process_cisco_asa_conf(parser)
 
     # Device data to generate report
     data = {}

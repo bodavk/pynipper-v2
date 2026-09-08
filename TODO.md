@@ -1,7 +1,7 @@
 
 ## Core tasks
 
-- [ ] Translate nipper-ng checks to pynipper-ng modules (issue #4)
+- [x] Translate nipper-ng checks to pynipper-ng modules (issue #4)
 
 ## Secondary tasks
 

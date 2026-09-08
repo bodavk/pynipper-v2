@@ -1,0 +1,87 @@
+{
+    "data": {
+        "date": "2026-09-08 21:26:05.794649",
+        "device-type": "ASA",
+        "hostname": "asa-vuln"
+    },
+    "security-audit": {
+        "2.0.0. Telnet Service Enabled": {
+            "ease": "High \u2014 Sniffing tools are widely available and extremely easy to use.",
+            "impact": "An attacker who is able to sniff network traffic can easily capture administrative credentials in transit.",
+            "observation": "The Telnet service is currently enabled on the device. Telnet is an insecure, clear-text protocol and does not encrypt management traffic.",
+            "recommendation": "It is strongly recommended to disable Telnet access using 'no telnet ...' and use SSH for encrypted remote management.",
+            "title": "Telnet Service Enabled"
+        },
+        "2.0.1. Weak Enable Password Configured": {
+            "ease": "High \u2014 Weak passwords are highly susceptible to dictionary and automated brute-force attacks.",
+            "impact": "An attacker who gets user-level access can guess the enable password and obtain full administrative control over the firewall.",
+            "observation": "The enable password 'cisco123' is weak, common, or easily guessable.",
+            "recommendation": "Change the enable password to a complex value using the command: enable password <complex_password>",
+            "title": "Weak Enable Password Configured"
+        },
+        "2.0.2. Insecure SNMP Community String": {
+            "ease": "High \u2014 SNMP brute force scanners will automatically test default community strings.",
+            "impact": "An attacker can read (public) or modify (private) system configuration and status via SNMP, exposing sensitive info.",
+            "observation": "The device has an insecure SNMP community string 'public' configured.",
+            "recommendation": "Change community strings to a private complex value: snmp-server community <complex_string>",
+            "title": "Insecure SNMP Community String"
+        },
+        "2.0.3. Unrestricted SSH Access Enabled": {
+            "ease": "Medium \u2014 Requires credentials to exploit, but massively increases exposure.",
+            "impact": "Exposes the SSH management interface to password guessing and potential zero-day exploit attempts from unauthorized hosts.",
+            "observation": "SSH access is configured with 0.0.0.0/0, allowing access from any IP address on the network/internet.",
+            "recommendation": "Restrict SSH access to trusted administration subnets using 'ssh <ip> <mask> <interface>'.",
+            "title": "Unrestricted SSH Access Enabled"
+        },
+        "2.0.4. Logging Disabled or Missing Configuration": {
+            "ease": "Low \u2014 Does not directly allow penetration, but severely cripples security operations and compliance.",
+            "impact": "Without logs, it is impossible to detect security incidents, perform audit trails, or conduct forensic analysis after a breach.",
+            "observation": "System logging is not enabled on this firewall ('no logging enable' is active).",
+            "recommendation": "Enable logging and configure a secure external syslog host: logging enable; logging host <interface> <ip>",
+            "title": "Logging Disabled or Missing Configuration"
+        },
+        "2.0.5. Insecure SSL/TLS Version Configured": {
+            "ease": "Medium \u2014 Interception of admin management sessions can reveal login credentials.",
+            "impact": "TLS 1.0, 1.1, and SSLv3 have known cryptographic vulnerabilities (e.g. POODLE, BEAST) that can lead to session decryption.",
+            "observation": "The firewall's minimum SSL/TLS version is configured as 'tlsv1'.",
+            "recommendation": "Configure TLS 1.2 as the minimum version: ssl minimum-version tlsv1.2",
+            "title": "Insecure SSL/TLS Version Configured"
+        },
+        "2.0.6. Wide Open ACL Rule on Outside Interface": {
+            "ease": "Critical \u2014 Allows immediate access/attack vector to all internal resources.",
+            "impact": "Allows unrestricted inbound network traffic from any source to any destination, defeating the primary firewall security boundary.",
+            "observation": "ACL 'outside_access_in' on low-security interface 'outside' contains a wide-open rule: 'access-list outside_access_in extended permit ip any any'",
+            "recommendation": "Restrict the ACL to only permit traffic to authorized hosts/ports: permit tcp any host <ip> eq <port>",
+            "title": "Wide Open ACL Rule on Outside Interface"
+        },
+        "2.1.0. Missing Logging Configuration": {
+            "ease": "Without logs, unauthorized access or configuration changes may go undetected.",
+            "impact": "Lack of logs makes it difficult to investigate security incidents or troubleshoot issues.",
+            "observation": "System logging is not enabled on the device.",
+            "recommendation": "Enable system logging. Command: logging enable",
+            "title": "Missing Logging Configuration"
+        },
+        "2.2.0. Telnet Enabled": {
+            "ease": "It is trivial to use captured credentials to log in.",
+            "impact": "An attacker could capture authentication credentials monitoring network traffic.",
+            "observation": "The Telnet service is enabled on the device. Telnet is a clear-text protocol and is vulnerable to packet-capture techniques.",
+            "recommendation": "Disable Telnet and use SSH instead. Command: no telnet <network> <mask> <interface>",
+            "title": "Telnet Enabled"
+        },
+        "2.2.1. Unrestricted SSH Access": {
+            "ease": "Attackers can attempt to guess passwords from any network location.",
+            "impact": "Increases the risk of brute-force attacks from unauthorized hosts.",
+            "observation": "SSH access is allowed from any IP address (0.0.0.0).",
+            "recommendation": "Restrict SSH access to specific management networks. Command: ssh <management-network> <mask> <interface>",
+            "title": "Unrestricted SSH Access"
+        },
+        "2.3.0. Insecure SNMP Communities": {
+            "ease": "Common community strings are widely known and frequently targeted by automated scanners.",
+            "impact": "Attackers can easily guess these strings to gain information or modify configuration via SNMP.",
+            "observation": "The SNMP service is configured with common or default community strings (e.g., 'public', 'private').",
+            "recommendation": "Change SNMP community strings to complex, unique values. Command: snmp-server community <new-string>",
+            "title": "Insecure SNMP Communities"
+        }
+    },
+    "vulnerabilities": []
+}

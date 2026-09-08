@@ -1,9 +1,10 @@
 
 # AGENT INSTRUCTIONS: Pynipper-ng Device Support Parity & Expansion (Fork Workflow)
-
+You are using a windows PC, adjust your commands accordingly. 
 ## Purpose of This Document
 
-This file is a self-contained instruction set for an autonomous coding agent (Claude Code, Gemini CLI, or similar) to execute a multi-phase project on `bodavk/pynipper-v2`, a personal fork of `syn-4ck/pynipper-ng`. The agent should treat each Phase as a checkpoint: complete it, verify it, push it, document it, then move to the next.
+This file is a self-contained instruction set for an autonomous coding agent (Claude Code, Gemini CLI, or similar) to execute a 
+multi-phase project on `bodavk/pynipper-v2`, a personal fork of `syn-4ck/pynipper-ng`. The agent should treat each Phase as a checkpoint: complete it, verify it, push it, document it, then move to the next.
 
 **Do not skip verification steps.** This project's entire value is accuracy of security detection — an agent that "completes" tasks without validating them against real configurations produces a tool that is actively dangerous to rely on.
 
