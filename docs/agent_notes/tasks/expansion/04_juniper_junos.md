@@ -1,7 +1,7 @@
 # Task: Juniper Networks JunOS Parser & Checks
 
 ## Status
-- [ ] Not started
+- [x] Completed (Parser implemented, security checks implemented, and verified with unit tests)
 
 ## Priority
 HIGH — Standard operating system for Juniper's routers and EX/QFX switches.
@@ -21,15 +21,15 @@ HIGH — Standard operating system for Juniper's routers and EX/QFX switches.
 ## Parser Requirements
 1. File location: `src/devices/juniper/junos.py`
 2. Must extract (assuming `display set` syntax):
-   - [ ] Hostname (`set system host-name ...`)
-   - [ ] Login accounts and authentication classes (`set system login ...`)
-   - [ ] Management services (SSH, Telnet, Web-management)
-   - [ ] Firewall filters / ACLs (`set firewall family ...`)
+   - [x] Hostname (`set system host-name ...`)
+   - [x] Login accounts and authentication classes (`set system login ...`)
+   - [x] Management services (SSH, Telnet, Web-management)
+   - [x] Firewall filters / ACLs (`set firewall family ...`)
 
 ## Plugin/Check Requirements
-- [ ] JUN-01: Insecure Web / CLI management — Flag if HTTP or Telnet services are enabled.
-- [ ] JUN-02: Broad Firewall Filters — Flag filters that permit any source/destination without logging enabled.
-- [ ] JUN-03: SSH Root Login — Flag if root login is permitted via SSH.
+- [x] JUN-01: Insecure Web / CLI management — Flag if HTTP or Telnet services are enabled.
+- [x] JUN-02: Broad Firewall Filters — Flag filters that permit any source/destination without logging enabled.
+- [x] JUN-03: SSH Root Login — Flag if root login is permitted via SSH.
 
 ## Acceptance Criteria
-- [ ] Registered in CLI as `JUNOS`.
+- [x] Registered in CLI as `JUNOS`.

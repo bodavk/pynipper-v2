@@ -1,7 +1,7 @@
 # Task: Cisco IOS-XE Parser & Checks
 
 ## Status
-- [ ] Not started
+- [x] Completed (Parser implemented, inheriting from IOS; plugin checks implemented)
 
 ## Priority
 HIGH — Standard corporate router/switch platform today.
@@ -22,15 +22,15 @@ HIGH — Standard corporate router/switch platform today.
 ## Parser Requirements
 1. File location: `src/devices/cisco/iosxe.py` (subclasses `CiscoIOSParser` for maximum code reuse).
 2. Must extract:
-   - [ ] Classic IOS sections
-   - [ ] MACsec configuration (`mka policy ...`)
-   - [ ] Modern AAA and crypto configuration (`crypto ikev2 ...`)
+   - [x] Classic IOS sections
+   - [x] MACsec configuration (`mka policy ...`)
+   - [x] Modern AAA and crypto configuration (`crypto ikev2 ...`)
 
 ## Plugin/Check Requirements
-- [ ] XE-01: Lack of MACsec — Flag interfaces connected to peer network devices that do not have MACsec encryption configured.
-- [ ] XE-02: Legacy Crypto Ciphers — Scan IKEv2 policies for weak parameters (e.g. 3DES, MD5, DH Groups 1/2/5).
-- [ ] XE-03: Classic IOS rules run as standard.
+- [x] XE-01: Lack of MACsec — Flag interfaces connected to peer network devices that do not have MACsec encryption configured.
+- [x] XE-02: Legacy Crypto Ciphers — Scan IKEv2 policies for weak parameters (e.g. 3DES, MD5, DH Groups 1/2/5).
+- [x] XE-03: Classic IOS rules run as standard.
 
 ## Acceptance Criteria
-- [ ] Registered in CLI as `IOS_XE`.
-- [ ] Reuses existing `CiscoIOSParser` code seamlessly.
+- [x] Registered in CLI as `IOS_XE`.
+- [x] Reuses existing `CiscoIOSParser` code seamlessly.

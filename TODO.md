@@ -5,4 +5,4 @@
 
 ## Secondary tasks
 
-- [ ] Unit tests and build/testing un CI (issue #42)
+- [x] Unit tests and build/testing in CI (issue #42)

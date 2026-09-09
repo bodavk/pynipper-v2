@@ -1,0 +1,28 @@
+<config>
+    <mgt-config>
+        <profiles>
+            <entry name="insecure-profile">
+                <http>yes</http>
+            </entry>
+        </profiles>
+    </mgt-config>
+    <devices>
+        <entry name="localhost">
+            <deviceconfig>
+                <system>
+                    <hostname>panos-test</hostname>
+                </system>
+            </deviceconfig>
+        </entry>
+    </devices>
+    <security>
+        <rules>
+            <entry name="any-rule">
+                <source><member>any</member></source>
+                <destination><member>any</member></destination>
+                <service><member>any</member></service>
+                <action>allow</action>
+            </entry>
+        </rules>
+    </security>
+</config>

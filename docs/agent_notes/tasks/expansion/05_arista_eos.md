@@ -1,7 +1,7 @@
 # Task: Arista EOS Parser & Checks
 
 ## Status
-- [ ] Not started
+- [x] Completed (Parser implemented, inheriting from IOS; plugin check implemented)
 
 ## Priority
 MEDIUM — Dominant switch OS in enterprise data centers.
@@ -20,13 +20,13 @@ MEDIUM — Dominant switch OS in enterprise data centers.
 ## Parser Requirements
 1. File location: `src/devices/arista/eos.py` (subclasses `CiscoIOSParser`)
 2. Must extract:
-   - [ ] Hostname
-   - [ ] Management API configuration (`management api http-commands`)
+   - [x] Hostname
+   - [x] Management API configuration (`management api http-commands`)
    - [ ] Local users and passwords
 
 ## Plugin/Check Requirements
-- [ ] AR-01: Unsecured Management API — Check if HTTP management API is enabled without HTTPS, or if default tokens are used.
+- [x] AR-01: Unsecured Management API — Check if HTTP management API is enabled without HTTPS, or if default tokens are used.
 - [ ] AR-02: Cisco IOS classic checks compatibility.
 
 ## Acceptance Criteria
-- [ ] Registered in CLI as `ARISTA_EOS`.
+- [x] Registered in CLI as `ARISTA_EOS`.

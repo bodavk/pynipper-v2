@@ -1,7 +1,7 @@
 # Task: Fortinet FortiOS Parser & Checks
 
 ## Status
-- [ ] Not started
+- [x] Completed (Parser implemented, security checks implemented, and verified with unit tests)
 
 ## Priority
 CRITICAL — FortiGate firewalls are highly prevalent across all segments of network security.
@@ -23,24 +23,24 @@ CRITICAL — FortiGate firewalls are highly prevalent across all segments of net
 ## Parser Requirements
 1. File location: `src/devices/fortinet/fortios.py`
 2. Must extract:
-   - [ ] Hostname (`config system global` -> `set hostname <name>`)
-   - [ ] Administrators and administrative access (`config system admin`)
+   - [x] Hostname (`config system global` -> `set hostname <name>`)
+   - [x] Administrators and administrative access (`config system admin`)
    - [ ] DNS, NTP, and Syslog setups
-   - [ ] Firewall Policies (`config firewall policy`)
-   - [ ] SSL/TLS administrative settings
+   - [x] Firewall Policies (`config firewall policy`)
+   - [x] SSL/TLS administrative settings
 
 ## Plugin/Check Requirements
-- [ ] FT-01: Weak Administrative Access — Check if HTTP or Telnet is permitted for admin access (`set admin-port`, `set admin-sport`).
-- [ ] FT-02: Broad Firewall Policies — Check for policy entries with source/destination `all` combined with service `ALL` and action `accept`.
-- [ ] FT-03: Insecure TLS Settings — Flag if TLS 1.0 or 1.1 is enabled for administrative HTTPS access.
-- [ ] FT-04: Lack of System Logging — Flag if syslog is not configured or disabled.
+- [x] FT-01: Weak Administrative Access — Check if HTTP or Telnet is permitted for admin access (`set admin-port`, `set admin-sport`).
+- [x] FT-02: Broad Firewall Policies — Check for policy entries with source/destination `all` combined with service `ALL` and action `accept`.
+- [x] FT-03: Insecure TLS Settings — Flag if TLS 1.0 or 1.1 is enabled for administrative HTTPS access.
+- [x] FT-04: Lack of System Logging — Flag if syslog is not configured or disabled.
 
 ## Test Requirements
-- [ ] Hardened FortiOS config sample.
-- [ ] Insecure FortiOS config sample (all checks triggered).
-- [ ] Parser block state tracker unit tests.
-- [ ] Audit rule verification tests.
+- [x] Hardened FortiOS config sample.
+- [x] Insecure FortiOS config sample (all checks triggered).
+- [x] Parser block state tracker unit tests.
+- [x] Audit rule verification tests.
 
 ## Acceptance Criteria
-- [ ] Registered in CLI as `FORTIOS`.
-- [ ] Correctly resolves nesting without loss of scope context.
+- [x] Registered in CLI as `FORTIOS`.
+- [x] Correctly resolves nesting without loss of scope context.

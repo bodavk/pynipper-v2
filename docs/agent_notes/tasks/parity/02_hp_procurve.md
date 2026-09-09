@@ -1,7 +1,7 @@
 # Task: HP ProCurve Switch Parser & Checks (Parity with Original Nipper-ng)
 
 ## Status
-- [ ] In progress (Preparing for implementation)
+- [x] Completed (Parser implemented, security checks implemented, and verified with unit tests)
 
 ## Priority
 HIGH — HP ProCurve (and modern ArubaOS-S) switches are common in campus networks. Auditing their configuration is highly relevant for internal network security.
@@ -22,24 +22,25 @@ HIGH — HP ProCurve (and modern ArubaOS-S) switches are common in campus networ
 ## Parser Requirements
 1. File location: `src/devices/hp/procurve.py`
 2. Must extract at minimum the following sections:
-   - [ ] Hostname
-   - [ ] Local users / passwords (`password manager user ...`)
-   - [ ] SNMP settings
-   - [ ] SSH/Telnet management settings (`no telnet`, `ip ssh`)
-   - [ ] Logging settings (`logging <ip>`)
-   - [ ] VLANs and IP addresses
+   - [x] Hostname
+   - [x] Local users / passwords (`password manager user ...`)
+   - [x] SNMP settings
+   - [x] SSH/Telnet/console/management access config
+   - [x] Logging settings (`logging <ip>`)
+   - [x] VLANs and IP addresses
 
 ## Plugin/Check Requirements
-- [ ] HP-01: Telnet Enabled — Check if Telnet management is active.
-- [ ] HP-02: SNMP Default Communities — Check for default community strings.
-- [ ] HP-03: Insecure Web Management — Check if HTTP (clear-text) is enabled instead of HTTPS.
-- [ ] HP-04: Lack of SSH Key Exchange Hardening — Check SSH cipher/KEX settings.
+- [x] HP-01: Telnet Enabled — Check if Telnet management is active.
+- [x] HP-02: SNMP Default Communities — Check for default community strings.
+- [x] HP-03: Insecure Web Management — Check if HTTP (clear-text) is enabled instead of HTTPS.
+- [x] HP-04: Lack of SSH Key Exchange Hardening — Check SSH cipher/KEX settings.
 
 ## Test Requirements
-- [ ] One clean HP configuration sample.
-- [ ] One vulnerable HP configuration sample.
-- [ ] Parser and plugin unit tests.
+- [x] One clean HP configuration sample.
+- [x] One vulnerable HP configuration sample.
+- [x] Parser and plugin unit tests.
 
 ## Acceptance Criteria
-- [ ] Registered in CLI as `HP_PROCURVE`.
-- [ ] Correctly parses HP VLAN-centric interface configurations.
+- [x] Registered in CLI as `HP_PROCURVE`.
+- [x] Correctly parses HP VLAN-centric interface configurations.
+

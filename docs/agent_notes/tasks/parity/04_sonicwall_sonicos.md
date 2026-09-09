@@ -1,7 +1,7 @@
 # Task: SonicWALL SonicOS Parser & Checks (Parity with Original Nipper-ng)
 
 ## Status
-- [ ] Not started
+- [x] Completed (Parser implemented, security checks implemented, and verified with unit tests)
 
 ## Priority
 MEDIUM — SonicWALL firewalls are heavily used in SMB (Small and Medium Business) sectors.
@@ -17,6 +17,7 @@ MEDIUM — SonicWALL firewalls are heavily used in SMB (Small and Medium Busines
 1. File location: `src/devices/sonicwall/sonicos.py`
 
 ## Plugin/Check Requirements
-- [ ] SW-01: HTTP Management Enabled
-- [ ] SW-02: Default Admin Credentials
-- [ ] SW-03: Weak Encryption for VPNs
+- [x] SW-01: HTTP Management Enabled
+- [x] SW-02: Default Admin Credentials
+- [x] SW-03: Weak Encryption for VPNs
+

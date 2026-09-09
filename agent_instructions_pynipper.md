@@ -1,33 +1,23 @@
-
 # AGENT INSTRUCTIONS: Pynipper-ng Device Support Parity & Expansion (Fork Workflow)
 You are using a windows PC, adjust your commands accordingly. 
 ## Purpose of This Document
 
 This file is a self-contained instruction set for an autonomous coding agent (Claude Code, Gemini CLI, or similar) to execute a 
-multi-phase project on `bodavk/pynipper-v2`, a personal fork of `syn-4ck/pynipper-ng`. The agent should treat each Phase as a checkpoint: complete it, verify it, push it, document it, then move to the next.
+multi-phase project on `bodavk/pynipper-v2`, a personal fork of `syn-4ck/pynipper-ng`. The agent should treat each Phase as a checkpoint: complete it, verify it, document it, then move to the next.
 
 **Do not skip verification steps.** This project's entire value is accuracy of security detection — an agent that "completes" tasks without validating them against real configurations produces a tool that is actively dangerous to rely on.
-
-**Repo setup for this project:**
-- **Working repo (origin):** `https://github.com/bodavk/pynipper-v2.git` — already cloned locally, opened in VS Code. All agent work happens here.
-- **Upstream reference:** `https://github.com/syn-4ck/pynipper-ng.git` — the original project this was forked from. Add as a second remote, fetch from it for reference/comparison, but **never push to it and never open PRs against it** unless the human explicitly asks for that in a future session.
-- **Legacy reference:** `https://github.com/arpitn30/nipper-ng.git` — the original C++ nipper-ng that pynipper-ng itself is a rewrite of. Cloned read-only into a `reference/` folder for comparison purposes only, never merged into the working tree.
-
-This is a normal fork-based git workflow — the agent should push to `origin` (the fork) freely as work completes. It should never push to `upstream`.
 
 ---
 
 ## Ground Rules for the Agent
 
-1. **Work in branches, push to `origin` as you go.** Branch per phase/task (e.g., `phase-1-audit`, `task-parity-cisco-pix`), merge into `main` on the fork once a phase/task's exit criteria are met, and push `main` after each merge. Real remote backup, no local-only risk.
-2. **Never push to `upstream`, never open a PR against `syn-4ck/pynipper-ng`,** unless explicitly instructed to in a future session. `upstream` is fetch-only, for reference and diffing.
-3. **Match the existing codebase's architecture and conventions before introducing new ones.** This is critical and detailed in its own section below — read it before writing any code.
-4. **Every new device parser or plugin must ship with a test config and a test case.** No exceptions. A parser with no test is treated as incomplete.
-5. **Do not delete or silently alter existing plugin behavior** without logging the change in `CHANGELOG_AGENT.md` with a reason.
-6. **Cite sources** for every security check you add (vendor hardening guide URL, CIS control ID, STIG ID, or CVE ID). Checks without a traceable source are not acceptable — do not invent thresholds or "best practices" from training data alone; verify against current vendor/CIS documentation.
-7. **Prefer small, reviewable commits** over large ones. One device parser = one commit. One plugin = one commit (or a small logical group). Since there's no code-review-by-others happening, commit messages and phase reports are the primary review trail — write them as if a human reviewer will read them later, because they will.
-8. **Stop and produce a written report** at the end of each Phase before proceeding — do not silently chain all phases in one pass.
-9. **If you cannot verify something (no test config available, ambiguous vendor doc), mark it explicitly as `NEEDS_HUMAN_REVIEW`** in code comments and in the phase report. Do not guess silently.
+1. **Match the existing codebase's architecture and conventions before introducing new ones.** This is critical and detailed in its own section below — read it before writing any code.
+2. **Every new device parser or plugin must ship with a test config and a test case.** No exceptions. A parser with no test is treated as incomplete.
+3. **Do not delete or silently alter existing plugin behavior** without logging the change in `CHANGELOG_AGENT.md` with a reason.
+4. **Cite sources** for every security check you add (vendor hardening guide URL, CIS control ID, STIG ID, or CVE ID). Checks without a traceable source are not acceptable — do not invent thresholds or "best practices" from training data alone; verify against current vendor/CIS documentation.
+5. **Prefer small, reviewable commits** over large ones. One device parser = one commit. One plugin = one commit (or a small logical group). Since there's no code-review-by-others happening, commit messages and phase reports are the primary review trail — write them as if a human reviewer will read them later, because they will.
+6. **Stop and produce a written report** at the end of each Phase before proceeding — do not silently chain all phases in one pass.
+7. **If you cannot verify something (no test config available, ambiguous vendor doc), mark it explicitly as `NEEDS_HUMAN_REVIEW`** in code comments and in the phase report. Do not guess silently.
 
 ---
 
@@ -58,33 +48,9 @@ This section applies throughout Phases 2-5 whenever new code is written, not jus
 
 ---
 
-## Phase 0: Environment & Remote Setup
+## Phase 0: Environment & Setup
 
 ### Tasks
-- [ ] Confirm the working directory is the local clone of the fork:
-  ```bash
-  cd /path/to/pynipper-v2
-  git remote -v
-  ```
-  Expect `origin` to point at `bodavk/pynipper-v2`. If it doesn't, stop and flag this to the human — do not proceed on the wrong repo.
-- [ ] Add the original pynipper-ng project as an `upstream` remote, fetch-only in practice (never pushed to):
-  ```bash
-  git remote add upstream https://github.com/syn-4ck/pynipper-ng.git
-  git fetch upstream
-  ```
-- [ ] Confirm current branch is `main` (or whatever the fork's default branch is) and it's clean:
-  ```bash
-  git status
-  git branch -a
-  ```
-- [ ] Clone the legacy reference project (the original C++ nipper-ng) into a local-only reference folder, excluded from the working repo's history:
-  ```bash
-  mkdir -p reference
-  git clone --depth 1 https://github.com/arpitn30/nipper-ng.git reference/nipper-ng-original
-  echo "reference/" >> .gitignore
-  git add .gitignore && git commit -m "chore: ignore local reference copy of original nipper-ng"
-  git push origin main
-  ```
 - [ ] Inspect and document the actual repo structure (do not assume — the real layout may differ from any prior documentation):
   ```bash
   find . -type f -name "*.py" | grep -v test | grep -v reference | sort > docs/agent_notes/current_file_inventory.txt
@@ -97,25 +63,10 @@ This section applies throughout Phases 2-5 whenever new code is written, not jus
   - `src/analyze/README.md` (if present)
   - Any `CHANGELOG.md`
 - [ ] Complete the **Architecture & Style Fidelity** study described above and write `docs/agent_notes/00_architecture_conventions.md` before proceeding to Phase 1.
-- [ ] Set up a working Python environment matching `setup.py` / `requirements.txt`. Use a local virtual environment so nothing pollutes system Python. Confirm the existing test suite (if any) runs cleanly before making any changes:
-  ```bash
-  python -m venv .venv
-  source .venv/bin/activate   # or .venv\Scripts\activate on Windows
-  pip install -e .
-  pip install pytest pytest-cov
-  pytest tests/ -v 2>&1 | tee docs/agent_notes/00_baseline_test_run.txt
-  ```
-- [ ] Note the commit hash of both `origin/main` and `upstream/main` (or default branch) at the start of this work, in `docs/agent_notes/00_baseline.md`, so drift from upstream can be tracked later if desired.
-- [ ] Commit and push all Phase 0 documentation:
-  ```bash
-  git add docs/
-  git commit -m "docs: phase 0 baseline and architecture conventions notes"
-  git push origin main
-  ```
+- [ ] Set up a working Python environment matching `setup.py` / `requirements.txt`. Use a local virtual environment so nothing pollutes system Python. Confirm the existing test suite (if any) runs cleanly before making any changes.
 
 ### Exit Criteria
-- `origin` confirmed as `bodavk/pynipper-v2`, `upstream` added and fetched.
-- `docs/agent_notes/00_baseline.md` and `docs/agent_notes/00_architecture_conventions.md` exist, committed and pushed.
+- `docs/agent_notes/00_baseline.md` and `docs/agent_notes/00_architecture_conventions.md` exist.
 - Baseline test suite result recorded (pass/fail/none).
 
 ---
@@ -175,17 +126,9 @@ For each existing device parser:
 - [ ] **Any parser or plugin bug found here that is a quick, low-risk fix should be fixed immediately in this phase**, following the existing code's conventions (see Architecture & Style Fidelity section), with its own commit and test.
 
 ### Exit Criteria
-- `01_pynipper_inventory.csv`, `01_original_nipper_inventory.csv`, `01_gap_matrix.md` exist and are internally consistent (every device in the gap matrix appears in both inventories or is explicitly marked missing from one side).
-- Every currently-claimed-supported device has a validation report, even if the report says "could not obtain a representative config, marked NEEDS_HUMAN_REVIEW."
+- `01_pynipper_inventory.csv`, `01_original_nipper_inventory.csv`, `01_gap_matrix.md` exist and are internally consistent.
+- Every currently-claimed-supported device has a validation report.
 - A short **Phase 1 Report** (`docs/agent_notes/01_PHASE_REPORT.md`) summarizing: total devices in original tool, total in pynipper-ng, count in each status bucket, top 5 riskiest gaps, top 5 validation bugs found.
-- All Phase 1 work committed on a `phase-1-audit` branch, merged into `main`, and pushed to `origin`:
-  ```bash
-  git checkout -b phase-1-audit
-  # ... work, commits ...
-  git checkout main
-  git merge phase-1-audit
-  git push origin main
-  ```
 
 **STOP. Present the Phase 1 Report to the human before proceeding to Phase 2.**
 
@@ -304,16 +247,12 @@ Use Phase 1 inventory to confirm the exact list, but at minimum ensure tasks are
 
 ### 2.3 Prioritization
 
-- [ ] Create `docs/agent_notes/tasks/parity/00_PRIORITY_ORDER.md` ranking all generated tasks. Suggested ranking heuristic (state your actual reasoning per item, don't just apply this blindly):
-  1. Devices still commonly deployed in production networks today (e.g., ASA remains widespread even as EOL approaches; PIX is long EOL and lower priority)
-  2. Devices representing a fundamentally different config paradigm not yet covered (e.g., first firewall with zone-based policy, first non-Cisco vendor) — these validate the architecture generalizes
-  3. Everything else, roughly by "approximate check category count" from Phase 1.2 (more original functionality = more value recovered)
+- [ ] Create `docs/agent_notes/tasks/parity/00_PRIORITY_ORDER.md` ranking all generated tasks.
 
 ### Exit Criteria
 - One task file per gap, following the exact template
 - A priority-ordered index file
 - **Phase 2 Report** (`docs/agent_notes/02_PHASE_REPORT.md`) summarizing task count, priority breakdown, and estimated relative effort (T-shirt sizing: S/M/L/XL) per task
-- All Phase 2 work committed on a `phase-2-tasks` branch, merged into `main`, and pushed to `origin`
 
 **STOP. Present the Phase 2 Report and task list to the human before implementing anything or proceeding to Phase 3.**
 
@@ -341,23 +280,22 @@ Use Phase 1 inventory to confirm the exact list, but at minimum ensure tasks are
 
 ### 3.2 Generate task files
 
-- [ ] For each approved candidate (confirm priority list with human before generating full tasks — this can be a lighter-weight check-in than a full phase stop), create a task file at `docs/agent_notes/tasks/expansion/<NN>_<device_slug>.md` using the **same template as Phase 2.1**, but with the "Source of Truth" section pointing to:
-  - Current vendor documentation (not the original nipper-ng, since it never supported this device)
+- [ ] For each approved candidate, create a task file at `docs/agent_notes/tasks/expansion/<NN>_<device_slug>.md` using the **same template as Phase 2.1**, but with the "Source of Truth" section pointing to:
+  - Current vendor documentation
   - Current CIS Benchmark for that platform if one exists
   - Relevant DISA STIG if one exists
   - Relevant CISA hardening guidance if applicable
 
 ### 3.3 Architecture check before scaling out
 
-- [ ] Before generating a large number of new-device tasks, do a short architecture review: does the current `BaseDevice`/plugin/loader design actually generalize cleanly to very different config paradigms (e.g., JSON/structured config like PAN-OS XML, or block-based config like JunOS `{ }` syntax, vs. flat line-based IOS-style config)?
-- [ ] If the architecture doesn't generalize well, create `docs/agent_notes/tasks/expansion/00_ARCHITECTURE_REFACTOR.md` specifying what changes to `BaseDevice` (e.g., pluggable tokenizers/parsers per config syntax family) are needed **before** device-specific tasks can be implemented — while staying as close as possible to the spirit of the existing design (extend, don't replace). Flag this as a blocking prerequisite task, ranked above device-specific expansion tasks.
+- [ ] Before generating a large number of new-device tasks, do a short architecture review: does the current `BaseDevice`/plugin/loader design actually generalize cleanly to very different config paradigms?
+- [ ] If the architecture doesn't generalize well, create `docs/agent_notes/tasks/expansion/00_ARCHITECTURE_REFACTOR.md` specifying what changes to `BaseDevice` are needed **before** device-specific tasks can be implemented.
 
 ### Exit Criteria
 - Candidate list with reasoning
 - Task files for approved new devices
 - Architecture refactor task if needed
 - **Phase 3 Report** (`docs/agent_notes/03_PHASE_REPORT.md`)
-- All Phase 3 work committed on a `phase-3-tasks` branch, merged into `main`, and pushed to `origin`
 
 **STOP. Present Phase 3 Report to the human before implementation.**
 
@@ -365,31 +303,23 @@ Use Phase 1 inventory to confirm the exact list, but at minimum ensure tasks are
 
 ## Phase 4: Implementation (Only After Human Sign-off on Phases 1–3)
 
-This phase is intentionally left as a controlled execution loop rather than a single "implement everything" instruction. All pushes go to `origin` (`bodavk/pynipper-v2`) only — never to `upstream`.
+This phase is intentionally left as a controlled execution loop rather than a single "implement everything" instruction.
 
 ### Execution loop (repeat per task, in priority order)
 
 1. [ ] Pick the single highest-priority `Not started` task from Phase 2 or Phase 3 task lists.
-2. [ ] Create a branch off `main`: `git checkout -b task-<task-id>-<slug>`
-3. [ ] Re-read the relevant section(s) of `docs/agent_notes/00_architecture_conventions.md` and the specific existing parser/plugin named in the task's "Architecture Notes" field before writing code.
-4. [ ] Implement the parser per the task's Parser Requirements section, matching existing conventions.
-5. [ ] Implement each plugin per the task's Plugin/Check Requirements section, one at a time, each with its own test, matching existing conventions.
-6. [ ] Write/finalize all Test Requirements from the task file.
-7. [ ] Run the full test suite (`pytest tests/ -v --cov=src`) and confirm:
+2. [ ] Re-read the relevant section(s) of `docs/agent_notes/00_architecture_conventions.md` and the specific existing parser/plugin named in the task's "Architecture Notes" field before writing code.
+3. [ ] Implement the parser per the task's Parser Requirements section, matching existing conventions.
+4. [ ] Implement each plugin per the task's Plugin/Check Requirements section, one at a time, each with its own test, matching existing conventions.
+5. [ ] Write/finalize all Test Requirements from the task file.
+6. [ ] Run the full test suite (`pytest tests/ -v --cov=src`) and confirm:
    - No regressions in previously-passing tests
    - New tests pass
    - Coverage for new files meets or exceeds project average
-8. [ ] Update `docs/SUPPORTED_DEVICES.md` and `src/devices/README.md`.
-9. [ ] Update the task file's Status checkbox and Acceptance Criteria checkboxes.
-10. [ ] Commit with a message referencing the task file: `git commit -m "feat(devices): add <device> parser + checks (task parity/03)"`
-11. [ ] Merge back into `main` and push to `origin`:
-    ```bash
-    git checkout main
-    git merge task-<task-id>-<slug>
-    git push origin main
-    ```
-12. [ ] Append a short completion note to `docs/agent_notes/IMPLEMENTATION_LOG.md`: what was implemented, what was verified, any `NEEDS_HUMAN_REVIEW` flags remaining, and any architecture deviations introduced.
-13. [ ] **Do not proceed to the next task until this one is marked Done or explicitly deferred with a reason.**
+7. [ ] Update `docs/SUPPORTED_DEVICES.md` and `src/devices/README.md`.
+8. [ ] Update the task file's Status checkbox and Acceptance Criteria checkboxes.
+9. [ ] Append a short completion note to `docs/agent_notes/IMPLEMENTATION_LOG.md`: what was implemented, what was verified, any `NEEDS_HUMAN_REVIEW` flags remaining, and any architecture deviations introduced.
+10. [ ] **Do not proceed to the next task until this one is marked Done or explicitly deferred with a reason.**
 
 ### Batch reporting
 - [ ] After every 5 completed tasks (or end of a work session, whichever is sooner), produce a short cumulative status update in `docs/agent_notes/IMPLEMENTATION_LOG.md`: tasks done, tasks remaining, any architecture issues discovered mid-implementation that affect remaining tasks.
@@ -400,22 +330,9 @@ This phase is intentionally left as a controlled execution loop rather than a si
 
 This is not a one-time phase — treat it as an ongoing discipline the agent applies throughout Phase 4, and as a final pass at the end.
 
-- [ ] Maintain `tests/test_data/regression/` — every sample config used anywhere in this project (Phase 1 validation + Phase 2/3 test fixtures) stays in the working repo as a permanent regression corpus, tracked in git and pushed to `origin`.
+- [ ] Maintain `tests/test_data/regression/` — every sample config used anywhere in this project stays in the working repo as a permanent regression corpus.
 - [ ] Add a script `scripts/run_full_regression.sh` (or `.py`) that runs every device parser against every regression config and every plugin against expected findings, failing loudly on any mismatch. Run this manually after each merged task.
 - [ ] At the end of implementing all parity tasks (end of working through the Phase 2 list), re-run the full regression corpus and produce `docs/agent_notes/FINAL_PARITY_REPORT.md` comparing final device/check counts against the original tool's counts from Phase 1.
-
----
-
-## Staying in Sync with Upstream (Optional, Human-Directed Only)
-
-The fork may want to periodically pull in upstream changes if `syn-4ck/pynipper-ng` receives updates during this project. The agent should **only** do this if explicitly asked, using:
-```bash
-git fetch upstream
-git merge upstream/main    # or rebase, per human's preference at the time
-```
-Conflicts from this kind of merge should always be surfaced to the human rather than resolved silently, since they may indicate the upstream project changed something this project's new code depends on.
-
-The agent should never assume this is wanted as part of routine phase/task work — it's a separate, occasional action taken only on explicit instruction.
 
 ---
 
@@ -454,6 +371,5 @@ The agent should never assume this is wanted as part of routine phase/task work 
 - ❌ Silently changing severity ratings or check logic of existing plugins while doing unrelated work.
 - ❌ Combining multiple unrelated devices/checks into one giant commit or one giant task file.
 - ❌ Proceeding past a Phase stop-point without an explicit human go-ahead.
-- ❌ Any `git push` to `upstream`, or any `gh pr create` / GitHub CLI operation targeting `syn-4ck/pynipper-ng`, unless explicitly instructed to in a future session.
 - ❌ Introducing a new architectural pattern (new base classes, new config representation, new plugin paradigm) without first checking whether the existing codebase already has a way to do it, and without documenting the deviation.
 - ❌ Treating this document as fully exhaustive — if Phase 1 reveals the real repo structure differs meaningfully from what's assumed here, update this instruction file itself (as `AGENT_INSTRUCTIONS.md` in the repo) to reflect reality, and note the deviation in the phase report.
