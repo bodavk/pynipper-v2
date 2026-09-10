@@ -141,3 +141,77 @@ missing_relative_links=0
 The warning is the existing Windows pytest-cache permission warning. Removal searches found no live references to the deleted runtime modules.
 
 `NEEDS_HUMAN_REVIEW`: the local interpreter lacks `setuptools`, so the clean-environment editable installation must be confirmed by the first hosted workflow run. The build dependency is declared in `pyproject.toml`.
+
+## 2026-09-10 — Wave 5 target-quality closure
+
+Status: Verified complete.
+
+Implemented:
+
+- Attached authoritative Cisco, Fortinet, or Juniper documentation references to every `Finding` construction in the older focused IOS HTTP/SSH, IOS-XE, ASA, FortiOS, Junos, and ScreenOS plugins.
+- Corrected a discovered inventory mismatch by also citing the shared Cisco IOS and ASA baseline finding helpers; every target plugin finding path is now cited.
+- Added a source-level test that fails on any uncited target finding constructor and validates that focused reference constants use authoritative vendor HTTPS domains.
+- Extended the public full-regression runner so every emitted target finding must contain an HTTPS source and no insecure external URL.
+- Expanded the permanent regression corpus from 14 to 20 configurations with effective overrides/removals, alternate command spelling, IPv6 management restrictions, inactive and disabled objects, unused weak crypto definitions, hierarchical Junos, and recoverable malformed ScreenOS input.
+- Updated current analyzer, parser, support, status, roadmap, changelog, and final-quality documentation after verification.
+
+Verification evidence:
+
+```text
+89 passed, 1 warning in 0.65s
+340 passed, 1 warning in 2.11s
+Regression corpus passed: 20 configurations
+```
+
+The warning is the existing Windows pytest-cache permission warning and does not represent a test failure.
+
+No finding semantics were intentionally changed. Exact observed variant results are recorded in `tests/test_data/regression/manifest.json`.
+
+## 2026-09-10 — Wave 6 secondary-vendor correctness baselines
+
+Status: Verified correctness work complete; advanced T-030/T-032 expansion remains open.
+
+Implemented:
+
+- Rebuilt PAN-OS XML parsing around device/vsys scope, same-device management-profile resolution, dedicated MGT explicit services, ordered security rules, same-vsys log-forwarding references, administrators, password policy, DNS/NTP, SNMPv3, and explicit Panorama inheritance uncertainty.
+- Rebuilt ArubaOS-Switch parsing around exact ordered commands, AOS-S 16.10 documented defaults, explicit unknowns elsewhere, redacted users/SNMP, effective SSH cipher/KEX/MAC state, authorized managers, AAA, syslog, and SNTP.
+- Replaced the synthetic SonicOS grammar with identified SonicOS 7 E-CLI `show current-config custom` support, typed interfaces/rules/VPN proposals and operations state, plus early rejection of legacy preferences and incompatible syntax.
+- Rebuilt Arista EOS eAPI evaluation around block-local shutdown, HTTP/HTTPS, VRF, and IPv4/IPv6 service ACL state, with EOS AAA, SNMP, syslog, and NTP checks.
+- Added authoritative vendor references to every new finding path and extended source-level citation enforcement to all four Wave 6 plugins.
+- Expanded the permanent corpus from 20 to 32 configurations with paired secure/vulnerable and scope/default/inactive/disabled variants for every Wave 6 platform.
+
+Verification evidence:
+
+```text
+Regression corpus passed: 32 configurations
+364 passed, 1 warning in 1.41s
+```
+
+The warning is the existing Windows pytest-cache permission warning and does not represent a test failure. Full boundaries and remaining work are in `WAVE6_SECONDARY_VENDOR_REPORT.md`.
+
+`NEEDS_HUMAN_REVIEW`: add anonymized customer-derived fixtures when available; the new cases are sanitized, purpose-built examples of real syntax patterns rather than customer configuration extracts.
+
+## 2026-09-10 — Wave 7 secondary baseline depth
+
+Status: Verified complete at the documented static-analysis boundary; T-030 and T-032 closed.
+
+Implemented:
+
+- Added PAN-OS shared/vsys SSL/TLS service-profile parsing, device management attachment resolution, explicit certificate and minimum-version checks, recurring threat-content action evaluation, system-event syslog forwarding, and normalized TLS settings.
+- Added ArubaOS-Switch ordered centralized accounting, password configuration-control, configured VLAN, and DHCP-snooping state with AOS-S 16.10-only absence/default evaluation and guarded VLAN range parsing.
+- Added Arista EOS explicit `management ssh` state for empty-password policy, ciphers, key exchanges, MACs, IPv4/IPv6 service ACLs, normalized crypto settings, and centralized exec authorization.
+- Added SonicOS typed authenticated NTP records, ordered removal semantics, Capture ATP/Gateway Anti-Virus dependency evaluation, and applicability-safe threat-service wording that does not invent license state.
+- Expanded focused tests with negative/positive and negation/removal cases and updated the permanent exact finding snapshots without increasing the 32-input corpus.
+- Updated living parser, analyzer, support, status, roadmap, inventory, gap, changelog, and quality documentation after verification.
+
+Verification evidence:
+
+```text
+30 passed, 1 warning in 0.34s
+367 passed, 1 warning in 1.42s
+Regression corpus passed: 32 configurations
+```
+
+The warning is the existing Windows pytest-cache permission warning and does not represent a test failure.
+
+`NEEDS_HUMAN_REVIEW`: review the project SSH weak-algorithm lists against the organization's approved cryptographic standard. Live certificate validity/expiry, active subscription/licensing, controller-inherited effective state, runtime authorization, and time-sensitive firmware support cannot be proven from the supported static exports and were not converted into guessed absence findings.

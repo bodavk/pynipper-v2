@@ -1,0 +1,18 @@
+<config version="11.2.3">
+  <mgt-config><users><entry name="admin"><permissions><role-based><superuser>yes</superuser></role-based></permissions></entry></users></mgt-config>
+  <devices><entry name="localhost.localdomain">
+    <deviceconfig><system><hostname>edge-pa</hostname><password-complexity><enabled>no</enabled><minimum-length>0</minimum-length><minimum-uppercase-letters>0</minimum-uppercase-letters><minimum-lowercase-letters>0</minimum-lowercase-letters><minimum-numeric-letters>0</minimum-numeric-letters><minimum-special-characters>0</minimum-special-characters></password-complexity></system></deviceconfig>
+    <network>
+      <profiles><interface-management-profile><entry name="UNUSED-HTTP"><http>yes</http></entry><entry name="WAN-MGMT"><http>yes</http><https>yes</https><ssh>yes</ssh><snmp>yes</snmp></entry></interface-management-profile></profiles>
+      <interface><ethernet><entry name="ethernet1/1"><layer3><ip><entry name="198.51.100.1/24"/></ip><interface-management-profile>WAN-MGMT</interface-management-profile></layer3></entry></ethernet></interface>
+    </network>
+    <vsys><entry name="vsys1">
+      <zone><entry name="untrust"><network><layer3><member>ethernet1/1</member></layer3></network></entry></zone>
+      <log-settings><profiles><entry name="UNUSED-SIEM"><match-list><entry name="traffic"><send-syslog><member>CORP-SYSLOG</member></send-syslog></entry></match-list></entry></profiles></log-settings>
+      <rulebase><security><rules>
+        <entry name="ANY-ALLOW"><from><member>any</member></from><to><member>any</member></to><source><member>any</member></source><destination><member>any</member></destination><source-user><member>any</member></source-user><category><member>any</member></category><application><member>any</member></application><service><member>any</member></service><action>allow</action></entry>
+        <entry name="DISABLED-ANY"><disabled>yes</disabled><from><member>any</member></from><to><member>any</member></to><source><member>any</member></source><destination><member>any</member></destination><source-user><member>any</member></source-user><category><member>any</member></category><application><member>any</member></application><service><member>any</member></service><action>allow</action></entry>
+      </rules></security></rulebase>
+    </entry></vsys>
+  </entry></devices>
+</config>

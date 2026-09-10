@@ -23,10 +23,10 @@ Statuses describe tested detection depth, not merely whether a registry entry ex
 | Juniper ScreenOS | SUPPORTED_VERIFIED | Paired corpus includes a hardened EOL configuration and vulnerable configuration |
 | Check Point Firewall-1 | SUPPORTED_VERIFIED | Offline management-export policy/object analysis; runtime installation state is out of scope |
 | Nortel Passport | MISSING | No parser or checks |
-| SonicWall SonicOS | SUPPORTED_PARTIAL | Basic registered implementation; export-format and effective-state tasks remain open |
+| SonicWall SonicOS | SUPPORTED_PARTIAL | SonicOS 7 E-CLI expanded static baseline verified; WebUI preferences/6.x remain unsupported and live certificate/license/firmware state is out of scope |
 | 3Com SuperStack3 Firewall | MISSING | No parser or checks |
 | Bay Networks Accelar | MISSING | No parser or checks |
-| HP ProCurve | SUPPORTED_PARTIAL | Basic registered implementation; parser and baseline tasks remain open |
+| HP ProCurve | SUPPORTED_PARTIAL | ArubaOS-Switch expanded static baseline verified; documented defaults remain limited to AOS-S 16.10 and other releases are explicit-state only |
 | Nokia IPSO | MISSING | No parser or checks |
 | Nortel Routing Switch | MISSING | No parser or checks |
 
@@ -37,9 +37,9 @@ Statuses describe tested detection depth, not merely whether a registry entry ex
 | Fortinet FortiGate/FortiOS | SUPPORTED_VERIFIED | Grammar-aware global/VDOM parser and target baseline; paired corpus coverage |
 | Cisco IOS-XE | SUPPORTED_VERIFIED | IOS composition plus IOS-XE MACsec/IKE/IPsec; paired corpus coverage |
 | Juniper Junos | SUPPORTED_VERIFIED | Hierarchical/display-set parser and target baseline; paired corpus coverage |
-| Palo Alto PAN-OS | SUPPORTED_PARTIAL | Basic XML parser/checks; scope, rule, and baseline tasks remain open |
-| Arista EOS | SUPPORTED_PARTIAL | Basic IOS-derived parser/check; eAPI and EOS-specific baseline tasks remain open |
+| Palo Alto PAN-OS | SUPPORTED_PARTIAL | Local XML scope/reference and expanded static baseline verified; Panorama merged state and live certificate/firmware state remain out of scope |
+| Arista EOS | SUPPORTED_PARTIAL | eAPI plus explicit SSH/authorization static baseline verified; implicit/default SSH suites and live certificate/firmware state remain out of scope |
 
 ## Priority conclusion
 
-The commonly encountered target set—Cisco IOS/IOS-XE/ASA, FortiOS, Check Point FW1, Junos, and ScreenOS—now has verified target-baseline coverage. The next implementation wave should address the explicitly deferred partial devices rather than imply original-Nipper parity: PAN-OS first if observed demand warrants it, followed by HP/ArubaOS-Switch, SonicOS, and Arista EOS. Legacy original-only platforms remain separate expansion decisions.
+The commonly encountered target set—Cisco IOS/IOS-XE/ASA, FortiOS, Check Point FW1, Junos, and ScreenOS—has verified target-baseline coverage. Waves 6-7 added bounded expanded static baselines for PAN-OS, HP/ArubaOS-Switch, SonicOS 7 E-CLI, and Arista EOS and closed T-030/T-032. Legacy original-only platforms and any live-state/advisory layer remain separate expansion decisions.

@@ -1,6 +1,6 @@
 # Detection Logic Audit Remediation Tasks
 
-This backlog remediates the findings in `DETECTION_AUDIT_FINDINGS.md`. It is prioritized for the configuration mix most often encountered by the project: Cisco (IOS, IOS-XE, and ASA), Fortinet FortiGate/FortiOS, Check Point FW1, and Juniper (Junos and ScreenOS). Other implemented vendors remain tracked but are deferred. A task is complete only when its implementation and the stated regression tests are both merged. Examples in tests must use valid vendor configuration syntax; invented test-only commands are not acceptable.
+This backlog remediates the findings in `DETECTION_AUDIT_FINDINGS.md`. It is prioritized for the configuration mix most often encountered by the project: Cisco (IOS, IOS-XE, and ASA), Fortinet FortiGate/FortiOS, Check Point FW1, and Juniper (Junos and ScreenOS). The planned secondary-vendor correctness and depth work is closed through Wave 7. A task is complete only when its implementation and stated regression tests are verified. Examples in tests must use valid vendor configuration syntax; invented test-only commands are not acceptable.
 
 ## Current execution order
 
@@ -9,11 +9,12 @@ This backlog remediates the findings in `DETECTION_AUDIT_FINDINGS.md`. It is pri
 3. **Wave 2 — Cisco correctness:** T-012, T-013, T-014, T-015, T-016, T-025, T-026. Make existing IOS, ASA, and IOS-XE detections dependable.
 4. **Wave 3 — FortiGate, Check Point, and Juniper correctness:** T-017, T-018, T-020, T-021, T-023. Rebuild existing rules on effective state and typed policies.
 5. **Wave 4 — target-platform coverage:** T-028, T-029, T-031, T-033, T-034. Add the missing high-value baseline controls only after correctness work for that platform is complete.
-6. **Deferred — secondary vendors:** T-007, T-010, T-011, T-019, T-022, T-024, T-027, T-030, T-032. Reassess these when the target-platform baseline is stable or the observed device mix changes.
+6. **Wave 6 — secondary-vendor correctness:** T-007, T-010, T-011, T-019, T-022, T-024, T-027, with core slices of T-030 and T-032. Parser/correctness work established the verified base for the following expansion.
+7. **Wave 7 — secondary-vendor depth:** T-030 and T-032. Closed the defensible static certificate/TLS, update, interface, authorization, SSH, and security-service dependency packs while leaving unprovable live state explicit.
 
 Within a wave, independent device tasks may run in parallel. A later wave may start for one vendor once that vendor's explicit dependencies are complete; it does not need to wait for unrelated devices in the preceding wave.
 
-**Cumulative validation status (2026-09-10):** Waves 0-4 for the prioritized target vendors are complete and covered by the permanent paired corpus in `tests/test_data/regression/`. The reusable gate is `scripts/run_full_regression.py`; its latest run passed 14/14 corpus cases and 317/317 tests. The secondary-vendor tasks listed as deferred above remain open.
+**Cumulative validation status (2026-09-10):** Waves 0-7 are covered by the permanent paired and edge-case corpus in `tests/test_data/regression/`. The reusable gate is `scripts/run_full_regression.py`; its latest run passed 32/32 corpus cases and 367/367 tests, including authoritative-reference enforcement for every emitted corpus finding. All tasks in this remediation backlog are closed at their documented static-analysis boundary.
 
 ## Foundation and parser tasks
 
@@ -79,6 +80,7 @@ Within a wave, independent device tasks may run in parallel. A later wave may st
 
 ## Task T-007: Support an explicitly identified SonicOS export format
 
+- **Status:** Complete (2026-09-10; SonicOS 7 E-CLI `show current-config custom`)
 - **Priority:** Low
 - **Effort:** Large
 - **Fixes findings:** SW-01, SW-05
@@ -108,6 +110,7 @@ Within a wave, independent device tasks may run in parallel. A later wave may st
 
 ## Task T-010: Normalize PAN-OS configuration scope and references
 
+- **Status:** Complete (2026-09-10)
 - **Priority:** Low
 - **Effort:** Large
 - **Fixes findings:** PAN-01, PAN-06
@@ -117,6 +120,7 @@ Within a wave, independent device tasks may run in parallel. A later wave may st
 
 ## Task T-011: Correct the ArubaOS-Switch/ProCurve parser baseline
 
+- **Status:** Complete (2026-09-10; explicit commands generally, documented defaults for AOS-S 16.10)
 - **Priority:** Low
 - **Effort:** Medium
 - **Fixes findings:** HP-01, HP-05, HP-06
@@ -198,6 +202,7 @@ Within a wave, independent device tasks may run in parallel. A later wave may st
 
 ## Task T-019: Make PAN-OS checks attachment- and scope-aware
 
+- **Status:** Complete (2026-09-10)
 - **Priority:** Low
 - **Effort:** Large
 - **Fixes findings:** PAN-02, PAN-03, PAN-04, PAN-05
@@ -227,6 +232,7 @@ Within a wave, independent device tasks may run in parallel. A later wave may st
 
 ## Task T-022: Parse and evaluate ArubaOS-Switch SNMP and SSH crypto
 
+- **Status:** Complete (2026-09-10; AOS-S 16.10 default policy table, explicit suites otherwise)
 - **Priority:** Low
 - **Effort:** Medium
 - **Fixes findings:** HP-02, HP-03, HP-04
@@ -246,6 +252,7 @@ Within a wave, independent device tasks may run in parallel. A later wave may st
 
 ## Task T-024: Rebuild SonicOS credential, management, and VPN checks
 
+- **Status:** Complete (2026-09-10; administrator default-password state is explicit unknown)
 - **Priority:** Low
 - **Effort:** Large
 - **Fixes findings:** SW-02, SW-03, SW-04
@@ -275,6 +282,7 @@ Within a wave, independent device tasks may run in parallel. A later wave may st
 
 ## Task T-027: Correct Arista eAPI state and protocol scoping
 
+- **Status:** Complete (2026-09-10)
 - **Priority:** Low
 - **Effort:** Medium
 - **Fixes findings:** AR-01, AR-02
@@ -306,6 +314,7 @@ Within a wave, independent device tasks may run in parallel. A later wave may st
 
 ## Task T-030: Expand the PAN-OS firewall baseline
 
+- **Status:** Complete (2026-09-10; management TLS/certificate resolution, automatic threat-content installation, system-log forwarding, and normalized TLS evidence added; live certificate validity and time-sensitive firmware currency require operational data)
 - **Priority:** Low
 - **Effort:** Extra large
 - **Fixes findings:** PAN-07
@@ -325,6 +334,7 @@ Within a wave, independent device tasks may run in parallel. A later wave may st
 
 ## Task T-032: Expand HP, Arista, and SonicOS baselines
 
+- **Status:** Complete (2026-09-10; Aruba accounting/password/DHCP-snooping, Arista SSH/service-ACL/exec authorization, and SonicOS authenticated NTP/Capture ATP dependency packs added; live certificate, license, and firmware currency remain operational-data limits)
 - **Priority:** Low
 - **Effort:** Extra large
 - **Fixes findings:** HP-07, AR-03, SW-06

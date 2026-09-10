@@ -6,6 +6,20 @@ from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.juniper.junos import JunOSParser, JunosFirewallTerm
 
 
+JUNIPER_REMOTE_ACCESS_GUIDE = (
+    "https://www.juniper.net/documentation/us/en/software/junos/user-access/"
+    "topics/topic-map/junos-software-remote-access-overview.html"
+)
+JUNIPER_FILTER_GUIDE = (
+    "https://www.juniper.net/documentation/us/en/software/junos/user-access/"
+    "topics/example/permitted-ip-configuring.html"
+)
+JUNIPER_SSH_REFERENCE = (
+    "https://www.juniper.net/documentation/us/en/software/junos/cli-reference/"
+    "topics/ref/statement/ssh-edit-system.html"
+)
+
+
 class PluginJunOSChecks(BasePlugin):
     """Effective Junos services, attached firewall filters, and SSH root policy."""
 
@@ -34,6 +48,7 @@ class PluginJunOSChecks(BasePlugin):
                         for statement in self._junos(parser).statements
                         if statement.active and protocol in statement.path
                     ),
+                    references=(JUNIPER_REMOTE_ACCESS_GUIDE,),
                 )
             )
 
@@ -79,6 +94,7 @@ class PluginJunOSChecks(BasePlugin):
                             exploitability="Any source can reach any destination and protocol within the attached filter scope.",
                             recommendation="Add explicit source, destination, and protocol matches before accepting traffic.",
                             evidence=tuple(item.text for item in term.evidence),
+                            references=(JUNIPER_FILTER_GUIDE,),
                         )
                     )
                 if catch_all and action in {"accept", "discard", "reject"}:
@@ -106,6 +122,7 @@ class PluginJunOSChecks(BasePlugin):
                 exploitability="An attacker who compromises an allowed root credential obtains immediate full privilege.",
                 recommendation="Configure 'set system services ssh root-login deny' and use named administrative accounts.",
                 evidence=tuple(item.text for item in evidence) or (f"root-login {value}",),
+                references=(JUNIPER_SSH_REFERENCE,),
             )
         )
 

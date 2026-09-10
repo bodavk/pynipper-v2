@@ -30,8 +30,12 @@ from src.analyze.cisco.ios.core.process_cisco_ios_conf import (  # noqa: E402
 )
 from src.analyze.cisco.iosxe.core.process_iosxe_conf import process_iosxe_conf  # noqa: E402
 from src.analyze.fortinet.core.process_fortios_conf import process_fortios_conf  # noqa: E402
+from src.analyze.hp.core.process_hp_conf import process_hp_conf  # noqa: E402
 from src.analyze.juniper.core.process_screenos_conf import process_screenos_conf  # noqa: E402
 from src.analyze.juniper.junos.core.process_junos_conf import process_junos_conf  # noqa: E402
+from src.analyze.paloalto.core.process_panos_conf import process_panos_conf  # noqa: E402
+from src.analyze.arista.core.process_arista_conf import process_arista_conf  # noqa: E402
+from src.analyze.sonicwall.core.process_sonicos_conf import process_sonicos_conf  # noqa: E402
 from src.devices import get_parser  # noqa: E402
 from src.devices.registry import validate_device_registry  # noqa: E402
 
@@ -47,8 +51,11 @@ PROCESSORS: dict[str, Callable] = {
     "JUNOS": process_junos_conf,
     "SCREENOS": process_screenos_conf,
     "CHECKPOINT_FW1": process_checkpoint_fw1_conf,
+    "PAN_OS": process_panos_conf,
+    "HP_PROCURVE": process_hp_conf,
+    "ARISTA_EOS": process_arista_conf,
+    "SONICOS": process_sonicos_conf,
 }
-
 
 def _load_cases() -> list[dict]:
     with MANIFEST_PATH.open(encoding="utf-8") as manifest_file:
@@ -82,6 +89,28 @@ def _analyze_case(case: dict) -> tuple[list[str], int]:
     parser.get_normalized_config()
     with redirect_stdout(StringIO()):
         findings = list(processor(parser).values())
+
+    uncited = [
+        finding.rule_id
+        for finding in findings
+        if not any(reference.startswith("https://") for reference in finding.references)
+    ]
+    if uncited:
+        raise AssertionError(
+            f"{case['name']}: target findings lack authoritative references: "
+            f"{sorted(set(uncited))!r}"
+        )
+    invalid_references = [
+        (finding.rule_id, reference)
+        for finding in findings
+        for reference in finding.references
+        if "://" in reference and not reference.startswith("https://")
+    ]
+    if invalid_references:
+        raise AssertionError(
+            f"{case['name']}: target findings contain non-HTTPS references: "
+            f"{invalid_references!r}"
+        )
 
     identities = [
         (finding.rule_id, tuple(finding.evidence) or (finding.observation,))

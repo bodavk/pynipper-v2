@@ -1,0 +1,6 @@
+<config xmlns="urn:panos" version="11.2.3">
+  <devices><entry name="localhost.localdomain">
+    <deviceconfig><system><hostname>panorama-managed-pa</hostname><password-complexity><enabled>yes</enabled><minimum-length>14</minimum-length><minimum-uppercase-letters>1</minimum-uppercase-letters><minimum-lowercase-letters>1</minimum-lowercase-letters><minimum-numeric-letters>1</minimum-numeric-letters><minimum-special-characters>1</minimum-special-characters></password-complexity></system></deviceconfig>
+    <device-group><entry name="BRANCH-FIREWALLS"/></device-group>
+  </entry></devices>
+</config>

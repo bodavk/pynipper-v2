@@ -5,6 +5,23 @@ from src.devices.common.models import ConfigurationState
 from src.devices.fortinet.fortios import FortiOSParser
 
 
+FORTINET_MANAGEMENT_GUIDE = (
+    "https://docs.fortinet.com/document/fortigate/7.6.5/administration-guide/"
+    "616955/configuring-ports"
+)
+FORTINET_POLICY_GUIDE = (
+    "https://docs.fortinet.com/document/fortigate/7.6.5/administration-guide/"
+    "826586/configuring-a-firewall-policy"
+)
+FORTINET_TLS_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.6.5/cli-reference/339914554"
+)
+FORTINET_LOGGING_GUIDE = (
+    "https://docs.fortinet.com/document/fortigate/7.6.5/administration-guide/"
+    "250999/log-settings-and-targets"
+)
+
+
 class PluginFortiOSChecks(BasePlugin):
     """Effective-state FortiOS management, policy, TLS, and logging checks."""
 
@@ -64,6 +81,7 @@ class PluginFortiOSChecks(BasePlugin):
                     evidence=tuple(item.text for item in service.evidence) or (
                         f"{service.scope}:{service.interface}:allowaccess {protocol}",
                     ),
+                    references=(FORTINET_MANAGEMENT_GUIDE,),
                 )
             )
 
@@ -105,6 +123,7 @@ class PluginFortiOSChecks(BasePlugin):
                     exploitability="Any source matching the interface scope can target any reachable destination and service.",
                     recommendation="Constrain source and destination addresses, services, schedule, and interfaces; enable appropriate policy logging.",
                     evidence=tuple(item.text for item in evidence) or (f"firewall policy {name}",),
+                    references=(FORTINET_POLICY_GUIDE,),
                 )
             )
 
@@ -140,6 +159,7 @@ class PluginFortiOSChecks(BasePlugin):
                     exploitability="An on-path attacker may target protocol downgrade or legacy cryptographic weaknesses.",
                     recommendation="Permit only tlsv1-2 and tlsv1-3 for administrative HTTPS and related TLS services.",
                     evidence=tuple(evidence) or tuple(weak_values),
+                    references=(FORTINET_TLS_REFERENCE,),
                 )
             )
 
@@ -168,6 +188,7 @@ class PluginFortiOSChecks(BasePlugin):
                 exploitability="Reduced centralized visibility makes malicious activity harder to detect and investigate.",
                 recommendation="Enable at least one supported centralized logging target and configure its destination and filters.",
                 evidence=tuple(configured) or ("No supported logging target configured",),
+                references=(FORTINET_LOGGING_GUIDE,),
             )
         )
 

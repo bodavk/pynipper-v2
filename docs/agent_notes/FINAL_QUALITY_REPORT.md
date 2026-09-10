@@ -6,7 +6,7 @@ Report date: 2026-09-10
 
 The prioritized remediation program for Cisco IOS, Cisco IOS-XE, Cisco ASA, Fortinet FortiOS, Check Point Firewall-1, Juniper Junos, and Juniper ScreenOS is complete at the target-baseline level. The project is materially beyond its original shallow substring-checking state: these public pipelines now parse effective configuration state, retain scoped evidence, distinguish unknown from absent state, emit typed stable findings, and include broad baseline packs.
 
-This is not a claim of universal device coverage or complete original-Nipper parity. PAN-OS, HP/ArubaOS-Switch, SonicOS, and Arista EOS remain intentionally deferred at basic depth, and several legacy platforms are missing.
+This is not a claim of universal device coverage or complete original-Nipper parity. Waves 6-7 subsequently raised PAN-OS, HP/ArubaOS-Switch, SonicOS 7 E-CLI, and Arista EOS to bounded expanded static baselines and closed T-030/T-032. Several missing legacy platforms and controls requiring live operational state remain explicit.
 
 ## Verification evidence
 
@@ -19,26 +19,30 @@ The reusable validation command is:
 Observed in this report session:
 
 ```text
-319 passed, 1 warning in 1.39s
-Regression corpus passed: 14 configurations
+Regression corpus passed: 32 configurations
+367 passed, 1 warning in 1.42s
 ```
 
 The warning is the existing Windows pytest-cache permission warning. It does not indicate a test failure.
 
-The permanent corpus contains a vulnerable and hardened case for each of seven public target pipelines. Exact duplicate-preserving rule-ID snapshots are stored in `tests/test_data/regression/manifest.json`.
+The permanent corpus contains a vulnerable and hardened case for each of eleven public pipelines, a sanitized syntax-variant case for each of the six older focused platforms, and a third scope/default/inactive-object case for each Wave 6 platform. Exact duplicate-preserving rule-ID snapshots are stored in `tests/test_data/regression/manifest.json`.
 
-| Pipeline | Vulnerable findings | Hardened findings | Snapshot result |
-|---|---:|---:|---|
-| Cisco IOS | 23 | 0 | Pass |
-| Cisco IOS-XE | 15 | 0 | Pass |
-| Cisco ASA | 13 | 0 | Pass |
-| FortiOS | 20 | 0 | Pass |
-| Junos | 11 | 0 | Pass |
-| ScreenOS | 16 | 1 | Pass; the remaining finding is intentional EOL posture |
-| Check Point FW1 | 13 | 0 | Pass |
-| **Total** | **111** | **1** | **14/14 configurations passed** |
+| Pipeline | Vulnerable | Hardened | Syntax variant | Snapshot result |
+|---|---:|---:|---:|---|
+| Cisco IOS | 23 | 0 | 0 | Pass |
+| Cisco IOS-XE | 15 | 0 | 0 | Pass |
+| Cisco ASA | 13 | 0 | 1 | Pass; retained uRPF baseline finding |
+| FortiOS | 20 | 0 | 3 | Pass; deliberately incomplete baseline controls retained |
+| Junos | 11 | 0 | 0 | Pass |
+| ScreenOS | 16 | 1 | 1 | Pass; hardened/variant findings are intentional EOL posture |
+| Check Point FW1 | 13 | 0 | — | Pass |
+| PAN-OS | 14 | 0 | 1 | Pass; scope finding records unresolved Panorama inheritance |
+| ArubaOS-Switch / HP ProCurve | 12 | 0 | 0 | Pass; unknown-release defaults remain unknown |
+| Arista EOS | 11 | 0 | 0 | Pass; inactive eAPI objects do not produce findings |
+| SonicOS 7 E-CLI | 10 | 0 | 0 | Pass; disabled rule/VPN objects do not produce findings |
+| **Total** | **158** | **1** | **6** | **32/32 configurations passed** |
 
-Across the vulnerable cases, the corpus asserts 94 distinct rule IDs. The 111 emitted findings include IOS rules deliberately reused by the IOS-XE composition and repeated Check Point IDs for distinct policy objects; object-level repeats are retained only when rule-bound evidence differs.
+Across the vulnerable cases, the corpus asserts 141 distinct rule IDs. The 158 emitted vulnerable findings include IOS rules deliberately reused by the IOS-XE composition and repeated Check Point IDs for distinct policy objects; object-level repeats are retained only when rule-bound evidence differs. The complete corpus emits 165 findings including intentional scope, lifecycle, and syntax-variant results.
 
 ## Detection depth before and after
 
@@ -61,22 +65,26 @@ For the prioritized formats, the checks are no longer “too basic to detect mos
 
 It still is not a replacement for a live control-plane assessment. Static configurations cannot prove runtime reachability, applied/installed policy, certificate validity, dynamic object membership, authentication-server health, hit counts, or compensating controls outside the file.
 
+## Wave 5 quality closure
+
+The earlier serialized-citation gap is closed. Every `Finding` constructor in all target plugin files supplies references, including the Cisco IOS and ASA baseline helpers that an older inventory had incorrectly marked as already cited. `tests/test_focused_plugin_references.py` rejects target constructors without references and validates focused constants against authoritative vendor HTTPS domains. The public regression runner requires every emitted target finding to contain an HTTPS source and rejects insecure external reference URLs.
+
+The six new permanent cases cover ordered enable/disable and set/unset behavior, alternate `ip ssh timeout` spelling, named and IPv6 VTY controls, removed ASA IPv4/IPv6 management grants, quoted FortiOS values and disabled policy objects, inactive/unused weak crypto definitions, native hierarchical Junos, and a malformed quoted ScreenOS line that must produce a diagnostic without preventing later valid commands from being analyzed.
+
 ## Residual risks and deferred work
 
-1. **Serialized citation gap in older focused plugins.** The new baseline plugins and Check Point focused rule attach source references to findings. Older focused IOS, IOS-XE, ASA, FortiOS, Junos, and ScreenOS plugins have their sources recorded in audit/task documentation but do not yet serialize those URLs per finding. Their detection behavior is Level 2, but they do not fully satisfy the project's per-finding citation standard. A small follow-up task should add references without changing rule semantics.
-2. **Deferred secondary vendors.** T-007, T-010, T-011, T-019, T-022, T-024, T-027, T-030, and T-032 remain open for SonicOS, PAN-OS, HP/ArubaOS-Switch, and Arista EOS. These implementations must continue to be described as basic/partial.
-3. **Legacy dialect qualification.** ASA corpus coverage does not independently qualify PIX or FWSM syntax. IOS Catalyst coverage does not imply CatOS/NMP support.
-4. **Corpus provenance.** The permanent fixtures are sanitized, purpose-built representative configurations. Adding sanitized examples from real customer exports will improve grammar and edge-case confidence without changing expected rule semantics casually.
-5. **Offline Check Point limits.** The legacy export cannot prove successful compilation/installation, dynamic-object runtime membership, hit counts, implied rules, or interactions between separately evaluated policy layers.
-6. **ScreenOS lifecycle.** A hardened ScreenOS configuration correctly retains one EOL finding; configuration hardening cannot remove the platform lifecycle risk.
+1. **Static-analysis boundaries.** T-030 and T-032 are closed, but static exports cannot prove certificate validity/expiry, active licenses or subscriptions, current vendor-support status, runtime authorization results, or effective state inherited from an unavailable controller hierarchy.
+2. **Legacy dialect qualification.** ASA corpus coverage does not independently qualify PIX or FWSM syntax. IOS Catalyst coverage does not imply CatOS/NMP support.
+3. **Corpus provenance.** The permanent fixtures are sanitized, purpose-built representative configurations. Adding sanitized examples derived from customer exports will improve grammar and edge-case confidence without casually changing expected rule semantics.
+4. **Offline Check Point limits.** The legacy export cannot prove successful compilation/installation, dynamic-object runtime membership, hit counts, implied rules, or interactions between separately evaluated policy layers.
+5. **ScreenOS lifecycle.** A hardened ScreenOS configuration correctly retains one EOL finding; configuration hardening cannot remove the platform lifecycle risk.
 
 ## Recommended next steps
 
-1. Add serialized vendor/benchmark references to the older target focused plugins and assert them in tests.
-2. Grow each target corpus directory with sanitized real-world syntax variants and malformed-input cases.
-3. Start the deferred secondary-vendor wave in observed-demand order, without weakening the Level-2 acceptance bar.
-4. Maintain the full regression command as the required cross-platform repository workflow; this was integrated during the post-Phase-F architecture cleanup.
+1. Plan the next program using observed configuration volume and measured false-positive/false-negative feedback.
+2. Add sanitized customer-derived fixtures opportunistically when new syntax is encountered, after secret removal and explicit expected-result review.
+3. Maintain the full regression command as the required cross-platform repository workflow and consider live-state/advisory correlation as a separate opt-in architecture.
 
 ## Conclusion
 
-The target-platform remediation is verified and useful, but deliberately bounded. Pynipper-v2 now has a credible static configuration-audit baseline for the device families most commonly encountered by this project. Its main remaining quality risk is unevenness outside that target set, not the earlier systemic inability to reason about effective configuration state.
+The target-platform remediation is verified and useful, but deliberately bounded. Pynipper-v2 now has a credible static configuration-audit baseline for the device families most commonly encountered by this project. Its main remaining quality risk is unevenness outside that target set, not the earlier systemic inability to reason about effective configuration state or the now-closed focused-plugin citation gap.

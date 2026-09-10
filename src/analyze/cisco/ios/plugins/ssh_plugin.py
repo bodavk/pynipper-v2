@@ -4,6 +4,12 @@ from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.cisco.ios import CiscoIOSParser, ConfigurationState, NumericSetting
 
 
+CISCO_IOS_SSH_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/sec_usr_ssh/"
+    "configuration/xe-2/sec-usr-ssh-xe-2-book/sec-usr-ssh-sec-shell.html"
+)
+
+
 class PluginSSH(BasePlugin):
     """Evaluate IOS SSH protocol, limits, and inbound VTY restrictions."""
 
@@ -38,6 +44,7 @@ class PluginSSH(BasePlugin):
             recommendation="Enforce SSHv2 with 'ip ssh version 2'.",
             severity=Severity.HIGH,
             evidence=evidence or ("SSH configuration present",),
+            references=(CISCO_IOS_SSH_GUIDE,),
         )
 
     @staticmethod
@@ -69,6 +76,7 @@ class PluginSSH(BasePlugin):
             recommendation=f"Configure 'ip ssh authentication-retries <1-{self.MAX_AUTHENTICATION_RETRIES}>'.",
             severity=Severity.MEDIUM,
             evidence=self._numeric_evidence(retries, 3),
+            references=(CISCO_IOS_SSH_GUIDE,),
         )
 
     def get_cisco_ios_ssh_timeout(self, parser: BaseDeviceParser):
@@ -94,6 +102,7 @@ class PluginSSH(BasePlugin):
             recommendation=f"Configure 'ip ssh time-out <1-{self.MAX_NEGOTIATION_TIMEOUT_SECONDS}>'.",
             severity=Severity.LOW,
             evidence=self._numeric_evidence(timeout, 120),
+            references=(CISCO_IOS_SSH_GUIDE,),
         )
 
     def get_cisco_ios_vty_access_restriction(self, parser: BaseDeviceParser):
@@ -116,6 +125,7 @@ class PluginSSH(BasePlugin):
             recommendation="Apply 'access-class <ACL> in' or 'ipv6 access-class <ACL> in' to every SSH-enabled VTY range.",
             severity=Severity.MEDIUM,
             evidence=evidence,
+            references=(CISCO_IOS_SSH_GUIDE,),
         )
 
     def analyze(self, parser: BaseDeviceParser) -> None:

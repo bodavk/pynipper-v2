@@ -4,6 +4,32 @@ from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.cisco.asa import CiscoASAParser
 
 
+CISCO_ASA_MANAGEMENT_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/security/asa/asa920/asdm720/"
+    "general/asdm-720-general-config/admin-management.html"
+)
+CISCO_ASA_PASSWORD_REFERENCE = (
+    "https://www.cisco.com/c/en/us/td/docs/security/asa/asa-cli-reference/"
+    "A-H/asa-command-ref-A-H/e-commands.html"
+)
+CISCO_ASA_SNMP_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/security/asa/asa916/configuration/"
+    "general/asa-916-general-config/monitor-snmp.html"
+)
+CISCO_ASA_LOGGING_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/security/asa/asa916/configuration/"
+    "general/asa-916-general-config/monitor-syslog.html"
+)
+CISCO_ASA_TLS_REFERENCE = (
+    "https://www.cisco.com/c/en/us/td/docs/security/asa/asa-cli-reference/"
+    "S/asa-command-ref-S/so-st-commands.html"
+)
+CISCO_ASA_ACCESS_RULES_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/security/asa/asa92/configuration/"
+    "firewall/asa-firewall-cli/access-rules.html"
+)
+
+
 class PluginASAChecks(BasePlugin):
     """Scope-aware checks for ASA management, logging, TLS, SNMP, and ACLs."""
 
@@ -26,6 +52,7 @@ class PluginASAChecks(BasePlugin):
                     exploitability="An attacker on the traffic path can capture credentials and commands.",
                     recommendation="Remove the Telnet grant and use restricted SSH management access.",
                     evidence=(grant.raw_line,),
+                    references=(CISCO_ASA_MANAGEMENT_GUIDE,),
                 )
             )
 
@@ -47,6 +74,7 @@ class PluginASAChecks(BasePlugin):
                 exploitability="Default values are easily guessed; plaintext values are exposed if the configuration is obtained.",
                 recommendation="Replace the credential with a unique secret stored using a supported strong hash format.",
                 evidence=(credential.raw_line_redacted,),
+                references=(CISCO_ASA_PASSWORD_REFERENCE,),
             )
         )
 
@@ -69,6 +97,7 @@ class PluginASAChecks(BasePlugin):
                         exploitability="The default value is publicly known.",
                         recommendation="Remove SNMPv1/v2c defaults and prefer SNMPv3 with authentication and privacy.",
                         evidence=(community.raw_line_redacted,),
+                        references=(CISCO_ASA_SNMP_GUIDE,),
                     )
                 )
             if community.access == "rw":
@@ -83,6 +112,7 @@ class PluginASAChecks(BasePlugin):
                         exploitability="An attacker needs SNMP reachability and the community value.",
                         recommendation="Remove write communities and use a least-privileged SNMPv3 user.",
                         evidence=(community.raw_line_redacted,),
+                        references=(CISCO_ASA_SNMP_GUIDE,),
                     )
                 )
 
@@ -99,6 +129,7 @@ class PluginASAChecks(BasePlugin):
                     exploitability="An attacker on the path may observe community-based SNMP traffic.",
                     recommendation="Use SNMPv3 with both authentication and privacy.",
                     evidence=tuple(host.raw_line_redacted for host in legacy_hosts),
+                    references=(CISCO_ASA_SNMP_GUIDE,),
                 )
             )
 
@@ -115,6 +146,7 @@ class PluginASAChecks(BasePlugin):
                     exploitability="An attacker requires SNMP reachability or traffic-path access.",
                     recommendation="Configure SNMPv3 users with strong authentication and privacy algorithms.",
                     evidence=tuple(incomplete_users),
+                    references=(CISCO_ASA_SNMP_GUIDE,),
                 )
             )
 
@@ -141,6 +173,7 @@ class PluginASAChecks(BasePlugin):
                     exploitability="Any host reachable through the named interface can attempt SSH access.",
                     recommendation="Restrict the grant to dedicated administration networks or move it to an isolated management interface.",
                     evidence=(grant.raw_line,),
+                    references=(CISCO_ASA_MANAGEMENT_GUIDE,),
                 )
             )
 
@@ -160,6 +193,7 @@ class PluginASAChecks(BasePlugin):
                     exploitability="An attacker may operate with reduced likelihood of centralized detection.",
                     recommendation="Enable logging and configure at least one reachable remote 'logging host'.",
                     evidence=tuple(hosts) or ("No active logging host",),
+                    references=(CISCO_ASA_LOGGING_GUIDE,),
                 )
             )
             return
@@ -188,6 +222,7 @@ class PluginASAChecks(BasePlugin):
                     exploitability="Missing telemetry reduces the likelihood that suspicious activity is detected.",
                     recommendation="Set 'logging trap informational' unless a documented local policy requires otherwise.",
                     evidence=(f"logging trap {level}",) if level else tuple(hosts),
+                    references=(CISCO_ASA_LOGGING_GUIDE,),
                 )
             )
 
@@ -206,6 +241,7 @@ class PluginASAChecks(BasePlugin):
                 exploitability="An on-path attacker may target weaknesses in permitted legacy protocol versions.",
                 recommendation="Set 'ssl server-version tlsv1.2' or a newer version supported by the platform.",
                 evidence=(f"ssl server-version {minimum}",),
+                references=(CISCO_ASA_TLS_REFERENCE,),
             )
         )
 
@@ -229,6 +265,7 @@ class PluginASAChecks(BasePlugin):
                         exploitability="Reachable attackers can target any destination allowed by routing and the broad ACE.",
                         recommendation="Replace the ACE with explicit source, destination, and service constraints.",
                         evidence=(entry.raw_line, f"access-group {entry.acl_name} in interface {binding['interface']}"),
+                        references=(CISCO_ASA_ACCESS_RULES_GUIDE,),
                     )
                 )
 

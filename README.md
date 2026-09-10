@@ -18,7 +18,7 @@ The primary, regression-gated platforms are:
 | Juniper | Junos | Target baseline |
 | Juniper | ScreenOS | Target baseline; the platform is end-of-life |
 
-PAN-OS, HP ProCurve/ArubaOS-Switch, SonicWall SonicOS, and Arista EOS are registered but remain basic/partial implementations. Registry presence does not mean target-baseline quality. See [Supported devices](docs/SUPPORTED_DEVICES.md) for the precise support boundary and [Final quality report](docs/agent_notes/FINAL_QUALITY_REPORT.md) for current evidence and limitations.
+PAN-OS, HP ProCurve/ArubaOS-Switch, SonicWall SonicOS 7 E-CLI, and Arista EOS have expanded, tested static baselines. Wave 7 closed their planned T-030/T-032 packs without claiming the same breadth as the seven prioritized target platforms or universal version/dialect support. See [Supported devices](docs/SUPPORTED_DEVICES.md) for precise boundaries and the [Wave 7 report](docs/agent_notes/WAVE7_SECONDARY_BASELINE_REPORT.md) for evidence and limitations.
 
 ## What the analyzer can and cannot prove
 

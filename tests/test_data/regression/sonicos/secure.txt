@@ -1,0 +1,25 @@
+firmware-version "SonicOS 7.1.2-7019"
+product-name "TZ 570"
+firewall-name "secure-fw"
+interface X0
+  zone LAN
+  ip-address 10.0.0.1
+  management https ssh
+access-rule ipv4 from LAN to WAN action allow source address name Corp service name HTTPS destination address name Updates schedule always-on
+  name "CONTROLLED"
+  enable
+  logging
+vpn policy site-to-site "MODERN-TUNNEL"
+  enable
+  proposal ike encryption aes-256
+  proposal ike authentication sha256
+  proposal ike dh-group 19
+  proposal ipsec encryption aes-gcm16-256
+  proposal ipsec authentication sha256
+log syslog server 192.0.2.20 enable
+ntp-server 192.0.2.30 md5 trust-key-no 1 key-number 1 password redacted
+gateway-anti-virus enable
+intrusion-prevention enable
+anti-spyware enable
+capture-atp enable
+cloud-gateway-anti-virus enable

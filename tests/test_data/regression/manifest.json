@@ -217,6 +217,193 @@
       "input": "checkpoint_fw1/secure",
       "expected_rule_ids": [],
       "expected_finding_count": 0
+    },
+    {
+      "name": "cisco-ios-syntax-variants",
+      "device": "IOS_ROUTER",
+      "input": "cisco_ios/syntax_variants.conf",
+      "expected_rule_ids": [],
+      "expected_finding_count": 0
+    },
+    {
+      "name": "cisco-iosxe-syntax-variants",
+      "device": "IOS_XE",
+      "input": "cisco_iosxe/syntax_variants.conf",
+      "expected_rule_ids": [],
+      "expected_finding_count": 0
+    },
+    {
+      "name": "cisco-asa-syntax-variants",
+      "device": "ASA",
+      "input": "cisco_asa/syntax_variants.conf",
+      "expected_rule_ids": [
+        "cisco.asa.interface.reverse_path"
+      ],
+      "expected_finding_count": 1
+    },
+    {
+      "name": "fortios-syntax-variants",
+      "device": "FORTIOS",
+      "input": "fortios/syntax_variants.conf",
+      "expected_rule_ids": [
+        "fortinet.fortios.admin.centralized_authentication",
+        "fortinet.fortios.dos.wan_policy_missing",
+        "fortinet.fortios.https.management_certificate"
+      ],
+      "expected_finding_count": 3
+    },
+    {
+      "name": "junos-hierarchical-variant",
+      "device": "JUNOS",
+      "input": "junos/hierarchical_variant.conf",
+      "expected_rule_ids": [],
+      "expected_finding_count": 0
+    },
+    {
+      "name": "screenos-syntax-variants",
+      "device": "SCREENOS",
+      "input": "screenos/syntax_variants.conf",
+      "expected_rule_ids": [
+        "juniper.screenos.lifecycle.end_of_life"
+      ],
+      "expected_finding_count": 1
+    },
+    {
+      "name": "panos-vulnerable",
+      "device": "PAN_OS",
+      "input": "panos/vulnerable.xml",
+      "expected_rule_ids": [
+        "paloalto.panos.admin.centralized_authentication",
+        "paloalto.panos.credentials.password_complexity",
+        "paloalto.panos.dns.servers",
+        "paloalto.panos.management.http",
+        "paloalto.panos.management.unrestricted_secure_service",
+        "paloalto.panos.ntp.servers",
+        "paloalto.panos.policy.broad_allow",
+        "paloalto.panos.policy.log_forwarding",
+        "paloalto.panos.policy.security_profiles",
+        "paloalto.panos.policy.session_logging",
+        "paloalto.panos.snmp.secure_user_missing",
+        "paloalto.panos.management.tls_profile_missing",
+        "paloalto.panos.updates.threat_content",
+        "paloalto.panos.logging.system_forwarding"
+      ],
+      "expected_finding_count": 14
+    },
+    {
+      "name": "panos-secure",
+      "device": "PAN_OS",
+      "input": "panos/secure.xml",
+      "expected_rule_ids": [],
+      "expected_finding_count": 0
+    },
+    {
+      "name": "panos-panorama-scope",
+      "device": "PAN_OS",
+      "input": "panos/panorama_scope.xml",
+      "expected_rule_ids": [
+        "paloalto.panos.analysis.panorama_inheritance_unknown"
+      ],
+      "expected_finding_count": 1
+    },
+    {
+      "name": "hp-procurve-vulnerable",
+      "device": "HP_PROCURVE",
+      "input": "hp_procurve/vulnerable.conf",
+      "expected_rule_ids": [
+        "hp.procurve.authentication.centralized",
+        "hp.procurve.logging.remote_destination",
+        "hp.procurve.management.http",
+        "hp.procurve.management.source_restriction",
+        "hp.procurve.management.telnet",
+        "hp.procurve.ntp.servers",
+        "hp.procurve.snmp.community_access",
+        "hp.procurve.snmp.default_community",
+        "hp.procurve.snmp.secure_user_missing",
+        "hp.procurve.ssh.weak_algorithms",
+        "hp.procurve.credentials.password_complexity",
+        "hp.procurve.layer2.dhcp_snooping"
+      ],
+      "expected_finding_count": 12
+    },
+    {
+      "name": "hp-procurve-secure",
+      "device": "HP_PROCURVE",
+      "input": "hp_procurve/secure.conf",
+      "expected_rule_ids": [],
+      "expected_finding_count": 0
+    },
+    {
+      "name": "hp-procurve-unknown-release",
+      "device": "HP_PROCURVE",
+      "input": "hp_procurve/unknown_release.conf",
+      "expected_rule_ids": [],
+      "expected_finding_count": 0
+    },
+    {
+      "name": "arista-eos-vulnerable",
+      "device": "ARISTA_EOS",
+      "input": "arista_eos/vulnerable.conf",
+      "expected_rule_ids": [
+        "arista.eos.authentication.centralized",
+        "arista.eos.eapi.https_disabled",
+        "arista.eos.eapi.insecure_http",
+        "arista.eos.eapi.source_restriction",
+        "arista.eos.ssh.empty_passwords",
+        "arista.eos.ssh.weak_algorithms",
+        "arista.eos.ssh.source_restriction",
+        "arista.eos.logging.remote_destination",
+        "arista.eos.ntp.servers",
+        "arista.eos.snmp.default_community",
+        "arista.eos.snmp.secure_user_missing"
+      ],
+      "expected_finding_count": 11
+    },
+    {
+      "name": "arista-eos-secure",
+      "device": "ARISTA_EOS",
+      "input": "arista_eos/secure.conf",
+      "expected_rule_ids": [],
+      "expected_finding_count": 0
+    },
+    {
+      "name": "arista-eos-inactive-eapi",
+      "device": "ARISTA_EOS",
+      "input": "arista_eos/inactive_eapi.conf",
+      "expected_rule_ids": [],
+      "expected_finding_count": 0
+    },
+    {
+      "name": "sonicos-vulnerable",
+      "device": "SONICOS",
+      "input": "sonicos/vulnerable.txt",
+      "expected_rule_ids": [
+        "sonicwall.sonicos.logging.remote_destination",
+        "sonicwall.sonicos.management.external_interface",
+        "sonicwall.sonicos.management.http",
+        "sonicwall.sonicos.ntp.servers",
+        "sonicwall.sonicos.policy.broad_allow",
+        "sonicwall.sonicos.policy.logging",
+        "sonicwall.sonicos.security_services.disabled",
+        "sonicwall.sonicos.snmp.secure_user_missing",
+        "sonicwall.sonicos.vpn.weak_proposal",
+        "sonicwall.sonicos.capture_atp.dependencies"
+      ],
+      "expected_finding_count": 10
+    },
+    {
+      "name": "sonicos-secure",
+      "device": "SONICOS",
+      "input": "sonicos/secure.txt",
+      "expected_rule_ids": [],
+      "expected_finding_count": 0
+    },
+    {
+      "name": "sonicos-disabled-objects",
+      "device": "SONICOS",
+      "input": "sonicos/disabled_objects.txt",
+      "expected_rule_ids": [],
+      "expected_finding_count": 0
     }
   ]
 }

@@ -4,6 +4,12 @@ from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.cisco.ios import CiscoIOSParser, ConfigurationState
 
 
+CISCO_IOS_HTTP_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/https/configuration/"
+    "xe-17/https-xe-17-book/HTTP_1-1_Web_Server_and_Client.html"
+)
+
+
 class PluginHTTP(BasePlugin):
     """Evaluate the effective IOS embedded HTTP server configuration."""
 
@@ -29,6 +35,7 @@ class PluginHTTP(BasePlugin):
             recommendation="Disable it with 'no ip http server' and use HTTPS or SSH for remote administration.",
             severity=Severity.HIGH,
             evidence=("ip http server",),
+            references=(CISCO_IOS_HTTP_GUIDE,),
         )
 
     def get_cisco_ios_http_access_list(self, parser: BaseDeviceParser):
@@ -48,6 +55,7 @@ class PluginHTTP(BasePlugin):
             recommendation="Restrict management sources with 'ip http access-class <ACL>' or disable HTTP.",
             severity=Severity.HIGH,
             evidence=("ip http server",),
+            references=(CISCO_IOS_HTTP_GUIDE,),
         )
 
     def get_cisco_ios_http_auth(self, parser: BaseDeviceParser):
@@ -79,6 +87,7 @@ class PluginHTTP(BasePlugin):
             recommendation="Configure a supported authentication method with 'ip http authentication local', 'aaa', 'tacacs', or 'enable', or disable HTTP.",
             severity=Severity.HIGH,
             evidence=evidence,
+            references=(CISCO_IOS_HTTP_GUIDE,),
         )
 
     def analyze(self, parser: BaseDeviceParser) -> None:

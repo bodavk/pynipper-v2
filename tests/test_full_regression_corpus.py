@@ -8,5 +8,6 @@ def test_permanent_target_platform_regression_corpus():
 
     assert {result["device"] for result in results} == set(PROCESSORS)
     assert Counter(result["device"] for result in results) == {
-        device: 2 for device in PROCESSORS
+        device: 2 if device == "CHECKPOINT_FW1" else 3
+        for device in PROCESSORS
     }

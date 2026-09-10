@@ -1,0 +1,14 @@
+firmware-version "SonicOS 7.1.2-7019"
+product-name "TZ 570"
+firewall-name "disabled-objects"
+interface X0
+  zone LAN
+  management https
+access-rule ipv4 from any to any action allow source address any service any destination address any
+  name "DISABLED"
+  no enable
+vpn policy site-to-site "DISABLED-LEGACY"
+  no enable
+  proposal ike encryption triple-des
+log syslog server 192.0.2.20 enable
+ntp-server 192.0.2.30 md5 trust-key-no 1 key-number 1 password redacted

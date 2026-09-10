@@ -6,6 +6,11 @@ from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.cisco.ios import CiscoIOSParser
 
 
+CISCO_IOS_HARDENING_GUIDE = (
+    "https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html"
+)
+
+
 class PluginIOSBaseline(BasePlugin):
     """Version-gated IOS hardening baseline beyond HTTP and SSH."""
 
@@ -40,6 +45,7 @@ class PluginIOSBaseline(BasePlugin):
             recommendation=recommendation,
             severity=severity,
             evidence=evidence,
+            references=(CISCO_IOS_HARDENING_GUIDE,),
         )
 
     def _global_lines(self, parser: BaseDeviceParser) -> list[str]:

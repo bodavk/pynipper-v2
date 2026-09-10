@@ -4,6 +4,11 @@ from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.juniper.screenos import JuniperScreenOSParser
 
 
+JUNIPER_SCREENOS_DOCUMENTATION = (
+    "https://www.juniper.net/documentation/product/us/en/screenos/6.3.0/"
+)
+
+
 class PluginScreenOSChecks(BasePlugin):
     """Evaluate effective ScreenOS interface management and ordered policies."""
 
@@ -40,6 +45,7 @@ class PluginScreenOSChecks(BasePlugin):
             exploitability="An attacker with reachability through the stated interface/zone can intercept or attempt management access.",
             recommendation=f"Remove {protocol} management from the interface and use SSH or HTTPS with manager-IP restrictions.",
             evidence=evidence or (f"effective {protocol} management",),
+            references=(JUNIPER_SCREENOS_DOCUMENTATION,),
         )
 
     def check_insecure_services(self, parser: BaseDeviceParser) -> None:
@@ -96,6 +102,7 @@ class PluginScreenOSChecks(BasePlugin):
                     exploitability="Any source in the source zone can target any destination and service in the destination zone.",
                     recommendation="Replace Any source, destination, and service values with explicit objects and enable session logging.",
                     evidence=tuple(item.text for item in policy.evidence),
+                    references=(JUNIPER_SCREENOS_DOCUMENTATION,),
                 )
             )
 

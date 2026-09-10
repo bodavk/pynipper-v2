@@ -1,0 +1,23 @@
+firmware-version "SonicOS 7.1.2-7019"
+product-name "TZ 570"
+firewall-name "edge-fw"
+interface X1
+  zone WAN
+  ip-address 198.51.100.1
+  management http https ssh snmp
+access-rule ipv4 from any to any action allow source address any service any destination address any schedule always-on
+  name "BROAD"
+  enable
+  no logging
+vpn policy site-to-site "LEGACY-TUNNEL"
+  enable
+  proposal ike encryption triple-des
+  proposal ike authentication sha1
+  proposal ike dh-group 2
+  proposal ipsec encryption des
+  proposal ipsec authentication md5
+no gateway-anti-virus enable
+no intrusion-prevention enable
+no anti-spyware enable
+capture-atp enable
+no cloud-gateway-anti-virus enable

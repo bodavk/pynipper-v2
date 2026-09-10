@@ -5,6 +5,16 @@ from src.analyze.common.issue import Finding, Severity
 from src.devices.common.base_parser import BaseDeviceParser
 
 
+CISCO_IOSXE_MACSEC_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/macsec/"
+    "configuration/xe-3s/macsec-xe-3s-book.html"
+)
+CISCO_IOSXE_IPSEC_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/routers/ios/config/17-x/sec-vpn/"
+    "b-security-vpn/m_sec-cfg-vpn-ipsec-0.html"
+)
+
+
 class PluginIOSXEChecks(BasePlugin):
     """IOS-XE-only MACsec and active cryptographic-suite checks."""
 
@@ -124,6 +134,7 @@ class PluginIOSXEChecks(BasePlugin):
                     exploitability="An attacker with access to the local link may observe or alter unprotected frames.",
                     recommendation="Attach a valid MKA policy and MACsec key chain, select an approved cipher suite, and activate MACsec.",
                     evidence=(interface.text.strip(), *children),
+                    references=(CISCO_IOSXE_MACSEC_GUIDE,),
                 )
             )
 
@@ -173,6 +184,7 @@ class PluginIOSXEChecks(BasePlugin):
                 exploitability="A capable on-path attacker may target legacy algorithms or weak key exchange.",
                 recommendation="Use AES-GCM or AES-256, SHA-256 or stronger where required, a strong PRF, and DH group 19 or stronger.",
                 evidence=(block.text.strip(), *self._children(block)),
+                references=(CISCO_IOSXE_IPSEC_GUIDE,),
             )
         )
 

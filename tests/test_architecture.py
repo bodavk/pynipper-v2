@@ -67,7 +67,13 @@ def _minimal_config_source(tmp_path, canonical_id):
         return str(source)
 
     source = tmp_path / f"{canonical_id.lower()}.conf"
-    source.write_text("<config />" if canonical_id == "PAN_OS" else "", encoding="utf-8")
+    if canonical_id == "PAN_OS":
+        content = "<config />"
+    elif canonical_id == "SONICOS":
+        content = 'firmware-version "SonicOS 7.1.2-7019"\n'
+    else:
+        content = ""
+    source.write_text(content, encoding="utf-8")
     return str(source)
 
 

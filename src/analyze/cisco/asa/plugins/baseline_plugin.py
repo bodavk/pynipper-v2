@@ -6,6 +6,16 @@ from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.cisco.asa import CiscoASAParser
 
 
+CISCO_ASA_CONFIGURATION_GUIDES = (
+    "https://www.cisco.com/c/en/us/td/docs/security/asa/asa924/configuration/"
+    "general/asa-924-general-config.html",
+    "https://www.cisco.com/c/en/us/td/docs/security/asa/asa924/configuration/"
+    "firewall/asa-924-firewall-config.html",
+    "https://www.cisco.com/c/en/us/td/docs/security/asa/asa924/configuration/"
+    "vpn/asa-924-vpn-config.pdf",
+)
+
+
 class PluginASABaseline(BasePlugin):
     """Additional version-aware ASA management and platform baseline."""
 
@@ -30,6 +40,7 @@ class PluginASABaseline(BasePlugin):
             recommendation=recommendation,
             severity=severity,
             evidence=evidence,
+            references=CISCO_ASA_CONFIGURATION_GUIDES,
         )
 
     def check_aaa(self, parser: BaseDeviceParser) -> None:
