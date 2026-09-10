@@ -1,17 +1,17 @@
 from src.devices.common.base_parser import BaseDeviceParser
 from ..plugins.fw1_checks_plugin import PluginCheckPointChecks
+from ..plugins.fw1_baseline_plugin import PluginCheckPointBaseline
 
 
 def process_checkpoint_fw1_conf(parser: BaseDeviceParser) -> dict:
     issues = {}
     idx = 0
 
-    # For CheckPoint, we use the CheckPoint plugin checks
-    plugin = PluginCheckPointChecks()
-    plugin.analyze(parser)
-    
-    i = plugin.get_issues()
-    issues = _generate_section(i, issues, idx)
+    for plugin_class in (PluginCheckPointChecks, PluginCheckPointBaseline):
+        plugin = plugin_class()
+        plugin.analyze(parser)
+        issues = _generate_section(plugin.get_issues(), issues, idx)
+        idx += 1
     
     return issues
 

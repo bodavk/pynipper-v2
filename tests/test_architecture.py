@@ -14,6 +14,10 @@ from src.devices.paloalto.panos import PaloAltoPANOSParser
 from src.devices.arista.eos import AristaEOSParser
 from src.devices.common.base_parser import BaseDeviceParser
 from src import main as main_module
+from src.analyze.cisco.ios.core.process_cisco_ios_conf import IOS_PLUGINS
+from src.analyze.cisco.ios.plugins.baseline_plugin import PluginIOSBaseline
+from src.analyze.cisco.ios.plugins.http_plugin import PluginHTTP
+from src.analyze.cisco.ios.plugins.ssh_plugin import PluginSSH
 
 
 EXPECTED_PARSERS = {
@@ -50,6 +54,10 @@ EXPECTED_ANALYZERS = {
     "JUNOS": "analyze_junos_device",
     "ARISTA_EOS": "analyze_arista_device",
 }
+
+
+def test_ios_public_pipeline_has_explicit_plugin_registration():
+    assert IOS_PLUGINS == (PluginHTTP, PluginSSH, PluginIOSBaseline)
 
 
 def _minimal_config_source(tmp_path, canonical_id):
@@ -112,6 +120,17 @@ def test_cli_accepts_every_registered_device_choice(monkeypatch, device_choice):
 
     assert main_module.main(["--device", device_choice, "--input", "unused.conf"]) == 0
     assert calls[0][0] == device_choice
+
+
+def test_cli_offline_flag_disables_online_lookup(monkeypatch):
+    calls = []
+    monkeypatch.setattr(main_module, "display_banner", lambda: None)
+    monkeypatch.setattr(main_module, "analyze_device", lambda *args: calls.append(args))
+
+    assert main_module.main([
+        "--device", "IOS_ROUTER", "--input", "unused.conf", "--offline"
+    ]) == 0
+    assert calls[0][-1] is False
 
 
 def test_unknown_device_is_rejected_by_factory(tmp_path):

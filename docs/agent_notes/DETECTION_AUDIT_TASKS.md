@@ -13,6 +13,8 @@ This backlog remediates the findings in `DETECTION_AUDIT_FINDINGS.md`. It is pri
 
 Within a wave, independent device tasks may run in parallel. A later wave may start for one vendor once that vendor's explicit dependencies are complete; it does not need to wait for unrelated devices in the preceding wave.
 
+**Cumulative validation status (2026-09-10):** Waves 0-4 for the prioritized target vendors are complete and covered by the permanent paired corpus in `tests/test_data/regression/`. The reusable gate is `scripts/run_full_regression.py`; its latest run passed 14/14 corpus cases and 317/317 tests. The secondary-vendor tasks listed as deferred above remain open.
+
 ## Foundation and parser tasks
 
 ## Task T-001: Make one device registry authoritative
@@ -313,6 +315,7 @@ Within a wave, independent device tasks may run in parallel. A later wave may st
 
 ## Task T-031: Expand Junos and ScreenOS baselines
 
+- **Status:** Complete (2026-09-10)
 - **Priority:** High
 - **Effort:** Extra large
 - **Fixes findings:** JUN-06, SCREEN-06
@@ -331,6 +334,7 @@ Within a wave, independent device tasks may run in parallel. A later wave may st
 
 ## Task T-033: Expand the FortiGate/FortiOS security baseline
 
+- **Status:** Complete (2026-09-10)
 - **Priority:** High
 - **Effort:** Extra large
 - **Fixes findings:** FORTI-10
@@ -340,6 +344,7 @@ Within a wave, independent device tasks may run in parallel. A later wave may st
 
 ## Task T-034: Expand the Check Point FW1 security-policy baseline
 
+- **Status:** Complete (2026-09-10)
 - **Priority:** High
 - **Effort:** Extra large
 - **Fixes findings:** CP-05

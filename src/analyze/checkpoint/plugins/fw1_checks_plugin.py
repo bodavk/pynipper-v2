@@ -2,6 +2,14 @@ from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.issue import Finding, Severity
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.models import ConfigurationState, KnowledgeState
+from src.devices.checkpoint.fw1 import CheckPointFW1Parser
+
+
+CHECKPOINT_ACCESS_BEST_PRACTICES = (
+    "https://sc1.checkpoint.com/documents/R82/WebAdminGuides/EN/"
+    "CP_R82_SecurityManagement_AdminGuide/Content/Topics-SECMG/"
+    "Best-Practices-for-Access-Control-Rules.htm"
+)
 
 
 class PluginCheckPointChecks(BasePlugin):
@@ -19,6 +27,22 @@ class PluginCheckPointChecks(BasePlugin):
         return None
 
     def check_broad_filter_rules(self, parser: BaseDeviceParser) -> None:
+        if isinstance(parser, CheckPointFW1Parser):
+            last_by_layer = {
+                layer.name: next(
+                    (rule for rule in reversed(layer.rules) if rule.enabled),
+                    None,
+                )
+                for layer in parser.get_policy_layers()
+            }
+            application_layers = {
+                layer.name
+                for layer in parser.get_policy_layers()
+                if "application" in f"{layer.name} {layer.kind or ''}".casefold()
+            }
+        else:
+            last_by_layer = {}
+            application_layers = set()
         policies = parser.get_normalized_config().policies
         if policies.state != KnowledgeState.KNOWN:
             return
@@ -32,6 +56,17 @@ class PluginCheckPointChecks(BasePlugin):
                 and self._all_wildcard(policy.destinations)
                 and self._all_wildcard(policy.services)
             ):
+                continue
+            layer_name = policy.scope or ""
+            is_application_layer = layer_name in application_layers
+            last_rule = last_by_layer.get(layer_name)
+            if (
+                is_application_layer
+                and last_rule is not None
+                and last_rule.name == policy.name
+            ):
+                # Application Control layers may intentionally use an explicit
+                # Any/Any/Any accept cleanup matching an accept implicit action.
                 continue
             tracking = policy.tracking or "not configured"
             install_on = ", ".join(policy.install_on) or "unspecified targets"
@@ -48,6 +83,7 @@ class PluginCheckPointChecks(BasePlugin):
                     evidence=tuple(item.text for item in policy.evidence) or (
                         f"Check Point rule {policy.name}",
                     ),
+                    references=(CHECKPOINT_ACCESS_BEST_PRACTICES,),
                 )
             )
 

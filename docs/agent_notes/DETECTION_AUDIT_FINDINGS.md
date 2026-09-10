@@ -2,6 +2,8 @@
 
 Audit date: 2026-09-09
 
+Historical note: this document records the pre-remediation code paths exactly as audited. Some superseded modules and generated output fixtures named below were intentionally removed during the 2026-09-10 architecture cleanup; current architecture is documented in `docs/ARCHITECTURE.md`.
+
 This audit is based on the implementation, not README/status claims. Every base class, issue class, device parser, analyzer/processor, and analysis plugin under `src/` was read in full. Tests and bundled original Nipper sources were used as corroborating evidence; tests were not treated as specifications.
 
 ## Summary

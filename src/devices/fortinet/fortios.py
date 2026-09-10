@@ -43,6 +43,19 @@ class _Frame:
 class FortiOSParser(BaseDeviceParser):
 
     device_type = "FORTIOS"
+    _SECRET_FIELDS = {
+        "auth-password",
+        "auth-pwd",
+        "key",
+        "password",
+        "passphrase",
+        "passwd",
+        "private-key",
+        "priv-password",
+        "priv-pwd",
+        "psksecret",
+        "secret",
+    }
 
     def __init__(self, config_filepath: str):
         super().__init__(config_filepath)
@@ -75,7 +88,18 @@ class FortiOSParser(BaseDeviceParser):
         return [str(value)]
 
     def _record_evidence(self, path: Tuple[str, ...], text: str, line_number: int) -> None:
-        self.evidence[path] = ConfigEvidence(text=text, source=self.config_filepath, line_number=line_number)
+        tokens = text.split(None, 2)
+        if (
+            len(tokens) >= 2
+            and tokens[0].lower() in {"set", "select", "append"}
+            and tokens[1].lower() in self._SECRET_FIELDS
+        ):
+            text = f"{tokens[0]} {tokens[1]} <redacted>"
+        self.evidence[path] = ConfigEvidence(
+            text=text,
+            source=self.config_filepath,
+            line_number=line_number,
+        )
 
     def _parse_header(self, line: str, line_number: int) -> None:
         match = re.match(
@@ -248,9 +272,33 @@ class FortiOSParser(BaseDeviceParser):
                 if isinstance(section, dict):
                     yield str(vdom_name), section, ("vdom", str(vdom_name), section_name)
 
+    def iter_scoped_sections(
+        self, section_name: str
+    ) -> Iterator[Tuple[str, FortiDict, Tuple[str, ...]]]:
+        """Yield root, global, and per-VDOM sections with their evidence path."""
+
+        yield from self._scoped_sections(section_name)
+
     def _field_evidence(self, path: Tuple[str, ...]) -> Tuple[ConfigEvidence, ...]:
         item = self.evidence.get(path)
         return (item,) if item is not None else ()
+
+    def field_evidence(self, path: Tuple[str, ...]) -> Tuple[ConfigEvidence, ...]:
+        """Return already-redacted evidence for a parsed field or object."""
+
+        return self._field_evidence(path)
+
+    def iter_administrators(self):
+        for scope, section, path in self._scoped_sections("system admin"):
+            for username, settings in section.items():
+                if isinstance(settings, dict):
+                    yield scope, str(username), settings, path + (str(username),)
+
+    def iter_interfaces(self):
+        for scope, section, path in self._scoped_sections("system interface"):
+            for name, settings in section.items():
+                if isinstance(settings, dict):
+                    yield scope, str(name), settings, path + (str(name),)
 
     def get_hostname(self) -> str:
         for _, section, _ in self._scoped_sections("system global"):
@@ -426,7 +474,12 @@ class FortiOSParser(BaseDeviceParser):
         logging_destinations = []
         for section_name, destination_type in (
             ("log syslogd setting", "syslog"),
+            ("log syslogd2 setting", "syslog2"),
+            ("log syslogd3 setting", "syslog3"),
+            ("log syslogd4 setting", "syslog4"),
             ("log fortianalyzer setting", "fortianalyzer"),
+            ("log fortianalyzer2 setting", "fortianalyzer2"),
+            ("log fortianalyzer3 setting", "fortianalyzer3"),
             ("log fortiguard setting", "forticloud"),
             ("system central-management", "fortimanager"),
         ):
@@ -447,7 +500,19 @@ class FortiOSParser(BaseDeviceParser):
 
         crypto_settings = []
         for scope, section, path in self._scoped_sections("system global"):
-            for key in ("ssl-min-proto-version", "admin-https-ssl-versions", "ssh-cbc-cipher"):
+            for key in (
+                "ssl-min-proto-version",
+                "admin-https-ssl-versions",
+                "strong-crypto",
+                "ssl-static-key-ciphers",
+                "dh-params",
+                "admin-ssh-v1",
+                "ssh-cbc-cipher",
+                "ssh-enc-algo",
+                "ssh-kex-algo",
+                "ssh-mac-algo",
+                "admin-server-cert",
+            ):
                 if key in section:
                     crypto_settings.append(
                         CryptoSetting(

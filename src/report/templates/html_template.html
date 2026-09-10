@@ -2,93 +2,102 @@
 <html lang="en">
     <head>
         <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
         <title>{{ device_type }} {{ hostname }} Security Report</title>
         <style type="text/css">
             {% include "style.css" %}
         </style>
-        <script src="http://ajax.googleapis.com/ajax/libs/jquery/1.9.1/jquery.min.js"></script>
     </head>
-
     <body class="mainbody">
-        <div class="pagebody">
-            <div id="title_header" style="text-align:center">
-                <h1>pynipper-ng</h1>
-                <h1>{{ device_type }} Security Report</h1>
-                <h3>of the</h3>
-                <h1>{{ hostname }} {{ device_type }}</h1>
-            </div>
-            <div id="report">
-                <div id="about_div">
-                    <hr>
-                        <h2>1. <a>About This Report</a></h3>
-                        This Cisco Router {{ hostname }} report was produced by Nipper on {{ date }}. The report contains the following sections:<br>
-                        &nbsp;<br>
-                        
-                        <ul>
-                            <li>a security audit report section that details any identified security-related issues. Each security issue includes a description of the issue, its impact, how easy it would be to exploit and a recommendation. The recommendations include, where appropriate, the command(s) to resolve the issue;</li>
-                            <li>a configuration report section that details the configuration settings;</li>
-                            <li>an abbreviations appendix section that expands any abbreviations used within the report;</li>
-                            <li>a common ports appendix section that details the TCP and UDP port numbers for the common services outlined within the report;</li>
-                            <li>an appendix section detailing the logging severity levels used by the logging facility;</li>
-                            <li>a time zones appendix section that details a number of the most commonly used time zones;</li>
-                            <li>an appendix section detailing the software used to produce this report.</li>
-                        </ul>
-    
+        <main class="pagebody">
+            <header id="title_header" style="text-align:center">
+                <h1>pynipper-v2</h1>
+                <h2>{{ device_type }} security report</h2>
+                <p>{{ hostname }} &mdash; {{ date }}</p>
+            </header>
 
-                </div>
-            </div>
-            <div id="security-issues">
+            <section id="about">
                 <hr>
-                    <h2>2. Security Audit</h2>
-                    <h3>2.1. Introduction</h3>
-                    Nipper performed a security audit of the {{ device_type }} {{ hostname }} on {{ date }}. This section details the findings of the security audit together with the impact and recommendations.
-                    
+                <h2>1. About this report</h2>
+                <p>
+                    This static configuration security report was produced from the supplied
+                    {{ device_type }} export. Findings describe configuration state visible to
+                    the parser; they do not prove runtime reachability or external controls.
+                </p>
+                <p>
+                    Each issue includes a stable rule ID, severity, observation, impact,
+                    exploitability, remediation guidance, and available evidence and references.
+                </p>
+            </section>
+
+            <section id="security-issues">
+                <hr>
+                <h2>2. Security audit</h2>
+                {% if issues %}
                     {% for key, value in issues.items() %}
-                        <h3>{{key}}</h3>
-                        <strong>Rule ID:</strong> {{value.rule_id}}<br/>
-                        <br/>
-                        <strong>Severity:</strong> {{value.severity.value}}<br/>
-                        <br/>
-                        <strong>Observation:</strong> {{value.observation}}<br/>
-                        <br/>
-                        <strong>Impact:</strong> {{value.impact}}<br/>
-                        <br/>
-                        <strong>Exploitability:</strong> {{value.exploitability}}<br/>
-                        <br/>
-                        <strong>Recommendation:</strong> {{value.recommendation}}<br/>
-                        <br/>
+                        <article>
+                            <h3>{{ key }}</h3>
+                            <p><strong>Rule ID:</strong> {{ value.rule_id }}</p>
+                            <p><strong>Severity:</strong> {{ value.severity.value }}</p>
+                            <p><strong>Observation:</strong> {{ value.observation }}</p>
+                            <p><strong>Impact:</strong> {{ value.impact }}</p>
+                            <p><strong>Exploitability:</strong> {{ value.exploitability }}</p>
+                            <p><strong>Recommendation:</strong> {{ value.recommendation }}</p>
+                            {% if value.evidence %}
+                                <strong>Evidence:</strong>
+                                <ul>
+                                {% for item in value.evidence %}
+                                    <li>{{ item }}</li>
+                                {% endfor %}
+                                </ul>
+                            {% endif %}
+                            {% if value.references %}
+                                <strong>References:</strong>
+                                <ul>
+                                {% for reference in value.references %}
+                                    <li><a href="{{ reference }}">{{ reference }}</a></li>
+                                {% endfor %}
+                                </ul>
+                            {% endif %}
+                        </article>
                     {% endfor %}
-                </hr>
-            </div>
-            <div id="security-vulns">
+                {% else %}
+                    <p>No security findings were emitted for the supplied configuration.</p>
+                {% endif %}
+            </section>
+
+            <section id="security-vulns">
                 <hr>
-                    <h2>3. Vulnerabilities</h2>
+                <h2>3. Software advisories</h2>
+                {% if vulns %}
                     <table class="table" id="vulnTable">
-                        <caption>Table 2: Vulnerabilities</caption>
+                        <caption>Advisories returned by the supported external integration</caption>
                         <thead>
                             <tr>
-                                <th id="title">Title</th>
-                                <th id="summary">Summary</th>
-                                <th id="cves">CVEs</th>
-                                <th id="cvss">CVSS</th>
-                                <th id="url">URL</th>
+                                <th>Title</th>
+                                <th>Summary</th>
+                                <th>CVEs</th>
+                                <th>CVSS</th>
+                                <th>Source</th>
                             </tr>
                         </thead>
                         <tbody>
                             {% for vuln in vulns %}
                                 <tr>
-                                    <td><strong>{{vuln.title}}</strong></td>
-                                    <td>{{vuln.summary|safe}}</td>
-                                    <td>{{vuln.cves|join(', ')}}</td>
-                                    <td class="cvssValue">{{vuln.cvss}}</td>
-                                    <td><a href={{vuln.url}}>{{vuln.url}}</a></td>
+                                    <td><strong>{{ vuln.title }}</strong></td>
+                                    <td>{{ vuln.summary|safe }}</td>
+                                    <td>{{ vuln.cves|join(', ') }}</td>
+                                    <td class="cvssValue">{{ vuln.cvss }}</td>
+                                    <td><a href="{{ vuln.url }}">{{ vuln.url }}</a></td>
                                 </tr>
                             {% endfor %}
                         </tbody>
                     </table>
-                </hr>
-            </div>
-        </div>
+                {% else %}
+                    <p>No software advisories were included in this report.</p>
+                {% endif %}
+            </section>
+        </main>
         <script type="text/javascript">
             {% include "impact-color.js" %}
         </script>

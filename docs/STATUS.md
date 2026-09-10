@@ -1,14 +1,17 @@
 # Project Status
 
-This document provides a high-level overview of the project's current state.
+Last verified: 2026-09-10
 
-## Current State: Maintenance & Continuous Improvement
-All planned parity and expansion efforts are complete. The project is currently fully functional and verified against its requirements.
+## Current state
 
-## Summary of Completed Tasks
-- **Architecture**: Plugin-based architecture implemented and verified.
-- **Device Support**:
-    - Full Parity with Nipper-ng: Cisco IOS, Cisco ASA, CheckPoint FW1, Juniper ScreenOS, SonicWALL SonicOS, HP ProCurve.
-    - Expansion Devices: Palo Alto PAN-OS, Fortinet FortiOS, Cisco IOS-XE, Juniper JunOS, Arista EOS.
-- **Testing**: Automated integration/unit test suite implemented for all device plugins.
-- **Documentation**: Fully documented in `docs/SUPPORTED_DEVICES.md` and `CHANGELOG_AGENT.md`.
+The architecture and prioritized target-platform remediation waves are complete. Cisco IOS, IOS-XE, ASA, FortiOS, Check Point FW1, Junos, and ScreenOS have paired permanent regression coverage. The latest evidence is maintained in `docs/agent_notes/FINAL_QUALITY_REPORT.md`.
+
+The project is not at universal device parity. PAN-OS, HP ProCurve/ArubaOS-Switch, SonicWall SonicOS, and Arista EOS remain registered basic/partial implementations. Several original Nipper dialects are not implemented.
+
+## Next work
+
+1. Wave 5: attach authoritative references to findings from older focused target plugins and expand sanitized real-world regression cases. The full regression gate is already mandatory in the repository workflow.
+2. Wave 6: address deferred secondary vendors in observed-demand order, beginning with PAN-OS unless the deployment mix changes.
+3. Separately assess missing legacy platforms; do not combine registry reachability with claims of detection parity.
+
+See `docs/SUPPORTED_DEVICES.md`, `docs/agent_notes/01_gap_matrix.md`, and `docs/agent_notes/DETECTION_AUDIT_TASKS.md` for detailed boundaries.

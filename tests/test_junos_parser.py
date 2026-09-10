@@ -10,6 +10,8 @@ system {
         inactive: telnet;
         ssh {
             root-login deny;
+            ciphers [ aes256-ctr aes256-gcm@openssh.com ];
+            macs [ hmac-sha2-256 hmac-sha2-512 ];
         }
         web-management {
             https {
@@ -23,6 +25,11 @@ system {
             authentication {
                 encrypted-password "$6$redacted";
             }
+        }
+    }
+    syslog {
+        host 192.0.2.30 {
+            any informational;
         }
     }
 }
@@ -78,9 +85,12 @@ set system host-name edge-a
 set system services telnet
 deactivate system services telnet
 set system services ssh root-login deny
+set system services ssh ciphers [ aes256-ctr aes256-gcm@openssh.com ]
+set system services ssh macs [ hmac-sha2-256 hmac-sha2-512 ]
 set system services web-management https system-generated-certificate
 set system login user audit class super-user
 set system login user audit authentication encrypted-password "$6$redacted"
+set system syslog host 192.0.2.30 any informational
 set interfaces ge-0/0/0 unit 0 family inet address 192.0.2.1/24
 set interfaces ge-0/0/0 unit 0 family inet filter input MGMT
 set security zones security-zone trust interfaces ge-0/0/0.0
@@ -146,6 +156,19 @@ def test_hierarchy_and_display_set_have_equivalent_semantics(tmp_path):
     assert normalized.interfaces.items[0].addresses == ("192.0.2.1/24",)
     assert normalized.policies.items[0].action == "accept"
     assert normalized.policies.items[1].state == ConfigurationState.DISABLED
+    display_normalized = display_set.get_normalized_config()
+    assert [
+        (item.destination_type, item.address, item.severity)
+        for item in normalized.logging_destinations.items
+    ] == [
+        (item.destination_type, item.address, item.severity)
+        for item in display_normalized.logging_destinations.items
+    ]
+    assert [
+        (item.name, item.value) for item in normalized.crypto_settings.items
+    ] == [
+        (item.name, item.value) for item in display_normalized.crypto_settings.items
+    ]
 
 
 def test_display_set_delete_deactivate_and_activate_are_effective(tmp_path):

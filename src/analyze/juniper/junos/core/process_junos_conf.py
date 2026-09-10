@@ -1,16 +1,17 @@
 from src.devices.common.base_parser import BaseDeviceParser
 from ..plugins.junos_checks_plugin import PluginJunOSChecks
+from ..plugins.baseline_plugin import PluginJunOSBaseline
 
 
 def process_junos_conf(parser: BaseDeviceParser) -> dict:
     issues = {}
     idx = 0
 
-    plugin = PluginJunOSChecks()
-    plugin.analyze(parser)
-    
-    i = plugin.get_issues()
-    issues = _generate_section(i, issues, idx)
+    for plugin_class in (PluginJunOSChecks, PluginJunOSBaseline):
+        plugin = plugin_class()
+        plugin.analyze(parser)
+        issues = _generate_section(plugin.get_issues(), issues, idx)
+        idx += 1
     
     return issues
 

@@ -142,7 +142,9 @@ end
 
     for section, settings in (
         ("log syslogd setting", "set status enable\nset server 192.0.2.50"),
+        ("log syslogd2 setting", "set status enable\nset server 192.0.2.51"),
         ("log fortianalyzer setting", "set status enable\nset server 192.0.2.60"),
+        ("log fortianalyzer2 setting", "set status enable\nset server 192.0.2.61"),
         ("log fortiguard setting", "set status enable"),
         ("system central-management", "set type fortimanager\nset fmg 192.0.2.70"),
     ):

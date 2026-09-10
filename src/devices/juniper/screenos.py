@@ -7,7 +7,9 @@ from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.models import (
     ConfigEvidence,
     ConfigurationState,
+    CryptoSetting,
     LocalUser,
+    LoggingDestination,
     ManagementService,
     NetworkInterface,
     NormalizedCollection,
@@ -51,6 +53,12 @@ class ScreenOSObject:
     evidence: ConfigEvidence
 
 
+@dataclass(frozen=True)
+class ScreenOSCommand:
+    tokens: tuple[str, ...]
+    evidence: ConfigEvidence
+
+
 class JuniperScreenOSParser(BaseDeviceParser):
 
     device_type = "SCREENOS"
@@ -82,6 +90,7 @@ class JuniperScreenOSParser(BaseDeviceParser):
         self.global_management: set[str] = set()
         self.global_management_evidence: dict[str, ConfigEvidence] = {}
         self.manager_ips: list[str] = []
+        self.effective_commands: list[ScreenOSCommand] = []
         self._parse()
         self.config = self._effective_native_lines()
 
@@ -89,7 +98,7 @@ class JuniperScreenOSParser(BaseDeviceParser):
         evidence_text = text
         if redact:
             evidence_text = re.sub(
-                r"(?i)(password|secret|key)\s+\S+",
+                r"(?i)(password|secret|key|community)\s+\S+",
                 r"\1 <redacted>",
                 evidence_text,
             )
@@ -108,6 +117,36 @@ class JuniperScreenOSParser(BaseDeviceParser):
             policy_id,
             ScreenOSPolicy(policy_id=policy_id, position=len(self.policies)),
         )
+
+    @staticmethod
+    def _is_token_prefix(prefix: tuple[str, ...], value: tuple[str, ...]) -> bool:
+        return len(value) >= len(prefix) and value[: len(prefix)] == prefix
+
+    def _record_effective_command(
+        self, tokens: list[str], raw_line: str, line_number: int
+    ) -> None:
+        operation = tokens[0].casefold()
+        command = tuple(token.casefold() for token in tokens[1:])
+        if operation == "unset":
+            self.effective_commands = [
+                item
+                for item in self.effective_commands
+                if not self._is_token_prefix(command, item.tokens)
+            ]
+            return
+        self.effective_commands.append(
+            ScreenOSCommand(command, self._evidence(raw_line, line_number, redact=True))
+        )
+
+    def get_effective_commands(
+        self, prefix: tuple[str, ...] = ()
+    ) -> list[ScreenOSCommand]:
+        normalized = tuple(token.casefold() for token in prefix)
+        return [
+            command
+            for command in self.effective_commands
+            if self._is_token_prefix(normalized, command.tokens)
+        ]
 
     def _parse(self) -> None:
         policy_context: Optional[str] = None
@@ -133,6 +172,7 @@ class JuniperScreenOSParser(BaseDeviceParser):
             if operation not in {"set", "unset"}:
                 self._parse_metadata_line(stripped)
                 continue
+            self._record_effective_command(tokens, stripped, line_number)
 
             if lowered[:2] == ["set", "hostname"] and len(tokens) >= 3:
                 self.hostname = tokens[2]
@@ -366,7 +406,11 @@ class JuniperScreenOSParser(BaseDeviceParser):
             destination = policy.destinations[0] if policy.destinations else ""
             service = policy.services[0] if policy.services else ""
             lines.append(
-                f'set policy id {policy.policy_id} from "{policy.from_zone}" to "{policy.to_zone}" "{source}" "{destination}" "{service}" {policy.action}'.strip()
+                (
+                    f'set policy id {policy.policy_id} from "{policy.from_zone}" '
+                    f'to "{policy.to_zone}" "{source}" "{destination}" '
+                    f'"{service}" {policy.action}'
+                ).strip()
             )
         return lines
 
@@ -384,15 +428,58 @@ class JuniperScreenOSParser(BaseDeviceParser):
         for interface in self.interfaces.values():
             if not interface.disabled:
                 enabled.update(interface.management_methods)
+        ssl_enabled = bool(self.get_effective_commands(("ssl", "enable")))
         return {
             "telnet": "telnet" in enabled,
             "ssh": "ssh" in enabled,
             "http": "http" in enabled,
-            "https": "https" in enabled,
+            "https": "https" in enabled and ssl_enabled,
         }
 
     def get_native_config(self) -> list[str]:
         return self.config
+
+    def get_logging_destinations(self) -> list[LoggingDestination]:
+        enabled = bool(self.get_effective_commands(("syslog", "enable")))
+        destinations = []
+        for command in self.get_effective_commands(("syslog", "config")):
+            if len(command.tokens) < 3:
+                continue
+            destinations.append(
+                LoggingDestination(
+                    destination_type="syslog",
+                    state=(
+                        ConfigurationState.ENABLED
+                        if enabled
+                        else ConfigurationState.DISABLED
+                    ),
+                    address=command.tokens[2],
+                    evidence=(command.evidence,),
+                )
+            )
+        return destinations
+
+    def get_crypto_settings(self) -> list[CryptoSetting]:
+        settings = []
+        for command in self.effective_commands:
+            tokens = command.tokens
+            if tokens[:2] == ("ssl", "encrypt") and len(tokens) > 2:
+                name, values = "ssl/encrypt", tokens[2:]
+            elif tokens[:2] == ("ike", "p1-proposal") and len(tokens) > 3:
+                name, values = f"ike/p1-proposal/{tokens[2]}", tokens[3:]
+            elif tokens[:2] == ("ike", "p2-proposal") and len(tokens) > 3:
+                name, values = f"ike/p2-proposal/{tokens[2]}", tokens[3:]
+            else:
+                continue
+            settings.append(
+                CryptoSetting(
+                    name=name,
+                    value=" ".join(values),
+                    state=ConfigurationState.CONFIGURED,
+                    evidence=(command.evidence,),
+                )
+            )
+        return settings
 
     def get_normalized_config(self) -> NormalizedConfig:
         management = []
@@ -410,6 +497,10 @@ class JuniperScreenOSParser(BaseDeviceParser):
             if interface.disabled:
                 continue
             for method in sorted(interface.management_methods):
+                if method == "https" and not self.get_effective_commands(
+                    ("ssl", "enable")
+                ):
+                    continue
                 management.append(
                     ManagementService(
                         method,
@@ -478,10 +569,8 @@ class JuniperScreenOSParser(BaseDeviceParser):
             users=NormalizedCollection.known(*normalized_users),
             interfaces=NormalizedCollection.known(*normalized_interfaces),
             policies=NormalizedCollection.known(*normalized_policies),
-            logging_destinations=NormalizedCollection.unknown(
-                "ScreenOS logging normalization is deferred to baseline expansion"
+            logging_destinations=NormalizedCollection.known(
+                *self.get_logging_destinations()
             ),
-            crypto_settings=NormalizedCollection.unknown(
-                "ScreenOS VPN normalization is deferred to baseline expansion"
-            ),
+            crypto_settings=NormalizedCollection.known(*self.get_crypto_settings()),
         )

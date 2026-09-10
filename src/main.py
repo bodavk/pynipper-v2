@@ -17,13 +17,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     device_type_list = get_device_choices(include_aliases=True)
     report_type_list = [report.name for report in ReportType]
 
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Static security analysis for exported network-device configurations."
+    )
 
     parser.add_argument('--device', '-d', help="Device type to analyze",
                         dest="device_type", action="store",
                         choices=device_type_list, required=True
                         )
-    parser.add_argument('--input', '-i', help="Device configuration file",
+    parser.add_argument('--input', '-i', help="Configuration file, or export directory for supported devices",
                         dest="input_file", action="store",
                         type=str, required=True
                         )
@@ -40,7 +42,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                         default=os.path.dirname(os.path.abspath(__file__)) + "/common/default.conf"
                         )
     parser.add_argument('--offline', '-x',
-                        help="Disable get APIs vulnerabilities data (Cisco API)",
+                        help="Disable external software-advisory lookups",
                         dest="offline", action='store_true'
                         )
 
@@ -49,7 +51,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     args_dict = vars(args)
 
     analyze_device(args_dict["device_type"], args_dict["input_file"], args_dict["output_file"],
-                   args_dict["output_type"], args_dict["conf_file"], args_dict["offline"]
+                   args_dict["output_type"], args_dict["conf_file"], not args_dict["offline"]
                    )
 
     return 0

@@ -28,6 +28,8 @@ Configuration records separately use `ConfigurationState` to represent `enabled`
 
 When normalized state is marked known, implementations should attach `ConfigEvidence` containing the source path, exact source text, and a positive line number when the format provides one. Secrets must be redacted before becoming evidence. Rules must not reinterpret an unknown value as disabled, absent, secure, or insecure.
 
+Findings may also carry a tuple of `references`. New or materially changed security controls should populate it with the vendor documentation, benchmark, STIG, or other source used to justify the evaluated behavior. References are serialized independently from configuration evidence.
+
 ## Migration rule
 
 The base implementation returns a complete explicit-unknown snapshot. Each parser-reconstruction task replaces those unknown fields with known typed records only after its grammar, scope, mutation ordering, and reference resolution are covered by vendor-native fixtures. This allows parser work to proceed incrementally without preserving the old ambiguity where `False`, `[]`, or `?` meant either absent or unimplemented.

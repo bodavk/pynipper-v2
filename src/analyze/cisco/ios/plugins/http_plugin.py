@@ -1,10 +1,10 @@
-from ..core.base_plugin import GenericPlugin
+from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.issue import Finding, Severity
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.cisco.ios import CiscoIOSParser, ConfigurationState
 
 
-class PluginHTTP(GenericPlugin):
+class PluginHTTP(BasePlugin):
     """Evaluate the effective IOS embedded HTTP server configuration."""
 
     _SUPPORTED_AUTHENTICATION = {"aaa", "enable", "local", "tacacs"}

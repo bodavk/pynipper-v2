@@ -7,7 +7,9 @@ from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.models import (
     ConfigEvidence,
     ConfigurationState,
+    CryptoSetting,
     LocalUser,
+    LoggingDestination,
     ManagementService,
     NetworkInterface,
     NormalizedCollection,
@@ -88,7 +90,21 @@ class JunOSParser(BaseDeviceParser):
         return "hierarchical"
 
     def _evidence(self, text: str, line_number: int) -> ConfigEvidence:
-        return ConfigEvidence(text=text, source=self.config_filepath, line_number=line_number)
+        redacted = re.sub(
+            r"(?i)((?:encrypted-password|plain-text-password|authentication-password|privacy-password|secret)\s+)\S+",
+            r"\1<redacted>",
+            text,
+        )
+        redacted = re.sub(
+            r"(?i)((?:authentication-key|pre-shared-key)\b.*?\b(?:value|ascii-text)\s+)\S+",
+            r"\1<redacted>",
+            redacted,
+        )
+        return ConfigEvidence(
+            text=redacted,
+            source=self.config_filepath,
+            line_number=line_number,
+        )
 
     @staticmethod
     def _is_prefix(prefix: tuple[str, ...], path: tuple[str, ...]) -> bool:
@@ -107,7 +123,11 @@ class JunOSParser(BaseDeviceParser):
                 raise JunosParseError(f"line {line_number}: {error}") from error
             if not tokens:
                 continue
-            operation, path = tokens[0], tuple(tokens[1:])
+            operation = tokens[0]
+            # Display-set output may retain brackets around multi-value lists.
+            # The hierarchical lexer treats those as structure rather than
+            # semantic values, so normalize them away in both representations.
+            path = tuple(token for token in tokens[1:] if token not in {"[", "]"})
             if operation not in {"set", "delete", "activate", "deactivate"} or not path:
                 raise JunosParseError(
                     f"line {line_number}: unsupported display-set operation"
@@ -295,6 +315,17 @@ class JunOSParser(BaseDeviceParser):
     def _active_paths(self) -> list[tuple[str, ...]]:
         return [statement.path for statement in self.statements if statement.active]
 
+    def get_active_statements(
+        self, prefix: tuple[str, ...] = ()
+    ) -> list[JunosStatement]:
+        """Return effective statements under an exact token-path prefix."""
+
+        return [
+            statement
+            for statement in self.statements
+            if statement.active and self._is_prefix(prefix, statement.path)
+        ]
+
     def _first_value(self, prefix: tuple[str, ...]) -> Optional[JunosStatement]:
         for statement in reversed(self.statements):
             if statement.active and self._is_prefix(prefix, statement.path):
@@ -432,6 +463,60 @@ class JunOSParser(BaseDeviceParser):
     def get_native_config(self) -> list[str]:
         return self.config
 
+    def get_logging_destinations(self) -> list[LoggingDestination]:
+        hosts: dict[str, dict] = {}
+        prefix = ("system", "syslog", "host")
+        for statement in self.get_active_statements(prefix):
+            if len(statement.path) < 4:
+                continue
+            address = statement.path[3]
+            data = hosts.setdefault(address, {"severities": [], "evidence": []})
+            data["evidence"].append(statement.evidence)
+            if len(statement.path) > 5:
+                severity = statement.path[5]
+                if severity not in data["severities"]:
+                    data["severities"].append(severity)
+        return [
+            LoggingDestination(
+                destination_type="syslog",
+                state=ConfigurationState.ENABLED,
+                address=address,
+                severity=",".join(data["severities"]) or None,
+                evidence=tuple(data["evidence"]),
+            )
+            for address, data in hosts.items()
+        ]
+
+    def get_crypto_settings(self) -> list[CryptoSetting]:
+        settings = []
+        fields = {
+            "ciphers",
+            "macs",
+            "key-exchange",
+            "hostkey-algorithm",
+            "authentication-algorithm",
+            "encryption-algorithm",
+            "dh-group",
+            "perfect-forward-secrecy",
+        }
+        for statement in self.get_active_statements():
+            path = statement.path
+            field_index = next(
+                (index for index, token in enumerate(path) if token in fields),
+                None,
+            )
+            if field_index is None or field_index + 1 >= len(path):
+                continue
+            settings.append(
+                CryptoSetting(
+                    name="/".join(path[: field_index + 1]),
+                    value=" ".join(path[field_index + 1 :]),
+                    state=ConfigurationState.CONFIGURED,
+                    evidence=(statement.evidence,),
+                )
+            )
+        return settings
+
     def get_normalized_config(self) -> NormalizedConfig:
         if self.parse_error:
             return NormalizedConfig(
@@ -553,10 +638,8 @@ class JunOSParser(BaseDeviceParser):
             users=NormalizedCollection.known(*normalized_users),
             interfaces=NormalizedCollection.known(*normalized_interfaces),
             policies=NormalizedCollection.known(*policies),
-            logging_destinations=NormalizedCollection.unknown(
-                "Junos logging normalization is deferred to the baseline task"
+            logging_destinations=NormalizedCollection.known(
+                *self.get_logging_destinations()
             ),
-            crypto_settings=NormalizedCollection.unknown(
-                "Junos cryptographic normalization is deferred to the baseline task"
-            ),
+            crypto_settings=NormalizedCollection.known(*self.get_crypto_settings()),
         )

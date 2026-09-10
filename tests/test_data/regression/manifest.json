@@ -1,0 +1,222 @@
+{
+  "cases": [
+    {
+      "name": "cisco-ios-vulnerable",
+      "device": "IOS_ROUTER",
+      "input": "cisco_ios/vulnerable.conf",
+      "expected_rule_ids": [
+        "cisco.ios.aaa.new_model",
+        "cisco.ios.banner.login",
+        "cisco.ios.console.session_timeout",
+        "cisco.ios.control_plane.copp",
+        "cisco.ios.credentials.enable_storage",
+        "cisco.ios.credentials.local_storage",
+        "cisco.ios.crypto.legacy_ike",
+        "cisco.ios.crypto.legacy_ipsec",
+        "cisco.ios.http.access_restriction",
+        "cisco.ios.http.cleartext_service",
+        "cisco.ios.interface.ip_hardening",
+        "cisco.ios.ip.source_route",
+        "cisco.ios.logging.remote_destination",
+        "cisco.ios.ntp.authentication",
+        "cisco.ios.services.unnecessary",
+        "cisco.ios.snmp.legacy_community",
+        "cisco.ios.ssh.authentication_retries",
+        "cisco.ios.ssh.negotiation_timeout",
+        "cisco.ios.ssh.protocol_version",
+        "cisco.ios.ssh.vty_access_restriction",
+        "cisco.ios.vty.authentication",
+        "cisco.ios.vty.session_timeout",
+        "cisco.ios.vty.telnet"
+      ],
+      "expected_finding_count": 23
+    },
+    {
+      "name": "cisco-ios-secure",
+      "device": "IOS_ROUTER",
+      "input": "cisco_ios/secure.conf",
+      "expected_rule_ids": [],
+      "expected_finding_count": 0
+    },
+    {
+      "name": "cisco-iosxe-vulnerable",
+      "device": "IOS_XE",
+      "input": "cisco_iosxe/vulnerable.conf",
+      "expected_rule_ids": [
+        "cisco.ios.aaa.new_model",
+        "cisco.ios.banner.login",
+        "cisco.ios.control_plane.copp",
+        "cisco.ios.http.access_restriction",
+        "cisco.ios.http.cleartext_service",
+        "cisco.ios.ip.source_route",
+        "cisco.ios.logging.remote_destination",
+        "cisco.ios.ntp.servers",
+        "cisco.ios.ssh.authentication_retries",
+        "cisco.ios.ssh.negotiation_timeout",
+        "cisco.ios.ssh.protocol_version",
+        "cisco.ios.ssh.vty_access_restriction",
+        "cisco.ios.vty.authentication",
+        "cisco.iosxe.crypto.legacy_ikev2",
+        "cisco.iosxe.macsec.missing"
+      ],
+      "expected_finding_count": 15
+    },
+    {
+      "name": "cisco-iosxe-secure",
+      "device": "IOS_XE",
+      "input": "cisco_iosxe/secure.conf",
+      "expected_rule_ids": [],
+      "expected_finding_count": 0
+    },
+    {
+      "name": "cisco-asa-vulnerable",
+      "device": "ASA",
+      "input": "cisco_asa/vulnerable.conf",
+      "expected_rule_ids": [
+        "cisco.asa.aaa.management_accounting",
+        "cisco.asa.aaa.management_authentication",
+        "cisco.asa.credentials.local_user_storage",
+        "cisco.asa.crypto.legacy_transform",
+        "cisco.asa.crypto.legacy_vpn",
+        "cisco.asa.failover.authentication",
+        "cisco.asa.interface.reverse_path",
+        "cisco.asa.logging.missing",
+        "cisco.asa.management.certificate",
+        "cisco.asa.management.unrestricted_http",
+        "cisco.asa.management.unrestricted_ssh",
+        "cisco.asa.ntp.authentication",
+        "cisco.asa.threat_detection.basic"
+      ],
+      "expected_finding_count": 13
+    },
+    {
+      "name": "cisco-asa-secure",
+      "device": "ASA",
+      "input": "cisco_asa/secure.conf",
+      "expected_rule_ids": [],
+      "expected_finding_count": 0
+    },
+    {
+      "name": "fortios-vulnerable",
+      "device": "FORTIOS",
+      "input": "fortios/vulnerable.conf",
+      "expected_rule_ids": [
+        "fortinet.fortios.admin.centralized_authentication",
+        "fortinet.fortios.admin.lockout",
+        "fortinet.fortios.admin.mfa",
+        "fortinet.fortios.admin.session_timeout",
+        "fortinet.fortios.admin.trusted_hosts",
+        "fortinet.fortios.crypto.admin_ssh_v1",
+        "fortinet.fortios.crypto.dh_parameters",
+        "fortinet.fortios.crypto.ssl_static_key_ciphers",
+        "fortinet.fortios.crypto.strong_crypto",
+        "fortinet.fortios.dos.wan_policy_missing",
+        "fortinet.fortios.logging.missing",
+        "fortinet.fortios.management.auxiliary_services",
+        "fortinet.fortios.management.insecure_protocol",
+        "fortinet.fortios.ntp.synchronization",
+        "fortinet.fortios.password_policy.disabled",
+        "fortinet.fortios.policy.broad_accept",
+        "fortinet.fortios.snmp.legacy_community",
+        "fortinet.fortios.snmp.secure_user_missing",
+        "fortinet.fortios.ssh.weak_enc_algo",
+        "fortinet.fortios.tls.minimum_version"
+      ],
+      "expected_finding_count": 20
+    },
+    {
+      "name": "fortios-secure",
+      "device": "FORTIOS",
+      "input": "fortios/secure.conf",
+      "expected_rule_ids": [],
+      "expected_finding_count": 0
+    },
+    {
+      "name": "junos-vulnerable",
+      "device": "JUNOS",
+      "input": "junos/vulnerable.conf",
+      "expected_rule_ids": [
+        "juniper.junos.authentication.centralized",
+        "juniper.junos.authentication.lockout",
+        "juniper.junos.control_plane.lo0_filter",
+        "juniper.junos.filter.broad_accept",
+        "juniper.junos.interfaces.redirects",
+        "juniper.junos.logging.remote_destination",
+        "juniper.junos.management.insecure_protocol",
+        "juniper.junos.ntp.authentication",
+        "juniper.junos.snmp.legacy_community",
+        "juniper.junos.ssh.root_login",
+        "juniper.junos.ssh.weak_ciphers"
+      ],
+      "expected_finding_count": 11
+    },
+    {
+      "name": "junos-secure",
+      "device": "JUNOS",
+      "input": "junos/secure.conf",
+      "expected_rule_ids": [],
+      "expected_finding_count": 0
+    },
+    {
+      "name": "screenos-vulnerable",
+      "device": "SCREENOS",
+      "input": "screenos/vulnerable.conf",
+      "expected_rule_ids": [
+        "juniper.screenos.administration.login_attempts",
+        "juniper.screenos.administration.login_banner",
+        "juniper.screenos.administration.manager_sources",
+        "juniper.screenos.administration.session_timeout",
+        "juniper.screenos.credentials.default_or_empty",
+        "juniper.screenos.https.legacy_cipher",
+        "juniper.screenos.lifecycle.end_of_life",
+        "juniper.screenos.logging.remote_destination",
+        "juniper.screenos.management.http",
+        "juniper.screenos.management.telnet",
+        "juniper.screenos.ntp.servers",
+        "juniper.screenos.policy.broad_permit",
+        "juniper.screenos.policy.unlogged_permit",
+        "juniper.screenos.snmp.legacy_community",
+        "juniper.screenos.ssh.protocol_version",
+        "juniper.screenos.vpn.weak_proposal"
+      ],
+      "expected_finding_count": 16
+    },
+    {
+      "name": "screenos-hardened",
+      "device": "SCREENOS",
+      "input": "screenos/secure.conf",
+      "expected_rule_ids": [
+        "juniper.screenos.lifecycle.end_of_life"
+      ],
+      "expected_finding_count": 1
+    },
+    {
+      "name": "checkpoint-fw1-vulnerable",
+      "device": "CHECKPOINT_FW1",
+      "input": "checkpoint_fw1/vulnerable",
+      "expected_rule_ids": [
+        "checkpoint.fw1.layer.stealth_rule_missing",
+        "checkpoint.fw1.policy.broad_accept",
+        "checkpoint.fw1.policy.broad_accept",
+        "checkpoint.fw1.policy.expired_rule",
+        "checkpoint.fw1.policy.install_scope_any",
+        "checkpoint.fw1.policy.install_scope_any",
+        "checkpoint.fw1.policy.redundant_rule",
+        "checkpoint.fw1.policy.redundant_rule",
+        "checkpoint.fw1.policy.risky_service_exposure",
+        "checkpoint.fw1.policy.sensitive_accept_untracked",
+        "checkpoint.fw1.policy.sensitive_accept_untracked",
+        "checkpoint.fw1.policy.shadowed_rule",
+        "checkpoint.fw1.policy.shadowed_rule"
+      ],
+      "expected_finding_count": 13
+    },
+    {
+      "name": "checkpoint-fw1-secure",
+      "device": "CHECKPOINT_FW1",
+      "input": "checkpoint_fw1/secure",
+      "expected_rule_ids": [],
+      "expected_finding_count": 0
+    }
+  ]
+}

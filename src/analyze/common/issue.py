@@ -39,6 +39,7 @@ class Finding:
         severity: Union[Severity, str] = Severity.UNKNOWN,
         exploitability: str = "",
         evidence: Iterable[str] = (),
+        references: Iterable[str] = (),
     ):
         required = {
             "rule_id": rule_id,
@@ -57,6 +58,12 @@ class Finding:
         normalized_evidence = tuple(evidence)
         if any(not isinstance(item, str) or not item.strip() for item in normalized_evidence):
             raise ValueError("evidence entries must be non-empty strings")
+        normalized_references = tuple(references)
+        if any(
+            not isinstance(item, str) or not item.strip()
+            for item in normalized_references
+        ):
+            raise ValueError("reference entries must be non-empty strings")
 
         self.rule_id = rule_id.strip()
         self.device = device.strip()
@@ -67,6 +74,7 @@ class Finding:
         self.severity = Severity.parse(severity)
         self.exploitability = exploitability.strip()
         self.evidence: Tuple[str, ...] = normalized_evidence
+        self.references: Tuple[str, ...] = normalized_references
 
     @property
     def ease(self) -> str:
@@ -85,6 +93,8 @@ class Finding:
         result += f"Recommendation: {self.recommendation}\n"
         if self.evidence:
             result += f"Evidence: {'; '.join(self.evidence)}\n"
+        if self.references:
+            result += f"References: {'; '.join(self.references)}\n"
         result += "-" * 100 + "\n"
         return result
 
@@ -101,6 +111,7 @@ class Finding:
             "ease": self.exploitability,
             "recommendation": self.recommendation,
             "evidence": list(self.evidence),
+            "references": list(self.references),
         }
 
 

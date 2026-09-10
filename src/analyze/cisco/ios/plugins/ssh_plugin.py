@@ -1,10 +1,10 @@
-from ..core.base_plugin import GenericPlugin
+from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.issue import Finding, Severity
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.cisco.ios import CiscoIOSParser, ConfigurationState, NumericSetting
 
 
-class PluginSSH(GenericPlugin):
+class PluginSSH(BasePlugin):
     """Evaluate IOS SSH protocol, limits, and inbound VTY restrictions."""
 
     MAX_AUTHENTICATION_RETRIES = 5
@@ -70,10 +70,6 @@ class PluginSSH(GenericPlugin):
             severity=Severity.MEDIUM,
             evidence=self._numeric_evidence(retries, 3),
         )
-
-    # Compatibility for callers which used the original misspelled method.
-    def get_cisco_ios_ssh_reties(self, parser: BaseDeviceParser):
-        return self.get_cisco_ios_ssh_retries(parser)
 
     def get_cisco_ios_ssh_timeout(self, parser: BaseDeviceParser):
         ios = self._ios_parser(parser)

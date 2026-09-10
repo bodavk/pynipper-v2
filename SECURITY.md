@@ -1,13 +1,11 @@
 # Security Policy
 
-## Supported Versions
+## Reporting a vulnerability
 
-| Version       | Supported          |
-| ------------- | ------------------ |
-| 0.2.0 ALPHA   | :x:                |
-| 0.1.1 ALPHA   | :x:                |
-| 0.1.0 ALPHA   | :x:                |
+Please report vulnerabilities in pynipper-v2 privately through [GitHub Security Advisories](https://github.com/bodavk/pynipper-v2/security/advisories/new). Include the affected version or revision, impact, reproduction steps, and any relevant CWE/CVE identifiers. Do not attach real device credentials or unsanitized customer configurations.
 
-## Reporting a Vulnerability
+Configuration findings produced by the tool are not vulnerabilities in pynipper-v2 itself. Rule false positives, false negatives, parser failures, and missing device syntax may be reported as normal project defects after removing sensitive configuration content.
 
-If you detect some vulnerability in this project, please, contact with me: repoJFM@protonmail.com. Please, in the mail describe the situation with the context (enviroment, tool's version...), attaching some evidence (f.e. screenshots or similar) and, if it is possible, share the CVE/CWE code. Thank you!
+## Supported versions
+
+The actively maintained state is the current default branch. Historical upstream alpha releases (`0.1.x` and `0.2.0 ALPHA`) are not maintained by this fork.

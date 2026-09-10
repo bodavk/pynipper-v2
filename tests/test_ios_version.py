@@ -1,7 +1,6 @@
 import pytest
 
 from src.devices.cisco.ios import CiscoIOSParser
-from src.analyze.cisco.ios.cisco_parser.parse_config import get_cisco_ios_version
 
 
 @pytest.mark.parametrize(
@@ -21,5 +20,4 @@ def test_ios_version_is_preserved_without_fabrication(tmp_path, line, expected):
     parser = CiscoIOSParser(str(path))
 
     assert parser.get_version() == expected
-    assert get_cisco_ios_version(str(path)) == expected
     assert not (expected == "12.3" and parser.get_version() == "12.3(1)")

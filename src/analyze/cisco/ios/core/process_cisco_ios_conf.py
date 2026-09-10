@@ -1,62 +1,43 @@
-import array
-import importlib
-import pkgutil
+"""Deterministic Cisco IOS plugin pipeline."""
 
+from typing import Iterable
+
+from src.analyze.common.issue import Finding
 from src.devices.common.base_parser import BaseDeviceParser
-from .. import plugins as plugs
+from ..plugins.baseline_plugin import PluginIOSBaseline
+from ..plugins.http_plugin import PluginHTTP
+from ..plugins.ssh_plugin import PluginSSH
 
 
-def _import_modules() -> array:
-    pkg = plugs.__package__
-    modules = []
-    module_names = []
-
-    for importer, modname, ispkg in pkgutil.iter_modules(plugs.__path__):
-        if modname != "generic_plugin" and modname.endswith("_plugin"):
-            module_name = f"{pkg}.{modname}"
-
-            importlib.import_module(module_name)
-            spec = importlib.util.find_spec(module_name)
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-
-            module_names.append(module.__name__)
-            modules.append(module)
-
-    print(f"[3/4] Scanning configuration file using the following plugins: {module_names}")
-
-    return modules
+IOS_PLUGINS = (PluginHTTP, PluginSSH, PluginIOSBaseline)
 
 
-def _classesinmodule(module):
-    md = module.__dict__
-    return [
-        md[c] for c in md if (
-            isinstance(md[c], type) and md[c].__module__ == module.__name__
-        )
-    ]
+def _deduplicate(findings: Iterable[Finding]) -> list[Finding]:
+    unique = []
+    seen = set()
+    for finding in findings:
+        identity = (finding.rule_id, finding.evidence or (finding.observation,))
+        if identity not in seen:
+            seen.add(identity)
+            unique.append(finding)
+    return unique
 
 
 def process_cisco_ios_conf(parser: BaseDeviceParser) -> dict:
-    issues = {}
-    i = []
-    idx = 0
-
-    for module in _import_modules():
-        for module_class in _classesinmodule(module):
-            m = module_class()
-            m.analyze(parser)
-            i = m.get_issues()
-            issues = _generate_section(i, issues, idx)
-            idx += 1
-
-    return issues
+    findings = []
+    print(
+        "[3/4] Scanning configuration file using the following IOS plugins: "
+        f"{[plugin.__name__ for plugin in IOS_PLUGINS]}"
+    )
+    for plugin_class in IOS_PLUGINS:
+        plugin = plugin_class()
+        plugin.analyze(parser)
+        findings.extend(plugin.get_issues())
+    return _generate_section(_deduplicate(findings), {}, 0)
 
 
-def _generate_section(issues: array, issue_dict: dict, index: int) -> dict:
-    subindex = 0
-    for issue in issues:
-        title = "2." + str(index) + "." + str(subindex) + ". " + issue.title
-        issue_dict[title] = issue
-        subindex += 1
+def _generate_section(findings: list[Finding], issue_dict: dict, index: int) -> dict:
+    for subindex, finding in enumerate(findings):
+        title = f"2.{index}.{subindex}. {finding.title}"
+        issue_dict[title] = finding
     return issue_dict
