@@ -143,4 +143,17 @@ The registry contains both target-baseline and partial devices. Registration gua
 - Do not add a public rule without true-positive, true-negative, edge/override, and pipeline tests.
 - Do not describe a partial parser as target-baseline support.
 
+## Durable engineering decisions
+
+These decisions apply to future checks, parser work, and device additions:
+
+- Reconstruct effective configuration state in parsers, preserving source order, scope, negation, removal, disablement, and inheritance where the format supports them.
+- Evaluate related fields from the same policy, object, interface, or management profile; resolve attachments before reporting exposure.
+- Treat missing, unsupported, malformed, and version-dependent state as explicit unknowns rather than silently secure or insecure values.
+- Keep vendor-specific grammar in typed parser APIs. Extend the normalized model only for concepts that have stable meaning across platforms.
+- Redact passwords, keys, communities, tokens, and other secrets before storing evidence or serializing findings.
+- Require every new or materially changed finding to have a stable namespaced rule ID, one root cause, sanitized evidence, an authoritative reference, and positive/negative edge-case coverage through the public processor.
+- Keep the permanent regression corpus exact and duplicate-free; snapshot changes require semantic review rather than automatic acceptance.
+- Separate static configuration analysis from live operational checks such as certificate validity, licensing, runtime authorization, controller-inherited state, and current firmware support.
+
 See [Extending pynipper-v2](EXTENDING.md) for the implementation workflow.

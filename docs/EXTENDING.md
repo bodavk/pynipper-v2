@@ -1,6 +1,6 @@
 # Extending pynipper-v2
 
-This guide covers adding a check to an existing platform and adding a new device family. Read [Architecture](ARCHITECTURE.md), [Normalized parser contract](agent_notes/NORMALIZED_PARSER_CONTRACT.md), and the closest existing parser/plugins before editing code.
+This guide covers adding a check to an existing platform and adding a new device family. Read [Architecture](ARCHITECTURE.md), [Normalized parser contract](agent_notes/NORMALIZED_PARSER_CONTRACT.md), and the closest existing parser/plugins before editing code. The architecture document contains the durable decisions that govern effective-state reconstruction, evidence handling, references, and the static-analysis boundary.
 
 ## Adding a check to an existing platform
 
