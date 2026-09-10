@@ -4,6 +4,8 @@ from src.devices.common.base_parser import BaseDeviceParser
 
 class PaloAltoPANOSParser(BaseDeviceParser):
 
+    device_type = "PAN_OS"
+
     def __init__(self, config_filepath: str):
         super().__init__(config_filepath)
         self.tree = ET.parse(config_filepath)
@@ -28,5 +30,5 @@ class PaloAltoPANOSParser(BaseDeviceParser):
         # Check management profile for services
         return {"telnet": False, "ssh": False, "http": False}
 
-    def get_raw_config(self) -> Any:
+    def get_native_config(self) -> Any:
         return self.root

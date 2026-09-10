@@ -3,7 +3,6 @@ from ciscoconfparse import CiscoConfParse
 
 from src.analyze.common.base_plugin import BasePlugin
 from src.devices.common.base_parser import BaseDeviceParser
-from ..issue.cisco_ios_issue import CiscoIOSIssue
 
 
 class GenericPlugin(BasePlugin):

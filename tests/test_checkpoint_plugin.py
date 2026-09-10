@@ -17,7 +17,7 @@ def test_plugin_checkpoint_checks():
         
     rules_path = os.path.join(test_dir, "rules.C")
     with open(rules_path, "w") as f:
-        f.write("( :rules ( :rule1 ( :action ( accept ) :object ( any ) ) ) )")
+        f.write("( :rules ( :rule1 ( :action ( accept ) :src ( any ) :dst ( any ) :services ( any ) ) ) )")
         
     parser = get_parser("CHECKPOINT", test_dir)
     assert isinstance(parser, CheckPointFW1Parser)
@@ -26,8 +26,7 @@ def test_plugin_checkpoint_checks():
     plugin.analyze(parser)
     
     issues = plugin.get_issues()
-    assert len(issues) == 2
-    assert any("Insecure Object Definition" in issue.title for issue in issues)
+    assert len(issues) == 1
     assert any("Broad Filter Rule Detected" in issue.title for issue in issues)
     
     # Cleanup

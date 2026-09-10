@@ -1,5 +1,4 @@
 from ciscoconfparse import CiscoConfParse
-import re
 
 
 def parse_cisco_ios_config_file(filename: str) -> CiscoConfParse:
@@ -25,18 +24,11 @@ def get_cisco_ios_hostname(filename: str) -> str:
 
 def get_cisco_ios_version(filename: str) -> str:
     parser = parse_cisco_ios_config_file(filename)
-    regex = re.compile(r'.+\(.+\).*')
-    version = parser.find_objects("^version")
+    version = parser.find_objects(r"^version(?:\s|$)")
     if (len(version) > 0):
         version_number = version[0].re_match_typed(
             r'^version\s+(\S+)', default='')
-        if (not regex.search(version_number)):
-            # if i don't know the full IOS version,
-            # i get the first one subversion
-            # motivation: report all possible vulns,
-            # better report more and some false positives
-            version_number = version_number + '(1)'
-        return version_number
+        return version_number or "?"
     else:
         return "?"
 

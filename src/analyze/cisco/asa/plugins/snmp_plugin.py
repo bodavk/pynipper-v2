@@ -1,5 +1,5 @@
 from ..core.base_plugin import ASAPlugin
-from src.analyze.common.issue import Issue
+from src.analyze.common.issue import Finding, Severity
 from src.devices.common.base_parser import BaseDeviceParser
 
 
@@ -13,12 +13,15 @@ class SNMPPlugin(ASAPlugin):
         snmp_lines = cisco_parser.find_objects("^snmp-server community")
         for line in snmp_lines:
             if "public" in line.text or "private" in line.text:
-                return Issue(
-                    "Insecure SNMP Communities",
-                    "The SNMP service is configured with common or default community strings (e.g., 'public', 'private').",
-                    "Attackers can easily guess these strings to gain information or modify configuration via SNMP.",
-                    "Common community strings are widely known and frequently targeted by automated scanners.",
-                    "Change SNMP community strings to complex, unique values. Command: snmp-server community <new-string>"
+                return Finding(
+                    rule_id="cisco.asa.snmp.default_community",
+                    device="ASA",
+                    title="Insecure SNMP Communities",
+                    observation="The SNMP service is configured with common or default community strings (e.g., 'public', 'private').",
+                    impact="Attackers can easily guess these strings to gain information or modify configuration via SNMP.",
+                    exploitability="Common community strings are widely known and frequently targeted by automated scanners.",
+                    recommendation="Change SNMP community strings to complex, unique values. Command: snmp-server community <new-string>",
+                    severity=Severity.HIGH,
                 )
         return None
 

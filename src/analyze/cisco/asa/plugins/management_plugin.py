@@ -1,5 +1,5 @@
 from ..core.base_plugin import ASAPlugin
-from src.analyze.common.issue import Issue
+from src.analyze.common.issue import Finding, Severity
 from src.devices.common.base_parser import BaseDeviceParser
 
 
@@ -8,12 +8,15 @@ class ManagementPlugin(ASAPlugin):
     def get_telnet_issue(self, parser: BaseDeviceParser):
         services = parser.get_services()
         if services.get("telnet", False):
-            return Issue(
-                "Telnet Enabled",
-                "The Telnet service is enabled on the device. Telnet is a clear-text protocol and is vulnerable to packet-capture techniques.",
-                "An attacker could capture authentication credentials monitoring network traffic.",
-                "It is trivial to use captured credentials to log in.",
-                "Disable Telnet and use SSH instead. Command: no telnet <network> <mask> <interface>"
+            return Finding(
+                rule_id="cisco.asa.management.telnet",
+                device="ASA",
+                title="Telnet Enabled",
+                observation="The Telnet service is enabled on the device. Telnet is a clear-text protocol and is vulnerable to packet-capture techniques.",
+                impact="An attacker could capture authentication credentials monitoring network traffic.",
+                exploitability="It is trivial to use captured credentials to log in.",
+                recommendation="Disable Telnet and use SSH instead. Command: no telnet <network> <mask> <interface>",
+                severity=Severity.HIGH,
             )
         return None
 
@@ -22,12 +25,15 @@ class ManagementPlugin(ASAPlugin):
         ssh_lines = cisco_parser.find_objects("^ssh")
         for line in ssh_lines:
             if "0.0.0.0 0.0.0.0" in line.text:
-                return Issue(
-                    "Unrestricted SSH Access",
-                    "SSH access is allowed from any IP address (0.0.0.0).",
-                    "Increases the risk of brute-force attacks from unauthorized hosts.",
-                    "Attackers can attempt to guess passwords from any network location.",
-                    "Restrict SSH access to specific management networks. Command: ssh <management-network> <mask> <interface>"
+                return Finding(
+                    rule_id="cisco.asa.management.unrestricted_ssh",
+                    device="ASA",
+                    title="Unrestricted SSH Access",
+                    observation="SSH access is allowed from any IP address (0.0.0.0).",
+                    impact="Increases the risk of brute-force attacks from unauthorized hosts.",
+                    exploitability="Attackers can attempt to guess passwords from any network location.",
+                    recommendation="Restrict SSH access to specific management networks. Command: ssh <management-network> <mask> <interface>",
+                    severity=Severity.MEDIUM,
                 )
         return None
 

@@ -1,128 +1,241 @@
-import re
 from src.analyze.common.base_plugin import BasePlugin
-from src.analyze.cisco.ios.issue.cisco_ios_issue import CiscoIOSIssue
+from src.analyze.common.issue import Finding, Severity
 from src.devices.common.base_parser import BaseDeviceParser
+from src.devices.cisco.asa import CiscoASAParser
 
 
 class PluginASAChecks(BasePlugin):
+    """Scope-aware checks for ASA management, logging, TLS, SNMP, and ACLs."""
 
-    def __init__(self):
-        super().__init__()
+    @staticmethod
+    def _asa(parser: BaseDeviceParser) -> CiscoASAParser:
+        if not isinstance(parser, CiscoASAParser):
+            raise TypeError("PluginASAChecks requires a Cisco ASA parser")
+        return parser
 
-    # ASA-01: Telnet Enabled
     def check_telnet(self, parser: BaseDeviceParser) -> None:
-        services = parser.get_services()
-        if services.get("telnet", False):
-            issue = CiscoIOSIssue(
-                "Telnet Service Enabled",
-                "The Telnet service is currently enabled on the device. Telnet is an insecure, clear-text protocol and does not encrypt management traffic.",
-                "An attacker who is able to sniff network traffic can easily capture administrative credentials in transit.",
-                "High — Sniffing tools are widely available and extremely easy to use.",
-                "It is strongly recommended to disable Telnet access using 'no telnet ...' and use SSH for encrypted remote management."
+        for grant in self._asa(parser).get_management_grants("telnet"):
+            self.add_issue(
+                Finding(
+                    rule_id="cisco.asa.management.telnet",
+                    device=parser.device_type,
+                    title="Telnet Service Enabled",
+                    observation=f"A Telnet management grant is active on interface '{grant.interface}' for source {grant.source}{' ' + grant.mask if grant.mask else ''}.",
+                    impact="Telnet sends administrative credentials and sessions without encryption.",
+                    severity=Severity.HIGH,
+                    exploitability="An attacker on the traffic path can capture credentials and commands.",
+                    recommendation="Remove the Telnet grant and use restricted SSH management access.",
+                    evidence=(grant.raw_line,),
+                )
             )
-            self.add_issue(issue)
 
-    # ASA-02: Weak Enable Password
+    def check_enable_credential(self, parser: BaseDeviceParser) -> None:
+        credential = self._asa(parser).get_enable_credential()
+        if credential is None:
+            return
+        if credential.storage_type != "plaintext" and not credential.is_default:
+            return
+        problem = "a known default value" if credential.is_default else "plaintext storage"
+        self.add_issue(
+            Finding(
+                rule_id="cisco.asa.credentials.weak_enable_password",
+                device=parser.device_type,
+                title="Unsafe enable credential storage or default",
+                observation=f"The enable credential uses {problem}. The secret value has been redacted.",
+                impact="A recoverable or default credential can enable administrative privilege escalation.",
+                severity=Severity.HIGH,
+                exploitability="Default values are easily guessed; plaintext values are exposed if the configuration is obtained.",
+                recommendation="Replace the credential with a unique secret stored using a supported strong hash format.",
+                evidence=(credential.raw_line_redacted,),
+            )
+        )
+
+    # Kept as a compatibility entry point for external callers.
     def check_weak_enable_password(self, parser: BaseDeviceParser) -> None:
-        # In ASA we use get_enable_password()
-        # Since it's a mock/subclass, we can check if it returns a known weak password
-        enable_pw = parser.get_enable_password()
-        weak_passwords = ["cisco", "cisco123", "admin", "password"]
-        if enable_pw in weak_passwords:
-            issue = CiscoIOSIssue(
-                "Weak Enable Password Configured",
-                f"The enable password '{enable_pw}' is weak, common, or easily guessable.",
-                "An attacker who gets user-level access can guess the enable password and obtain full administrative control over the firewall.",
-                "High — Weak passwords are highly susceptible to dictionary and automated brute-force attacks.",
-                "Change the enable password to a complex value using the command: enable password <complex_password>"
-            )
-            self.add_issue(issue)
+        self.check_enable_credential(parser)
 
-    # ASA-03: Insecure SNMP Communities
+    def check_snmp(self, parser: BaseDeviceParser) -> None:
+        communities, hosts, users = self._asa(parser).get_snmp_configuration()
+        for community in communities:
+            if community.is_default:
+                self.add_issue(
+                    Finding(
+                        rule_id="cisco.asa.snmp.default_community",
+                        device=parser.device_type,
+                        title="Default SNMP community configured",
+                        observation="An exact default SNMP community is configured. Its value has been redacted.",
+                        impact="Default communities are routinely tried by automated discovery and attack tools.",
+                        severity=Severity.HIGH,
+                        exploitability="The default value is publicly known.",
+                        recommendation="Remove SNMPv1/v2c defaults and prefer SNMPv3 with authentication and privacy.",
+                        evidence=(community.raw_line_redacted,),
+                    )
+                )
+            if community.access == "rw":
+                self.add_issue(
+                    Finding(
+                        rule_id="cisco.asa.snmp.write_community",
+                        device=parser.device_type,
+                        title="Writable SNMP community configured",
+                        observation="An SNMP community grants read-write access. Its value has been redacted.",
+                        impact="Compromise of the community may permit remote state or configuration changes.",
+                        severity=Severity.HIGH,
+                        exploitability="An attacker needs SNMP reachability and the community value.",
+                        recommendation="Remove write communities and use a least-privileged SNMPv3 user.",
+                        evidence=(community.raw_line_redacted,),
+                    )
+                )
+
+        legacy_hosts = [host for host in hosts if host.version in {"1", "2", "2c", "unknown"}]
+        if legacy_hosts:
+            self.add_issue(
+                Finding(
+                    rule_id="cisco.asa.snmp.legacy_version",
+                    device=parser.device_type,
+                    title="Legacy SNMP management configured",
+                    observation="At least one SNMP destination uses v1/v2c or does not state a version.",
+                    impact="Community-based SNMP does not provide modern authentication and privacy protections.",
+                    severity=Severity.MEDIUM,
+                    exploitability="An attacker on the path may observe community-based SNMP traffic.",
+                    recommendation="Use SNMPv3 with both authentication and privacy.",
+                    evidence=tuple(host.raw_line_redacted for host in legacy_hosts),
+                )
+            )
+
+        incomplete_users = [user for user in users if user.endswith("incomplete")]
+        if incomplete_users:
+            self.add_issue(
+                Finding(
+                    rule_id="cisco.asa.snmp.v3_protection",
+                    device=parser.device_type,
+                    title="SNMPv3 user lacks authentication or privacy",
+                    observation="At least one SNMPv3 user does not specify both authentication and privacy.",
+                    impact="SNMP data or credentials may lack confidentiality or strong origin authentication.",
+                    severity=Severity.MEDIUM,
+                    exploitability="An attacker requires SNMP reachability or traffic-path access.",
+                    recommendation="Configure SNMPv3 users with strong authentication and privacy algorithms.",
+                    evidence=tuple(incomplete_users),
+                )
+            )
+
     def check_snmp_communities(self, parser: BaseDeviceParser) -> None:
-        communities = parser.get_snmp_communities()
-        for comm in communities:
-            if comm.lower() in ["public", "private"]:
-                issue = CiscoIOSIssue(
-                    "Insecure SNMP Community String",
-                    f"The device has an insecure SNMP community string '{comm}' configured.",
-                    "An attacker can read (public) or modify (private) system configuration and status via SNMP, exposing sensitive info.",
-                    "High — SNMP brute force scanners will automatically test default community strings.",
-                    "Change community strings to a private complex value: snmp-server community <complex_string>"
-                )
-                self.add_issue(issue)
-                break  # avoid duplicate alerts
+        self.check_snmp(parser)
 
-    # ASA-04: Unrestricted SSH Access
     def check_unrestricted_ssh(self, parser: BaseDeviceParser) -> None:
-        hosts = parser.get_ssh_hosts()
-        for host in hosts:
-            if host["ip"] == "0.0.0.0" and host["mask"] == "0.0.0.0":
-                issue = CiscoIOSIssue(
-                    "Unrestricted SSH Access Enabled",
-                    "SSH access is configured with 0.0.0.0/0, allowing access from any IP address on the network/internet.",
-                    "Exposes the SSH management interface to password guessing and potential zero-day exploit attempts from unauthorized hosts.",
-                    "Medium — Requires credentials to exploit, but massively increases exposure.",
-                    "Restrict SSH access to trusted administration subnets using 'ssh <ip> <mask> <interface>'."
+        asa = self._asa(parser)
+        levels = {item["nameif"]: item["security_level"] for item in asa.get_interfaces()}
+        for grant in asa.get_management_grants("ssh"):
+            name = grant.interface.casefold()
+            is_management_only = "mgmt" in name or "management" in name or "oob" in name
+            is_untrusted = levels.get(grant.interface, -1) <= 10 and not is_management_only
+            if not grant.is_any_source or not is_untrusted:
+                continue
+            self.add_issue(
+                Finding(
+                    rule_id="cisco.asa.management.unrestricted_ssh",
+                    device=parser.device_type,
+                    title="Unrestricted SSH access on an untrusted interface",
+                    observation=f"SSH permits every {grant.address_family} source on untrusted interface '{grant.interface}'.",
+                    impact="The management plane is exposed to password guessing and service exploitation from an untrusted scope.",
+                    severity=Severity.MEDIUM,
+                    exploitability="Any host reachable through the named interface can attempt SSH access.",
+                    recommendation="Restrict the grant to dedicated administration networks or move it to an isolated management interface.",
+                    evidence=(grant.raw_line,),
                 )
-                self.add_issue(issue)
-                break
+            )
 
-    # ASA-05: Missing Logging Configuration
     def check_logging(self, parser: BaseDeviceParser) -> None:
-        if not parser.get_logging_enabled():
-            issue = CiscoIOSIssue(
-                "Logging Disabled or Missing Configuration",
-                "System logging is not enabled on this firewall ('no logging enable' is active).",
-                "Without logs, it is impossible to detect security incidents, perform audit trails, or conduct forensic analysis after a breach.",
-                "Low — Does not directly allow penetration, but severely cripples security operations and compliance.",
-                "Enable logging and configure a secure external syslog host: logging enable; logging host <interface> <ip>"
+        asa = self._asa(parser)
+        hosts = asa.get_logging_hosts()
+        if not asa.get_logging_enabled() or not hosts:
+            reason = "logging is disabled" if not asa.get_logging_enabled() else "no active remote logging host is configured"
+            self.add_issue(
+                Finding(
+                    rule_id="cisco.asa.logging.missing",
+                    device=parser.device_type,
+                    title="Remote security logging is not operational",
+                    observation=f"Centralized logging is unavailable because {reason}.",
+                    impact="Security events may not be retained for monitoring, investigation, or audit.",
+                    severity=Severity.LOW,
+                    exploitability="An attacker may operate with reduced likelihood of centralized detection.",
+                    recommendation="Enable logging and configure at least one reachable remote 'logging host'.",
+                    evidence=tuple(hosts) or ("No active logging host",),
+                )
             )
-            self.add_issue(issue)
+            return
 
-    # ASA-06: Insecure SSL/TLS Versions
+        level = asa.get_logging_trap_level()
+        severity_values = {
+            "emergencies": 0,
+            "alerts": 1,
+            "critical": 2,
+            "errors": 3,
+            "warnings": 4,
+            "notifications": 5,
+            "informational": 6,
+            "debugging": 7,
+        }
+        numeric_level = int(level) if level and level.isdigit() else severity_values.get(level or "")
+        if numeric_level is None or numeric_level < 6:
+            self.add_issue(
+                Finding(
+                    rule_id="cisco.asa.logging.severity",
+                    device=parser.device_type,
+                    title="Remote logging severity is insufficient",
+                    observation=f"The effective trap level is {level or 'not configured'}; informational events are not assured.",
+                    impact="Important security and administrative events may be omitted from centralized logs.",
+                    severity=Severity.LOW,
+                    exploitability="Missing telemetry reduces the likelihood that suspicious activity is detected.",
+                    recommendation="Set 'logging trap informational' unless a documented local policy requires otherwise.",
+                    evidence=(f"logging trap {level}",) if level else tuple(hosts),
+                )
+            )
+
     def check_ssl_version(self, parser: BaseDeviceParser) -> None:
-        min_ver = parser.get_ssl_min_version()
-        if min_ver.lower() in ["tlsv1", "tlsv1.1", "sslv3"]:
-            issue = CiscoIOSIssue(
-                "Insecure SSL/TLS Version Configured",
-                f"The firewall's minimum SSL/TLS version is configured as '{min_ver}'.",
-                "TLS 1.0, 1.1, and SSLv3 have known cryptographic vulnerabilities (e.g. POODLE, BEAST) that can lead to session decryption.",
-                "Medium — Interception of admin management sessions can reveal login credentials.",
-                "Configure TLS 1.2 as the minimum version: ssl minimum-version tlsv1.2"
+        minimum = self._asa(parser).get_ssl_min_version()
+        if minimum.casefold() not in {"sslv3", "tlsv1", "tlsv1.1"}:
+            return
+        self.add_issue(
+            Finding(
+                rule_id="cisco.asa.tls.minimum_version",
+                device=parser.device_type,
+                title="Insecure ASA TLS server version configured",
+                observation=f"The ASA server-side minimum protocol is '{minimum}'.",
+                impact="Legacy SSL/TLS protocols contain known cryptographic weaknesses.",
+                severity=Severity.MEDIUM,
+                exploitability="An on-path attacker may target weaknesses in permitted legacy protocol versions.",
+                recommendation="Set 'ssl server-version tlsv1.2' or a newer version supported by the platform.",
+                evidence=(f"ssl server-version {minimum}",),
             )
-            self.add_issue(issue)
+        )
 
-    # ASA-07: Wide Open ACLs
     def check_wide_open_acls(self, parser: BaseDeviceParser) -> None:
-        interfaces = parser.get_interfaces()
-        bindings = parser.get_acl_bindings()
-        
-        # Identify interface security levels
-        low_sec_interfaces = [i["nameif"] for i in interfaces if i["security_level"] <= 10]
-        
-        for binding in bindings:
-            # Check if ACL is on a low security level interface (e.g. outside)
-            if binding["interface"] in low_sec_interfaces and binding["direction"] == "in":
-                acl_name = binding["acl_name"]
-                rules = parser.get_acl_rules(acl_name)
-                for rule in rules:
-                    # Look for "permit ip any any" or similar wide open rules
-                    if re.search(r'permit\s+ip\s+any\s+any', rule) or re.search(r'permit\s+tcp\s+any\s+any', rule):
-                        issue = CiscoIOSIssue(
-                            "Wide Open ACL Rule on Outside Interface",
-                            f"ACL '{acl_name}' on low-security interface '{binding['interface']}' contains a wide-open rule: '{rule}'",
-                            "Allows unrestricted inbound network traffic from any source to any destination, defeating the primary firewall security boundary.",
-                            "Critical — Allows immediate access/attack vector to all internal resources.",
-                            "Restrict the ACL to only permit traffic to authorized hosts/ports: permit tcp any host <ip> eq <port>"
-                        )
-                        self.add_issue(issue)
-                        break
+        asa = self._asa(parser)
+        levels = {item["nameif"]: item["security_level"] for item in asa.get_interfaces()}
+        for binding in asa.get_acl_bindings():
+            if binding["direction"] != "in" or levels.get(binding["interface"], -1) > 10:
+                continue
+            for entry in asa.get_acl_entries(binding["acl_name"]):
+                if not entry.is_broad_permit:
+                    continue
+                self.add_issue(
+                    Finding(
+                        rule_id="cisco.asa.acl.broad_inbound_permit",
+                        device=parser.device_type,
+                        title="Broad inbound permit on a low-trust interface",
+                        observation=f"ACL '{entry.acl_name}' permits {entry.protocol} from any source to any destination on '{binding['interface']}'.",
+                        impact="The rule can defeat the firewall boundary for the permitted protocol.",
+                        severity=Severity.CRITICAL,
+                        exploitability="Reachable attackers can target any destination allowed by routing and the broad ACE.",
+                        recommendation="Replace the ACE with explicit source, destination, and service constraints.",
+                        evidence=(entry.raw_line, f"access-group {entry.acl_name} in interface {binding['interface']}"),
+                    )
+                )
 
     def analyze(self, parser: BaseDeviceParser) -> None:
         self.check_telnet(parser)
-        self.check_weak_enable_password(parser)
-        self.check_snmp_communities(parser)
+        self.check_enable_credential(parser)
+        self.check_snmp(parser)
         self.check_unrestricted_ssh(parser)
         self.check_logging(parser)
         self.check_ssl_version(parser)

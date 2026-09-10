@@ -11,8 +11,10 @@ def test_plugin_fortios_checks():
         f.write("config system global\n")
         f.write("set hostname fortigate\n")
         f.write("end\n")
-        f.write("config system admin\n")
-        f.write("set http-access enable\n")
+        f.write("config system interface\n")
+        f.write('edit "port1"\n')
+        f.write('set allowaccess "http" "ssh"\n')
+        f.write("next\n")
         f.write("end\n")
     
     parser = get_parser("FORTIOS", config_path)

@@ -3,6 +3,8 @@ from src.devices.common.base_parser import BaseDeviceParser
 
 class SonicOSParser(BaseDeviceParser):
 
+    device_type = "SONICOS"
+
     def __init__(self, config_filepath: str):
         super().__init__(config_filepath)
         with open(config_filepath, 'r') as f:
@@ -31,5 +33,5 @@ class SonicOSParser(BaseDeviceParser):
                 services["http"] = True
         return services
 
-    def get_raw_config(self) -> Any:
+    def get_native_config(self) -> Any:
         return self.config

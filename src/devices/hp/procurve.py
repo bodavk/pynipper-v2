@@ -3,6 +3,8 @@ from src.devices.common.base_parser import BaseDeviceParser
 
 class HPProCurveParser(BaseDeviceParser):
 
+    device_type = "HP_PROCURVE"
+
     def __init__(self, config_filepath: str):
         super().__init__(config_filepath)
         with open(config_filepath, 'r') as f:
@@ -35,5 +37,5 @@ class HPProCurveParser(BaseDeviceParser):
                 services["http"] = True
         return services
 
-    def get_raw_config(self) -> Any:
+    def get_native_config(self) -> Any:
         return self.config

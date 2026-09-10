@@ -1,51 +1,103 @@
 from src.analyze.common.base_plugin import BasePlugin
-from src.analyze.cisco.ios.issue.cisco_ios_issue import CiscoIOSIssue
+from src.analyze.common.issue import Finding, Severity
 from src.devices.common.base_parser import BaseDeviceParser
+from src.devices.juniper.screenos import JuniperScreenOSParser
 
 
 class PluginScreenOSChecks(BasePlugin):
+    """Evaluate effective ScreenOS interface management and ordered policies."""
 
-    def __init__(self):
-        super().__init__()
+    @staticmethod
+    def _screenos(parser: BaseDeviceParser) -> JuniperScreenOSParser:
+        if not isinstance(parser, JuniperScreenOSParser):
+            raise TypeError("PluginScreenOSChecks requires a ScreenOS parser")
+        return parser
 
-    # NS-01: Insecure Admin Services
+    def _management_finding(
+        self,
+        parser: BaseDeviceParser,
+        protocol: str,
+        interface: str,
+        zone: str,
+        permitted_sources: tuple[str, ...],
+        evidence: tuple[str, ...],
+    ) -> Finding:
+        rule_id = (
+            "juniper.screenos.management.telnet"
+            if protocol == "telnet"
+            else "juniper.screenos.management.http"
+        )
+        title = "Telnet Service Enabled" if protocol == "telnet" else "Web Management (HTTP) Enabled"
+        source_scope = ", ".join(permitted_sources) if permitted_sources else "unrestricted/unspecified manager sources"
+        trust = "untrusted" if zone.casefold() in {"untrust", "dmz", "public"} else "trusted or unspecified"
+        return Finding(
+            rule_id=rule_id,
+            device=parser.device_type,
+            title=title,
+            observation=f"Effective {protocol.upper()} management is enabled on {interface or 'global scope'} in zone '{zone or 'unspecified'}' ({trust}); permitted manager sources: {source_scope}.",
+            impact="The clear-text management protocol can expose administrative credentials and sessions.",
+            severity=Severity.HIGH,
+            exploitability="An attacker with reachability through the stated interface/zone can intercept or attempt management access.",
+            recommendation=f"Remove {protocol} management from the interface and use SSH or HTTPS with manager-IP restrictions.",
+            evidence=evidence or (f"effective {protocol} management",),
+        )
+
     def check_insecure_services(self, parser: BaseDeviceParser) -> None:
-        config = parser.get_raw_config()
-        # Look for enabled telnet or web (HTTP)
-        for line in config:
-            if "set admin telnet enable" in line:
-                issue = CiscoIOSIssue(
-                    "Telnet Service Enabled",
-                    "The Telnet service is enabled on the device.",
-                    "Telnet transmits management credentials in clear-text, exposing them to interception.",
-                    "High",
-                    "Disable Telnet and use SSH. Command: unset admin telnet"
+        screenos = self._screenos(parser)
+        for protocol in sorted(screenos.global_management & {"telnet", "http"}):
+            evidence = screenos.global_management_evidence.get(protocol)
+            self.add_issue(
+                self._management_finding(
+                    parser,
+                    protocol,
+                    "",
+                    "",
+                    tuple(screenos.manager_ips),
+                    (evidence.text,) if evidence else (),
                 )
-                self.add_issue(issue)
-            elif "set admin web enable" in line:
-                issue = CiscoIOSIssue(
-                    "Web Management (HTTP) Enabled",
-                    "Web management (HTTP) is enabled.",
-                    "Web management via HTTP transmits traffic in clear-text.",
-                    "High",
-                    "Disable HTTP and use HTTPS. Command: unset admin web"
+            )
+        for interface in screenos.interfaces.values():
+            if interface.disabled:
+                continue
+            for protocol in sorted(interface.management_methods & {"telnet", "http"}):
+                self.add_issue(
+                    self._management_finding(
+                        parser,
+                        protocol,
+                        interface.name,
+                        interface.zone,
+                        tuple(interface.manager_ips or screenos.manager_ips),
+                        tuple(item.text for item in interface.evidence),
+                    )
                 )
-                self.add_issue(issue)
 
-    # NS-03: Broad Policy Rules
+    @staticmethod
+    def _all_any(values: list[str]) -> bool:
+        return bool(values) and all(value.strip().casefold() == "any" for value in values)
+
     def check_broad_policy_rules(self, parser: BaseDeviceParser) -> None:
-        config = parser.get_raw_config()
-        # Simplistic check for policy rules allowing 'any'
-        for line in config:
-            if "set policy" in line and "any" in line and "any" in line and "permit" in line:
-                issue = CiscoIOSIssue(
-                    "Broad Policy Rule Detected",
-                    f"Policy rule detected allowing 'any' to 'any': {line.strip()}",
-                    "Allows unrestricted traffic between zones/networks.",
-                    "Critical",
-                    "Restrict policy rules to specific source/destination objects."
+        for policy in self._screenos(parser).policies.values():
+            if policy.disabled or policy.action.casefold() not in {"permit", "accept"}:
+                continue
+            if not (
+                self._all_any(policy.sources)
+                and self._all_any(policy.destinations)
+                and self._all_any(policy.services)
+            ):
+                continue
+            self.add_issue(
+                Finding(
+                    rule_id="juniper.screenos.policy.broad_permit",
+                    device=parser.device_type,
+                    title="Broad Policy Rule Detected",
+                    observation=f"Enabled policy ID {policy.policy_id} at position {policy.position} permits Any source, Any destination, and Any service from zone '{policy.from_zone}' to '{policy.to_zone}'; tracking is '{policy.tracking or 'not configured'}'.",
+                    impact="The policy allows unrestricted traffic between its source and destination zones.",
+                    severity=Severity.CRITICAL,
+                    exploitability="Any source in the source zone can target any destination and service in the destination zone.",
+                    recommendation="Replace Any source, destination, and service values with explicit objects and enable session logging.",
+                    evidence=tuple(item.text for item in policy.evidence),
                 )
-                self.add_issue(issue)
+            )
 
     def analyze(self, parser: BaseDeviceParser) -> None:
         self.check_insecure_services(parser)

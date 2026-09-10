@@ -5,7 +5,7 @@ from typing import List
 from typing import Optional
 
 from .common.banner import display_banner
-from .devices.common.types import DeviceType
+from .devices import get_device_choices
 from .report.common.types import ReportType
 from .analyze.analyze_device import analyze_device
 
@@ -14,7 +14,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     display_banner()
 
-    device_type_list = [dev.name for dev in DeviceType]
+    device_type_list = get_device_choices(include_aliases=True)
     report_type_list = [report.name for report in ReportType]
 
     parser = argparse.ArgumentParser()
@@ -44,7 +44,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                         dest="offline", action='store_true'
                         )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     args_dict = vars(args)
 

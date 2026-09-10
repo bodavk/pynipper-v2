@@ -3,6 +3,8 @@ from src.devices.cisco.ios import CiscoIOSParser
 
 class CiscoIOSXEParser(CiscoIOSParser):
 
+    device_type = "IOS_XE"
+
     def __init__(self, config_filepath: str):
         super().__init__(config_filepath)
         # Inherits parsing capabilities from CiscoIOSParser
@@ -11,5 +13,5 @@ class CiscoIOSXEParser(CiscoIOSParser):
         # IOS-XE might report version differently, but for now reuse
         return super().get_version()
 
-    def get_raw_config(self) -> Any:
-        return super().get_raw_config()
+    def get_native_config(self) -> Any:
+        return super().get_native_config()

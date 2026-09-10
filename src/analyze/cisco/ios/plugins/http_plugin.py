@@ -1,91 +1,91 @@
-
 from ..core.base_plugin import GenericPlugin
-from ..issue.cisco_ios_issue import CiscoIOSIssue
+from src.analyze.common.issue import Finding, Severity
 from src.devices.common.base_parser import BaseDeviceParser
+from src.devices.cisco.ios import CiscoIOSParser, ConfigurationState
 
 
 class PluginHTTP(GenericPlugin):
+    """Evaluate the effective IOS embedded HTTP server configuration."""
 
-    def __init__(self):
-        super().__init__()
+    _SUPPORTED_AUTHENTICATION = {"aaa", "enable", "local", "tacacs"}
 
-    # If the device has http configured -> true
-
-    def _has_http(self, parser: BaseDeviceParser) -> bool:
-        cisco_parser = parser.get_raw_config()
-        http_enable = cisco_parser.find_objects("ip http server")
-        http_disable = cisco_parser.find_objects("no ip http server")
-        if (len(http_enable) > 0):
-            return True
-        elif (len(http_disable) > 0):
-            return False
-        else:
-            return True  # by default IOS Cisco devices has HTTP
+    @staticmethod
+    def _ios_parser(parser: BaseDeviceParser) -> CiscoIOSParser:
+        if not isinstance(parser, CiscoIOSParser):
+            raise TypeError("PluginHTTP requires a Cisco IOS-family parser")
+        return parser
 
     def get_cisco_ios_http(self, parser: BaseDeviceParser):
-        if (self._has_http(parser)):
-            return CiscoIOSIssue(
-                "HyperText Transport Protocol Service",
-                "Recent Cisco IOS-based devices support web-based administration using the HTTP protocol. Cisco web-based administration facilities can sometimes be basic but they do provide a simple method of administering remote devices. However, HTTP is a clear-text protocol and is vulnerable to various packet-capture techniques.",  # noqa: E501
-                "An attacker who was able to monitor network traffic could capture authentication credentials.",  # noqa: E501
-                "Network packet and password sniffing tools are widely available on the Internet. Once authentication credentials have been captured it is trivial to use the credentials to log in using the captured credentials.",  # noqa: E501
-                "It is recommended that, if not required, the HTTP service be disabled. If a remote method of access to the device is required, consider using HTTPS or SSH. The encrypted HTTPS and SSH services may require a firmware or hardware upgrade. The HTTP service can be disabled with the following IOS command: no ip http server. If it is not possible to upgrade the device to use the encrypted HTTPS or SSH services, additional security can be configured."  # noqa: E501
-            )
-        return None
-
-    # Number of access list should be used to restrict access to HTTP server
-
-    def _get_cisco_ios_http_access_list(self, parser: BaseDeviceParser):
-        cisco_parser = parser.get_raw_config()
-        access_list = cisco_parser.find_objects("ip http access-class")
-        if (len(access_list) > 0):
-            num = access_list[0].re_match_typed(
-                r'^ip http access-class\s+(\S+)', default='')
-            return int(num)
-        else:
+        ios = self._ios_parser(parser)
+        if ios.get_http_server_state() != ConfigurationState.ENABLED:
             return None
+        return Finding(
+            rule_id="cisco.ios.http.cleartext_service",
+            device=parser.device_type,
+            title="Clear-text HTTP management service enabled",
+            observation="The IOS HTTP management server is explicitly enabled.",
+            impact="Administrative credentials and sessions can be exposed to interception or modification.",
+            exploitability="An attacker with access to the management traffic path can observe or alter clear-text HTTP traffic.",
+            recommendation="Disable it with 'no ip http server' and use HTTPS or SSH for remote administration.",
+            severity=Severity.HIGH,
+            evidence=("ip http server",),
+        )
 
     def get_cisco_ios_http_access_list(self, parser: BaseDeviceParser):
-        if (self._get_cisco_ios_http_access_list(parser) is None):
-            return CiscoIOSIssue(
-                "ACL restrict for HTTP service",
-                "The HTTP service was not configured with an access-list to restrict network access to the device.",
-                "An attacker who was able to monitor network traffic could capture authentication credentials. This issue is made more serious with the enable password being used for authentication as this would give the attacker full administrative access to the device with the captured credentials. This issue is mitigated slightly by employing an access list to restrict network access to the device.",  # noqa: E501
-                "Network packet and password sniffing tools are widely available on the Internet. Once authentication credentials have been captured it is trivial to use the credentials to log in using the captured credentials. Furthermore, it may be possible for an attacker to masquerade as the administrators host in order to bypass configured network access restrictions.",  # noqa: E501
-                "If you can't disable HTTP, an access list can be configured to restrict access to the device. An access list can be specified with the following command:ip http access-class <access-list-number>"  # noqa: E501
-            )
-        return None
-
-    # Kind of auth in HTTP server
-
-    def _get_cisco_ios_http_auth(self, parser: BaseDeviceParser) -> str:
-        cisco_parser = parser.get_raw_config()
-        timeout = cisco_parser.find_objects("ip http auth")
-        if (len(timeout) > 0):
-            auth_type = timeout[0].re_match_typed(
-                r'^ip http auth(entication)?\s+(\S+)', default='')
-            return auth_type.split()[0]
-        else:
-            return ""
+        ios = self._ios_parser(parser)
+        if ios.get_http_server_state() != ConfigurationState.ENABLED:
+            return None
+        access_class = ios.get_http_access_class()
+        if access_class:
+            return None
+        return Finding(
+            rule_id="cisco.ios.http.access_restriction",
+            device=parser.device_type,
+            title="HTTP management access is unrestricted",
+            observation="The enabled HTTP server has no effective 'ip http access-class' restriction.",
+            impact="Untrusted networks may be able to reach the device management service.",
+            exploitability="An attacker only needs network reachability to attempt authentication or exploit the HTTP service.",
+            recommendation="Restrict management sources with 'ip http access-class <ACL>' or disable HTTP.",
+            severity=Severity.HIGH,
+            evidence=("ip http server",),
+        )
 
     def get_cisco_ios_http_auth(self, parser: BaseDeviceParser):
-        if (self._get_cisco_ios_http_auth(parser) == ""):
-            return CiscoIOSIssue(
-                "Authentication mode to HTTP service",
-                "The HTTP service was not configured with an authentication method.",
-                "An attacker who was able to monitor network traffic could capture authentication credentials. This issue is made more serious if no authentication is required or if it uses insecure methods. This issue is mitigated slightly by employing an access list to restrict network access to the device.",  # noqa: E501
-                "Network packet and password sniffing tools are widely available on the Internet. Once authentication credentials have been captured it is trivial to use the credentials to log in using the captured credentials. Furthermore, it may be possible for an attacker to masquerade as the administrators host in order to bypass configured network access restrictions.",  # noqa: E501
-                "If you can't disable HTTP, the authentication method can be changed using the following command (where the authentication method is either local, enable, tacacs or aaa): ip http authentication <authentication-method>"  # noqa: E501
-            )
-        return None
+        ios = self._ios_parser(parser)
+        if ios.get_http_server_state() != ConfigurationState.ENABLED:
+            return None
+        authentication = ios.get_http_authentication()
+        method = authentication.split()[0].lower() if authentication else ""
+        if method in self._SUPPORTED_AUTHENTICATION:
+            return None
+
+        detail = (
+            f"unsupported authentication value {authentication!r}"
+            if authentication
+            else "no authentication method"
+        )
+        evidence = (
+            (f"ip http authentication {authentication}",)
+            if authentication
+            else ("ip http server",)
+        )
+        return Finding(
+            rule_id="cisco.ios.http.authentication",
+            device=parser.device_type,
+            title="HTTP management authentication is not safely defined",
+            observation=f"The enabled HTTP server has {detail}.",
+            impact="The management service may use an unintended or weak authentication path.",
+            exploitability="A reachable management service can be probed for weak or missing authentication.",
+            recommendation="Configure a supported authentication method with 'ip http authentication local', 'aaa', 'tacacs', or 'enable', or disable HTTP.",
+            severity=Severity.HIGH,
+            evidence=evidence,
+        )
 
     def analyze(self, parser: BaseDeviceParser) -> None:
-        issues = []
-
-        issues.append(self.get_cisco_ios_http(parser))
-        issues.append(self.get_cisco_ios_http_access_list(parser))
-        issues.append(self.get_cisco_ios_http_auth(parser))
-
-        for issue in issues:
+        for issue in (
+            self.get_cisco_ios_http(parser),
+            self.get_cisco_ios_http_access_list(parser),
+            self.get_cisco_ios_http_auth(parser),
+        ):
             if issue is not None:
                 self.add_issue(issue)

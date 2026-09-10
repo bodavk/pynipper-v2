@@ -11,7 +11,9 @@ def test_plugin_junos_checks_full():
         f.write("set system host-name juniper\n")
         f.write("set system services telnet\n")
         f.write("set system services ssh root-login allow\n")
-        f.write("set firewall filter test term 1 then accept source-address 0.0.0.0/0\n")
+        f.write("set firewall filter test term 1 from source-address 0.0.0.0/0\n")
+        f.write("set firewall filter test term 1 then accept\n")
+        f.write("set interfaces ge-0/0/0 unit 0 family inet filter input test\n")
     
     parser = get_parser("JUNOS", config_path)
     assert isinstance(parser, JunOSParser)

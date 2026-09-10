@@ -1,30 +1,9 @@
-class CiscoIOSIssue:
+"""Compatibility import for the former Cisco-specific issue class."""
 
-    def __init__(self, title, observation, impact, ease, recommendation):
-        self.title = title
-        self.observation = observation
-        self.impact = impact
-        self.ease = ease
-        self.recommendation = recommendation
+from src.analyze.common.issue import Finding
 
-    def __str__(self):
-        print("Issue " + self.title + ":")
-        print("===================================================================================================")  # noqa: E501
-        print("Observation: " + self.observation)
-        print("Impact: " + self.impact)
-        print("Ease: " + self.ease)
-        print("Recommendation: " + self.recommendation)
-        print("\n---------------------------------------------------------------------------------------------------")  # noqa: E501
-        return("")
+# New code must import and construct Finding directly. The alias keeps older
+# imports working without maintaining a second data model.
+CiscoIOSIssue = Finding
 
-    def __dict__(self):
-        return self.to_dict()
-
-    def to_dict(self):
-        d = {}
-        d['title'] = self.title
-        d['observation'] = self.observation
-        d['impact'] = self.impact
-        d['ease'] = self.ease
-        d['recommendation'] = self.recommendation
-        return d
+__all__ = ["CiscoIOSIssue"]

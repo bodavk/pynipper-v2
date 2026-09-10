@@ -45,11 +45,15 @@
                     
                     {% for key, value in issues.items() %}
                         <h3>{{key}}</h3>
+                        <strong>Rule ID:</strong> {{value.rule_id}}<br/>
+                        <br/>
+                        <strong>Severity:</strong> {{value.severity.value}}<br/>
+                        <br/>
                         <strong>Observation:</strong> {{value.observation}}<br/>
                         <br/>
                         <strong>Impact:</strong> {{value.impact}}<br/>
                         <br/>
-                        <strong>Ease:</strong> {{value.ease}}<br/>
+                        <strong>Exploitability:</strong> {{value.exploitability}}<br/>
                         <br/>
                         <strong>Recommendation:</strong> {{value.recommendation}}<br/>
                         <br/>

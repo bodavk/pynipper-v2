@@ -1,129 +1,133 @@
-# flake8: noqa
-
 from ..core.base_plugin import GenericPlugin
-from ..issue.cisco_ios_issue import CiscoIOSIssue
+from src.analyze.common.issue import Finding, Severity
 from src.devices.common.base_parser import BaseDeviceParser
+from src.devices.cisco.ios import CiscoIOSParser, ConfigurationState, NumericSetting
 
 
 class PluginSSH(GenericPlugin):
+    """Evaluate IOS SSH protocol, limits, and inbound VTY restrictions."""
 
-    def __init__(self):
-        super().__init__()
+    MAX_AUTHENTICATION_RETRIES = 5
+    MAX_NEGOTIATION_TIMEOUT_SECONDS = 60
 
-    # If the device has ssh configured -> true
-
-    def _has_cisco_ios_ssh(self, parser: BaseDeviceParser) -> bool:
-        cisco_parser = parser.get_raw_config()
-        transport_disable = cisco_parser.find_objects("transport input none")
-        ssh_disable = cisco_parser.find_objects("no transport input ssh")
-        ssh_ip_disable = cisco_parser.find_objects("no ip ssh")
-        if (len(transport_disable) > 0 or len(ssh_disable) > 0 or len(ssh_ip_disable) > 0):
-            return False
-        else:
-            return True
-
-    # Number of ssh version
-
-    def _get_cisco_ios_ssh_version(self, parser: BaseDeviceParser) -> str:
-        cisco_parser = parser.get_raw_config()
-        ssh_version = cisco_parser.find_objects("ip ssh version")
-        if (len(ssh_version) > 0):
-            version = ssh_version[0].re_match_typed(
-                r'^ip ssh version\s+(\S+)', default='')
-            return version
-        else:
-            return ""
+    @staticmethod
+    def _ios_parser(parser: BaseDeviceParser) -> CiscoIOSParser:
+        if not isinstance(parser, CiscoIOSParser):
+            raise TypeError("PluginSSH requires a Cisco IOS-family parser")
+        return parser
 
     def get_cisco_ios_ssh(self, parser: BaseDeviceParser):
-        if (not self._has_cisco_ios_ssh(parser) or self._get_cisco_ios_ssh_version(parser) == "" or self._get_cisco_ios_ssh_version(parser) != "2"):
-            return CiscoIOSIssue(
-                "SSH Protocol Version",
-                "The SSH service is commonly used for encrypted command-based remote device management. There are multiple SSH protocol versions and SSH servers will often support multiple versions to maintain backwards compatibility. Although flaws have been identified in implementations of version 2 of the SSH protocol, fundamental flaws exist in SSH protocol version 1.",  # noqa: E501
-                "An attacker who was able to intercept SSH protocol version 1 traffic would be able to perform a man-in-the-middle style attack. The attacker could then capture network traffic and possibly authentication credentials.",  # noqa: E501
-                "Although vulnerabilities are widely known, exploiting the vulnerabilities in the SSH protocol can be difficult.",
-                "When SSH protocol version 2 support is configured on Cisco IOS devices, support for version 1 will be disabled. This can be configured with the following command: ip ssh version 2"  # noqa: E501
-            )
-        return None
+        ios = self._ios_parser(parser)
+        if ios.get_ssh_state() != ConfigurationState.ENABLED:
+            return None
 
-    # Number of max. retries configured to login with ssh
+        version = ios.get_ssh_version()
+        if version == "2":
+            return None
+        mode = "compatibility mode (SSHv1 and SSHv2)" if version is None else f"version {version!r}"
+        evidence = (f"ip ssh version {version}",) if version else tuple(
+            profile.line for profile in ios.get_vty_profiles() if profile.permits_ssh
+        )
+        return Finding(
+            rule_id="cisco.ios.ssh.protocol_version",
+            device=parser.device_type,
+            title="SSH protocol version 2 is not enforced",
+            observation=f"The reachable SSH service uses {mode}.",
+            impact="SSHv1 has fundamental protocol weaknesses and permits downgrade exposure where compatibility mode is allowed.",
+            exploitability="An on-path attacker may be able to exploit SSHv1 weaknesses or force use of the legacy protocol.",
+            recommendation="Enforce SSHv2 with 'ip ssh version 2'.",
+            severity=Severity.HIGH,
+            evidence=evidence or ("SSH configuration present",),
+        )
 
-    def _get_cisco_ios_ssh_retries(self, parser: BaseDeviceParser) -> str:
-        cisco_parser = parser.get_raw_config()
-        retries = cisco_parser.find_objects("ip ssh authentication-retries")
-        if (len(retries) > 0):
-            max_retries = retries[0].re_match_typed(
-                r'^ip ssh authentication-retries\s+(\S+)', default='')
-            return max_retries
-        else:
-            return ""
+    @staticmethod
+    def _numeric_evidence(setting: NumericSetting, default: int) -> tuple[str, ...]:
+        if setting.raw_line:
+            return (setting.raw_line,)
+        return (f"effective documented default: {default}",)
 
+    def get_cisco_ios_ssh_retries(self, parser: BaseDeviceParser):
+        ios = self._ios_parser(parser)
+        if ios.get_ssh_state() != ConfigurationState.ENABLED:
+            return None
+        retries = ios.get_ssh_authentication_retries()
+        if retries.value is not None and 0 < retries.value <= self.MAX_AUTHENTICATION_RETRIES:
+            return None
+
+        observation = (
+            f"The SSH authentication-retries value could not be parsed: {retries.parse_error}."
+            if retries.parse_error
+            else f"The effective SSH authentication retry limit is {retries.value}; it must be between 1 and {self.MAX_AUTHENTICATION_RETRIES}."
+        )
+        return Finding(
+            rule_id="cisco.ios.ssh.authentication_retries",
+            device=parser.device_type,
+            title="SSH authentication retry limit is unsafe",
+            observation=observation,
+            impact="A high or invalid retry limit increases the opportunity for password guessing attacks.",
+            exploitability="An attacker with SSH reachability can repeatedly attempt authentication.",
+            recommendation=f"Configure 'ip ssh authentication-retries <1-{self.MAX_AUTHENTICATION_RETRIES}>'.",
+            severity=Severity.MEDIUM,
+            evidence=self._numeric_evidence(retries, 3),
+        )
+
+    # Compatibility for callers which used the original misspelled method.
     def get_cisco_ios_ssh_reties(self, parser: BaseDeviceParser):
-        retries = self._get_cisco_ios_ssh_retries(parser)
-        if (retries == "" or int(retries) > 5):
-            return CiscoIOSIssue(
-                "SSH retries misconfiguration",
-                "The SSH service must have a defined number of retries, the recommended is between 0 and 5.",
-                "Set a retries number allows to reduce the bruteforce and dictionary attacks. If a retry number is defined, the attacker can not test with an user multiple passwords.",  # noqa: E501
-                "This issue improve the hardening of passwords in the network device.",
-                "This can be configured with the following command: ip ssh authentication-retries <retry-number>."
-            )
-        return None
-
-    # Number of seconds of ssh timeout
-
-    def _get_cisco_ios_ssh_timeout(self, parser: BaseDeviceParser) -> int:
-        cisco_parser = parser.get_raw_config()
-        timeout = cisco_parser.find_objects("ip ssh time-out")
-        if (len(timeout) > 0):
-            seconds = timeout[0].re_match_typed(
-                r'^ip ssh time-out\s+(\S+)', default='')
-            return int(seconds)
-        else:
-            return 0
+        return self.get_cisco_ios_ssh_retries(parser)
 
     def get_cisco_ios_ssh_timeout(self, parser: BaseDeviceParser):
-        timeout = self._get_cisco_ios_ssh_timeout(parser)
-        if (timeout == 0 or timeout > 120):
-            return CiscoIOSIssue(
-                "SSH timeout misconfiguration",
-                "The SSH service must have a defined timeout between 0 and 60 seconds.",
-                "Set a timeout allows disable not used or malicious sessions in background.",
-                "This issue only increase the device management security, it is not exploitable.",
-                "This can be configured with the following command: ip ssh time-out <timeout-in-seconds>."
-            )
-        return None
+        ios = self._ios_parser(parser)
+        if ios.get_ssh_state() != ConfigurationState.ENABLED:
+            return None
+        timeout = ios.get_ssh_timeout()
+        if timeout.value is not None and 0 < timeout.value <= self.MAX_NEGOTIATION_TIMEOUT_SECONDS:
+            return None
 
-    # Get the source interface
+        observation = (
+            f"The SSH time-out value could not be parsed: {timeout.parse_error}."
+            if timeout.parse_error
+            else f"The effective SSH negotiation timeout is {timeout.value} seconds; the policy maximum is {self.MAX_NEGOTIATION_TIMEOUT_SECONDS} seconds."
+        )
+        return Finding(
+            rule_id="cisco.ios.ssh.negotiation_timeout",
+            device=parser.device_type,
+            title="SSH negotiation timeout is unsafe",
+            observation=observation,
+            impact="Long unauthenticated negotiations consume management-plane resources and leave sessions open unnecessarily.",
+            exploitability="A reachable attacker can hold multiple unauthenticated SSH negotiations open.",
+            recommendation=f"Configure 'ip ssh time-out <1-{self.MAX_NEGOTIATION_TIMEOUT_SECONDS}>'.",
+            severity=Severity.LOW,
+            evidence=self._numeric_evidence(timeout, 120),
+        )
 
-    def _get_cisco_ios_ssh_interface(self, parser: BaseDeviceParser) -> str:
-        cisco_parser = parser.get_raw_config()
-        src_interface = cisco_parser.find_objects("ip ssh source-interface")
-        if (len(src_interface) > 0):
-            interface = src_interface[0].re_match_typed(
-                r'^ip ssh source-interface\s+(\S+)', default='')
-            return interface
-        else:
-            return ""
+    def get_cisco_ios_vty_access_restriction(self, parser: BaseDeviceParser):
+        ios = self._ios_parser(parser)
+        if ios.get_ssh_state() != ConfigurationState.ENABLED:
+            return None
+        ssh_profiles = [profile for profile in ios.get_vty_profiles() if profile.permits_ssh]
+        unrestricted = [profile for profile in ssh_profiles if not profile.has_inbound_access_class]
+        if ssh_profiles and not unrestricted:
+            return None
 
-    def get_cisco_ios_ssh_interface(self, parser: BaseDeviceParser):
-        if (self._get_cisco_ios_ssh_interface(parser) == ""):
-            return CiscoIOSIssue(
-                "SSH source-interface enabled",
-                "The SSH service must have a controlated set of source interfaces to manage the device",
-                "To reduce bruteforce attacks is usefull have a set of source interfaces, logged and filtered, to access to SSH device management.",
-                "This issue only increase the device management security, it is not exploitable, but it reduce bruteforce attacks.",
-                "This can be configured with the following command: ip ssh source-interface <interface> "
-            )
-        return None
+        evidence = tuple(profile.line for profile in unrestricted) or ("No SSH-enabled VTY access-class found",)
+        return Finding(
+            rule_id="cisco.ios.ssh.vty_access_restriction",
+            device=parser.device_type,
+            title="SSH VTY access is not source-restricted",
+            observation="At least one SSH-enabled VTY range lacks an inbound IPv4 or IPv6 access-class.",
+            impact="Any source with network reachability can attempt to access the SSH management service.",
+            exploitability="An attacker can probe and brute-force SSH from any network permitted by upstream controls.",
+            recommendation="Apply 'access-class <ACL> in' or 'ipv6 access-class <ACL> in' to every SSH-enabled VTY range.",
+            severity=Severity.MEDIUM,
+            evidence=evidence,
+        )
 
     def analyze(self, parser: BaseDeviceParser) -> None:
-        issues = []
-
-        issues.append(self.get_cisco_ios_ssh(parser))
-        issues.append(self.get_cisco_ios_ssh_reties(parser))
-        issues.append(self.get_cisco_ios_ssh_timeout(parser))
-        issues.append(self.get_cisco_ios_ssh_interface(parser))
-
-        for issue in issues:
+        for issue in (
+            self.get_cisco_ios_ssh(parser),
+            self.get_cisco_ios_ssh_retries(parser),
+            self.get_cisco_ios_ssh_timeout(parser),
+            self.get_cisco_ios_vty_access_restriction(parser),
+        ):
             if issue is not None:
                 self.add_issue(issue)
