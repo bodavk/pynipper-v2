@@ -15,6 +15,9 @@ ARISTA_ACL_GUIDE = "https://www.arista.com/en/um-eos/eos-acls-and-route-maps"
 ARISTA_SNMP_GUIDE = "https://www.arista.com/en/um-eos/eos-snmp"
 ARISTA_TIME_GUIDE = "https://www.arista.com/en/um-eos/eos-system-clock-and-time-protocols"
 ARISTA_SECURITY_GUIDE = "https://www.arista.com/en/um-eos/eos-security"
+ARISTA_USER_SECURITY_GUIDE = "https://www.arista.com/en/um-eos/eos-user-security"
+ARISTA_DISPLAY_GUIDE = "https://www.arista.com/en/um-eos/eos-managing-display-attributes"
+ARISTA_TLS_GUIDE = "https://www.arista.com/en/um-eos/eos-control-plane-security"
 
 
 class PluginAristaChecks(BasePlugin):
@@ -89,7 +92,11 @@ class PluginAristaChecks(BasePlugin):
 
     def check_authentication(self, parser: BaseDeviceParser) -> None:
         eos = self._eos(parser)
-        if not any(endpoint.active for endpoint in eos.get_eapi_endpoints()):
+        remote_cli = any(
+            session.applicable is True and session.channel in {"ssh", "telnet"}
+            for session in eos.get_management_sessions()
+        )
+        if not any(endpoint.active for endpoint in eos.get_eapi_endpoints()) and not remote_cli:
             return
         if eos.get_remote_authentication():
             return
@@ -107,6 +114,249 @@ class PluginAristaChecks(BasePlugin):
                 references=(ARISTA_SECURITY_GUIDE,),
             )
         )
+
+    def check_administrative_policy(self, parser: BaseDeviceParser) -> None:
+        eos = self._eos(parser)
+        endpoints = eos.get_eapi_endpoints()
+        sessions = eos.get_management_sessions()
+        interactive = [item for item in sessions if item.applicable is True]
+        remote_active = any(endpoint.active for endpoint in endpoints) or any(
+            item.channel in {"ssh", "telnet"} for item in interactive
+        )
+
+        for administrator in eos.get_administrators():
+            if administrator.role_resolved:
+                continue
+            self.add_issue(Finding(
+                rule_id="arista.eos.admin.role_reference",
+                device=parser.device_type,
+                title="Local administrator references an undefined role",
+                observation=f"Local user '{administrator.name}' resolves to role '{administrator.role}', which is not defined in the export.",
+                impact="The intended command authorization boundary cannot be established from the configuration.",
+                exploitability="A fallback/default role may grant different access than operators intended.",
+                recommendation="Define the referenced role or assign a verified built-in/custom role explicitly.",
+                severity=Severity.HIGH,
+                evidence=tuple(item.text for item in administrator.evidence),
+                references=(ARISTA_USER_SECURITY_GUIDE,),
+            ))
+
+        for policy in eos.get_aaa_policies():
+            if policy.unauthenticated is not True:
+                continue
+            applicable = (
+                policy.connection == "console" and any(item.channel == "console" for item in interactive)
+            ) or (
+                policy.connection == "default" and remote_active
+            )
+            if not applicable:
+                continue
+            self.add_issue(Finding(
+                rule_id="arista.eos.authentication.unauthenticated_method",
+                device=parser.device_type,
+                title="Applicable AAA policy includes a bypass method",
+                observation=(
+                    f"The effective {policy.policy_type} {policy.service} {policy.connection} method list includes 'none', "
+                    f"which EOS documents as permitting the {policy.policy_type} action without validation."
+                ),
+                impact="The fallback can admit a session or command without the intended AAA decision.",
+                exploitability="A reachable user can be accepted if earlier methods are unavailable and EOS reaches the none method.",
+                recommendation="Remove 'none' and use an approved centralized method with a controlled local emergency fallback.",
+                severity=Severity.CRITICAL,
+                evidence=tuple(item.text for item in policy.evidence),
+                references=(ARISTA_USER_SECURITY_GUIDE,),
+            ))
+
+        remote_auth = eos.get_remote_authentication()
+        if remote_active and remote_auth:
+            aaa = eos.get_aaa_policies()
+            commands_authorized = any(
+                item.policy_type == "authorization"
+                and
+                item.service == "commands-all"
+                and item.connection == "default"
+                and item.methods is not None
+                and (item.centralized or "local" in item.methods)
+                and not item.unauthenticated
+                for item in aaa
+            )
+            if not commands_authorized:
+                self.add_issue(Finding(
+                    rule_id="arista.eos.authorization.commands",
+                    device=parser.device_type,
+                    title="Centralized login lacks command authorization",
+                    observation="Remote login authentication is configured without an effective default all-command authorization method list.",
+                    impact="Authenticated users may execute commands outside the intended central or local RBAC policy.",
+                    exploitability="A compromised account can receive broader CLI access than the identity service intended.",
+                    recommendation="Configure 'aaa authorization commands all default' using the approved service and controlled fallback.",
+                    severity=Severity.HIGH,
+                    evidence=("centralized login authentication without all-command authorization",),
+                    references=(ARISTA_USER_SECURITY_GUIDE,),
+                ))
+
+            accounting = eos.get_accounting_policies()
+            covered = {
+                item.service
+                for item in accounting
+                if item.connection == "default"
+                and item.mode in {"start-stop", "stop-only", "stop"}
+                and item.destinations
+                and "none" not in item.destinations
+            }
+            missing = sorted({"exec", "commands-all"} - covered)
+            if missing:
+                self.add_issue(Finding(
+                    rule_id="arista.eos.authentication.accounting",
+                    device=parser.device_type,
+                    title="Centralized administrative access lacks complete accounting",
+                    observation="Default AAA accounting is missing for: " + ", ".join(missing) + ".",
+                    impact="Login sessions or executed commands may lack an independent audit trail.",
+                    exploitability="A compromised administrator can act with reduced centralized evidence.",
+                    recommendation="Configure default EXEC and all-command accounting to TACACS+, RADIUS, or protected syslog.",
+                    severity=Severity.MEDIUM,
+                    evidence=tuple(
+                        evidence.text for item in accounting for evidence in item.evidence
+                    ) or ("default EXEC/all-command accounting incomplete",),
+                    references=(ARISTA_USER_SECURITY_GUIDE,),
+                ))
+
+        lockout = eos.get_lockout_policy()
+        if remote_active and lockout.enabled is False:
+            self.add_issue(Finding(
+                rule_id="arista.eos.authentication.lockout_disabled",
+                device=parser.device_type,
+                title="Remote login lockout is disabled",
+                observation="An explicit management service is active while the EOS AAA time-based lockout policy is disabled by default or reset.",
+                impact="The switch does not locally suspend accounts after repeated failed remote logins.",
+                exploitability="A reachable attacker can sustain password-guessing attempts.",
+                recommendation="Configure AAA lockout with no more than five failures and a duration of at least 300 seconds.",
+                severity=Severity.HIGH,
+                evidence=tuple(item.text for item in lockout.evidence) or (
+                    "identified EOS release default: AAA time-based lockout disabled",
+                ),
+                references=(ARISTA_USER_SECURITY_GUIDE,),
+            ))
+        elif remote_active and lockout.enabled is True:
+            weak = []
+            if lockout.failure_count is not None and lockout.failure_count > 5:
+                weak.append(f"{lockout.failure_count} failures")
+            if lockout.duration_seconds is not None and lockout.duration_seconds < 300:
+                weak.append(f"{lockout.duration_seconds}-second duration")
+            if weak:
+                self.add_issue(Finding(
+                    rule_id="arista.eos.authentication.lockout_policy",
+                    device=parser.device_type,
+                    title="Remote login lockout thresholds are weak",
+                    observation="The explicit lockout policy uses " + " and ".join(weak) + ".",
+                    impact="The switch permits excessive guesses or restores access too quickly.",
+                    exploitability="A reachable attacker receives more opportunities to guess a password.",
+                    recommendation="Allow no more than five failures and lock the account for at least 300 seconds.",
+                    severity=Severity.MEDIUM,
+                    evidence=tuple(item.text for item in lockout.evidence),
+                    references=(ARISTA_USER_SECURITY_GUIDE,),
+                ))
+
+        for session in interactive:
+            if session.resolution_state == "invalid" or session.idle_timeout_minutes is None:
+                continue
+            if 0 < session.idle_timeout_minutes <= 10:
+                continue
+            self.add_issue(Finding(
+                rule_id="arista.eos.admin.idle_timeout",
+                device=parser.device_type,
+                title=f"{session.channel.upper()} administrative idle timeout is " + (
+                    "disabled" if session.idle_timeout_minutes == 0 else "excessive"
+                ),
+                observation=(
+                    f"The {session.channel} idle timeout is disabled."
+                    if session.idle_timeout_minutes == 0
+                    else f"The {session.channel} idle timeout is {session.idle_timeout_minutes} minutes, above the 10-minute project target."
+                ),
+                impact="An unattended authenticated management session can remain usable longer than intended.",
+                exploitability="A person or process with access to an abandoned session can inherit its privileges.",
+                recommendation=f"Set the {session.channel} idle-timeout to ten minutes or less.",
+                severity=Severity.MEDIUM,
+                evidence=tuple(item.text for item in session.evidence),
+                references=(ARISTA_SESSION_GUIDE,),
+            ))
+
+        banner = eos.get_banner_policy()
+        if interactive and banner.login_enabled is False:
+            self.add_issue(Finding(
+                rule_id="arista.eos.admin.login_banner",
+                device=parser.device_type,
+                title="Pre-login administrative notice is not configured",
+                observation="An interactive management channel is explicitly configured without an effective login banner.",
+                impact="Users are not shown the organization's authorization and monitoring notice before login.",
+                exploitability="This is primarily a governance and legal-notice control rather than a direct technical exploit.",
+                recommendation="Configure an approved 'banner login' notice and validate it before the credential prompt.",
+                severity=Severity.LOW,
+                evidence=tuple(item.text for item in banner.evidence) or (
+                    "banner login absent from identified EOS configuration",
+                ),
+                references=(ARISTA_DISPLAY_GUIDE,),
+            ))
+
+        profiles = eos.get_ssl_profiles()
+        for endpoint in endpoints:
+            if not endpoint.active or not endpoint.https:
+                continue
+            evidence = tuple(item.text for item in endpoint.evidence)
+            if not endpoint.ssl_profile:
+                self.add_issue(Finding(
+                    rule_id="arista.eos.eapi.tls_profile",
+                    device=parser.device_type,
+                    title="eAPI HTTPS lacks an explicit SSL profile",
+                    observation=f"The active HTTPS eAPI endpoint in VRF '{endpoint.scope}' does not attach an SSL profile.",
+                    impact="Certificate identity and TLS-version policy remain dependent on an implicit service default.",
+                    exploitability="Administrators may receive an unexpected certificate or negotiate an unintended legacy protocol.",
+                    recommendation="Attach a named SSL profile with an approved certificate and TLS 1.2 or 1.3 policy.",
+                    severity=Severity.MEDIUM,
+                    evidence=evidence,
+                    references=(ARISTA_TLS_GUIDE, ARISTA_SESSION_GUIDE),
+                ))
+                continue
+            profile = profiles.get(endpoint.ssl_profile.casefold())
+            if profile is None:
+                self.add_issue(Finding(
+                    rule_id="arista.eos.eapi.tls_profile_reference",
+                    device=parser.device_type,
+                    title="eAPI HTTPS references an undefined SSL profile",
+                    observation=f"The active HTTPS eAPI endpoint in VRF '{endpoint.scope}' references '{endpoint.ssl_profile}', which is absent.",
+                    impact="The intended HTTPS identity and protocol policy cannot be established.",
+                    exploitability="The service can fail or use behavior different from the intended profile.",
+                    recommendation="Define the referenced SSL profile and attach its certificate and TLS-version policy.",
+                    severity=Severity.HIGH,
+                    evidence=evidence,
+                    references=(ARISTA_TLS_GUIDE, ARISTA_SESSION_GUIDE),
+                ))
+                continue
+            profile_evidence = evidence + tuple(item.text for item in profile.evidence)
+            if not profile.certificate:
+                self.add_issue(Finding(
+                    rule_id="arista.eos.eapi.tls_certificate",
+                    device=parser.device_type,
+                    title="Attached eAPI SSL profile lacks a certificate",
+                    observation=f"SSL profile '{profile.name}' is attached to active eAPI HTTPS but has no certificate declaration.",
+                    impact="The switch cannot present the intended managed identity from this profile.",
+                    exploitability="Clients may reject the service or accept an unintended fallback identity.",
+                    recommendation="Configure an approved certificate and matching private key in the attached SSL profile.",
+                    severity=Severity.HIGH,
+                    evidence=profile_evidence,
+                    references=(ARISTA_TLS_GUIDE,),
+                ))
+            if profile.tls_versions is not None and set(profile.tls_versions) & {"1.0", "1.1"}:
+                self.add_issue(Finding(
+                    rule_id="arista.eos.eapi.legacy_tls",
+                    device=parser.device_type,
+                    title="Attached eAPI SSL profile permits legacy TLS",
+                    observation=f"SSL profile '{profile.name}' explicitly permits: {', '.join(profile.tls_versions)}.",
+                    impact="Administrative API sessions can negotiate obsolete TLS versions.",
+                    exploitability="A network-positioned attacker can target clients that negotiate the legacy protocol.",
+                    recommendation="Restrict the attached SSL profile to TLS 1.2 and 1.3.",
+                    severity=Severity.HIGH,
+                    evidence=profile_evidence,
+                    references=(ARISTA_TLS_GUIDE,),
+                ))
 
     def check_ssh_and_authorization(self, parser: BaseDeviceParser) -> None:
         eos = self._eos(parser)
@@ -440,6 +690,7 @@ class PluginAristaChecks(BasePlugin):
     def analyze(self, parser: BaseDeviceParser) -> None:
         self.check_management_api(parser)
         self.check_authentication(parser)
+        self.check_administrative_policy(parser)
         self.check_ssh_and_authorization(parser)
         self.check_credentials(parser)
         self.check_snmp(parser)

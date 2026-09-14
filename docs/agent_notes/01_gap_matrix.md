@@ -26,7 +26,7 @@ Statuses describe tested detection depth, not merely whether a registry entry ex
 | SonicWall SonicOS | SUPPORTED_PARTIAL | SonicOS 7 E-CLI expanded static baseline verified; WebUI preferences/6.x remain unsupported and live certificate/license/firmware state is out of scope |
 | 3Com SuperStack3 Firewall | MISSING | No parser or checks |
 | Bay Networks Accelar | MISSING | No parser or checks |
-| HP ProCurve | SUPPORTED_PARTIAL | ArubaOS-Switch expanded static baseline verified; documented defaults remain limited to AOS-S 16.10 and other releases are explicit-state only |
+| HP ProCurve | SUPPORTED_PARTIAL | ArubaOS-Switch expanded static baseline verified; general service defaults remain limited to AOS-S 16.10, administrative defaults and typed per-channel/session/banner state to verified 16.10/16.11 exports, and other releases remain explicit-state only |
 | Nokia IPSO | MISSING | No parser or checks |
 | Nortel Routing Switch | MISSING | No parser or checks |
 

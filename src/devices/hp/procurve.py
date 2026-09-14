@@ -35,6 +35,42 @@ class HPFeature:
 
 
 @dataclass(frozen=True)
+class HPLocalAdministratorCredential:
+    username: str
+    role: str
+    state: ConfigurationState
+    credential_format: str
+    evidence: tuple[ConfigEvidence, ...] = ()
+
+
+@dataclass(frozen=True)
+class HPAuthenticationPolicy:
+    channel: str
+    access_level: str
+    applicable: bool | None
+    primary: str
+    secondary: str
+    resolution_state: str
+    evidence: tuple[ConfigEvidence, ...] = ()
+
+
+@dataclass(frozen=True)
+class HPSessionPolicy:
+    channel: str
+    applicable: bool | None
+    timeout_seconds: int | None
+    resolution_state: str
+    evidence: tuple[ConfigEvidence, ...] = ()
+
+
+@dataclass(frozen=True)
+class HPBannerPolicy:
+    state: ConfigurationState
+    resolution_state: str
+    evidence: tuple[ConfigEvidence, ...] = ()
+
+
+@dataclass(frozen=True)
 class HPSnmpCommunity:
     name: str
     access: str
@@ -92,6 +128,7 @@ class HPProCurveParser(BaseDeviceParser):
 
     device_type = "HP_PROCURVE"
     _SUPPORTED_DEFAULT_RELEASE = re.compile(r"^(?:[A-Z]{2}\.)?16\.10\.", re.IGNORECASE)
+    _SUPPORTED_ADMIN_RELEASE = re.compile(r"^(?:[A-Z]{2}\.)?16\.(?:10|11)\.", re.IGNORECASE)
     _DEFAULT_CRYPTO = {
         "cipher": {
             "aes128-cbc",
@@ -183,6 +220,9 @@ class HPProCurveParser(BaseDeviceParser):
 
     def has_supported_layer2_release(self) -> bool:
         return bool(re.match(r"^(?:[A-Z]{2}\.)?16\.(?:10|11)\.", self.get_version(), re.IGNORECASE))
+
+    def has_supported_administrative_release(self) -> bool:
+        return bool(self._SUPPORTED_ADMIN_RELEASE.match(self.get_version()))
 
     @staticmethod
     def _expand_ports(value: str) -> set[str]:
@@ -279,17 +319,30 @@ class HPProCurveParser(BaseDeviceParser):
         ]
 
     def _feature(self, protocol: str) -> HPFeature:
-        patterns = {
-            "telnet": r"(?P<no>no\s+)?telnet-server",
-            "ssh": r"(?P<no>no\s+)?ip\s+ssh",
-            "http": r"(?P<no>no\s+)?web-management",
-            "https": r"(?P<no>no\s+)?web-management\s+ssl(?:\s+port\s+\d+)?",
-        }
-        selected = self._last_fullmatch(patterns[protocol])
+        selected: tuple[HPCommand, bool] | None = None
+        for command in self.commands:
+            if protocol == "telnet":
+                match = re.fullmatch(r"(?P<no>no\s+)?telnet-server", command.text, re.I)
+            elif protocol == "ssh":
+                match = re.fullmatch(r"(?P<no>no\s+)?ip\s+ssh", command.text, re.I)
+            elif protocol == "https":
+                match = re.fullmatch(
+                    r"(?P<no>no\s+)?web-management\s+ssl(?:\s+(?:port|tcp-port)\s+\d+)?",
+                    command.text,
+                    re.I,
+                )
+            else:
+                match = re.fullmatch(
+                    r"(?P<no>no\s+)?web-management(?:\s+plaintext)?",
+                    command.text,
+                    re.I,
+                )
+            if match:
+                selected = (command, bool(match.group("no")))
         if selected:
-            command, match = selected
+            command, disabled = selected
             return HPFeature(
-                ConfigurationState.DISABLED if match.group("no") else ConfigurationState.ENABLED,
+                ConfigurationState.DISABLED if disabled else ConfigurationState.ENABLED,
                 (self._evidence(command),),
             )
 
@@ -317,28 +370,86 @@ class HPProCurveParser(BaseDeviceParser):
             for protocol, feature in self.get_service_states().items()
         }
 
-    def _local_users(self) -> list[LocalUser]:
-        users = []
+    def _credentials_exported(self) -> bool:
+        enabled = False
+        for command in self.commands:
+            if re.fullmatch(r"include-credentials", command.text, re.I):
+                enabled = True
+            elif re.fullmatch(r"no\s+include-credentials", command.text, re.I):
+                enabled = False
+        return enabled
+
+    def get_local_administrator_credentials(self) -> tuple[HPLocalAdministratorCredential, ...]:
+        """Resolve manager/operator password protection without exposing material."""
+
+        credentials: dict[str, HPLocalAdministratorCredential] = {}
+        explicitly_removed: dict[str, ConfigEvidence] = {}
         expression = re.compile(
-            r"password\s+(?P<role>manager|operator)(?:\s+user-name\s+(?P<name>\S+))?(?:\s+\S+.*)?",
-            re.IGNORECASE,
+            r"(?P<no>no\s+)?password\s+(?P<role>manager|operator|all)"
+            r"(?:\s+user-name\s+(?P<name>\"[^\"]+\"|\S+))?"
+            r"(?:\s+(?P<format>plaintext|sha-?1|sha256))?(?:\s+.*)?",
+            re.I,
         )
         for command in self.commands:
             match = expression.fullmatch(command.text)
             if not match:
                 continue
-            role = match.group("role").lower()
-            users.append(
-                LocalUser(
-                    username=match.group("name") or role,
-                    state=ConfigurationState.ENABLED,
+            roles = ("manager", "operator") if match.group("role").casefold() == "all" else (match.group("role").casefold(),)
+            for role in roles:
+                if match.group("no"):
+                    credentials.pop(role, None)
+                    explicitly_removed[role] = self._evidence(command, redact=True)
+                    continue
+                username = (match.group("name") or role).strip('"')
+                credential_format = (match.group("format") or "configured-unspecified").casefold().replace("-", "")
+                credentials[role] = HPLocalAdministratorCredential(
+                    username=username,
                     role=role,
-                    authentication="local-password",
-                    scope="switch",
+                    state=ConfigurationState.ENABLED,
+                    credential_format=credential_format,
                     evidence=(self._evidence(command, redact=True),),
                 )
+                explicitly_removed.pop(role, None)
+
+        results = list(credentials.values())
+        for role in ("manager", "operator"):
+            if role in credentials:
+                continue
+            if role in explicitly_removed or self._credentials_exported():
+                evidence = (
+                    (explicitly_removed[role],)
+                    if role in explicitly_removed
+                    else (ConfigEvidence("include-credentials enabled and no active local credential is exported", self.config_filepath),)
+                )
+                results.append(HPLocalAdministratorCredential(
+                    username=role,
+                    role=role,
+                    state=ConfigurationState.DISABLED,
+                    credential_format="none",
+                    evidence=evidence,
+                ))
+            else:
+                results.append(HPLocalAdministratorCredential(
+                    username=role,
+                    role=role,
+                    state=ConfigurationState.UNKNOWN,
+                    credential_format="unknown-not-exported",
+                ))
+        return tuple(sorted(results, key=lambda item: (item.role, item.username)))
+
+    def _local_users(self) -> list[LocalUser]:
+        return [
+            LocalUser(
+                username=credential.username,
+                state=credential.state,
+                role=credential.role,
+                authentication="local-password",
+                scope="switch",
+                evidence=credential.evidence,
             )
-        return users
+            for credential in self.get_local_administrator_credentials()
+            if credential.state == ConfigurationState.ENABLED
+        ]
 
     def get_users(self) -> list[dict]:
         return [
@@ -476,6 +587,190 @@ class HPProCurveParser(BaseDeviceParser):
                 tokens = {token.casefold() for token in self._tokens(match.group(1))}
                 methods.update(tokens & {"radius", "tacacs"})
         return tuple(sorted(methods))
+
+    def _administrative_channel_applicability(self, channel: str) -> bool | None:
+        if channel == "console":
+            return True
+        states = self.get_service_states()
+        if channel in {"telnet", "ssh"}:
+            state = states[channel].state
+            return True if state == ConfigurationState.ENABLED else False if state == ConfigurationState.DISABLED else None
+        web_states = (states["http"].state, states["https"].state)
+        if ConfigurationState.ENABLED in web_states:
+            return True
+        if web_states == (ConfigurationState.DISABLED, ConfigurationState.DISABLED):
+            return False
+        return None
+
+    def get_administrative_authentication_policies(self) -> tuple[HPAuthenticationPolicy, ...]:
+        """Resolve login/operator and enable/manager methods for each admin channel."""
+
+        supported = self.has_supported_administrative_release()
+        policies: dict[tuple[str, str], tuple[str, str, str, tuple[ConfigEvidence, ...]]] = {}
+        for channel in ("console", "telnet", "ssh", "web"):
+            for access_level in ("login", "enable"):
+                if supported:
+                    policies[(channel, access_level)] = (
+                        "local",
+                        "none",
+                        "documented-default",
+                        (ConfigEvidence(
+                            f"AOS-S {self.get_version()} documented {channel} {access_level} default: local, then none",
+                            self.config_filepath,
+                        ),),
+                    )
+                else:
+                    policies[(channel, access_level)] = ("unknown", "unknown", "unknown-release", ())
+
+        expression = re.compile(
+            r"(?P<no>no\s+)?aaa\s+authentication\s+"
+            r"(?P<channel>console|telnet|ssh|web)\s+"
+            r"(?P<level>login|enable)(?:\s+privilege-mode)?(?:\s+(?P<methods>.+))?",
+            re.I,
+        )
+        recognized = {
+            "local", "tacacs", "radius", "public-key", "certificate", "two-factor",
+            "peap-mschapv2", "none", "authorized",
+        }
+        for command in self.commands:
+            match = expression.fullmatch(command.text)
+            if not match:
+                continue
+            key = (match.group("channel").casefold(), match.group("level").casefold())
+            if match.group("no"):
+                if supported:
+                    policies[key] = (
+                        "local", "none", "documented-default", (self._evidence(command),),
+                    )
+                else:
+                    policies[key] = ("unknown", "unknown", "unknown-release", (self._evidence(command),))
+                continue
+            methods = [
+                token.casefold()
+                for token in self._tokens(match.group("methods") or "")
+                if token.casefold() in recognized
+            ]
+            if not methods:
+                policies[key] = ("unknown", "unknown", "invalid", (self._evidence(command),))
+                continue
+            primary = methods[0]
+            secondary = methods[-1] if len(methods) > 1 else "none"
+            policies[key] = (primary, secondary, "explicit", (self._evidence(command),))
+
+        return tuple(
+            HPAuthenticationPolicy(
+                channel=channel,
+                access_level=access_level,
+                applicable=self._administrative_channel_applicability(channel),
+                primary=values[0],
+                secondary=values[1],
+                resolution_state=values[2],
+                evidence=values[3],
+            )
+            for (channel, access_level), values in policies.items()
+        )
+
+    def get_administrative_session_policies(self) -> tuple[HPSessionPolicy, ...]:
+        """Resolve remote CLI, serial/USB, and WebAgent idle timeouts."""
+
+        supported = self.has_supported_administrative_release()
+        policies: dict[str, tuple[int | None, str, tuple[ConfigEvidence, ...]]] = {
+            "remote-cli": (
+                (0, "documented-default-disabled", (ConfigEvidence(
+                    f"AOS-S {self.get_version()} documented remote CLI idle-timeout default is disabled",
+                    self.config_filepath,
+                ),)) if supported else (None, "unknown-release", ())
+            ),
+            "serial-usb": (
+                (0, "documented-default-disabled", (ConfigEvidence(
+                    f"AOS-S {self.get_version()} documented serial/USB idle-timeout default is disabled",
+                    self.config_filepath,
+                ),)) if supported else (None, "unknown-release", ())
+            ),
+            "web": (
+                (600, "documented-default", (ConfigEvidence(
+                    f"AOS-S {self.get_version()} documented WebAgent idle-timeout default is 600 seconds",
+                    self.config_filepath,
+                ),))
+                if supported else (None, "unknown-release", ())
+            ),
+        }
+
+        for command in self.commands:
+            legacy = re.fullmatch(r"(?P<no>no\s+)?console\s+inactivity-timer(?:\s+(?P<value>\S+))?", command.text, re.I)
+            idle = re.fullmatch(
+                r"(?P<no>no\s+)?console\s+idle-timeout(?:\s+(?P<serial>serial-usb))?(?:\s+(?P<value>\S+))?",
+                command.text,
+                re.I,
+            )
+            web = re.fullmatch(r"(?P<no>no\s+)?web-management\s+idle-timeout(?:\s+(?P<value>\S+))?", command.text, re.I)
+            if legacy:
+                targets = ("remote-cli", "serial-usb")
+                value_text = legacy.group("value")
+                multiplier = 60
+                reset = bool(legacy.group("no"))
+            elif idle:
+                targets = ("serial-usb",) if idle.group("serial") else ("remote-cli", "serial-usb")
+                value_text = idle.group("value")
+                multiplier = 1
+                reset = bool(idle.group("no"))
+            elif web:
+                targets = ("web",)
+                value_text = web.group("value")
+                multiplier = 1
+                reset = bool(web.group("no"))
+            else:
+                continue
+
+            evidence = (self._evidence(command),)
+            for target in targets:
+                if reset:
+                    if supported:
+                        policies[target] = (600, "documented-default", evidence) if target == "web" else (0, "documented-default-disabled", evidence)
+                    else:
+                        policies[target] = (None, "unknown-release", evidence)
+                    continue
+                try:
+                    value = int(value_text or "") * multiplier
+                except ValueError:
+                    policies[target] = (None, "invalid", evidence)
+                    continue
+                valid = 0 <= value <= 7200 and (target != "web" or 300 <= value <= 7200)
+                policies[target] = (value if valid else None, "explicit" if valid else "invalid", evidence)
+
+        ssh_or_telnet = tuple(self._administrative_channel_applicability(name) for name in ("ssh", "telnet"))
+        remote_applicable = True if True in ssh_or_telnet else False if ssh_or_telnet == (False, False) else None
+        web_applicable = self._administrative_channel_applicability("web")
+        applicability = {"remote-cli": remote_applicable, "serial-usb": True, "web": web_applicable}
+        return tuple(
+            HPSessionPolicy(
+                channel=channel,
+                applicable=applicability[channel],
+                timeout_seconds=values[0],
+                resolution_state=values[1],
+                evidence=values[2],
+            )
+            for channel, values in policies.items()
+        )
+
+    def get_login_banner_policy(self) -> HPBannerPolicy:
+        state = ConfigurationState.DISABLED if self.has_supported_administrative_release() else ConfigurationState.UNKNOWN
+        resolution = "known-absent" if self.has_supported_administrative_release() else "unknown-release"
+        evidence: tuple[ConfigEvidence, ...] = ()
+        for command in self.commands:
+            if re.fullmatch(r"no\s+banner\s+motd", command.text, re.I):
+                state = ConfigurationState.DISABLED
+                resolution = "explicit"
+                evidence = (self._evidence(command),)
+            elif re.fullmatch(r"banner\s+motd\s+.+", command.text, re.I):
+                state = ConfigurationState.ENABLED
+                resolution = "explicit"
+                evidence = (self._evidence(command),)
+            elif re.fullmatch(r"banner\s+motd", command.text, re.I):
+                state = ConfigurationState.UNKNOWN
+                resolution = "invalid-or-interactive-export"
+                evidence = (self._evidence(command),)
+        return HPBannerPolicy(state=state, resolution_state=resolution, evidence=evidence)
 
     def has_management_accounting(self) -> bool:
         active: dict[str, bool] = {}

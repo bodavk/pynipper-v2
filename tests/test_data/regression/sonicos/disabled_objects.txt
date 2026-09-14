@@ -4,6 +4,18 @@ firewall-name "disabled-objects"
 interface X0
   zone LAN
   management https
+administration
+  admin one-time-password totp
+  password minimum-length 12
+  password complexity alpha-and-numeric-and-symbols
+  idle-logout-time 5
+  user-lockout
+    failures-per-minute 3
+    lockout-duration 10
+  max-login-attempts-cli 5
+  no log-without-lockout
+  tls-and-above
+  web-management certificate "corp-management"
 access-rule ipv4 from any to any action allow source address any service any destination address any
   name "DISABLED"
   no enable

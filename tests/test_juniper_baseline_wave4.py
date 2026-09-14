@@ -85,6 +85,10 @@ set version 22.4R1.10
 set system host-name secure-srx
 set system authentication-order [ tacplus password ]
 set system tacplus-server 192.0.2.5 secret "$9$redacted"
+set system accounting events [ login change-log interactive-commands ]
+set system accounting destination tacplus
+set system login message "Authorized use only"
+set system login idle-timeout 10
 set system login retry-options tries-before-disconnect 3
 set system login retry-options lockout-period 30
 set system login user ops class super-user

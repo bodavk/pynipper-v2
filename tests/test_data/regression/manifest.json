@@ -180,8 +180,14 @@
         "interface_roles": {"ge-0/0/0": "external"}
       },
       "expected_rule_ids": [
-        "juniper.junos.authentication.centralized",
+        "juniper.junos.administration.web_session_limit",
+        "juniper.junos.administration.web_session_timeout",
+        "juniper.junos.authentication.accounting_destination",
+        "juniper.junos.authentication.accounting_events",
+        "juniper.junos.authentication.idle_timeout",
         "juniper.junos.authentication.lockout",
+        "juniper.junos.authentication.login_banner",
+        "juniper.junos.authentication.super_user",
         "juniper.junos.control_plane.lo0_filter",
         "juniper.junos.discovery.lldp.external",
         "juniper.junos.filter.broad_accept",
@@ -198,7 +204,7 @@
         "juniper.junos.ssh.root_login",
         "juniper.junos.ssh.weak_ciphers"
       ],
-      "expected_finding_count": 17
+      "expected_finding_count": 23
     },
     {
       "name": "junos-secure",
@@ -334,6 +340,12 @@
       "input": "panos/vulnerable.xml",
       "expected_rule_ids": [
         "paloalto.panos.admin.centralized_authentication",
+        "paloalto.panos.admin.concurrent_sessions",
+        "paloalto.panos.admin.idle_timeout",
+        "paloalto.panos.admin.lockout_time",
+        "paloalto.panos.admin.login_attempts",
+        "paloalto.panos.admin.login_banner",
+        "paloalto.panos.admin.ssh_profile_missing",
         "paloalto.panos.credentials.password_complexity",
         "paloalto.panos.credentials.password_history_disabled",
         "paloalto.panos.credentials.username_inclusion_allowed",
@@ -350,7 +362,7 @@
         "paloalto.panos.updates.threat_content",
         "paloalto.panos.logging.system_forwarding"
       ],
-      "expected_finding_count": 16
+      "expected_finding_count": 22
     },
     {
       "name": "panos-secure",
@@ -378,6 +390,9 @@
       },
       "expected_rule_ids": [
         "hp.procurve.authentication.centralized",
+        "hp.procurve.admin.login_banner",
+        "hp.procurve.admin.remote_cli_idle_timeout",
+        "hp.procurve.admin.serial_idle_timeout",
         "hp.procurve.layer2.access_edge.arp_protection",
         "hp.procurve.layer2.access_edge.port_security",
         "hp.procurve.layer2.access_edge.source_lockdown",
@@ -393,7 +408,7 @@
         "hp.procurve.credentials.password_complexity",
         "hp.procurve.layer2.dhcp_snooping"
       ],
-      "expected_finding_count": 15
+      "expected_finding_count": 18
     },
     {
       "name": "hp-procurve-secure",
@@ -419,6 +434,9 @@
       "input": "arista_eos/vulnerable.conf",
       "expected_rule_ids": [
         "arista.eos.authentication.centralized",
+        "arista.eos.authentication.lockout_disabled",
+        "arista.eos.admin.idle_timeout",
+        "arista.eos.admin.login_banner",
         "arista.eos.eapi.https_disabled",
         "arista.eos.eapi.insecure_http",
         "arista.eos.eapi.source_restriction",
@@ -431,7 +449,7 @@
         "arista.eos.snmp.default_community",
         "arista.eos.snmp.secure_user_missing"
       ],
-      "expected_finding_count": 12
+      "expected_finding_count": 15
     },
     {
       "name": "arista-eos-secure",
@@ -452,18 +470,24 @@
       "device": "SONICOS",
       "input": "sonicos/vulnerable.txt",
       "expected_rule_ids": [
+        "sonicwall.sonicos.admin.connection_banner",
+        "sonicwall.sonicos.admin.lockout_disabled",
+        "sonicwall.sonicos.admin.mfa_missing",
+        "sonicwall.sonicos.capture_atp.dependencies",
         "sonicwall.sonicos.logging.remote_destination",
         "sonicwall.sonicos.management.external_interface",
         "sonicwall.sonicos.management.http",
+        "sonicwall.sonicos.management.self_signed_certificate",
         "sonicwall.sonicos.ntp.servers",
+        "sonicwall.sonicos.password.complexity",
+        "sonicwall.sonicos.password.minimum_length",
         "sonicwall.sonicos.policy.broad_allow",
         "sonicwall.sonicos.policy.logging",
         "sonicwall.sonicos.security_services.disabled",
         "sonicwall.sonicos.snmp.secure_user_missing",
-        "sonicwall.sonicos.vpn.weak_proposal",
-        "sonicwall.sonicos.capture_atp.dependencies"
+        "sonicwall.sonicos.vpn.weak_proposal"
       ],
-      "expected_finding_count": 10
+      "expected_finding_count": 16
     },
     {
       "name": "sonicos-secure",

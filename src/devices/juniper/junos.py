@@ -159,6 +159,51 @@ class JunosIPSecVPN:
     evidence: tuple[ConfigEvidence, ...]
 
 
+@dataclass(frozen=True)
+class JunosLoginClassPolicy:
+    name: str
+    predefined: bool
+    defined: bool
+    permissions: tuple[str, ...]
+    users: tuple[str, ...]
+    idle_timeout_minutes: Optional[int]
+    timeout_source: str
+    resolution_state: str
+    inheritance_unknown: bool
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class JunosAccountingPolicy:
+    events: tuple[str, ...]
+    destination_methods: tuple[str, ...]
+    resolved_methods: tuple[str, ...]
+    inheritance_unknown: bool
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class JunosWebManagementPolicy:
+    enabled: bool
+    protocols: tuple[str, ...]
+    idle_timeout_minutes: Optional[int]
+    idle_timeout_source: str
+    idle_timeout_resolution: str
+    session_limit: Optional[int]
+    session_limit_source: str
+    session_limit_resolution: str
+    inheritance_unknown: bool
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class JunosLoginNoticePolicy:
+    message_configured: bool
+    announcement_configured: bool
+    inheritance_unknown: bool
+    evidence: tuple[ConfigEvidence, ...]
+
+
 class JunosParseError(ValueError):
     pass
 
@@ -493,6 +538,228 @@ class JunOSParser(BaseDeviceParser):
                 if auth_index + 1 < len(path):
                     user["authentication"] = path[auth_index + 1]
         return list(users.values())
+
+    def has_unexpanded_inheritance(self) -> bool:
+        return any(
+            statement.active and "apply-groups" in statement.path
+            for statement in self.statements
+        )
+
+    @staticmethod
+    def _bounded_integer(value: str, minimum: int, maximum: int) -> Optional[int]:
+        if not value.isdigit():
+            return None
+        parsed = int(value)
+        return parsed if minimum <= parsed <= maximum else None
+
+    def get_login_class_policies(self) -> tuple[JunosLoginClassPolicy, ...]:
+        """Resolve effective named-user class and CLI idle-timeout relationships."""
+
+        predefined = {"operator", "read-only", "super-user", "superuser", "unauthorized"}
+        inheritance_unknown = self.has_unexpanded_inheritance()
+        class_data: dict[str, dict] = {}
+        for statement in self.get_active_statements(("system", "login", "class")):
+            if len(statement.path) < 4:
+                continue
+            name = statement.path[3]
+            data = class_data.setdefault(
+                name.casefold(),
+                {
+                    "name": name,
+                    "permissions": [],
+                    "timeout": None,
+                    "evidence": [],
+                },
+            )
+            data["evidence"].append(statement.evidence)
+            suffix = statement.path[4:]
+            if suffix[:1] == ("permissions",):
+                for permission in suffix[1:]:
+                    if permission not in data["permissions"]:
+                        data["permissions"].append(permission)
+            elif suffix[:1] == ("idle-timeout",) and len(suffix) > 1:
+                data["timeout"] = statement
+
+        users_by_class: dict[str, list[str]] = {}
+        user_evidence: dict[str, list[ConfigEvidence]] = {}
+        for user in self.get_users():
+            class_name = user["class"]
+            if not class_name:
+                continue
+            key = class_name.casefold()
+            users_by_class.setdefault(key, []).append(user["username"])
+            user_evidence.setdefault(key, []).extend(user["evidence"])
+            class_data.setdefault(
+                key,
+                {
+                    "name": class_name,
+                    "permissions": [],
+                    "timeout": None,
+                    "evidence": [],
+                },
+            )
+
+        global_timeouts = [
+            statement
+            for statement in self.get_active_statements(("system", "login", "idle-timeout"))
+            if len(statement.path) == 4
+        ]
+        global_timeout = global_timeouts[-1] if global_timeouts else None
+        policies = []
+        for key in sorted(class_data):
+            data = class_data[key]
+            class_timeout = data["timeout"]
+            effective_timeout = class_timeout or global_timeout
+            timeout_minutes: Optional[int] = None
+            if effective_timeout is None:
+                timeout_source = "unconfigured"
+                resolution_state = (
+                    "inheritance-unknown" if inheritance_unknown else "known"
+                )
+            else:
+                timeout_source = (
+                    "class-explicit" if class_timeout is not None else "global-explicit"
+                )
+                maximum = 4294967295 if class_timeout is not None else 60
+                timeout_minutes = self._bounded_integer(
+                    effective_timeout.path[-1], 0 if class_timeout is not None else 1, maximum
+                )
+                resolution_state = "known" if timeout_minutes is not None else "invalid"
+            evidence = list(data["evidence"])
+            evidence.extend(user_evidence.get(key, ()))
+            if class_timeout is None and global_timeout is not None:
+                evidence.append(global_timeout.evidence)
+            policies.append(
+                JunosLoginClassPolicy(
+                    name=data["name"],
+                    predefined=key in predefined,
+                    defined=key in predefined or bool(data["evidence"]),
+                    permissions=tuple(data["permissions"]),
+                    users=tuple(users_by_class.get(key, ())),
+                    idle_timeout_minutes=timeout_minutes,
+                    timeout_source=timeout_source,
+                    resolution_state=resolution_state,
+                    inheritance_unknown=inheritance_unknown,
+                    evidence=tuple(evidence),
+                )
+            )
+        return tuple(policies)
+
+    def get_login_notice_policy(self) -> JunosLoginNoticePolicy:
+        statements = self.get_active_statements(("system", "login"))
+        messages = [item for item in statements if item.path[2:3] == ("message",)]
+        announcements = [
+            item for item in statements if item.path[2:3] == ("announcement",)
+        ]
+        return JunosLoginNoticePolicy(
+            message_configured=any(len(item.path) > 3 for item in messages),
+            announcement_configured=any(len(item.path) > 3 for item in announcements),
+            inheritance_unknown=self.has_unexpanded_inheritance(),
+            evidence=tuple(item.evidence for item in messages + announcements),
+        )
+
+    def get_accounting_policy(self) -> JunosAccountingPolicy:
+        statements = self.get_active_statements(("system", "accounting"))
+        events: list[str] = []
+        methods: list[str] = []
+        resolved: list[str] = []
+        for statement in statements:
+            path = statement.path
+            if path[2:3] == ("events",):
+                for event in path[3:]:
+                    if event not in events:
+                        events.append(event)
+            if path[2:3] == ("destination",) and len(path) > 3:
+                method = path[3].casefold()
+                if method not in methods:
+                    methods.append(method)
+
+        active_paths = self._active_paths()
+        for method in methods:
+            explicit_server = any(
+                path[:4] == ("system", "accounting", "destination", method)
+                and "server" in path[4:]
+                for path in active_paths
+            )
+            fallback_prefix = (
+                ("system", "tacplus-server")
+                if method == "tacplus"
+                else ("system", "radius-server")
+            )
+            fallback_server = method in {"tacplus", "radius"} and any(
+                self._is_prefix(fallback_prefix, path) for path in active_paths
+            )
+            if explicit_server or fallback_server:
+                resolved.append(method)
+        evidence = [item.evidence for item in statements]
+        for statement in self.get_active_statements(("system",)):
+            if statement.path[:2] in {
+                ("system", "tacplus-server"),
+                ("system", "radius-server"),
+            }:
+                evidence.append(statement.evidence)
+        return JunosAccountingPolicy(
+            events=tuple(events),
+            destination_methods=tuple(methods),
+            resolved_methods=tuple(resolved),
+            inheritance_unknown=self.has_unexpanded_inheritance(),
+            evidence=tuple(evidence),
+        )
+
+    def get_web_management_policy(self) -> JunosWebManagementPolicy:
+        statements = self.get_active_statements(
+            ("system", "services", "web-management")
+        )
+        protocols = tuple(
+            protocol for protocol in ("http", "https") if self.get_services()[protocol]
+        )
+        timeout_statements = [
+            item
+            for item in statements
+            if "idle-timeout" in item.path[3:]
+            and item.path.index("idle-timeout", 3) + 1 < len(item.path)
+        ]
+        limit_statements = [
+            item
+            for item in statements
+            if "session-limit" in item.path[3:]
+            and item.path.index("session-limit", 3) + 1 < len(item.path)
+        ]
+        timeout = timeout_statements[-1] if timeout_statements else None
+        limit = limit_statements[-1] if limit_statements else None
+        inheritance_unknown = self.has_unexpanded_inheritance()
+        timeout_value = (
+            self._bounded_integer(timeout.path[-1], 1, 1440) if timeout else None
+        )
+        limit_value = self._bounded_integer(limit.path[-1], 1, 1024) if limit else None
+        return JunosWebManagementPolicy(
+            enabled=bool(protocols),
+            protocols=protocols,
+            idle_timeout_minutes=timeout_value,
+            idle_timeout_source="explicit" if timeout else "unresolved-default",
+            idle_timeout_resolution=(
+                "known"
+                if timeout and timeout_value is not None
+                else "invalid"
+                if timeout
+                else "inheritance-unknown"
+                if inheritance_unknown
+                else "unknown"
+            ),
+            session_limit=limit_value,
+            session_limit_source="explicit" if limit else "documented-default-unlimited",
+            session_limit_resolution=(
+                "known"
+                if limit and limit_value is not None
+                else "invalid"
+                if limit
+                else "inheritance-unknown"
+                if inheritance_unknown
+                else "known"
+            ),
+            inheritance_unknown=inheritance_unknown,
+            evidence=tuple(item.evidence for item in statements),
+        )
 
     @staticmethod
     def _credential_storage(method: str, value: str) -> CredentialStorageAssessment:

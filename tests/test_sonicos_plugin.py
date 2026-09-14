@@ -39,6 +39,19 @@ interface X0
   zone LAN
   ip-address 10.0.0.1
   management https ssh
+administration
+  admin one-time-password totp
+  password minimum-length 12
+  password complexity alpha-and-numeric-and-symbols
+  idle-logout-time 5
+  user-lockout
+    failures-per-minute 3
+    lockout-duration 10
+  max-login-attempts-cli 5
+  no log-without-lockout
+  tls-and-above
+  web-management certificate "corp-management"
+cli banner connection "Authorized access only"
 access-rule ipv4 from LAN to WAN action allow source address name Corp service name HTTPS destination address name Updates schedule always-on
   name "CONTROLLED"
   enable
@@ -103,6 +116,12 @@ def test_vulnerable_sonicos_has_exact_findings(tmp_path):
     assert [issue.rule_id for issue in issues] == [
         "sonicwall.sonicos.management.http",
         "sonicwall.sonicos.management.external_interface",
+        "sonicwall.sonicos.admin.mfa_missing",
+        "sonicwall.sonicos.password.minimum_length",
+        "sonicwall.sonicos.password.complexity",
+        "sonicwall.sonicos.admin.lockout_disabled",
+        "sonicwall.sonicos.admin.connection_banner",
+        "sonicwall.sonicos.management.self_signed_certificate",
         "sonicwall.sonicos.policy.broad_allow",
         "sonicwall.sonicos.policy.logging",
         "sonicwall.sonicos.vpn.weak_proposal",

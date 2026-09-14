@@ -131,6 +131,54 @@ class PanosPasswordPolicy:
 
 
 @dataclass(frozen=True)
+class PanosAdministratorPolicy:
+    username: str
+    role_type: str
+    role: str
+    role_resolution: str
+    authentication_profile: str
+    authentication_resolution: str
+    authentication_method: str
+    mfa_state: str
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class PanosAdministrativeSettings:
+    device_scope: str
+    authentication_profile: str
+    authentication_resolution: str
+    authentication_method: str
+    mfa_state: str
+    login_banner_configured: bool
+    acknowledge_login_banner: bool | None
+    idle_timeout_minutes: int | None
+    idle_timeout_state: str
+    failed_attempts: int | None
+    failed_attempts_state: str
+    lockout_minutes: int | None
+    lockout_state: str
+    max_session_count: int | None
+    max_session_count_state: str
+    max_session_minutes: int | None
+    max_session_time_state: str
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class PanosSSHManagementPolicy:
+    device_scope: str
+    enabled: bool
+    supported: bool
+    selected_profile: str
+    resolution_state: str
+    ciphers: tuple[str, ...]
+    key_exchanges: tuple[str, ...]
+    macs: tuple[str, ...]
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
 class PanosSSLServiceProfile:
     name: str
     scope: str
@@ -256,6 +304,33 @@ class PaloAltoPANOSParser(BaseDeviceParser):
         except (TypeError, ValueError):
             return None
 
+    @classmethod
+    def _element_values(cls, node: ET.Element | None) -> tuple[str, ...]:
+        """Return PAN-OS list values from member nodes or enum child tags."""
+
+        if node is None:
+            return ()
+        members = tuple(
+            value
+            for value in (cls._text(member) for member in node.findall("member"))
+            if value
+        )
+        if members:
+            return members
+        children = tuple(
+            child.tag
+            for child in list(node)
+            if child.tag not in {"member", "entry"}
+        )
+        if children:
+            return children
+        text = cls._text(node)
+        return tuple(text.split()) if text else ()
+
+    def _version_major(self) -> int | None:
+        match = re.match(r"^(\d+)", self.get_version())
+        return int(match.group(1)) if match else None
+
     def _device_entries(self) -> list[ET.Element]:
         return self.root.findall("./devices/entry") or self.root.findall(".//devices/entry")
 
@@ -280,23 +355,199 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                 return candidate
         return "?"
 
+    def _management_user_entries(self) -> list[ET.Element]:
+        entries = list(self.root.findall("./mgt-config/users/entry"))
+        entries.extend(
+            self.root.findall(".//deviceconfig/system/mgt-config/users/entry")
+        )
+        return entries
+
+    def _authentication_profile_entries(self) -> dict[str, list[ET.Element]]:
+        profiles: dict[str, list[ET.Element]] = {}
+        candidates = list(self.root.findall("./shared/authentication-profile/entry"))
+        for device in self._device_entries():
+            candidates.extend(device.findall("./vsys/entry/authentication-profile/entry"))
+        for entry in candidates:
+            name = entry.get("name") or ""
+            if name:
+                profiles.setdefault(name.casefold(), []).append(entry)
+        return profiles
+
+    def _authentication_sequence_entries(self) -> dict[str, list[ET.Element]]:
+        sequences: dict[str, list[ET.Element]] = {}
+        candidates = list(self.root.findall("./shared/authentication-sequence/entry"))
+        for device in self._device_entries():
+            candidates.extend(device.findall("./vsys/entry/authentication-sequence/entry"))
+        for entry in candidates:
+            name = entry.get("name") or ""
+            if name:
+                sequences.setdefault(name.casefold(), []).append(entry)
+        return sequences
+
+    @staticmethod
+    def _authentication_method(entry: ET.Element) -> str:
+        method = entry.find("method")
+        if method is None or not list(method):
+            return "unknown"
+        return list(method)[0].tag.casefold()
+
+    def _profile_mfa_state(self, entry: ET.Element, method: str) -> str:
+        mfa_enabled = self._text(
+            entry.find("./multi-factor-auth/mfa-enable")
+        ).casefold()
+        factors = self._element_values(entry.find("./multi-factor-auth/factors"))
+        if mfa_enabled == "yes" and factors:
+            return "configured"
+        if mfa_enabled == "no":
+            return "explicitly-disabled"
+        if method in {"radius", "saml-idp", "cloud"}:
+            return "external-unknown"
+        return "not-configured"
+
+    def _resolve_authentication_reference(
+        self, name: str
+    ) -> tuple[str, str, str, tuple[ConfigEvidence, ...]]:
+        if not name:
+            return "local", "local", "not-configured-local", ()
+        profiles = self._authentication_profile_entries()
+        sequences = self._authentication_sequence_entries()
+        profile_matches = profiles.get(name.casefold(), [])
+        sequence_matches = sequences.get(name.casefold(), [])
+        if len(profile_matches) + len(sequence_matches) != 1:
+            if profile_matches or sequence_matches:
+                return "ambiguous", "unknown", "unknown", ()
+            resolution = (
+                "unknown-inherited"
+                if self.panorama_inheritance_unknown
+                else "unresolved"
+            )
+            return resolution, "unknown", "unknown", ()
+        if profile_matches:
+            profile = profile_matches[0]
+            method = self._authentication_method(profile)
+            mfa_state = self._profile_mfa_state(profile, method)
+            return (
+                "known",
+                method,
+                mfa_state,
+                (self._evidence(
+                    f"authentication-profile {name}; method {method}; MFA {mfa_state}"
+                ),),
+            )
+
+        sequence = sequence_matches[0]
+        member_names = self._element_values(
+            sequence.find("authentication-profiles")
+        )
+        resolved_profiles = []
+        for member in member_names:
+            matches = profiles.get(member.casefold(), [])
+            if len(matches) != 1:
+                resolution = (
+                    "unknown-inherited"
+                    if self.panorama_inheritance_unknown
+                    else "unresolved"
+                )
+                return resolution, "sequence", "unknown", (
+                    self._evidence(
+                        f"authentication-sequence {name}; unresolved member {member}"
+                    ),
+                )
+            resolved_profiles.append(matches[0])
+        if not resolved_profiles:
+            return "unresolved", "sequence", "unknown", (
+                self._evidence(f"authentication-sequence {name}; no profiles"),
+            )
+        methods = tuple(
+            dict.fromkeys(self._authentication_method(item) for item in resolved_profiles)
+        )
+        mfa_states = tuple(
+            self._profile_mfa_state(item, self._authentication_method(item))
+            for item in resolved_profiles
+        )
+        mfa_state = (
+            "configured"
+            if all(state == "configured" for state in mfa_states)
+            else "external-unknown"
+            if any(state == "external-unknown" for state in mfa_states)
+            else "not-configured"
+        )
+        return (
+            "known",
+            "sequence:" + ",".join(methods),
+            mfa_state,
+            (self._evidence(
+                f"authentication-sequence {name}; methods {','.join(methods)}; MFA {mfa_state}"
+            ),),
+        )
+
+    def get_administrator_policies(self) -> tuple[PanosAdministratorPolicy, ...]:
+        """Resolve local administrator role and authentication-profile references."""
+
+        custom_roles = {
+            (entry.get("name") or "").casefold()
+            for entry in self.root.findall("./mgt-config/roles/entry")
+            if entry.get("name")
+        }
+        policies = []
+        for entry in self._management_user_entries():
+            username = entry.get("name") or "unnamed"
+            role_node = entry.find("./permissions/role-based")
+            role_type = "missing"
+            role = ""
+            role_resolution = "missing"
+            if role_node is not None and list(role_node):
+                selected = list(role_node)[0]
+                if selected.tag == "custom":
+                    role_type = "custom"
+                    role = self._text(selected.find("profile"))
+                    role_resolution = (
+                        "known" if role and role.casefold() in custom_roles else "unresolved"
+                    )
+                else:
+                    role_type = "dynamic"
+                    role = selected.tag
+                    role_resolution = "known"
+
+            auth_profile = self._text(entry.find("authentication-profile"))
+            (
+                auth_resolution,
+                auth_method,
+                mfa_state,
+                auth_evidence,
+            ) = self._resolve_authentication_reference(auth_profile)
+            evidence = [self._evidence(f"mgt-config user {username}")]
+            evidence.extend(auth_evidence)
+            policies.append(
+                PanosAdministratorPolicy(
+                    username=username,
+                    role_type=role_type,
+                    role=role,
+                    role_resolution=(
+                        "unknown-inherited"
+                        if role_resolution != "known" and self.panorama_inheritance_unknown
+                        else role_resolution
+                    ),
+                    authentication_profile=auth_profile,
+                    authentication_resolution=auth_resolution,
+                    authentication_method=auth_method,
+                    mfa_state=mfa_state,
+                    evidence=tuple(evidence),
+                )
+            )
+        return tuple(policies)
+
     def _local_users(self) -> list[LocalUser]:
         users = []
-        entries = self.root.findall("./mgt-config/users/entry")
-        entries += self.root.findall(".//deviceconfig/system/mgt-config/users/entry")
-        for entry in entries:
-            username = entry.get("name") or "unnamed"
-            auth_profile = self._text(entry.find("authentication-profile"))
-            role_node = entry.find("./permissions/role-based")
-            role = list(role_node)[0].tag if role_node is not None and list(role_node) else ""
+        for policy in self.get_administrator_policies():
             users.append(
                 LocalUser(
-                    username=username,
+                    username=policy.username,
                     state=ConfigurationState.ENABLED,
-                    role=role or None,
-                    authentication=auth_profile or "local",
+                    role=policy.role or None,
+                    authentication=policy.authentication_profile or "local",
                     scope="management",
-                    evidence=(self._evidence(f"mgt-config user {username}"),),
+                    evidence=policy.evidence,
                 )
             )
         return users
@@ -731,6 +982,162 @@ class PaloAltoPANOSParser(BaseDeviceParser):
             blocks_username=yes_no("block-username-inclusion"),
             evidence=(self._evidence("deviceconfig system password-complexity"),),
         )
+
+    def get_administrative_settings(self) -> tuple[PanosAdministrativeSettings, ...]:
+        """Return explicit management authentication/session settings per device."""
+
+        settings = []
+
+        def bounded(
+            parent: ET.Element | None, path: str, minimum: int, maximum: int
+        ) -> tuple[int | None, str]:
+            node = parent.find(path) if parent is not None else None
+            if node is None:
+                return None, (
+                    "unknown-inherited"
+                    if self.panorama_inheritance_unknown
+                    else "absent"
+                )
+            value = self._safe_int(self._text(node))
+            if value is None or not minimum <= value <= maximum:
+                return None, "invalid"
+            return value, "explicit"
+
+        for device in self._device_entries():
+            scope = self._device_scope(device)
+            system = device.find("./deviceconfig/system")
+            management = device.find("./deviceconfig/setting/management")
+            login_banner = self._text(system.find("login-banner")) if system is not None else ""
+            acknowledgement_value = (
+                self._text(system.find("ack-login-banner")).casefold()
+                if system is not None
+                else ""
+            )
+            acknowledgement = (
+                True
+                if acknowledgement_value == "yes"
+                else False
+                if acknowledgement_value == "no"
+                else None
+            )
+            authentication_profile = (
+                self._text(system.find("authentication-profile"))
+                if system is not None
+                else ""
+            )
+            (
+                authentication_resolution,
+                authentication_method,
+                mfa_state,
+                authentication_evidence,
+            ) = self._resolve_authentication_reference(authentication_profile)
+            idle_timeout, idle_state = bounded(management, "idle-timeout", 0, 1440)
+            failed_attempts, attempts_state = bounded(
+                management, "./admin-lockout/failed-attempts", 0, 10
+            )
+            lockout, lockout_state = bounded(
+                management, "./admin-lockout/lockout-time", 0, 60
+            )
+            session_count, count_state = bounded(
+                management, "./admin-session/max-session-count", 0, 4
+            )
+            session_time, time_state = bounded(
+                management, "./admin-session/max-session-time", 0, 1499
+            )
+            settings.append(
+                PanosAdministrativeSettings(
+                    device_scope=scope,
+                    authentication_profile=authentication_profile,
+                    authentication_resolution=authentication_resolution,
+                    authentication_method=authentication_method,
+                    mfa_state=mfa_state,
+                    login_banner_configured=bool(login_banner),
+                    acknowledge_login_banner=acknowledgement,
+                    idle_timeout_minutes=idle_timeout,
+                    idle_timeout_state=idle_state,
+                    failed_attempts=failed_attempts,
+                    failed_attempts_state=attempts_state,
+                    lockout_minutes=lockout,
+                    lockout_state=lockout_state,
+                    max_session_count=session_count,
+                    max_session_count_state=count_state,
+                    max_session_minutes=session_time,
+                    max_session_time_state=time_state,
+                    evidence=(
+                        self._evidence(f"{scope}: administrative management settings"),
+                    ) + authentication_evidence,
+                )
+            )
+        return tuple(settings)
+
+    def get_ssh_management_policies(self) -> tuple[PanosSSHManagementPolicy, ...]:
+        """Resolve PAN-OS 10+ management SSH profile attachment and algorithms."""
+
+        major = self._version_major()
+        supported = major is not None and major >= 10
+        enabled_scopes = {
+            service.scope
+            for service in self.get_dedicated_management_services()
+            if service.protocol == "ssh"
+        }
+        management_profiles = self.get_management_profiles()
+        for interface in self.get_interfaces():
+            if not interface.enabled or not interface.management_profile:
+                continue
+            if any(
+                profile.scope == interface.device_scope
+                and profile.name == interface.management_profile
+                and "ssh" in profile.protocols
+                for profile in management_profiles
+            ):
+                enabled_scopes.add(interface.device_scope)
+        policies = []
+        for device in self._device_entries():
+            scope = self._device_scope(device)
+            system = device.find("./deviceconfig/system")
+            ssh = system.find("ssh") if system is not None else None
+            selected = self._text(ssh.find("./mgmt/server-profile")) if ssh is not None else ""
+            definitions = {
+                (entry.get("name") or "").casefold(): entry
+                for entry in (
+                    ssh.findall("./profiles/mgmt-profiles/server-profiles/entry")
+                    if ssh is not None
+                    else ()
+                )
+                if entry.get("name")
+            }
+            profile = definitions.get(selected.casefold()) if selected else None
+            if not supported:
+                resolution = "unsupported"
+            elif not selected:
+                resolution = (
+                    "unknown-inherited"
+                    if self.panorama_inheritance_unknown
+                    else "missing"
+                )
+            elif profile is None:
+                resolution = (
+                    "unknown-inherited"
+                    if self.panorama_inheritance_unknown
+                    else "unresolved"
+                )
+            else:
+                resolution = "known"
+            evidence = [self._evidence(f"{scope}: management SSH profile {selected or 'absent'}")]
+            policies.append(
+                PanosSSHManagementPolicy(
+                    device_scope=scope,
+                    enabled=scope in enabled_scopes,
+                    supported=supported,
+                    selected_profile=selected,
+                    resolution_state=resolution,
+                    ciphers=self._element_values(profile.find("ciphers")) if profile is not None else (),
+                    key_exchanges=self._element_values(profile.find("kex")) if profile is not None else (),
+                    macs=self._element_values(profile.find("mac")) if profile is not None else (),
+                    evidence=tuple(evidence),
+                )
+            )
+        return tuple(policies)
 
     def get_ssl_tls_service_profiles(self) -> list[PanosSSLServiceProfile]:
         """Return shared and vsys-local SSL/TLS profiles without merging Panorama state."""

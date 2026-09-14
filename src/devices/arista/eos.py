@@ -39,6 +39,8 @@ class AristaEAPIEndpoint:
     https: bool
     ipv4_acl: str
     ipv6_acl: str
+    ssl_profile: str
+    client_certificate: bool
     evidence: tuple[ConfigEvidence, ...]
 
 
@@ -51,6 +53,77 @@ class AristaSSHSettings:
     ciphers: tuple[str, ...]
     key_exchanges: tuple[str, ...]
     macs: tuple[str, ...]
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class AristaAdministrator:
+    name: str
+    role: str
+    privilege: int | None
+    role_class: str
+    role_resolved: bool
+    credential_state: str
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class AristaAAAPolicy:
+    policy_type: str
+    service: str
+    connection: str
+    methods: tuple[str, ...] | None
+    centralized: bool | None
+    local_fallback: bool | None
+    unauthenticated: bool | None
+    resolution_state: str
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class AristaAccountingPolicy:
+    service: str
+    connection: str
+    mode: str
+    destinations: tuple[str, ...]
+    resolution_state: str
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class AristaManagementSession:
+    channel: str
+    applicable: bool | None
+    idle_timeout_minutes: int | None
+    absolute_timeout_minutes: int | None
+    resolution_state: str
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class AristaBannerPolicy:
+    login_enabled: bool | None
+    motd_enabled: bool | None
+    resolution_state: str
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class AristaLockoutPolicy:
+    enabled: bool | None
+    failure_count: int | None
+    duration_seconds: int | None
+    window_seconds: int | None
+    resolution_state: str
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class AristaSSLProfile:
+    name: str
+    certificate: str
+    tls_versions: tuple[str, ...] | None
+    resolution_state: str
     evidence: tuple[ConfigEvidence, ...]
 
 
@@ -195,6 +268,8 @@ class AristaEOSParser(CiscoIOSParser):
             https = True
             ipv4_acl = ""
             ipv6_acl = ""
+            ssl_profile = ""
+            client_certificate = False
             for command in root_commands:
                 if re.fullmatch(r"protocol\s+http(?:\s+(?:port\s+)?\d+)?", command.text, re.IGNORECASE):
                     http = True
@@ -202,8 +277,30 @@ class AristaEOSParser(CiscoIOSParser):
                     http = False
                 elif re.fullmatch(r"protocol\s+https(?:\s+(?:port\s+)?\d+)?", command.text, re.IGNORECASE):
                     https = True
+                    ssl_profile = ""
                 elif re.fullmatch(r"no\s+protocol\s+https", command.text, re.IGNORECASE):
                     https = False
+                    ssl_profile = ""
+                elif re.fullmatch(r"default\s+protocol\s+https", command.text, re.IGNORECASE):
+                    https = True
+                    ssl_profile = ""
+                elif match := re.fullmatch(
+                    r"protocol\s+https(?:\s+port\s+\d+)?\s+ssl\s+profile\s+(\S+)",
+                    command.text,
+                    re.IGNORECASE,
+                ):
+                    https = True
+                    ssl_profile = match.group(1)
+                elif re.fullmatch(
+                    r"(?:no|default)\s+protocol\s+https\s+ssl\s+profile(?:\s+\S+)?",
+                    command.text,
+                    re.IGNORECASE,
+                ):
+                    ssl_profile = ""
+                elif re.fullmatch(r"protocol\s+https\s+certificate", command.text, re.IGNORECASE):
+                    client_certificate = True
+                elif re.fullmatch(r"(?:no|default)\s+protocol\s+https\s+certificate", command.text, re.IGNORECASE):
+                    client_certificate = False
                 elif match := re.fullmatch(r"ip\s+access-group\s+(\S+)(?:\s+in)?", command.text, re.IGNORECASE):
                     ipv4_acl = match.group(1)
                 elif match := re.fullmatch(r"ipv6\s+access-group\s+(\S+)(?:\s+in)?", command.text, re.IGNORECASE):
@@ -219,6 +316,8 @@ class AristaEOSParser(CiscoIOSParser):
                         https=https,
                         ipv4_acl=ipv4_acl,
                         ipv6_acl=ipv6_acl,
+                        ssl_profile=ssl_profile,
+                        client_certificate=client_certificate,
                         evidence=(self._evidence(parent),) + tuple(self._evidence(item) for item in children),
                     )
                 )
@@ -247,6 +346,8 @@ class AristaEOSParser(CiscoIOSParser):
                         https=https,
                         ipv4_acl=scope_ipv4,
                         ipv6_acl=scope_ipv6,
+                        ssl_profile=ssl_profile,
+                        client_certificate=client_certificate,
                         evidence=(self._evidence(parent), self._evidence(vrf_command))
                         + tuple(self._evidence(item) for item in scoped),
                     )
@@ -254,27 +355,349 @@ class AristaEOSParser(CiscoIOSParser):
         return endpoints
 
     def get_remote_authentication(self) -> tuple[str, ...]:
-        methods = set()
-        for command in self.commands:
-            match = re.fullmatch(r"aaa\s+authentication\s+login\s+\S+\s+(.+)", command.text, re.IGNORECASE)
-            if match:
-                tokens = {token.casefold() for token in self._tokens(match.group(1))}
-                methods.update(token for token in ("radius", "tacacs+") if token in tokens)
+        methods = {
+            method.removeprefix("group:")
+            for policy in self.get_aaa_policies()
+            if policy.policy_type == "authentication"
+            and policy.service == "login"
+            and policy.connection == "default"
+            and policy.methods is not None
+            for method in policy.methods
+            if method.startswith("group:")
+        }
         return tuple(sorted(methods))
 
     def has_exec_authorization(self) -> bool:
-        active = False
+        return any(
+            policy.policy_type == "authorization"
+            and policy.service == "exec"
+            and policy.connection == "default"
+            and policy.methods is not None
+            and any(method.startswith("group:") for method in policy.methods)
+            and not policy.unauthenticated
+            for policy in self.get_aaa_policies()
+        )
+
+    @staticmethod
+    def _method_list(tokens: list[str]) -> tuple[str, ...]:
+        methods: list[str] = []
+        index = 0
+        while index < len(tokens):
+            token = tokens[index].casefold()
+            if token == "group" and index + 1 < len(tokens):
+                methods.append(f"group:{tokens[index + 1].casefold()}")
+                index += 2
+            else:
+                methods.append(token)
+                index += 1
+        return tuple(methods)
+
+    def get_aaa_policies(self) -> list[AristaAAAPolicy]:
+        policies: dict[tuple[str, str], AristaAAAPolicy] = {}
         expression = re.compile(
-            r"(?P<no>no\s+)?aaa\s+authorization\s+exec\s+\S+\s+(.+)",
+            r"(?P<reset>(?:no|default)\s+)?aaa\s+"
+            r"(?P<kind>authentication|authorization)\s+"
+            r"(?P<service>login|enable|exec|commands(?:\s+all)?)\s+"
+            r"(?P<connection>default|console)(?:\s+(?P<methods>.+))?",
             re.IGNORECASE,
         )
         for command in self.commands:
             match = expression.fullmatch(command.text)
             if not match:
                 continue
-            methods = {token.casefold() for token in self._tokens(match.group(2))}
-            active = not bool(match.group("no")) and bool(methods & {"tacacs+", "radius"})
-        return active
+            service = match.group("service").casefold().replace(" ", "-")
+            policy_type = match.group("kind").casefold()
+            connection = match.group("connection").casefold()
+            key = (f"{policy_type}:{service}", connection)
+            if match.group("reset"):
+                # EOS removes authentication lists back to local. Explicitly
+                # resetting an authorization list instead installs the
+                # documented `none` behavior, which permits the action.
+                methods = ("local",) if policy_type == "authentication" else ("none",)
+                policies[key] = AristaAAAPolicy(
+                    policy_type, service, connection, methods, False,
+                    "local" in methods, "none" in methods,
+                    "explicit-reset", (self._evidence(command),),
+                )
+                continue
+            methods = self._method_list(self._tokens(match.group("methods") or ""))
+            centralized = any(item.startswith("group:") for item in methods)
+            policies[key] = AristaAAAPolicy(
+                policy_type=policy_type,
+                service=service,
+                connection=connection,
+                methods=methods,
+                centralized=centralized,
+                local_fallback="local" in methods,
+                unauthenticated="none" in methods,
+                resolution_state="explicit",
+                evidence=(self._evidence(command),),
+            )
+        return list(policies.values())
+
+    def get_accounting_policies(self) -> list[AristaAccountingPolicy]:
+        policies: dict[tuple[str, str], AristaAccountingPolicy] = {}
+        expression = re.compile(
+            r"(?P<reset>(?:no|default)\s+)?aaa\s+accounting\s+"
+            r"(?P<service>exec|commands\s+all)\s+"
+            r"(?P<connection>default|console)(?:\s+(?P<mode>start-stop|stop-only|stop|none))?"
+            r"(?:\s+(?P<methods>.+))?",
+            re.IGNORECASE,
+        )
+        for command in self.commands:
+            match = expression.fullmatch(command.text)
+            if not match:
+                continue
+            service = match.group("service").casefold().replace(" ", "-")
+            connection = match.group("connection").casefold()
+            key = (service, connection)
+            if match.group("reset"):
+                policies.pop(key, None)
+                continue
+            methods = self._method_list(self._tokens(match.group("methods") or ""))
+            policies[key] = AristaAccountingPolicy(
+                service=service,
+                connection=connection,
+                mode=(match.group("mode") or "").casefold(),
+                destinations=methods,
+                resolution_state="explicit",
+                evidence=(self._evidence(command),),
+            )
+        return list(policies.values())
+
+    def get_administrators(self) -> list[AristaAdministrator]:
+        defined_roles = {"network-admin", "network-operator"}
+        for command in self.commands:
+            match = re.fullmatch(r"role\s+(\S+)", command.text, re.IGNORECASE)
+            if match:
+                defined_roles.add(match.group(1).casefold())
+            elif match := re.fullmatch(r"(?:no|default)\s+role\s+(\S+)", command.text, re.IGNORECASE):
+                defined_roles.discard(match.group(1).casefold())
+
+        default_role = "network-operator"
+        for command in self.commands:
+            match = re.fullmatch(
+                r"aaa\s+authorization\s+policy\s+local\s+default-role\s+(\S+)",
+                command.text,
+                re.IGNORECASE,
+            )
+            if match:
+                default_role = match.group(1)
+            elif re.fullmatch(
+                r"(?:no|default)\s+aaa\s+authorization\s+policy\s+local\s+default-role(?:\s+\S+)?",
+                command.text,
+                re.IGNORECASE,
+            ):
+                default_role = "network-operator"
+
+        credentials = {item.account.casefold(): item for item in self.get_credential_metadata()}
+        administrators = []
+        for user in self._local_users():
+            role = user.role or default_role
+            folded_role = role.casefold()
+            credential = credentials.get(user.username.casefold())
+            administrators.append(AristaAdministrator(
+                name=user.username,
+                role=role,
+                privilege=user.privilege,
+                role_class=(
+                    "full-admin" if folded_role == "network-admin"
+                    else "operator" if folded_role == "network-operator"
+                    else "custom"
+                ),
+                role_resolved=folded_role in defined_roles,
+                credential_state=(
+                    credential.storage_assessment.value if credential else "not-exported"
+                ),
+                evidence=user.evidence + (credential.evidence if credential else ()),
+            ))
+        return administrators
+
+    def get_management_sessions(self) -> list[AristaManagementSession]:
+        sessions = []
+        release = self._release_tuple()
+        for channel in ("console", "ssh", "telnet"):
+            blocks = self._blocks(f"management {channel}")
+            reset_commands = [
+                command for command in self.commands
+                if command.indent == 0 and re.fullmatch(
+                    rf"(?:no|default)\s+management\s+{channel}",
+                    command.text,
+                    re.IGNORECASE,
+                )
+            ]
+            if not blocks and not reset_commands:
+                continue
+            applicable: bool | None = True if channel in {"console", "ssh"} else False
+            idle: int | None = 0 if release is not None else None
+            absolute: int | None = 0 if release is not None and release >= (4, 36, 0) else None
+            resolution = "documented-default" if release is not None else "unknown-release"
+            evidence: list[ConfigEvidence] = []
+            events = [
+                (parent.line_number, "block", parent, children)
+                for parent, children in blocks
+            ] + [
+                (command.line_number, "reset", command, [])
+                for command in reset_commands
+            ]
+            for _, event_type, parent, children in sorted(events):
+                evidence.append(self._evidence(parent))
+                if event_type == "reset":
+                    applicable = True if channel in {"console", "ssh"} else False
+                    idle = 0 if release is not None else None
+                    absolute = 0 if release is not None and release >= (4, 36, 0) else None
+                    resolution = "explicit-reset" if release is not None else "unknown-release"
+                    continue
+                for command in children:
+                    tokens = self._tokens(command.text)
+                    folded = [token.casefold() for token in tokens]
+                    if folded == ["shutdown"]:
+                        applicable = False
+                    elif folded == ["no", "shutdown"]:
+                        applicable = True
+                    elif folded and folded[0] == "idle-timeout":
+                        try:
+                            idle = int(tokens[1])
+                        except (IndexError, ValueError):
+                            idle = None
+                            resolution = "invalid"
+                        else:
+                            resolution = "explicit"
+                    elif folded and folded[0] == "timeout":
+                        if release is not None and release < (4, 36, 0):
+                            absolute = None
+                            resolution = "unsupported-release"
+                        else:
+                            try:
+                                absolute = int(tokens[1])
+                            except (IndexError, ValueError):
+                                absolute = None
+                                resolution = "invalid"
+                            else:
+                                resolution = "explicit"
+                    elif folded[:2] in (["no", "idle-timeout"], ["default", "idle-timeout"]):
+                        idle = 0 if release is not None else None
+                    elif folded[:2] in (["no", "timeout"], ["default", "timeout"]):
+                        absolute = 0 if release is not None and release >= (4, 36, 0) else None
+                    else:
+                        continue
+                    evidence.append(self._evidence(command))
+            sessions.append(AristaManagementSession(
+                channel, applicable, idle, absolute, resolution, tuple(evidence)
+            ))
+        return sessions
+
+    def get_banner_policy(self) -> AristaBannerPolicy:
+        login: bool | None = False if self._release_tuple() is not None else None
+        motd: bool | None = False if self._release_tuple() is not None else None
+        resolution = "documented-default" if self._release_tuple() is not None else "unknown-release"
+        evidence: list[ConfigEvidence] = []
+        for command in self.commands:
+            if re.fullmatch(r"banner\s+login(?:\s+.*)?", command.text, re.IGNORECASE):
+                login = True
+            elif re.fullmatch(r"(?:no|default)\s+banner\s+login", command.text, re.IGNORECASE):
+                login = False
+            elif re.fullmatch(r"banner\s+motd(?:\s+.*)?", command.text, re.IGNORECASE):
+                motd = True
+            elif re.fullmatch(r"(?:no|default)\s+banner\s+motd", command.text, re.IGNORECASE):
+                motd = False
+            else:
+                continue
+            resolution = "explicit"
+            evidence.append(self._evidence(command))
+        return AristaBannerPolicy(login, motd, resolution, tuple(evidence))
+
+    def get_lockout_policy(self) -> AristaLockoutPolicy:
+        enabled: bool | None = False if self._release_tuple() is not None else None
+        failures: int | None = None
+        duration: int | None = None
+        window: int | None = None
+        resolution = "documented-default" if self._release_tuple() is not None else "unknown-release"
+        evidence: tuple[ConfigEvidence, ...] = ()
+        for command in self.commands:
+            tokens = self._tokens(command.text)
+            folded = [token.casefold() for token in tokens]
+            if folded[:5] == ["aaa", "authentication", "policy", "lockout", "failure"]:
+                enabled = True
+                try:
+                    failures = int(tokens[5])
+                    duration = int(tokens[folded.index("duration") + 1])
+                    window = int(tokens[folded.index("window") + 1]) if "window" in folded else 86400
+                except (IndexError, ValueError):
+                    failures = duration = window = None
+                    resolution = "invalid"
+                else:
+                    resolution = "explicit"
+                evidence = (self._evidence(command),)
+            elif folded[:6] in (
+                ["no", "aaa", "authentication", "policy", "lockout", "failure"],
+                ["default", "aaa", "authentication", "policy", "lockout", "failure"],
+            ):
+                enabled = False if self._release_tuple() is not None else None
+                failures = duration = window = None
+                resolution = "explicit-reset" if enabled is False else "unknown-release"
+                evidence = (self._evidence(command),)
+        return AristaLockoutPolicy(enabled, failures, duration, window, resolution, evidence)
+
+    def get_ssl_profiles(self) -> dict[str, AristaSSLProfile]:
+        profiles: dict[str, AristaSSLProfile] = {}
+        for index, command in enumerate(self.commands):
+            removed = re.fullmatch(
+                r"(?:no|default)\s+ssl\s+profile\s+(\S+)",
+                command.text,
+                re.IGNORECASE,
+            )
+            if removed:
+                profiles.pop(removed.group(1).casefold(), None)
+                continue
+            match = re.fullmatch(r"ssl\s+profile\s+(\S+)", command.text, re.IGNORECASE)
+            if not match:
+                continue
+            previous = profiles.get(match.group(1).casefold())
+            children = []
+            for child in self.commands[index + 1:]:
+                if child.indent <= command.indent:
+                    break
+                children.append(child)
+            certificate = previous.certificate if previous else ""
+            versions: set[str] | None = (
+                set(previous.tls_versions)
+                if previous and previous.tls_versions is not None
+                else None
+            )
+            resolution = previous.resolution_state if previous else "explicit-empty"
+            for child in children:
+                tokens = self._tokens(child.text)
+                folded = [token.casefold() for token in tokens]
+                if folded and folded[0] == "certificate" and len(tokens) > 1:
+                    certificate = tokens[1]
+                    resolution = "explicit"
+                elif folded[:2] == ["no", "certificate"]:
+                    certificate = ""
+                elif folded[:2] == ["tls", "versions"]:
+                    numeric = {value for value in folded[2:] if value in {"1.0", "1.1", "1.2", "1.3"}}
+                    if "remove" in folded:
+                        versions = versions - numeric if versions is not None else None
+                        resolution = "partial-removal" if versions is None else "explicit"
+                    elif "add" in folded:
+                        versions = (versions or set()) | numeric
+                        resolution = "partial-addition" if len(versions) == len(numeric) else "explicit"
+                    else:
+                        versions = numeric
+                        resolution = "explicit"
+                elif folded[:3] in (["no", "tls", "versions"], ["default", "tls", "versions"]):
+                    versions = None
+                    resolution = "explicit-reset"
+            profiles[match.group(1).casefold()] = AristaSSLProfile(
+                name=match.group(1),
+                certificate=certificate,
+                tls_versions=tuple(sorted(versions)) if versions is not None else None,
+                resolution_state=resolution,
+                evidence=(previous.evidence if previous else ())
+                + (self._evidence(command),)
+                + tuple(self._evidence(item) for item in children),
+            )
+        return profiles
 
     def get_ssh_settings(self) -> AristaSSHSettings:
         blocks = self._blocks("management ssh")
@@ -884,10 +1307,17 @@ class AristaEOSParser(CiscoIOSParser):
 
 
 __all__ = [
+    "AristaAAAPolicy",
+    "AristaAccountingPolicy",
+    "AristaAdministrator",
+    "AristaBannerPolicy",
     "AristaCommand",
     "AristaEAPIEndpoint",
     "AristaEOSParser",
+    "AristaLockoutPolicy",
+    "AristaManagementSession",
     "AristaNTPAssociation",
     "AristaNTPKey",
+    "AristaSSLProfile",
     "AristaSSHSettings",
 ]

@@ -28,6 +28,32 @@ SONICOS_CAPTURE_ATP_GUIDE = (
     "https://www.sonicwall.com/support/technical-documentation/docs/"
     "sonicos-7-1-capture_atp/Content/capture-atp-disabling-gav.htm"
 )
+SONICOS_PASSWORD_GUIDE = (
+    "https://www.sonicwall.com/support/technical-documentation/docs/"
+    "sonicos-7-1-device_settings/Content/System_Administration/Multiple_Administrator/"
+    "password-compliance-configuration.htm"
+)
+SONICOS_LOGIN_CONSTRAINTS_GUIDE = (
+    "https://www.sonicwall.com/support/technical-documentation/docs/"
+    "sonicos-7-1-device_settings/Content/System_Administration/Multiple_Administrator/"
+    "login-constraints-configuring.htm"
+)
+SONICOS_ADMIN_ROLES_GUIDE = (
+    "https://www.sonicwall.com/support/knowledge-base/"
+    "access-rights-for-administrators/kA1VN0000000Frz0AE"
+)
+SONICOS_CERTIFICATE_GUIDE = (
+    "https://www.sonicwall.com/support/technical-documentation/docs/"
+    "sonicos-7-1-device_settings/Content/Management/security-certificate-selecting.htm"
+)
+SONICOS_TLS_GUIDE = (
+    "https://www.sonicwall.com/support/technical-documentation/docs/"
+    "sonicos-7-1-device_settings/Content/Management/TLS-version-enforcing.htm"
+)
+SONICOS_LOGIN_BANNER_GUIDE = (
+    "https://www.sonicwall.com/support/knowledge-base/"
+    "modifying-the-sonicwall-login-banner-page-display/kA1VN0000000Ogg0AE"
+)
 
 
 class PluginSonicOSChecks(BasePlugin):
@@ -79,6 +105,209 @@ class PluginSonicOSChecks(BasePlugin):
                     )
                 )
 
+    def check_administration(self, parser: BaseDeviceParser) -> None:
+        sonic = self._sonic(parser)
+        services = sonic.get_services()
+
+        for administrator in sonic.get_administrators():
+            if len(administrator.roles) > 1:
+                self.add_issue(Finding(
+                    rule_id="sonicwall.sonicos.admin.conflicting_roles",
+                    device=parser.device_type,
+                    title="Administrator belongs to conflicting privilege groups",
+                    observation=(
+                        f"Local administrator '{administrator.name}' belongs to {', '.join(administrator.roles)}; "
+                        f"SonicOS resolves the effective role to {administrator.effective_role}."
+                    ),
+                    impact="A higher-precedence group can silently override the intended lower-privilege administrative role.",
+                    exploitability="Compromise or misuse of the account receives the effective higher privilege.",
+                    recommendation="Place each administrator in one deliberate administrative group and use read-only or limited access wherever sufficient.",
+                    severity=Severity.HIGH if administrator.effective_role == "full-admin" else Severity.MEDIUM,
+                    evidence=tuple(item.text for item in administrator.evidence),
+                    references=(SONICOS_ADMIN_ROLES_GUIDE, SONICOS_CLI_GUIDE),
+                ))
+            if administrator.otp_enabled is False and administrator.effective_role in {"full-admin", "limited-admin"}:
+                self.add_issue(Finding(
+                    rule_id="sonicwall.sonicos.admin.mfa_missing",
+                    device=parser.device_type,
+                    title="Privileged local administrator does not require TOTP",
+                    observation=f"Local {administrator.effective_role} account '{administrator.name}' has TOTP explicitly or unambiguously disabled.",
+                    impact="A stolen or guessed password alone can authorize privileged firewall administration.",
+                    exploitability="An attacker who obtains the local password does not need an independent authentication factor.",
+                    recommendation="Require TOTP for privileged local administrators and maintain a separately controlled recovery procedure.",
+                    severity=Severity.HIGH,
+                    evidence=tuple(item.text for item in administrator.evidence) or (
+                        "SonicOS 7.0-7.2 documented default: built-in administrator TOTP disabled",
+                    ),
+                    references=(SONICOS_CLI_GUIDE,),
+                ))
+
+        password = sonic.get_password_policy()
+        password_evidence = tuple(item.text for item in password.evidence)
+        if password.minimum_length is not None and password.minimum_length < 12:
+            self.add_issue(Finding(
+                rule_id="sonicwall.sonicos.password.minimum_length",
+                device=parser.device_type,
+                title="Administrative password minimum length is weak",
+                observation=f"The effective minimum password length is {password.minimum_length}, below the 12-character project baseline.",
+                impact="Short passwords reduce resistance to online guessing and offline cracking after credential disclosure.",
+                exploitability="An attacker can search a materially smaller password space.",
+                recommendation="Set the SonicOS minimum password length to at least 12 characters and prefer longer passphrases.",
+                severity=Severity.MEDIUM,
+                evidence=password_evidence or ("SonicOS 7.0-7.2 documented minimum-length default: 8",),
+                references=(SONICOS_PASSWORD_GUIDE, SONICOS_CLI_GUIDE),
+            ))
+        if password.complexity is not None and password.complexity not in {
+            "alpha-and-numeric-and-symbols", "alphanumeric-and-symbols"
+        }:
+            self.add_issue(Finding(
+                rule_id="sonicwall.sonicos.password.complexity",
+                device=parser.device_type,
+                title="Administrative password complexity is not fully enabled",
+                observation=f"The effective password complexity mode is '{password.complexity}'.",
+                impact="Locally managed passwords may be easier to guess or reuse across systems.",
+                exploitability="Password-spraying and credential-cracking attacks benefit from a less diverse password policy.",
+                recommendation="Require alphabetic, numeric, and symbolic characters for applicable administrator accounts.",
+                severity=Severity.MEDIUM,
+                evidence=password_evidence or ("SonicOS 7.0-7.2 documented password-complexity default: none",),
+                references=(SONICOS_PASSWORD_GUIDE, SONICOS_CLI_GUIDE),
+            ))
+        required_scopes = {"admin", "full-admin", "limited-admin"}
+        if password.scopes is not None and not required_scopes.issubset(password.scopes):
+            missing_scopes = sorted(required_scopes - set(password.scopes))
+            self.add_issue(Finding(
+                rule_id="sonicwall.sonicos.password.admin_scope",
+                device=parser.device_type,
+                title="Password constraints omit an administrator class",
+                observation="Password constraints do not apply to: " + ", ".join(missing_scopes) + ".",
+                impact="Privileged local accounts in the omitted classes can be assigned passwords outside the configured policy.",
+                exploitability="An attacker can target weaker credentials belonging to an excluded administrator class.",
+                recommendation="Apply password constraints to the built-in, full, and limited administrator classes.",
+                severity=Severity.HIGH,
+                evidence=password_evidence,
+                references=(SONICOS_PASSWORD_GUIDE, SONICOS_CLI_GUIDE),
+            ))
+
+        session = sonic.get_admin_session_policy()
+        session_evidence = tuple(item.text for item in session.evidence)
+        management_active = any(services.values())
+        if management_active and session.lockout_enabled is False:
+            self.add_issue(Finding(
+                rule_id="sonicwall.sonicos.admin.lockout_disabled",
+                device=parser.device_type,
+                title="Administrator login lockout is disabled",
+                observation="The effective administrator/user lockout control is disabled while a management service is active.",
+                impact="Repeated password guesses are not stopped by the appliance lockout control.",
+                exploitability="A reachable attacker can sustain online password-guessing attempts.",
+                recommendation="Enable user lockout with a conservative failed-attempt threshold and a controlled recovery process.",
+                severity=Severity.HIGH,
+                evidence=session_evidence or ("SonicOS 7.0-7.2 documented user-lockout default: disabled",),
+                references=(SONICOS_LOGIN_CONSTRAINTS_GUIDE, SONICOS_CLI_GUIDE),
+            ))
+        if management_active and session.lockout_enabled is True:
+            weaknesses = []
+            if session.failures_per_minute is not None and session.failures_per_minute > 5:
+                weaknesses.append(f"{session.failures_per_minute} allowed failures")
+            if session.lockout_duration_minutes is not None and session.lockout_duration_minutes < 5:
+                weaknesses.append(f"{session.lockout_duration_minutes}-minute lockout")
+            if weaknesses:
+                self.add_issue(Finding(
+                    rule_id="sonicwall.sonicos.admin.lockout_policy",
+                    device=parser.device_type,
+                    title="Administrator lockout thresholds are weak",
+                    observation="The effective lockout policy uses " + " and ".join(weaknesses) + ".",
+                    impact="The appliance permits rapid retry or restores guessing access too quickly.",
+                    exploitability="A reachable attacker receives more opportunities to guess an administrator password.",
+                    recommendation="Allow no more than five failed attempts and lock the account for at least five minutes.",
+                    severity=Severity.MEDIUM,
+                    evidence=session_evidence,
+                    references=(SONICOS_LOGIN_CONSTRAINTS_GUIDE, SONICOS_CLI_GUIDE),
+                ))
+        if management_active and session.idle_logout_minutes is not None and session.idle_logout_minutes > 5:
+            self.add_issue(Finding(
+                rule_id="sonicwall.sonicos.admin.idle_timeout",
+                device=parser.device_type,
+                title="Administrator idle timeout is excessive",
+                observation=f"The effective administrator inactivity timeout is {session.idle_logout_minutes} minutes.",
+                impact="An unattended authenticated management session remains usable longer than the vendor default.",
+                exploitability="A person or process with access to an abandoned session can inherit its privileges.",
+                recommendation="Set the administrator inactivity timeout to five minutes or less.",
+                severity=Severity.MEDIUM,
+                evidence=session_evidence,
+                references=(SONICOS_LOGIN_CONSTRAINTS_GUIDE, SONICOS_CLI_GUIDE),
+            ))
+        if services["ssh"] and session.max_cli_attempts is not None and session.max_cli_attempts > 5:
+            self.add_issue(Finding(
+                rule_id="sonicwall.sonicos.admin.cli_login_attempts",
+                device=parser.device_type,
+                title="CLI login attempt limit is excessive",
+                observation=f"The CLI permits {session.max_cli_attempts} attempts before disconnecting the session.",
+                impact="Each SSH connection receives more opportunities to guess a privileged password.",
+                exploitability="A reachable attacker can make more guesses per connection.",
+                recommendation="Set max-login-attempts-cli to five or fewer.",
+                severity=Severity.MEDIUM,
+                evidence=session_evidence,
+                references=(SONICOS_LOGIN_CONSTRAINTS_GUIDE, SONICOS_CLI_GUIDE),
+            ))
+        if management_active and session.log_without_lockout is True:
+            self.add_issue(Finding(
+                rule_id="sonicwall.sonicos.admin.log_without_lockout",
+                device=parser.device_type,
+                title="Failed logins are logged without enforcing lockout",
+                observation="The log-without-lockout option is enabled.",
+                impact="Monitoring records failed attempts but does not stop sustained password guessing.",
+                exploitability="A reachable attacker can continue attempts despite generating audit events.",
+                recommendation="Disable log-without-lockout and enforce the configured administrator lockout policy.",
+                severity=Severity.HIGH,
+                evidence=session_evidence,
+                references=(SONICOS_LOGIN_CONSTRAINTS_GUIDE, SONICOS_CLI_GUIDE),
+            ))
+
+        banner = sonic.get_banner_policy()
+        if services["ssh"] and banner.connection_enabled is False:
+            self.add_issue(Finding(
+                rule_id="sonicwall.sonicos.admin.connection_banner",
+                device=parser.device_type,
+                title="SSH connection notice is not configured",
+                observation="SSH management is active without an effective pre-authentication CLI connection banner.",
+                impact="Administrative users are not shown the organization's authorization and monitoring notice before login.",
+                exploitability="This is primarily a governance and legal-notice control rather than a direct technical exploit.",
+                recommendation="Configure an approved 'cli banner connection' notice and validate it before the credential prompt.",
+                severity=Severity.LOW,
+                evidence=tuple(item.text for item in banner.evidence) or (
+                    "SonicOS 7.0-7.2 documented CLI connection banner default: absent",
+                ),
+                references=(SONICOS_LOGIN_BANNER_GUIDE, SONICOS_CLI_GUIDE),
+            ))
+
+        tls = sonic.get_management_tls_policy()
+        tls_evidence = tuple(item.text for item in tls.evidence)
+        if tls.applicable and tls.minimum_version == "tls1.0":
+            self.add_issue(Finding(
+                rule_id="sonicwall.sonicos.management.legacy_tls",
+                device=parser.device_type,
+                title="Legacy TLS 1.0 is permitted for web management",
+                observation="HTTPS management is active and 'no tls-and-above' permits TLS 1.0.",
+                impact="Administrative sessions can negotiate an obsolete protocol with known design weaknesses.",
+                exploitability="A network-positioned attacker can target clients that negotiate the legacy protocol.",
+                recommendation="Enable tls-and-above and, where the release permits, enforce a stronger TLS floor through the supported management settings.",
+                severity=Severity.HIGH,
+                evidence=tls_evidence,
+                references=(SONICOS_TLS_GUIDE, SONICOS_CLI_GUIDE),
+            ))
+        if tls.applicable and tls.certificate_type == "self-signed":
+            self.add_issue(Finding(
+                rule_id="sonicwall.sonicos.management.self_signed_certificate",
+                device=parser.device_type,
+                title="Web management uses the default self-signed certificate type",
+                observation="HTTPS management is active and the effective certificate selection is self-signed.",
+                impact="Administrators cannot rely on an organization-trusted identity chain to authenticate the firewall.",
+                exploitability="Users who bypass certificate warnings are more susceptible to management-plane impersonation.",
+                recommendation="Install and select an organization-approved identity certificate with the correct DNS name and trust chain.",
+                severity=Severity.MEDIUM,
+                evidence=tls_evidence or ("SonicOS 7.0-7.2 documented certificate-selection default: self-signed",),
+                references=(SONICOS_CERTIFICATE_GUIDE, SONICOS_CLI_GUIDE),
+            ))
     @staticmethod
     def _is_any(value: str) -> bool:
         return value.casefold() in {"any", "all"}
@@ -311,6 +540,7 @@ class PluginSonicOSChecks(BasePlugin):
 
     def analyze(self, parser: BaseDeviceParser) -> None:
         self.check_management(parser)
+        self.check_administration(parser)
         self.check_access_rules(parser)
         self.check_vpn(parser)
         self.check_operations(parser)

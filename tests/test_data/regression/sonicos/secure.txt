@@ -5,6 +5,19 @@ interface X0
   zone LAN
   ip-address 10.0.0.1
   management https ssh
+administration
+  admin one-time-password totp
+  password minimum-length 12
+  password complexity alpha-and-numeric-and-symbols
+  idle-logout-time 5
+  user-lockout
+    failures-per-minute 3
+    lockout-duration 10
+  max-login-attempts-cli 5
+  no log-without-lockout
+  tls-and-above
+  web-management certificate "corp-management"
+cli banner connection "Authorized access only"
 access-rule ipv4 from LAN to WAN action allow source address name Corp service name HTTPS destination address name Updates schedule always-on
   name "CONTROLLED"
   enable

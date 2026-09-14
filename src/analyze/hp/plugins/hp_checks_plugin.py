@@ -23,6 +23,18 @@ AOS_SWITCH_LAYER2_GUIDE = (
     "https://arubanetworking.hpe.com/techdocs/AOS-Switch/16.11/"
     "Aruba%203810M5400R%20Access%20Security%20Guide%20for%20AOS-S%2016.11.pdf"
 )
+AOS_SWITCH_BASIC_OPERATION_GUIDE = (
+    "https://arubanetworking.hpe.com/techdocs/AOS-Switch/16.11/"
+    "Aruba%20Basic%20Operation%20Guide%20for%20AOS-S%2016.11.pdf"
+)
+AOS_SWITCH_PASSWORD_GUIDE = (
+    "https://arubanetworking.hpe.com/techdocs/AOS-S/16.11/ASG/YC/content/"
+    "common%20files/cnf-pas-sec.htm"
+)
+AOS_SWITCH_AUTHENTICATION_GUIDE = (
+    "https://arubanetworking.hpe.com/techdocs/AOS-S/16.10/ASG/YC/content/"
+    "common%20files/cnf-swi-aut-met.htm"
+)
 
 
 class PluginHPChecks(BasePlugin):
@@ -277,6 +289,116 @@ class PluginHPChecks(BasePlugin):
                 )
             )
 
+    def check_administrative_policy(self, parser: BaseDeviceParser) -> None:
+        hp = self._hp(parser)
+        policies = hp.get_administrative_authentication_policies()
+        credentials = {
+            item.role: item for item in hp.get_local_administrator_credentials()
+        }
+
+        local_is_applicable = any(
+            policy.applicable is True
+            and "local" in {policy.primary, policy.secondary}
+            for policy in policies
+        )
+        manager = credentials["manager"]
+        if local_is_applicable and manager.state == ConfigurationState.DISABLED:
+            operator = credentials["operator"]
+            observation = "Local authentication is effective for an administrative channel, but manager password protection is explicitly absent."
+            if operator.state == ConfigurationState.ENABLED:
+                observation += " Only an operator credential is exported; AOS-S documents that this condition permits full manager privilege."
+            self.add_issue(Finding(
+                rule_id="hp.procurve.admin.manager_credential_missing",
+                device=parser.device_type,
+                title="Local administrative fallback lacks manager protection",
+                observation=observation,
+                impact="An administrative channel can reach read-write manager access without the intended manager-level credential boundary.",
+                exploitability="A user who reaches a locally authenticated management channel may obtain full configuration privileges.",
+                recommendation="Configure a unique manager credential and retain local fallback only as a controlled emergency-access path.",
+                severity=Severity.HIGH,
+                evidence=tuple(item.text for item in manager.evidence) + tuple(
+                    item.text
+                    for policy in policies
+                    if policy.applicable is True and "local" in {policy.primary, policy.secondary}
+                    for item in policy.evidence
+                ),
+                references=(AOS_SWITCH_PASSWORD_GUIDE,),
+            ))
+
+        for policy in policies:
+            if policy.applicable is not True or "authorized" not in {policy.primary, policy.secondary}:
+                continue
+            self.add_issue(Finding(
+                rule_id="hp.procurve.admin.unauthenticated_method",
+                device=parser.device_type,
+                title="Administrative channel permits an unauthenticated method",
+                observation=(
+                    f"The {policy.channel} {policy.access_level} policy uses "
+                    f"'{policy.primary} {policy.secondary}', including the documented no-authentication 'authorized' method."
+                ),
+                impact="The configured fallback can grant administrative access without validating a credential.",
+                exploitability="A user who can reach the affected management service may be admitted when that method is selected.",
+                recommendation="Replace 'authorized' with a validated primary method and either a controlled local fallback or fail-closed 'none'.",
+                severity=Severity.CRITICAL if policy.access_level == "enable" else Severity.HIGH,
+                evidence=tuple(item.text for item in policy.evidence),
+                references=(AOS_SWITCH_AUTHENTICATION_GUIDE,),
+            ))
+
+        banner = hp.get_login_banner_policy()
+        if banner.state == ConfigurationState.DISABLED and banner.resolution_state != "unknown-release":
+            self.add_issue(Finding(
+                rule_id="hp.procurve.admin.login_banner",
+                device=parser.device_type,
+                title="Pre-login administrative notice is not configured",
+                observation="The supported AOS-S export has no effective 'banner motd' configuration.",
+                impact="Users are not shown the organization's authorization and monitoring notice at administrative access.",
+                exploitability="This is primarily a governance and legal-notice control rather than a direct technical exploit.",
+                recommendation="Configure an approved message with 'banner motd' and validate its presentation on each enabled management channel.",
+                severity=Severity.LOW,
+                evidence=tuple(item.text for item in banner.evidence) or ("banner motd absent from supported AOS-S export",),
+                references=(AOS_SWITCH_BASIC_OPERATION_GUIDE,),
+            ))
+
+        for session in hp.get_administrative_session_policies():
+            if (
+                session.applicable is not True
+                or session.resolution_state in {"invalid", "unknown-release"}
+                or session.timeout_seconds is None
+                or 0 < session.timeout_seconds <= 600
+            ):
+                continue
+            label = {
+                "remote-cli": "remote CLI",
+                "serial-usb": "serial/USB console",
+                "web": "WebAgent",
+            }[session.channel]
+            disabled = session.timeout_seconds == 0
+            rule_id = {
+                "remote-cli": "hp.procurve.admin.remote_cli_idle_timeout",
+                "serial-usb": "hp.procurve.admin.serial_idle_timeout",
+                "web": "hp.procurve.admin.web_idle_timeout",
+            }[session.channel]
+            command = {
+                "remote-cli": "console idle-timeout 600",
+                "serial-usb": "console idle-timeout serial-usb 600",
+                "web": "web-management idle-timeout 600",
+            }[session.channel]
+            self.add_issue(Finding(
+                rule_id=rule_id,
+                device=parser.device_type,
+                title=f"{label.capitalize()} idle timeout is {'disabled' if disabled else 'excessive'}",
+                observation=(
+                    f"The effective {label} idle timeout is disabled."
+                    if disabled else f"The effective {label} idle timeout is {session.timeout_seconds} seconds, above the 600-second project target."
+                ),
+                impact="An unattended authenticated administrative session can remain usable longer than intended.",
+                exploitability="A person or process with access to an abandoned management session can inherit its privileges.",
+                recommendation=f"Set a timeout of at most 600 seconds (for example, '{command}').",
+                severity=Severity.MEDIUM,
+                evidence=tuple(item.text for item in session.evidence),
+                references=(AOS_SWITCH_BASIC_OPERATION_GUIDE,),
+            ))
+
     def check_advanced_baseline(self, parser: BaseDeviceParser) -> None:
         hp = self._hp(parser)
         remote_authentication = hp.get_remote_authentication()
@@ -469,5 +591,6 @@ class PluginHPChecks(BasePlugin):
         self.check_snmp(parser)
         self.check_ssh_crypto(parser)
         self.check_operational_baseline(parser)
+        self.check_administrative_policy(parser)
         self.check_advanced_baseline(parser)
         self.check_edge_protections(parser)

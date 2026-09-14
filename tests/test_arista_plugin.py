@@ -25,20 +25,30 @@ hostname secure-leaf
 username breakglass role network-admin secret sha512 $6$salt$hash
 aaa authentication login default group tacacs+ local
 aaa authorization exec default group tacacs+ local
+aaa authorization commands all default group tacacs+ local
+aaa accounting exec default start-stop group tacacs+
+aaa accounting commands all default start-stop group tacacs+
+aaa authentication policy lockout failure 5 duration 300
+banner login
 management api http-commands
    no protocol http
-   protocol https
+   protocol https ssl profile EAPI-TLS
    vrf MGMT
       ip access-group EAPI-MGMT in
       ipv6 access-group EAPI-MGMT-V6 in
       no shutdown
 management ssh
+   idle-timeout 10
    authentication empty-passwords deny
    cipher aes256-ctr
    key-exchange diffie-hellman-group16-sha512
    mac hmac-sha2-256
    ip access-group SSH-MGMT in vrf MGMT
    ipv6 access-group SSH-MGMT-V6 in vrf MGMT
+management security
+   ssl profile EAPI-TLS
+      certificate eapi.pem
+      tls versions 1.2 1.3
 snmp-server view MONITOR system included
 snmp-server group SECURE v3 priv read MONITOR
 snmp-server ipv4 access-list SNMP-MGMT
@@ -91,6 +101,9 @@ def test_vulnerable_eos_has_exact_findings_and_redacted_evidence(tmp_path):
         "arista.eos.eapi.https_disabled",
         "arista.eos.eapi.source_restriction",
         "arista.eos.authentication.centralized",
+        "arista.eos.authentication.lockout_disabled",
+        "arista.eos.admin.idle_timeout",
+        "arista.eos.admin.login_banner",
         "arista.eos.ssh.empty_passwords",
         "arista.eos.ssh.weak_algorithms",
         "arista.eos.ssh.source_restriction",

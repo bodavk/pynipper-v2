@@ -33,6 +33,9 @@ sntp authentication key-id 55 authentication-mode md5 key-value ciphertext trust
 sntp server priority 1 192.0.2.30 3 key-id 55
 snmpv3 user monitor auth sha auth-secret priv aes privacy-secret
 password configuration-control
+banner motd "Authorized access only"
+console idle-timeout 600
+console idle-timeout serial-usb 600
 vlan 10 name "USERS"
 dhcp-snooping vlan 10
 no ip ssh cipher 3des-cbc
@@ -96,6 +99,9 @@ def test_vulnerable_aos_switch_has_exact_effective_findings(tmp_path):
         "hp.procurve.snmp.secure_user_missing",
         "hp.procurve.ssh.weak_algorithms",
         "hp.procurve.authentication.centralized",
+        "hp.procurve.admin.login_banner",
+        "hp.procurve.admin.remote_cli_idle_timeout",
+        "hp.procurve.admin.serial_idle_timeout",
         "hp.procurve.credentials.password_complexity",
         "hp.procurve.layer2.dhcp_snooping",
         "hp.procurve.logging.remote_destination",

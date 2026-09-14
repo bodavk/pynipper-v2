@@ -21,6 +21,22 @@ JUNIPER_LOGIN_GUIDE = (
     "https://www.juniper.net/documentation/us/en/software/junos/"
     "user-access/topics/topic-map/junos-os-login-settings.html"
 )
+JUNIPER_LOGIN_CLASS_REFERENCE = (
+    "https://www.juniper.net/documentation/us/en/software/junos/cli-reference/"
+    "topics/ref/statement/class-edit-system-login.html"
+)
+JUNIPER_TACACS_GUIDE = (
+    "https://www.juniper.net/documentation/us/en/software/junos/"
+    "user-access/topics/topic-map/user-access-tacacs-authentication.html"
+)
+JUNIPER_RADIUS_GUIDE = (
+    "https://www.juniper.net/documentation/us/en/software/junos/"
+    "user-access/topics/topic-map/user-access-radius-authentication.html"
+)
+JUNIPER_JWEB_SESSION_REFERENCE = (
+    "https://www.juniper.net/documentation/us/en/software/junos/cli-reference/"
+    "topics/ref/statement/session-edit-system.html"
+)
 JUNIPER_SSH_REFERENCE = (
     "https://www.juniper.net/documentation/us/en/software/junos/cli-reference/"
     "topics/ref/statement/ssh-edit-system.html"
@@ -137,24 +153,19 @@ class PluginJunOSBaseline(BasePlugin):
     def check_authentication(self, parser: BaseDeviceParser) -> None:
         authentication_order = self._statements(parser, ("system", "authentication-order"))
         order_tokens = {
-            token
-            for statement in authentication_order
-            for token in statement.path[2:]
+            token for statement in authentication_order for token in statement.path[2:]
         }
         if not order_tokens.intersection({"radius", "tacplus"}):
-            self.add_issue(
-                self._finding(
-                    parser,
-                    "juniper.junos.authentication.centralized",
-                    "Centralized administrator authentication is not configured",
-                    "The effective authentication order uses only local passwords or the local-password default.",
-                    "Local-only authentication reduces centralized access control and accountability.",
-                    "Configure RADIUS or TACACS+ first in authentication-order and retain a tested local fallback according to policy.",
-                    Severity.MEDIUM,
-                    self._texts(authentication_order) or ("system authentication-order absent",),
-                    (JUNIPER_AUTH_GUIDE,),
-                )
-            )
+            self.add_issue(self._finding(
+                parser, "juniper.junos.authentication.centralized",
+                "Centralized administrator authentication is not configured",
+                "The effective authentication order uses only local passwords or the local-password default.",
+                "Local-only authentication reduces centralized access control and accountability.",
+                "Configure RADIUS or TACACS+ first in authentication-order and retain a tested local fallback according to policy.",
+                Severity.MEDIUM,
+                self._texts(authentication_order) or ("system authentication-order absent",),
+                (JUNIPER_AUTH_GUIDE,),
+            ))
 
         retries = self._statements(
             parser, ("system", "login", "retry-options", "tries-before-disconnect")
@@ -162,55 +173,40 @@ class PluginJunOSBaseline(BasePlugin):
         if retries:
             value = retries[-1].path[-1]
             if value.isdigit() and int(value) > 3:
-                self.add_issue(
-                    self._finding(
-                        parser,
-                        "juniper.junos.authentication.login_attempts",
-                        "Excessive login attempts are permitted",
-                        f"The effective tries-before-disconnect value is {value}; the Junos default and hardened target is three attempts.",
-                        "Additional guesses increase exposure to online password attacks.",
-                        "Set system login retry-options tries-before-disconnect to 3 or fewer.",
-                        Severity.MEDIUM,
-                        self._texts(retries[-1:]),
-                        (JUNIPER_LOGIN_GUIDE,),
-                    )
-                )
+                self.add_issue(self._finding(
+                    parser, "juniper.junos.authentication.login_attempts",
+                    "Excessive login attempts are permitted",
+                    f"The effective tries-before-disconnect value is {value}; the Junos default and hardened target is three attempts.",
+                    "Additional guesses increase exposure to online password attacks.",
+                    "Set system login retry-options tries-before-disconnect to 3 or fewer.",
+                    Severity.MEDIUM, self._texts(retries[-1:]), (JUNIPER_LOGIN_GUIDE,),
+                ))
 
         lockout = self._statements(
             parser, ("system", "login", "retry-options", "lockout-period")
         )
         if not lockout:
-            self.add_issue(
-                self._finding(
-                    parser,
-                    "juniper.junos.authentication.lockout",
-                    "Administrative account lockout is not configured",
-                    "No effective login retry-options lockout-period is configured.",
-                    "Repeated password guessing is not interrupted by a timed account lockout.",
-                    "Configure a policy-approved lockout-period and test the recovery procedure.",
-                    Severity.MEDIUM,
-                    ("system login retry-options lockout-period absent",),
-                    (JUNIPER_LOGIN_GUIDE,),
-                )
-            )
+            self.add_issue(self._finding(
+                parser, "juniper.junos.authentication.lockout",
+                "Administrative account lockout is not configured",
+                "No effective login retry-options lockout-period is configured.",
+                "Repeated password guessing is not interrupted by a timed account lockout.",
+                "Configure a policy-approved lockout-period and test the recovery procedure.",
+                Severity.MEDIUM, ("system login retry-options lockout-period absent",),
+                (JUNIPER_LOGIN_GUIDE,),
+            ))
 
         for user in self._junos(parser).get_users():
-            if user["class"] != "super-user":
-                continue
-            if not user["authentication"]:
-                self.add_issue(
-                    self._finding(
-                        parser,
-                        "juniper.junos.authentication.super_user",
-                        "Super-user account lacks explicit authentication",
-                        f"Administrative user '{user['username']}' has class super-user but no effective authentication method.",
-                        "An unusable or unexpectedly inherited account can undermine intended administrative access controls.",
-                        "Configure an approved SSH key or strong encrypted password, or remove the account.",
-                        Severity.HIGH,
-                        tuple(item.text for item in user["evidence"]),
-                        (JUNIPER_AUTH_GUIDE,),
-                    )
-                )
+            if user["class"] == "super-user" and not user["authentication"]:
+                self.add_issue(self._finding(
+                    parser, "juniper.junos.authentication.super_user",
+                    "Super-user account lacks explicit authentication",
+                    f"Administrative user '{user['username']}' has class super-user but no effective authentication method.",
+                    "An unusable or unexpectedly inherited account can undermine intended administrative access controls.",
+                    "Configure an approved SSH key or strong encrypted password, or remove the account.",
+                    Severity.HIGH, tuple(item.text for item in user["evidence"]),
+                    (JUNIPER_AUTH_GUIDE,),
+                ))
 
         unsafe = {
             CredentialStorageAssessment.EMPTY,
@@ -220,24 +216,146 @@ class PluginJunOSBaseline(BasePlugin):
         }
         for credential in self._junos(parser).get_credential_metadata():
             if credential.storage_assessment in unsafe:
-                self.add_issue(
-                    self._finding(
-                        parser,
-                        "juniper.junos.authentication.weak_storage",
-                        "Administrative credential uses weak storage",
-                        (
-                            f"The {credential.context} credential for '{credential.account}' uses "
-                            f"'{credential.method}' format '{credential.storage_type}', classified as "
-                            f"'{credential.storage_assessment.value}'; the separate exact-default "
-                            f"comparison is '{credential.default_assessment.value}'. The value is redacted."
-                        ),
-                        "Configuration disclosure can expose or accelerate recovery of the credential.",
-                        "Replace the credential with a supported strong hash or SSH public key.",
-                        Severity.HIGH,
-                        tuple(item.text for item in credential.evidence),
-                        (JUNIPER_AUTH_GUIDE,),
-                    )
+                self.add_issue(self._finding(
+                    parser, "juniper.junos.authentication.weak_storage",
+                    "Administrative credential uses weak storage",
+                    f"The {credential.context} credential for '{credential.account}' uses '{credential.method}' format '{credential.storage_type}', classified as '{credential.storage_assessment.value}'; the separate exact-default comparison is '{credential.default_assessment.value}'. The value is redacted.",
+                    "Configuration disclosure can expose or accelerate recovery of the credential.",
+                    "Replace the credential with a supported strong hash or SSH public key.",
+                    Severity.HIGH, tuple(item.text for item in credential.evidence),
+                    (JUNIPER_AUTH_GUIDE,),
+                ))
+
+    def check_administrative_policy(self, parser: BaseDeviceParser) -> None:
+        junos = self._junos(parser)
+        notice = junos.get_login_notice_policy()
+        if not notice.message_configured and not notice.inheritance_unknown:
+            self.add_issue(self._finding(
+                parser, "juniper.junos.authentication.login_banner",
+                "Pre-authentication login message is missing",
+                "No effective system login message is configured; a post-login announcement does not replace the pre-authentication notice.",
+                "Users are not shown an approved access warning before supplying administrative credentials.",
+                "Configure an organization-approved system login message and retain announcements only for post-login information.",
+                Severity.MEDIUM, tuple(item.text for item in notice.evidence) or ("system login message absent",),
+                (JUNIPER_LOGIN_GUIDE,),
+            ))
+
+        inheritance_unknown = junos.has_unexpanded_inheritance()
+        for user in junos.get_users():
+            if not user["class"] and not inheritance_unknown:
+                self.add_issue(self._finding(
+                    parser, "juniper.junos.authentication.login_class_binding",
+                    "Administrative user has no resolved login class",
+                    f"User '{user['username']}' has no effective login-class binding in the supplied configuration.",
+                    "The export does not establish the authorization privileges applied to this identity.",
+                    "Assign the user to a defined least-privilege login class or provide the complete inherited configuration.",
+                    Severity.HIGH, tuple(item.text for item in user["evidence"]),
+                    (JUNIPER_LOGIN_CLASS_REFERENCE,),
+                ))
+
+        for policy in junos.get_login_class_policies():
+            if not policy.users:
+                continue
+            evidence = tuple(item.text for item in policy.evidence)
+            if not policy.defined and not policy.inheritance_unknown:
+                self.add_issue(self._finding(
+                    parser, "juniper.junos.authentication.login_class_binding",
+                    "Administrative user references an unresolved login class",
+                    f"Users {', '.join(policy.users)} reference login class '{policy.name}', but no predefined or locally defined class is resolved.",
+                    "The export does not establish the authorization privileges applied to these identities.",
+                    "Define and review the referenced least-privilege class or correct the user bindings.",
+                    Severity.HIGH, evidence, (JUNIPER_LOGIN_CLASS_REFERENCE,),
+                ))
+                continue
+            if (
+                policy.name.casefold() == "unauthorized"
+                or policy.resolution_state != "known"
+                or policy.idle_timeout_minutes not in {None, 0}
+            ):
+                continue
+            state = (
+                "is not configured, so the documented default does not force idle logout"
+                if policy.idle_timeout_minutes is None
+                else "is explicitly zero, which disables idle logout"
+            )
+            self.add_issue(self._finding(
+                parser, "juniper.junos.authentication.idle_timeout",
+                "Administrative login class has no effective idle timeout",
+                f"Login class '{policy.name}', used by {', '.join(policy.users)}, {state}.",
+                "An abandoned authenticated CLI session can remain available indefinitely.",
+                "Apply a policy-approved nonzero idle-timeout through the user-defined class or supported global login setting.",
+                Severity.MEDIUM, evidence or (f"login class {policy.name} timeout absent",),
+                (JUNIPER_LOGIN_GUIDE, JUNIPER_LOGIN_CLASS_REFERENCE),
+            ))
+
+        authentication_order = self._statements(parser, ("system", "authentication-order"))
+        remote_methods = {
+            token for statement in authentication_order for token in statement.path[2:]
+            if token in {"radius", "tacplus"}
+        }
+        if remote_methods:
+            accounting = junos.get_accounting_policy()
+            missing_events = sorted(
+                {"login", "change-log", "interactive-commands"} - set(accounting.events)
+            )
+            evidence = tuple(item.text for item in accounting.evidence)
+            if missing_events and not accounting.inheritance_unknown:
+                self.add_issue(self._finding(
+                    parser, "juniper.junos.authentication.accounting_events",
+                    "Administrative accounting event coverage is incomplete",
+                    f"Remote authentication uses {', '.join(sorted(remote_methods))}, but accounting omits: {', '.join(missing_events)}.",
+                    "Logins, configuration changes, or interactive commands can lack centralized attribution.",
+                    "Configure system accounting events for login, change-log, and interactive-commands.",
+                    Severity.MEDIUM, evidence or ("system accounting events absent",),
+                    (JUNIPER_TACACS_GUIDE, JUNIPER_RADIUS_GUIDE),
+                ))
+            unresolved = sorted(
+                set(accounting.destination_methods) - set(accounting.resolved_methods)
+            )
+            if not accounting.inheritance_unknown and (
+                not accounting.destination_methods or unresolved
+            ):
+                observation = (
+                    "No effective RADIUS or TACACS+ accounting destination is configured."
+                    if not accounting.destination_methods
+                    else f"Accounting destination methods have no resolved server: {', '.join(unresolved)}."
                 )
+                self.add_issue(self._finding(
+                    parser, "juniper.junos.authentication.accounting_destination",
+                    "Administrative accounting destination is missing or unresolved",
+                    observation,
+                    "Centralized authentication activity might not reach an independent audit destination.",
+                    "Configure and verify a RADIUS or TACACS+ accounting destination with a resolved server.",
+                    Severity.HIGH, evidence or ("system accounting destination absent",),
+                    (JUNIPER_TACACS_GUIDE, JUNIPER_RADIUS_GUIDE),
+                ))
+
+        web = junos.get_web_management_policy()
+        if not web.enabled:
+            return
+        evidence = tuple(item.text for item in web.evidence)
+        if (
+            web.idle_timeout_resolution == "known"
+            and web.idle_timeout_minutes is not None
+            and web.idle_timeout_minutes > 30
+        ):
+            self.add_issue(self._finding(
+                parser, "juniper.junos.administration.web_session_timeout",
+                "J-Web idle timeout exceeds the hardened reference value",
+                f"J-Web is enabled for {', '.join(web.protocols)} with an explicit idle timeout of {web.idle_timeout_minutes} minutes.",
+                "An abandoned authenticated browser session remains usable for an excessive period.",
+                "Set the J-Web session idle-timeout to 30 minutes or less, or the stricter approved organizational value.",
+                Severity.MEDIUM, evidence, (JUNIPER_JWEB_SESSION_REFERENCE,),
+            ))
+        if web.session_limit_resolution == "known" and web.session_limit is None:
+            self.add_issue(self._finding(
+                parser, "juniper.junos.administration.web_session_limit",
+                "J-Web concurrent sessions are not bounded",
+                "J-Web is enabled without an explicit session-limit; the documented default permits an unlimited number of concurrent sessions.",
+                "Unbounded authenticated sessions can increase management-plane resource pressure and account-sharing exposure.",
+                "Configure a finite J-Web session-limit based on the number of authorized administrators.",
+                Severity.MEDIUM, evidence, (JUNIPER_JWEB_SESSION_REFERENCE,),
+            ))
 
     def check_ssh_algorithms(self, parser: BaseDeviceParser) -> None:
         if not self._junos(parser).get_services()["ssh"]:
@@ -622,6 +740,7 @@ class PluginJunOSBaseline(BasePlugin):
         if not self._applicable(parser):
             return
         self.check_authentication(parser)
+        self.check_administrative_policy(parser)
         self.check_logging(parser)
         self.check_ntp(parser)
         self.check_routing_engine_filter(parser)

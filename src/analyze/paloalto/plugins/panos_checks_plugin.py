@@ -35,6 +35,14 @@ PANOS_ADMIN_GUIDE = (
     "https://docs.paloaltonetworks.com/ngfw/administration/firewall-administration/"
     "manage-firewall-administrators/administrative-authentication"
 )
+PANOS_ADMIN_ROLE_GUIDE = (
+    "https://docs.paloaltonetworks.com/ngfw/help/12-1/device/"
+    "device-admin-roles"
+)
+PANOS_SSH_PROFILE_GUIDE = (
+    "https://docs.paloaltonetworks.com/ngfw/administration/"
+    "certificate-management/configure-ssh-service-profile"
+)
 PANOS_CLI_GUIDE = (
     "https://docs.paloaltonetworks.com/ngfw/pan-os-cli-quick-start/"
     "cli-command-hierarchy/pan-os-11-1-configure-cli-command-hierarchy"
@@ -151,6 +159,242 @@ class PluginPANOSChecks(BasePlugin):
                     references=(PANOS_ADMIN_GUIDE,),
                 )
             )
+
+    def check_administrative_policy(self, parser: BaseDeviceParser) -> None:
+        panos = self._panos(parser)
+        for account in panos.get_administrator_policies():
+            evidence = self._evidence(account.evidence)
+            if account.role_resolution in {"missing", "unresolved"}:
+                self.add_issue(
+                    Finding(
+                        rule_id="paloalto.panos.admin.role_assignment",
+                        device=parser.device_type,
+                        title="Administrator role is missing or unresolved",
+                        observation=(
+                            f"Administrator '{account.username}' has no resolved role assignment."
+                            if account.role_resolution == "missing"
+                            else f"Administrator '{account.username}' references custom role '{account.role or 'unnamed'}', but that role is not defined in the supplied configuration."
+                        ),
+                        impact="The export does not establish the privileges granted to the administrative identity.",
+                        exploitability="An incorrectly resolved role can grant unintended management capabilities or prevent intended separation of duties.",
+                        recommendation="Assign a defined dynamic or custom Admin Role profile that matches the administrator's approved duties.",
+                        severity=Severity.HIGH,
+                        evidence=evidence,
+                        references=(PANOS_ADMIN_ROLE_GUIDE,),
+                    )
+                )
+            if account.authentication_resolution in {"unresolved", "ambiguous"}:
+                self.add_issue(
+                    Finding(
+                        rule_id="paloalto.panos.admin.authentication_profile_unresolved",
+                        device=parser.device_type,
+                        title="Administrator authentication profile is unresolved",
+                        observation=f"Administrator '{account.username}' references authentication profile '{account.authentication_profile}', but the profile cannot be resolved uniquely in the supplied configuration.",
+                        impact="The static export cannot establish the authentication method protecting this administrator.",
+                        exploitability="A missing or incorrectly scoped profile can cause unexpected authentication behavior or reliance on an unintended method.",
+                        recommendation="Define the referenced authentication profile in the correct scope or provide the merged effective Panorama configuration.",
+                        severity=Severity.HIGH,
+                        evidence=evidence,
+                        references=(PANOS_ADMIN_GUIDE,),
+                    )
+                )
+
+        if not panos.panorama_inheritance_unknown:
+            for settings in panos.get_administrative_settings():
+                evidence = self._evidence(settings.evidence)
+                if settings.authentication_resolution in {"unresolved", "ambiguous"}:
+                    self.add_issue(
+                        Finding(
+                            rule_id="paloalto.panos.admin.authentication_profile_unresolved",
+                            device=parser.device_type,
+                            title="Global administrator authentication profile is unresolved",
+                            observation=f"Device scope '{settings.device_scope}' references global authentication profile or sequence '{settings.authentication_profile}', but it cannot be resolved uniquely in the supplied configuration.",
+                            impact="The static export cannot establish authentication for externally defined administrators.",
+                            exploitability="A missing or incorrectly scoped global profile can cause unexpected authentication behavior or prevent the intended external control from applying.",
+                            recommendation="Define the referenced profile or sequence in the correct scope, or provide the merged effective Panorama configuration.",
+                            severity=Severity.HIGH,
+                            evidence=evidence,
+                            references=(PANOS_ADMIN_GUIDE,),
+                        )
+                    )
+                if not settings.login_banner_configured:
+                    self.add_issue(
+                        Finding(
+                            rule_id="paloalto.panos.admin.login_banner",
+                            device=parser.device_type,
+                            title="Administrative login banner is missing",
+                            observation=f"No login banner is configured for device scope '{settings.device_scope}'.",
+                            impact="Administrators are not shown an approved access warning before authentication.",
+                            exploitability="Missing legal or acceptable-use notice can weaken deterrence and incident-response support.",
+                            recommendation="Configure an organization-approved login banner on the management interface.",
+                            severity=Severity.MEDIUM,
+                            evidence=evidence,
+                            references=(PANOS_PASSWORD_GUIDE,),
+                        )
+                    )
+                elif settings.acknowledge_login_banner is not True:
+                    self.add_issue(
+                        Finding(
+                            rule_id="paloalto.panos.admin.login_banner_acknowledgement",
+                            device=parser.device_type,
+                            title="Login banner acknowledgement is not enforced",
+                            observation=f"A login banner exists in device scope '{settings.device_scope}', but administrators are not explicitly required to acknowledge it.",
+                            impact="The warning can be bypassed without affirmative acknowledgement.",
+                            exploitability="An unauthorized user can proceed directly to authentication without accepting the displayed notice.",
+                            recommendation="Enable Force Admins to Acknowledge Login Banner.",
+                            severity=Severity.LOW,
+                            evidence=evidence,
+                            references=(PANOS_PASSWORD_GUIDE,),
+                        )
+                    )
+                if (
+                    settings.idle_timeout_state == "explicit"
+                    and settings.idle_timeout_minutes is not None
+                    and (settings.idle_timeout_minutes == 0 or settings.idle_timeout_minutes > 10)
+                ):
+                    self.add_issue(
+                        Finding(
+                            rule_id="paloalto.panos.admin.idle_timeout",
+                            device=parser.device_type,
+                            title="Administrative idle timeout is disabled or excessive",
+                            observation=f"The explicit management idle timeout is {settings.idle_timeout_minutes} minutes in device scope '{settings.device_scope}'.",
+                            impact="An abandoned web or CLI administrative session can remain usable for an excessive period.",
+                            exploitability="A person with access to an unattended administrator workstation can reuse the active session.",
+                            recommendation="Set the management idle timeout to 10 minutes or the stricter approved organizational value.",
+                            severity=Severity.MEDIUM,
+                            evidence=evidence,
+                            references=(PANOS_PASSWORD_GUIDE,),
+                        )
+                    )
+                if (
+                    settings.failed_attempts_state == "explicit"
+                    and settings.failed_attempts is not None
+                    and (settings.failed_attempts == 0 or settings.failed_attempts > 5)
+                ):
+                    self.add_issue(
+                        Finding(
+                            rule_id="paloalto.panos.admin.login_attempts",
+                            device=parser.device_type,
+                            title="Administrative login attempt limit is unsafe",
+                            observation=f"The explicit failed-attempt limit is {settings.failed_attempts} in device scope '{settings.device_scope}'.",
+                            impact="Unlimited or excessive retries increase exposure to online password guessing.",
+                            exploitability="A management-plane attacker can submit more credential guesses before account lockout.",
+                            recommendation="Set Failed Attempts to a value from 1 through 5 and test the recovery procedure.",
+                            severity=Severity.MEDIUM,
+                            evidence=evidence,
+                            references=(PANOS_PASSWORD_GUIDE,),
+                        )
+                    )
+                if (
+                    settings.failed_attempts_state == "explicit"
+                    and settings.failed_attempts is not None
+                    and settings.failed_attempts > 0
+                    and settings.lockout_state == "explicit"
+                    and settings.lockout_minutes is not None
+                    and 0 < settings.lockout_minutes < 30
+                ):
+                    self.add_issue(
+                        Finding(
+                            rule_id="paloalto.panos.admin.lockout_time",
+                            device=parser.device_type,
+                            title="Administrative lockout period is too short",
+                            observation=f"The explicit lockout period is {settings.lockout_minutes} minutes after {settings.failed_attempts} failed attempts in device scope '{settings.device_scope}'.",
+                            impact="Short lockouts allow repeated guessing campaigns to resume quickly.",
+                            exploitability="An attacker can wait out the short lockout and continue attempting credentials.",
+                            recommendation="Set Lockout Time to at least 30 minutes or use the manual-unlock value according to policy.",
+                            severity=Severity.MEDIUM,
+                            evidence=evidence,
+                            references=(PANOS_PASSWORD_GUIDE,),
+                        )
+                    )
+                if (
+                    settings.max_session_count_state == "explicit"
+                    and settings.max_session_count == 0
+                ):
+                    self.add_issue(
+                        Finding(
+                            rule_id="paloalto.panos.admin.concurrent_sessions",
+                            device=parser.device_type,
+                            title="Concurrent administrative sessions are unlimited",
+                            observation=f"The explicit maximum session count is 0 (unlimited) in device scope '{settings.device_scope}'.",
+                            impact="Unlimited concurrent sessions weaken account-use control and can increase management-plane resource pressure.",
+                            exploitability="A compromised administrator credential can be used for multiple simultaneous sessions without this bound.",
+                            recommendation="Configure a finite Max Session Count consistent with the number of authorized administrators.",
+                            severity=Severity.MEDIUM,
+                            evidence=evidence,
+                            references=(PANOS_PASSWORD_GUIDE,),
+                        )
+                    )
+
+        weak_ciphers = {"aes128-cbc", "aes192-cbc", "aes256-cbc"}
+        weak_kex = {"diffie-hellman-group14-sha1"}
+        weak_macs = {"hmac-sha1"}
+        for policy in panos.get_ssh_management_policies():
+            if not policy.enabled or not policy.supported:
+                continue
+            evidence = self._evidence(policy.evidence)
+            if policy.resolution_state == "missing":
+                self.add_issue(
+                    Finding(
+                        rule_id="paloalto.panos.admin.ssh_profile_missing",
+                        device=parser.device_type,
+                        title="Management SSH service profile is not applied",
+                        observation=f"SSH management is enabled in device scope '{policy.device_scope}' without an applied management SSH service profile.",
+                        impact="The management SSH server can advertise the full default algorithm set instead of an explicitly restricted policy.",
+                        exploitability="A reachable SSH client can negotiate any algorithm that remains available in the default server set.",
+                        recommendation="Create, apply, and activate a management SSH service profile containing only approved algorithms.",
+                        severity=Severity.HIGH,
+                        evidence=evidence,
+                        references=(PANOS_SSH_PROFILE_GUIDE,),
+                    )
+                )
+                continue
+            if policy.resolution_state == "unresolved":
+                self.add_issue(
+                    Finding(
+                        rule_id="paloalto.panos.admin.ssh_profile_unresolved",
+                        device=parser.device_type,
+                        title="Management SSH service profile is unresolved",
+                        observation=f"SSH management in device scope '{policy.device_scope}' references profile '{policy.selected_profile}', but its definition is absent.",
+                        impact="The exported configuration does not establish the algorithms offered by the management SSH server.",
+                        exploitability="A broken or incorrectly scoped reference can leave the intended SSH hardening unapplied.",
+                        recommendation="Define and apply the referenced management SSH service profile in the correct device or template scope.",
+                        severity=Severity.HIGH,
+                        evidence=evidence,
+                        references=(PANOS_SSH_PROFILE_GUIDE,),
+                    )
+                )
+                continue
+            if policy.resolution_state != "known":
+                continue
+            weaknesses = []
+            if not policy.ciphers:
+                weaknesses.append("cipher list is not restricted")
+            elif weak := sorted(set(policy.ciphers).intersection(weak_ciphers)):
+                weaknesses.append("CBC ciphers: " + ", ".join(weak))
+            if not policy.key_exchanges:
+                weaknesses.append("key-exchange list is not restricted")
+            elif weak := sorted(set(policy.key_exchanges).intersection(weak_kex)):
+                weaknesses.append("legacy key exchange: " + ", ".join(weak))
+            if not policy.macs:
+                weaknesses.append("MAC list is not restricted")
+            elif weak := sorted(set(policy.macs).intersection(weak_macs)):
+                weaknesses.append("legacy MAC: " + ", ".join(weak))
+            if weaknesses:
+                self.add_issue(
+                    Finding(
+                        rule_id="paloalto.panos.admin.ssh_profile_algorithms",
+                        device=parser.device_type,
+                        title="Management SSH profile permits unsafe algorithm behavior",
+                        observation=f"Applied profile '{policy.selected_profile}' has the following weaknesses: {'; '.join(weaknesses)}.",
+                        impact="Legacy or unrestricted SSH negotiation weakens management-session confidentiality and integrity.",
+                        exploitability="A management-path attacker can target or negotiate algorithms left available by the applied profile.",
+                        recommendation="Restrict the profile to approved CTR/GCM ciphers, SHA-2 MACs, and SHA-2 elliptic-curve key exchange, then restart the management SSH service.",
+                        severity=Severity.HIGH,
+                        evidence=evidence,
+                        references=(PANOS_SSH_PROFILE_GUIDE,),
+                    )
+                )
 
     def check_platform_services(self, parser: BaseDeviceParser) -> None:
         panos = self._panos(parser)
@@ -832,6 +1076,7 @@ class PluginPANOSChecks(BasePlugin):
         self.check_password_policy(parser)
         self.check_password_reuse_and_username(parser)
         self.check_administration(parser)
+        self.check_administrative_policy(parser)
         self.check_platform_services(parser)
         self.check_management_tls(parser)
         self.check_updates_and_system_logging(parser)
