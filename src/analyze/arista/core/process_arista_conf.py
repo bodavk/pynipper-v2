@@ -10,7 +10,7 @@ def process_arista_conf(parser: BaseDeviceParser) -> dict:
     plugin.analyze(parser)
     
     i = plugin.get_issues()
-    issues = _generate_section(i, issues, idx)
+    issues = _generate_section(parser.assessment_context.filter_findings(i), issues, idx)
     
     return issues
 

@@ -5,7 +5,7 @@ parser,CiscoASAParser,src/devices/cisco/asa.py,"Cisco ASA; PIX registry alias",y
 parser,FortiOSParser,src/devices/fortinet/fortios.py,FortiGate/FortiOS,yes,yes,n/a,n/a,"Target grammar-aware parser with global/VDOM scope and parse diagnostics"
 parser,CheckPointFW1Parser,src/devices/checkpoint/fw1.py,Check Point Firewall-1 export directory,yes,yes,n/a,n/a,"Target offline export parser for typed layers/rules/objects/services"
 parser,JunOSParser,src/devices/juniper/junos.py,Juniper Junos,yes,yes,n/a,n/a,"Target parser for display-set and hierarchy syntax"
-parser,JuniperScreenOSParser,src/devices/juniper/screenos.py,Juniper ScreenOS,yes,yes,n/a,n/a,"Target parser with effective set/unset and policy continuation handling"
+parser,JuniperScreenOSParser,src/devices/juniper/screenos.py,Juniper ScreenOS,yes,yes,n/a,n/a,"Target parser with effective set/unset and policy continuation handling; 6.3-gated policy-default and active timeout/binding records"
 parser,PaloAltoPANOSParser,src/devices/paloalto/panos.py,Palo Alto PAN-OS XML,yes,yes,n/a,n/a,"Expanded parser; local device/vsys references, management TLS, update schedules, system logging, and explicit Panorama unknown verified"
 parser,HPProCurveParser,src/devices/hp/procurve.py,HP ProCurve/ArubaOS-Switch,yes,yes,n/a,n/a,"Expanded parser; ordered services/AAA/accounting/password/VLAN/DHCP state verified, documented defaults limited to AOS-S 16.10"
 parser,SonicOSParser,src/devices/sonicwall/sonicos.py,SonicWall SonicOS 7 E-CLI current-config,yes,yes,n/a,n/a,"Expanded parser; authoritative dialect, authenticated NTP and explicit threat-service dependencies verified; incompatible formats rejected"

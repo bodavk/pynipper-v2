@@ -3,9 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 import xml.etree.ElementTree as ET
 from typing import Any, Iterable
 
+from src.common.certificates import (
+    CertificateAssessment,
+    CertificateMetadata,
+    assess_public_certificate,
+    certificate_metadata,
+    load_public_certificate,
+)
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.models import (
     ConfigEvidence,
@@ -63,6 +71,41 @@ class PanosSecurityRule:
     log_end: bool
     log_setting: str
     profile_setting: tuple[str, ...]
+    profile_group: str
+    individual_profiles: tuple[tuple[str, str], ...]
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class PanosInspectionProfile:
+    """A resolved or unresolved security-profile reference used by an active rule."""
+
+    profile_type: str
+    name: str
+    definition_scope: str
+    resolution_state: str
+    content_state: str
+    actions: tuple[str, ...]
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class PanosSecurityProfileGroup:
+    name: str
+    scope: str
+    members: tuple[tuple[str, str], ...]
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class PanosSecurityInspection:
+    rule_name: str
+    rule_scope: str
+    rule_position: int
+    attachment_mode: str
+    attachment_name: str
+    resolution_state: str
+    profiles: tuple[PanosInspectionProfile, ...]
     evidence: tuple[ConfigEvidence, ...]
 
 
@@ -107,11 +150,58 @@ class PanosManagementTLS:
 
 
 @dataclass(frozen=True)
+class PanosCertificateObject:
+    """Public certificate-object state; private key content is never retained."""
+
+    name: str
+    scope: str
+    public_material_state: str
+    metadata: CertificateMetadata | None
+    private_key_present: bool
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class PanosManagementCertificateBinding:
+    device_scope: str
+    certificate: str
+    source: str
+    object_scope: str | None
+    resolution: str
+    public_material_state: str
+    assessment: CertificateAssessment | None
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
 class PanosUpdateSchedule:
     device_scope: str
     content_type: str
     recurrence: str
     action: str
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class PanosNTPAssociation:
+    role: str
+    address: str
+    device_scope: str
+    authentication: str
+    key_id: str
+    algorithm: str
+    key_material_state: str
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class PanosSNMPUser:
+    name: str
+    device_scope: str
+    authentication: str
+    privacy: str
+    authentication_key_state: str
+    privacy_key_state: str
     evidence: tuple[ConfigEvidence, ...]
 
 
@@ -344,8 +434,21 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                 for position, entry in enumerate(rule_nodes, start=1):
                     name = entry.get("name") or f"rule-{position}"
                     profiles = []
+                    profile_group = ""
+                    individual_profiles: list[tuple[str, str]] = []
                     profile_setting = entry.find("profile-setting")
                     if profile_setting is not None:
+                        group = profile_setting.find("group")
+                        if group is not None:
+                            group_members = self._members(profile_setting, "group")
+                            profile_group = group_members[0] if group_members else ""
+                        individual = profile_setting.find("profiles")
+                        if individual is not None:
+                            for profile_type in list(individual):
+                                for member in profile_type.findall("member"):
+                                    value = self._text(member)
+                                    if value:
+                                        individual_profiles.append((profile_type.tag, value))
                         for leaf in profile_setting.iter():
                             if leaf is profile_setting:
                                 continue
@@ -374,10 +477,207 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                             log_end=self._yes(entry, "log-end"),
                             log_setting=self._text(entry.find("log-setting")),
                             profile_setting=tuple(profiles),
+                            profile_group=profile_group,
+                            individual_profiles=tuple(individual_profiles),
                             evidence=(self._evidence(f"{scope}: security rule {position} {name}"),),
                         )
                     )
         return rules
+
+    @staticmethod
+    def _profile_actions(entry: ET.Element) -> tuple[str, ...]:
+        actions: list[str] = []
+        for node in entry.iter():
+            if node.tag != "action":
+                continue
+            value = (node.text or "").strip().casefold()
+            if value:
+                actions.append(value)
+            for child in list(node):
+                child_value = (child.text or "").strip().casefold()
+                actions.append(child_value or child.tag.casefold())
+        return tuple(dict.fromkeys(actions))
+
+    @staticmethod
+    def _profile_has_content(entry: ET.Element) -> bool:
+        ignored = {"description", "tag"}
+        return any(node.tag not in ignored for node in list(entry))
+
+    def _shared_nodes(self, relative_path: str) -> list[ET.Element]:
+        nodes = self.root.findall(f"./shared/{relative_path}")
+        seen = {id(node) for node in nodes}
+        for node in self.root.findall(f".//shared/{relative_path}"):
+            if id(node) not in seen:
+                nodes.append(node)
+                seen.add(id(node))
+        return nodes
+
+    def get_security_profile_definitions(self) -> tuple[PanosInspectionProfile, ...]:
+        definitions: list[PanosInspectionProfile] = []
+
+        def add(scope: str, profile_type: str, entry: ET.Element) -> None:
+            name = entry.get("name") or "unnamed"
+            actions = self._profile_actions(entry)
+            if not self._profile_has_content(entry):
+                content_state = "empty"
+            elif actions and all(
+                action in {"allow", "alert", "pass", "monitor"} for action in actions
+            ):
+                content_state = "nonblocking"
+            else:
+                content_state = "configured"
+            definitions.append(
+                PanosInspectionProfile(
+                    profile_type=profile_type,
+                    name=name,
+                    definition_scope=scope,
+                    resolution_state="resolved",
+                    content_state=content_state,
+                    actions=actions,
+                    evidence=(self._evidence(f"{scope}: {profile_type} profile {name}"),),
+                )
+            )
+
+        for profiles in self._shared_nodes("profiles"):
+            for profile_type in list(profiles):
+                for entry in profile_type.findall("entry"):
+                    add("shared", profile_type.tag, entry)
+        for device in self._device_entries():
+            for vsys in device.findall("./vsys/entry"):
+                scope = vsys.get("name") or "vsys"
+                profiles = vsys.find("profiles")
+                if profiles is None:
+                    continue
+                for profile_type in list(profiles):
+                    for entry in profile_type.findall("entry"):
+                        add(scope, profile_type.tag, entry)
+        return tuple(definitions)
+
+    def get_security_profile_groups(self) -> tuple[PanosSecurityProfileGroup, ...]:
+        groups: list[PanosSecurityProfileGroup] = []
+
+        def add(scope: str, entry: ET.Element) -> None:
+            name = entry.get("name") or "unnamed"
+            members: list[tuple[str, str]] = []
+            for profile_type in list(entry):
+                for member in profile_type.findall("member"):
+                    value = self._text(member)
+                    if value:
+                        members.append((profile_type.tag, value))
+            groups.append(
+                PanosSecurityProfileGroup(
+                    name=name,
+                    scope=scope,
+                    members=tuple(members),
+                    evidence=(self._evidence(f"{scope}: security profile group {name}"),),
+                )
+            )
+
+        for entry in self._shared_nodes("profile-group/entry"):
+            add("shared", entry)
+        for device in self._device_entries():
+            for vsys in device.findall("./vsys/entry"):
+                scope = vsys.get("name") or "vsys"
+                for entry in vsys.findall("./profile-group/entry"):
+                    add(scope, entry)
+        return tuple(groups)
+
+    def get_security_inspection(self) -> tuple[PanosSecurityInspection, ...]:
+        """Resolve active allow-rule attachments without inferring Panorama state."""
+
+        definitions = self.get_security_profile_definitions()
+        groups = self.get_security_profile_groups()
+        builtins = {"default", "strict"}
+
+        def profile(profile_type: str, name: str, scope: str) -> PanosInspectionProfile:
+            for candidate_scope in (scope, "shared"):
+                match = next(
+                    (
+                        item
+                        for item in definitions
+                        if item.definition_scope == candidate_scope
+                        and item.profile_type == profile_type
+                        and item.name == name
+                    ),
+                    None,
+                )
+                if match is not None:
+                    return match
+            if name.casefold() in builtins:
+                return PanosInspectionProfile(
+                    profile_type=profile_type,
+                    name=name,
+                    definition_scope="builtin",
+                    resolution_state="builtin",
+                    content_state="vendor-default",
+                    actions=(),
+                    evidence=(),
+                )
+            state = "unknown-inherited" if self.panorama_inheritance_unknown else "unresolved"
+            return PanosInspectionProfile(
+                profile_type=profile_type,
+                name=name,
+                definition_scope="",
+                resolution_state=state,
+                content_state="unknown",
+                actions=(),
+                evidence=(),
+            )
+
+        inspections: list[PanosSecurityInspection] = []
+        for rule in self.get_security_rules():
+            if not rule.enabled or rule.action != "allow":
+                continue
+            if rule.profile_group:
+                group = next(
+                    (
+                        item
+                        for candidate_scope in (rule.scope, "shared")
+                        for item in groups
+                        if item.scope == candidate_scope and item.name == rule.profile_group
+                    ),
+                    None,
+                )
+                if group is None:
+                    state = "unknown-inherited" if self.panorama_inheritance_unknown else "unresolved"
+                    profiles: tuple[PanosInspectionProfile, ...] = ()
+                    group_evidence: tuple[ConfigEvidence, ...] = ()
+                else:
+                    state = "empty" if not group.members else "resolved"
+                    profiles = tuple(
+                        profile(profile_type, name, rule.scope)
+                        for profile_type, name in group.members
+                    )
+                    group_evidence = group.evidence
+                inspections.append(
+                    PanosSecurityInspection(
+                        rule_name=rule.name,
+                        rule_scope=rule.scope,
+                        rule_position=rule.position,
+                        attachment_mode="group",
+                        attachment_name=rule.profile_group,
+                        resolution_state=state,
+                        profiles=profiles,
+                        evidence=rule.evidence + group_evidence,
+                    )
+                )
+            elif rule.individual_profiles:
+                inspections.append(
+                    PanosSecurityInspection(
+                        rule_name=rule.name,
+                        rule_scope=rule.scope,
+                        rule_position=rule.position,
+                        attachment_mode="profiles",
+                        attachment_name="individual profiles",
+                        resolution_state="resolved",
+                        profiles=tuple(
+                            profile(profile_type, name, rule.scope)
+                            for profile_type, name in rule.individual_profiles
+                        ),
+                        evidence=rule.evidence,
+                    )
+                )
+        return tuple(inspections)
 
     def get_log_forwarding_profiles(self) -> list[PanosLogForwardingProfile]:
         profiles = []
@@ -409,16 +709,26 @@ class PaloAltoPANOSParser(BaseDeviceParser):
         def number(name: str) -> int | None:
             return self._safe_int(self._text(node.find(name)))
 
-        block_username = self._text(node.find("block-username-inclusion"))
+        def yes_no(name: str) -> bool | None:
+            value = self._text(node.find(name)).casefold()
+            if value == "yes":
+                return True
+            if value == "no":
+                return False
+            return None
+
+        history_count = number("password-history-count")
+        if history_count is not None and not 0 <= history_count <= 50:
+            history_count = None
         return PanosPasswordPolicy(
-            enabled=self._text(node.find("enabled")).casefold() == "yes",
+            enabled=yes_no("enabled"),
             minimum_length=number("minimum-length"),
             minimum_uppercase=number("minimum-uppercase-letters"),
             minimum_lowercase=number("minimum-lowercase-letters"),
             minimum_numeric=number("minimum-numeric-letters"),
             minimum_special=number("minimum-special-characters"),
-            history_count=number("password-history-count"),
-            blocks_username=(block_username.casefold() == "yes") if block_username else None,
+            history_count=history_count,
+            blocks_username=yes_no("block-username-inclusion"),
             evidence=(self._evidence("deviceconfig system password-complexity"),),
         )
 
@@ -472,6 +782,115 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                 )
             )
         return settings
+
+    @staticmethod
+    def _certificate_material(value: str) -> tuple[str, CertificateMetadata | None]:
+        if not value.strip():
+            return "missing", None
+        try:
+            parsed = load_public_certificate(value)
+        except (TypeError, UnicodeEncodeError, ValueError):
+            return "malformed", None
+        return "parsed", certificate_metadata(parsed)
+
+    def _certificate_entries(self):
+        for entry in self.root.findall("./shared/certificate/entry"):
+            yield "shared", entry
+        for device in self._device_entries():
+            device_scope = self._device_scope(device)
+            for entry in device.findall("./certificate/entry"):
+                yield device_scope, entry
+            for vsys in device.findall("./vsys/entry"):
+                for entry in vsys.findall("./certificate/entry"):
+                    yield vsys.get("name") or "vsys", entry
+
+    def get_certificate_objects(self) -> list[PanosCertificateObject]:
+        """Return only public-material state and private-key presence, never key content."""
+
+        objects = []
+
+        for scope, entry in self._certificate_entries():
+            name = entry.get("name") or "unnamed"
+            state, metadata = self._certificate_material(self._text(entry.find("certificate")))
+            objects.append(
+                PanosCertificateObject(
+                    name=name,
+                    scope=scope,
+                    public_material_state=state,
+                    metadata=metadata,
+                    private_key_present=bool(self._text(entry.find("private-key"))),
+                    evidence=(self._evidence(f"{scope}: certificate object {name}"),),
+                )
+            )
+        return objects
+
+    def get_management_certificate_bindings(self) -> list[PanosManagementCertificateBinding]:
+        profiles = {
+            (profile.scope, profile.name): profile
+            for profile in self.get_ssl_tls_service_profiles()
+        }
+        objects = self.get_certificate_objects()
+        parsed_certificates = {}
+        for scope, entry in self._certificate_entries():
+            value = self._text(entry.find("certificate"))
+            if not value:
+                continue
+            try:
+                parsed_certificates[(scope, entry.get("name") or "unnamed")] = (
+                    load_public_certificate(value)
+                )
+            except (TypeError, UnicodeEncodeError, ValueError):
+                continue
+        all_certificates = tuple(parsed_certificates.values())
+        bindings = []
+        for setting in self.get_management_tls():
+            reference = setting.certificate
+            source = "management-tls-certificate"
+            evidence = setting.evidence
+            if not reference and setting.profile:
+                profile = profiles.get((setting.device_scope, setting.profile)) or profiles.get(
+                    ("shared", setting.profile)
+                )
+                if profile is None:
+                    continue
+                reference = profile.certificate
+                source = f"ssl-tls-service-profile {profile.name}"
+                evidence += profile.evidence
+            if not reference:
+                continue
+            candidates = [
+                item for item in objects
+                if item.name == reference and item.scope in {"shared", setting.device_scope}
+            ]
+            certificate = candidates[0] if candidates else None
+            parsed_certificate = (
+                parsed_certificates.get((certificate.scope, certificate.name))
+                if certificate else None
+            )
+            assessment = None
+            if parsed_certificate is not None:
+                assessment = assess_public_certificate(
+                    parsed_certificate,
+                    all_certificates,
+                    self.assessment_context.trusted_certificate_sha256,
+                    self.assessment_context.management_identity_for_scope(setting.device_scope),
+                    self.assessment_context.assessment_datetime(),
+                )
+            bindings.append(
+                PanosManagementCertificateBinding(
+                    device_scope=setting.device_scope,
+                    certificate=reference,
+                    source=source,
+                    object_scope=certificate.scope if certificate else None,
+                    resolution="resolved" if certificate else "unresolved",
+                    public_material_state=(
+                        certificate.public_material_state if certificate else "unknown"
+                    ),
+                    assessment=assessment,
+                    evidence=evidence + (certificate.evidence if certificate else ()),
+                )
+            )
+        return bindings
 
     def get_update_schedules(self) -> list[PanosUpdateSchedule]:
         schedules = []
@@ -549,16 +968,79 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                 )
         return services
 
-    def get_ntp_servers(self) -> tuple[str, ...]:
-        servers = []
+    @staticmethod
+    def _release_tuple(version: str) -> tuple[int, int, int] | None:
+        match = re.match(r"(\d+)\.(\d+)(?:\.(\d+))?", version)
+        return (
+            (int(match.group(1)), int(match.group(2)), int(match.group(3) or 0))
+            if match
+            else None
+        )
+
+    def supports_modern_ntp_algorithms(self) -> bool | None:
+        release = self._release_tuple(self.get_version())
+        return None if release is None else release >= (12, 1, 2)
+
+    def get_ntp_associations(self) -> list[PanosNTPAssociation]:
+        associations = []
         for device in self._device_entries():
-            for node in device.findall(
-                "./deviceconfig/system/ntp-servers/*/ntp-server-address"
-            ):
-                value = self._text(node)
-                if value:
-                    servers.append(value)
-        return tuple(servers)
+            scope = self._device_scope(device)
+            for role in ("primary", "secondary"):
+                server = device.find(
+                    f"./deviceconfig/system/ntp-servers/{role}-ntp-server"
+                )
+                if server is None:
+                    continue
+                address = self._text(server.find("ntp-server-address"))
+                if not address:
+                    continue
+                authentication = "none"
+                key_id = ""
+                algorithm = ""
+                key_material_state = "not-applicable"
+                auth = server.find("authentication-type")
+                if auth is not None:
+                    symmetric = auth.find("symmetric-key")
+                    if symmetric is not None:
+                        authentication = "symmetric-key"
+                        key_id = self._text(symmetric.find("key-id"))
+                        algorithm_node = symmetric.find("algorithm")
+                        algorithm = self._text(algorithm_node).casefold()
+                        if not algorithm and algorithm_node is not None and list(algorithm_node):
+                            algorithm = list(algorithm_node)[0].tag.casefold()
+                        key_node = symmetric.find("authentication-key")
+                        if key_node is None:
+                            key_node = symmetric.find("key-value")
+                        if key_node is None:
+                            key_material_state = "missing"
+                        elif self._text(key_node):
+                            key_material_state = "present"
+                        else:
+                            key_material_state = "redacted-or-unexported"
+                    elif auth.find("autokey") is not None:
+                        authentication = "autokey"
+                    elif auth.find("none") is None and list(auth):
+                        authentication = "unknown"
+                summary = f"{scope}: {role} NTP server {address}; authentication {authentication}"
+                if authentication == "symmetric-key":
+                    summary += (
+                        f"; key-id {key_id or 'missing'}; algorithm {algorithm or 'missing'}; "
+                        f"key material {key_material_state}"
+                    )
+                associations.append(PanosNTPAssociation(
+                    role=role,
+                    address=address,
+                    device_scope=scope,
+                    authentication=authentication,
+                    key_id=key_id,
+                    algorithm=algorithm,
+                    key_material_state=key_material_state,
+                    evidence=(self._evidence(summary),),
+                ))
+        return associations
+
+    def get_ntp_servers(self) -> tuple[str, ...]:
+        return tuple(item.address for item in self.get_ntp_associations())
 
     def get_dns_servers(self) -> tuple[str, ...]:
         servers = []
@@ -572,18 +1054,46 @@ class PaloAltoPANOSParser(BaseDeviceParser):
         return tuple(servers)
 
     def has_secure_snmpv3_user(self) -> bool:
-        for user in self.root.findall(
-            ".//deviceconfig/system/snmp-setting/access-setting/version/v3/users/entry"
-        ):
-            authentication = self._text(user.find("authproto")).casefold()
-            privacy = self._text(user.find("privproto")).casefold()
-            if authentication in {"sha", "sha-224", "sha-256", "sha-384", "sha-512"} and privacy in {
-                "aes",
-                "aes-192",
-                "aes-256",
-            }:
-                return True
-        return False
+        return any(
+            user.authentication in {"sha", "sha-224", "sha-256", "sha-384", "sha-512"}
+            and user.privacy in {"aes", "aes-192", "aes-256"}
+            for user in self.get_snmpv3_users()
+        )
+
+    def get_snmpv3_users(self) -> list[PanosSNMPUser]:
+        users = []
+        for device in self._device_entries():
+            scope = device.get("name", "local")
+            for user in device.findall(
+                "./deviceconfig/system/snmp-setting/access-setting/version/v3/users/entry"
+            ):
+                name = user.get("name", "unknown")
+                authentication = self._text(user.find("authproto")).casefold()
+                privacy = self._text(user.find("privproto")).casefold()
+
+                def key_state(*names: str) -> str:
+                    for field in names:
+                        node = user.find(field)
+                        if node is not None:
+                            return "present" if self._text(node) else "redacted-or-unexported"
+                    return "unknown"
+
+                authentication_key_state = key_state("authpwd", "auth-password", "authentication-password")
+                privacy_key_state = key_state("privpwd", "priv-password", "privacy-password")
+                users.append(PanosSNMPUser(
+                    name=name,
+                    device_scope=scope,
+                    authentication=authentication,
+                    privacy=privacy,
+                    authentication_key_state=authentication_key_state,
+                    privacy_key_state=privacy_key_state,
+                    evidence=(self._evidence(
+                        f"{scope}: SNMPv3 user {name}; auth {authentication or 'unknown'} "
+                        f"<key {authentication_key_state}>; priv {privacy or 'unknown'} "
+                        f"<key {privacy_key_state}>"
+                    ),),
+                ))
+        return users
 
     def get_native_config(self) -> Any:
         return self.root
@@ -700,5 +1210,8 @@ __all__ = [
     "PanosSecurityRule",
     "PanosSSLServiceProfile",
     "PanosManagementTLS",
+    "PanosCertificateObject",
+    "PanosManagementCertificateBinding",
+    "PanosNTPAssociation",
     "PanosUpdateSchedule",
 ]

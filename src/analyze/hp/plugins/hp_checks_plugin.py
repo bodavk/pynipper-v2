@@ -11,6 +11,18 @@ AOS_SWITCH_SECURITY_GUIDE = (
     "https://www.arubanetworks.com/techdocs/AOS-Switch/16.10/"
     "Aruba%202530%20Access%20Security%20Guide%20for%20ArubaOS-Switch%2016.10.pdf"
 )
+AOS_SWITCH_SNTP_GUIDE = (
+    "https://arubanetworking.hpe.com/techdocs/AOS-S/16.11/MCG/KB/content/kb/"
+    "snt-ser.htm"
+)
+AOS_SWITCH_SNMPV3_GUIDE = (
+    "https://arubanetworking.hpe.com/techdocs/AOS-S/16.11/MCG/WC/content/"
+    "common%20files/snm-use-com.htm"
+)
+AOS_SWITCH_LAYER2_GUIDE = (
+    "https://arubanetworking.hpe.com/techdocs/AOS-Switch/16.11/"
+    "Aruba%203810M5400R%20Access%20Security%20Guide%20for%20AOS-S%2016.11.pdf"
+)
 
 
 class PluginHPChecks(BasePlugin):
@@ -145,6 +157,66 @@ class PluginHPChecks(BasePlugin):
                     )
                 )
 
+        if hp.get_snmpv3_agent_state() is False:
+            return
+        for user in hp.get_snmpv3_users():
+            evidence = tuple(item.text for item in user.evidence)
+            missing = []
+            if user.authentication == "none":
+                missing.append("authentication")
+            if user.privacy == "none":
+                missing.append("privacy")
+            if missing:
+                self.add_issue(
+                    Finding(
+                        rule_id="hp.procurve.snmp.v3_protection",
+                        device=parser.device_type,
+                        title="SNMPv3 user lacks complete protection",
+                        observation=f"SNMPv3 user '{user.name}' lacks {' and '.join(missing)}.",
+                        impact="SNMP management traffic may lack origin authentication or confidentiality.",
+                        exploitability="A reachable or on-path attacker can target an under-protected SNMP identity.",
+                        recommendation="Configure SHA authentication and AES privacy for this user.",
+                        severity=Severity.HIGH,
+                        evidence=evidence,
+                        references=(AOS_SWITCH_SNMPV3_GUIDE,),
+                    )
+                )
+            weak = []
+            if user.authentication == "md5":
+                weak.append("MD5 authentication")
+            if user.privacy == "des":
+                weak.append("DES privacy")
+            if weak:
+                self.add_issue(
+                    Finding(
+                        rule_id="hp.procurve.snmp.v3_weak_algorithm",
+                        device=parser.device_type,
+                        title="SNMPv3 user uses weak algorithms",
+                        observation=f"SNMPv3 user '{user.name}' uses {', '.join(weak)}.",
+                        impact="Legacy SNMPv3 algorithms provide inadequate cryptographic protection.",
+                        exploitability="A traffic observer can target weaknesses in the configured algorithms.",
+                        recommendation="Use the platform-supported SHA authentication and AES privacy options.",
+                        severity=Severity.MEDIUM,
+                        evidence=evidence,
+                        references=(AOS_SWITCH_SNMPV3_GUIDE,),
+                    )
+                )
+            if not hp.has_authorized_managers():
+                self.add_issue(
+                    Finding(
+                        rule_id="hp.procurve.snmp.v3_access_scope",
+                        device=parser.device_type,
+                        title="SNMPv3 access lacks a manager source restriction",
+                        observation=f"SNMPv3 user '{user.name}' is configured without an active authorized-manager restriction.",
+                        impact="Every routed source that can reach the agent may attempt SNMPv3 authentication.",
+                        exploitability="A reachable attacker can probe or password-guess the SNMP agent.",
+                        recommendation="Restrict management access to approved NMS networks with authorized managers and network controls.",
+                        severity=Severity.MEDIUM,
+                        evidence=evidence,
+                        references=(AOS_SWITCH_SNMPV3_GUIDE,),
+                    )
+                )
+
     def check_ssh_crypto(self, parser: BaseDeviceParser) -> None:
         hp = self._hp(parser)
         ssh = hp.get_service_states()["ssh"]
@@ -262,6 +334,72 @@ class PluginHPChecks(BasePlugin):
                         references=(AOS_SWITCH_SECURITY_GUIDE,),
                     )
                 )
+
+        self._check_observability(parser)
+
+    def check_edge_protections(self, parser: BaseDeviceParser) -> None:
+        hp = self._hp(parser)
+        ports = hp.get_port_protections() if hp.has_supported_layer2_release() else ()
+        for port in ports:
+            if not port.active or port.role != "access-edge":
+                continue
+            evidence = tuple(item.text for item in port.evidence) + (
+                f"assessment policy: port {port.port} role access-edge",
+            )
+            if port.tagged:
+                self.add_issue(Finding(
+                    rule_id="hp.procurve.layer2.access_edge_trunk",
+                    device=parser.device_type,
+                    title="Access-edge port carries tagged VLANs",
+                    observation=f"Port {port.port} is explicitly classified access-edge but has tagged VLAN membership {list(port.vlans)}.",
+                    impact="An unintended tagged path can expose multiple VLANs to an endpoint and weaken segmentation.",
+                    exploitability="A connected endpoint may send tagged traffic into VLANs not intended for that access port.",
+                    recommendation="Use untagged client VLAN membership, or reclassify and document the port as an approved uplink.",
+                    severity=Severity.HIGH,
+                    evidence=evidence,
+                    references=(AOS_SWITCH_LAYER2_GUIDE,),
+                ))
+                continue
+            trusted = [
+                label for label, enabled in (
+                    ("DHCP snooping", port.dhcp_trusted),
+                    ("ARP protection", port.arp_trusted),
+                ) if enabled
+            ]
+            if trusted:
+                self.add_issue(Finding(
+                    rule_id="hp.procurve.layer2.access_edge_trust",
+                    device=parser.device_type,
+                    title="Access-edge port is trusted by spoofing protections",
+                    observation=f"Port {port.port} is explicitly classified access-edge but is trusted for {', '.join(trusted)}.",
+                    impact="Trust bypasses validation intended to block rogue DHCP or forged ARP messages from endpoint-facing ports.",
+                    exploitability="A connected endpoint can originate server or ARP traffic that would otherwise be validated or dropped.",
+                    recommendation="Remove trust from this access edge and reserve it for explicitly classified server/uplink ports.",
+                    severity=Severity.HIGH,
+                    evidence=evidence,
+                    references=(AOS_SWITCH_LAYER2_GUIDE,),
+                ))
+            for suffix, present, label in (
+                ("arp_protection", port.arp_protected, "Dynamic ARP protection on its VLAN"),
+                ("source_lockdown", port.source_lockdown, "Dynamic IP Lockdown"),
+                ("port_security", port.port_security, "port security"),
+            ):
+                if present or (suffix == "arp_protection" and not port.vlans):
+                    continue
+                self.add_issue(Finding(
+                    rule_id=f"hp.procurve.layer2.access_edge.{suffix}",
+                    device=parser.device_type,
+                    title=f"Access-edge port lacks {label}",
+                    observation=f"Port {port.port} is explicitly classified access-edge but lacks {label}.",
+                    impact="A connected endpoint may spoof IP/MAC bindings or exceed the intended endpoint identity policy.",
+                    exploitability="An attacker with physical or Layer-2 access may inject forged traffic on the client segment.",
+                    recommendation=f"Enable and validate {label} for this access edge, preserving DHCP snooping prerequisites and server/uplink trust boundaries.",
+                    severity=Severity.MEDIUM,
+                    evidence=evidence,
+                    references=(AOS_SWITCH_LAYER2_GUIDE,),
+                ))
+    def _check_observability(self, parser: BaseDeviceParser) -> None:
+        hp = self._hp(parser)
         if not hp.get_logging_destinations():
             self.add_issue(
                 Finding(
@@ -277,7 +415,8 @@ class PluginHPChecks(BasePlugin):
                     references=(AOS_SWITCH_SECURITY_GUIDE,),
                 )
             )
-        if not hp.get_ntp_servers():
+        associations = hp.get_sntp_associations()
+        if not associations:
             self.add_issue(
                 Finding(
                     rule_id="hp.procurve.ntp.servers",
@@ -289,9 +428,41 @@ class PluginHPChecks(BasePlugin):
                     recommendation="Configure redundant trusted SNTP servers and the appropriate time synchronization mode.",
                     severity=Severity.LOW,
                     evidence=("SNTP server absent",),
-                    references=(AOS_SWITCH_SECURITY_GUIDE,),
+                    references=(AOS_SWITCH_SNTP_GUIDE,),
                 )
             )
+        elif hp.has_supported_sntp_release():
+            for association in associations:
+                if association.authentication_state == "unauthenticated":
+                    self.add_issue(
+                        Finding(
+                            rule_id="hp.procurve.ntp.authentication",
+                            device=parser.device_type,
+                            title="SNTP association is unauthenticated",
+                            observation=f"SNTP server '{association.address}' does not have effective client authentication and a per-server key binding.",
+                            impact="Unauthenticated time responses can corrupt log chronology and time-dependent security behavior.",
+                            exploitability="A network-positioned attacker may spoof SNTP responses if routing and filtering permit it.",
+                            recommendation="Enable SNTP authentication and associate a configured trusted key with every unicast server.",
+                            severity=Severity.MEDIUM,
+                            evidence=tuple(item.text for item in association.evidence),
+                            references=(AOS_SWITCH_SNTP_GUIDE,),
+                        )
+                    )
+                elif association.authentication_state == "unresolved":
+                    self.add_issue(
+                        Finding(
+                            rule_id="hp.procurve.ntp.key_resolution",
+                            device=parser.device_type,
+                            title="SNTP server key binding is unresolved",
+                            observation=f"SNTP server '{association.address}' references key ID '{association.key_id or 'missing'}', but the key is missing, incomplete, or not trusted.",
+                            impact="The switch cannot establish the intended authenticated time association from the exported configuration.",
+                            exploitability="Authentication failure can cause loss of synchronization or fallback to an unintended time source.",
+                            recommendation="Define the referenced MD5 key with secret material, mark it trusted, and retain its per-server binding.",
+                            severity=Severity.MEDIUM,
+                            evidence=tuple(item.text for item in association.evidence),
+                            references=(AOS_SWITCH_SNTP_GUIDE,),
+                        )
+                    )
 
     def analyze(self, parser: BaseDeviceParser) -> None:
         self.check_management(parser)
@@ -299,3 +470,4 @@ class PluginHPChecks(BasePlugin):
         self.check_ssh_crypto(parser)
         self.check_operational_baseline(parser)
         self.check_advanced_baseline(parser)
+        self.check_edge_protections(parser)

@@ -10,7 +10,8 @@ def process_screenos_conf(parser: BaseDeviceParser) -> dict:
     for plugin_class in (PluginScreenOSChecks, PluginScreenOSBaseline):
         plugin = plugin_class()
         plugin.analyze(parser)
-        issues = _generate_section(plugin.get_issues(), issues, idx)
+        selected = parser.assessment_context.filter_findings(plugin.get_issues())
+        issues = _generate_section(selected, issues, idx)
         idx += 1
     
     return issues

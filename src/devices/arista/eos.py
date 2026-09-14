@@ -11,7 +11,10 @@ from src.devices.cisco.ios import CiscoIOSParser
 from src.devices.common.models import (
     ConfigEvidence,
     ConfigurationState,
+    CredentialMetadata,
+    CredentialStorageAssessment,
     CryptoSetting,
+    DefaultCredentialAssessment,
     LocalUser,
     LoggingDestination,
     ManagementService,
@@ -48,6 +51,59 @@ class AristaSSHSettings:
     ciphers: tuple[str, ...]
     key_exchanges: tuple[str, ...]
     macs: tuple[str, ...]
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class AristaNTPKey:
+    key_id: str
+    algorithm: str
+    trusted: bool
+    material_present: bool
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class AristaNTPAssociation:
+    address: str
+    vrf: str
+    key_id: str
+    nts_profile: str
+    authentication_state: str
+    algorithm: str
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class AristaSNMPView:
+    name: str
+    included_subtrees: tuple[str, ...]
+    excluded_subtrees: tuple[str, ...]
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class AristaSNMPGroup:
+    name: str
+    security_level: str
+    read_view: str
+    write_view: str
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class AristaSNMPUser:
+    name: str
+    group: str
+    authentication: str
+    privacy: str
+    authentication_key_state: str
+    privacy_key_state: str
+    group_security_level: str
+    group_resolved: bool
+    read_view: str
+    read_view_resolved: bool
+    source_restricted: bool
     evidence: tuple[ConfigEvidence, ...]
 
 
@@ -90,6 +146,14 @@ class AristaEOSParser(CiscoIOSParser):
             if match:
                 return match.group(1).strip()
         return "?"
+
+    def _release_tuple(self) -> tuple[int, int, int] | None:
+        match = re.match(r"(\d+)\.(\d+)\.(\d+)", self.get_version())
+        return tuple(map(int, match.groups())) if match else None
+
+    def supports_nts(self) -> bool | None:
+        release = self._release_tuple()
+        return None if release is None else release >= (4, 35, 0)
 
     def _blocks(self, parent_text: str) -> list[tuple[AristaCommand, list[AristaCommand]]]:
         blocks = []
@@ -259,23 +323,135 @@ class AristaEOSParser(CiscoIOSParser):
         )
 
     def _local_users(self) -> list[LocalUser]:
-        users = []
+        users: dict[str, LocalUser] = {}
         for command in self.commands:
-            match = re.fullmatch(r"username\s+(\S+)(?:\s+privilege\s+(\d+))?(?:\s+role\s+(\S+))?.*", command.text, re.IGNORECASE)
-            if not match:
+            tokens = self._tokens(command.text)
+            lowered = [token.casefold() for token in tokens]
+            if len(tokens) >= 3 and lowered[0] in {"no", "default"} and lowered[1] == "username":
+                if len(tokens) == 3:
+                    users.pop(tokens[2].casefold(), None)
                 continue
-            users.append(
-                LocalUser(
-                    username=match.group(1),
-                    state=ConfigurationState.ENABLED,
-                    role=match.group(3),
-                    privilege=int(match.group(2)) if match.group(2) else None,
-                    authentication="local",
-                    scope="switch",
-                    evidence=(ConfigEvidence(f"username {match.group(1)} <credential redacted>", self.config_filepath, command.line_number),),
-                )
+            if len(tokens) < 2 or lowered[0] != "username":
+                continue
+            account = tokens[1]
+            previous = users.get(account.casefold())
+            privilege = previous.privilege if previous else None
+            role = previous.role if previous else None
+            if "privilege" in lowered:
+                index = lowered.index("privilege")
+                if index + 1 < len(tokens) and tokens[index + 1].isdigit():
+                    privilege = int(tokens[index + 1])
+            if "role" in lowered:
+                index = lowered.index("role")
+                if index + 1 < len(tokens):
+                    role = tokens[index + 1]
+            users[account.casefold()] = LocalUser(
+                username=account,
+                state=ConfigurationState.ENABLED,
+                role=role,
+                privilege=privilege,
+                authentication="local",
+                scope="switch",
+                evidence=(ConfigEvidence(
+                    f"username {account} <credential redacted>",
+                    self.config_filepath,
+                    command.line_number,
+                ),),
             )
-        return users
+        return list(users.values())
+
+    @staticmethod
+    def _eos_storage(storage_type: str, value: str) -> CredentialStorageAssessment:
+        if storage_type == "none" or not value:
+            return CredentialStorageAssessment.EMPTY
+        if storage_type == "0":
+            return CredentialStorageAssessment.PLAINTEXT
+        if storage_type == "5":
+            return (
+                CredentialStorageAssessment.WEAK_HASH
+                if value.startswith("$1$") and len(value) > 3
+                else CredentialStorageAssessment.MALFORMED
+            )
+        if storage_type == "sha512":
+            return (
+                CredentialStorageAssessment.APPROVED_HASH
+                if value.startswith("$6$") and len(value) > 3
+                else CredentialStorageAssessment.MALFORMED
+            )
+        return CredentialStorageAssessment.UNKNOWN
+
+    @staticmethod
+    def _eos_default(
+        storage: CredentialStorageAssessment, value: str
+    ) -> DefaultCredentialAssessment:
+        if storage == CredentialStorageAssessment.EMPTY:
+            return DefaultCredentialAssessment.MATCH
+        if storage != CredentialStorageAssessment.PLAINTEXT:
+            return DefaultCredentialAssessment.NOT_EVALUATED
+        return (
+            DefaultCredentialAssessment.MATCH
+            if value.casefold() in {"admin", "arista", "password"}
+            else DefaultCredentialAssessment.NO_MATCH
+        )
+
+    def get_credential_metadata(self) -> list[CredentialMetadata]:
+        credentials: dict[str, CredentialMetadata] = {}
+        for command in self.commands:
+            tokens = self._tokens(command.text)
+            lowered = [token.casefold() for token in tokens]
+            if len(tokens) >= 3 and lowered[0] in {"no", "default"} and lowered[1] == "username":
+                if len(tokens) != 3:
+                    continue
+                account = tokens[2]
+                credentials.pop(account.casefold(), None)
+                if lowered[0] == "default" and account.casefold() == "admin":
+                    credentials["admin"] = CredentialMetadata(
+                        account="admin",
+                        context="local_user",
+                        method="nopassword",
+                        storage_type="none",
+                        storage_assessment=CredentialStorageAssessment.EMPTY,
+                        default_assessment=DefaultCredentialAssessment.MATCH,
+                        evidence=(self._evidence(command),),
+                    )
+                continue
+            if len(tokens) < 3 or lowered[0] != "username":
+                continue
+            account = tokens[1]
+            method = ""
+            storage_type = ""
+            value = ""
+            if "nopassword" in lowered[2:]:
+                method = "nopassword"
+                storage_type = "none"
+            elif "secret" in lowered[2:]:
+                method = "secret"
+                index = lowered.index("secret") + 1
+                if index < len(tokens) and lowered[index] in {"0", "5", "sha5", "sha512"}:
+                    marker = lowered[index]
+                    storage_type = "sha512" if marker in {"sha5", "sha512"} else marker
+                    index += 1
+                else:
+                    storage_type = "0"
+                value = tokens[index] if index < len(tokens) else ""
+            else:
+                # A role/privilege-only update retains the existing credential.
+                continue
+            storage = self._eos_storage(storage_type, value)
+            credentials[account.casefold()] = CredentialMetadata(
+                account=account,
+                context="local_user",
+                method=method,
+                storage_type=storage_type,
+                storage_assessment=storage,
+                default_assessment=self._eos_default(storage, value),
+                evidence=(ConfigEvidence(
+                    f"username {account} {method} {storage_type} <credential redacted>",
+                    self.config_filepath,
+                    command.line_number,
+                ),),
+            )
+        return list(credentials.values())
 
     def get_users(self) -> list[dict]:
         return [
@@ -296,11 +472,180 @@ class AristaEOSParser(CiscoIOSParser):
                 communities[key] = ConfigEvidence("snmp-server community <redacted>", self.config_filepath, command.line_number)
         return [(name, evidence) for name, evidence in communities.items()]
 
-    def has_secure_snmpv3_user(self) -> bool:
+    def get_snmp_default_vrf_enabled(self) -> bool:
+        state = True
         for command in self.commands:
-            if re.fullmatch(r"snmp-server\s+user\s+\S+\s+\S+\s+v3\s+auth\s+(?:sha|sha224|sha256|sha384|sha512)\s+\S+\s+priv\s+(?:aes|aes192|aes256)\s+\S+.*", command.text, re.IGNORECASE):
-                return True
-        return False
+            if re.fullmatch(r"no\s+snmp-server\s+vrf\s+default", command.text, re.IGNORECASE):
+                state = False
+            elif re.fullmatch(
+                r"(?:snmp-server|default\s+snmp-server)\s+vrf\s+default",
+                command.text,
+                re.IGNORECASE,
+            ):
+                state = True
+        return state
+
+    def has_secure_snmpv3_user(self) -> bool:
+        return any(
+            user.group_resolved
+            and user.group_security_level == "priv"
+            and user.authentication.startswith("sha")
+            and user.privacy.startswith("aes")
+            for user in self.get_snmpv3_relationships()[2]
+        )
+
+    def get_snmpv3_relationships(
+        self,
+    ) -> tuple[list[AristaSNMPView], list[AristaSNMPGroup], list[AristaSNMPUser]]:
+        view_entries: dict[tuple[str, str], tuple[str, ConfigEvidence]] = {}
+        groups: dict[str, AristaSNMPGroup] = {}
+        raw_users: dict[
+            str, tuple[str, str, str, str, str, str, ConfigEvidence]
+        ] = {}
+        source_acls: dict[str, ConfigEvidence] = {}
+
+        for command in self.commands:
+            tokens = self._tokens(command.text)
+            folded = [token.casefold() for token in tokens]
+            if not folded:
+                continue
+
+            offset = 1 if folded[0] in {"no", "default"} else 0
+            removed = bool(offset)
+            if folded[offset : offset + 2] == ["snmp-server", "view"] and len(tokens) >= offset + 4:
+                name, subtree = tokens[offset + 2], tokens[offset + 3]
+                key = (name.casefold(), subtree.casefold())
+                if removed:
+                    view_entries.pop(key, None)
+                elif len(tokens) > offset + 4 and folded[offset + 4] in {"include", "included", "exclude", "excluded"}:
+                    inclusion = "included" if folded[offset + 4].startswith("include") else "excluded"
+                    view_entries[key] = (
+                        inclusion,
+                        ConfigEvidence(
+                            f"snmp-server view {name} {subtree} {inclusion}",
+                            self.config_filepath,
+                            command.line_number,
+                        ),
+                    )
+                continue
+
+            if folded[offset : offset + 2] == ["snmp-server", "group"] and len(tokens) >= offset + 4:
+                name = tokens[offset + 2]
+                if removed:
+                    groups.pop(name.casefold(), None)
+                    continue
+                tail = folded[offset + 3 :]
+                if "v3" not in tail:
+                    continue
+                index = tail.index("v3") + 1
+                level = tail[index] if index < len(tail) and tail[index] in {"noauth", "auth", "priv"} else "noauth"
+
+                def option(keyword: str) -> str:
+                    return tail[tail.index(keyword) + 1] if keyword in tail and tail.index(keyword) + 1 < len(tail) else ""
+
+                read_view, write_view = option("read"), option("write")
+                groups[name.casefold()] = AristaSNMPGroup(
+                    name=name,
+                    security_level=level,
+                    read_view=read_view,
+                    write_view=write_view,
+                    evidence=(ConfigEvidence(
+                        f"snmp-server group {name} v3 {level} read {read_view or '<default>'} "
+                        f"write {write_view or '<none>'}",
+                        self.config_filepath,
+                        command.line_number,
+                    ),),
+                )
+                continue
+
+            if folded[offset : offset + 2] == ["snmp-server", "user"] and len(tokens) >= offset + 4:
+                name, group_name = tokens[offset + 2], tokens[offset + 3]
+                if removed:
+                    raw_users.pop(name.casefold(), None)
+                    continue
+                tail = tokens[offset + 4 :]
+                lowered = [token.casefold() for token in tail]
+                if "v3" not in lowered:
+                    continue
+
+                def secret_option(keyword: str) -> tuple[str, str]:
+                    if keyword not in lowered:
+                        return "", "missing"
+                    index = lowered.index(keyword) + 1
+                    if index >= len(lowered):
+                        return "", "unknown"
+                    algorithm = lowered[index]
+                    index += 1
+                    if algorithm == "aes" and index < len(lowered) and lowered[index] in {"128", "192", "256"}:
+                        algorithm = f"aes{lowered[index]}"
+                        index += 1
+                    if index < len(lowered) and lowered[index] in {"0", "7", "encrypted", "localized"}:
+                        index += 1
+                    state = "present" if index < len(lowered) and lowered[index] not in {"auth", "priv"} else "unknown"
+                    return algorithm, state
+
+                authentication, auth_state = secret_option("auth")
+                privacy, privacy_state = secret_option("priv")
+                raw_users[name.casefold()] = (
+                    name,
+                    group_name,
+                    authentication,
+                    privacy,
+                    auth_state,
+                    privacy_state,
+                    ConfigEvidence(
+                        f"snmp-server user {name} {group_name} v3 auth {authentication or 'none'} "
+                        f"<key {auth_state}> priv {privacy or 'none'} <key {privacy_state}>",
+                        self.config_filepath,
+                        command.line_number,
+                    ),
+                )
+                continue
+
+            acl = re.fullmatch(
+                r"(?:(?:no|default)\s+)?snmp-server\s+(?:ipv4|ipv6)\s+access-list\s+(\S+)(?:\s+vrf\s+(\S+))?",
+                command.text,
+                re.IGNORECASE,
+            )
+            if acl:
+                vrf = (acl.group(2) or "default").casefold()
+                if removed:
+                    source_acls.pop(vrf, None)
+                else:
+                    source_acls[vrf] = self._evidence(command)
+                continue
+
+        by_view: dict[str, list[tuple[str, str, ConfigEvidence]]] = {}
+        for (name, subtree), (inclusion, evidence) in view_entries.items():
+            by_view.setdefault(name, []).append((subtree, inclusion, evidence))
+        views = [
+            AristaSNMPView(
+                name=name,
+                included_subtrees=tuple(item[0] for item in entries if item[1] == "included"),
+                excluded_subtrees=tuple(item[0] for item in entries if item[1] == "excluded"),
+                evidence=tuple(item[2] for item in entries),
+            )
+            for name, entries in by_view.items()
+        ]
+        users = []
+        for name, group_name, authentication, privacy, auth_state, privacy_state, evidence in raw_users.values():
+            group = groups.get(group_name.casefold())
+            read_view = group.read_view if group else ""
+            users.append(AristaSNMPUser(
+                name=name,
+                group=group_name,
+                authentication=authentication,
+                privacy=privacy,
+                authentication_key_state=auth_state,
+                privacy_key_state=privacy_state,
+                group_security_level=group.security_level if group else "",
+                group_resolved=group is not None,
+                read_view=read_view,
+                read_view_resolved=not read_view or read_view.casefold() in by_view,
+                source_restricted="default" in source_acls,
+                evidence=(evidence,) + (group.evidence if group else ()),
+            ))
+        return views, list(groups.values()), users if self.get_snmp_default_vrf_enabled() else []
 
     def get_logging_destinations(self) -> list[LoggingDestination]:
         destinations = {}
@@ -321,13 +666,158 @@ class AristaEOSParser(CiscoIOSParser):
                 )
         return list(destinations.values())
 
-    def get_ntp_servers(self) -> tuple[str, ...]:
-        servers = {}
+    def get_ntp_keys(self) -> dict[str, AristaNTPKey]:
+        configured: dict[str, tuple[str, bool, ConfigEvidence]] = {}
+        trusted: set[str] = set()
         for command in self.commands:
-            match = re.fullmatch(r"(?P<no>no\s+)?ntp\s+server\s+(?P<address>\S+)(?:\s+.*)?", command.text, re.IGNORECASE)
-            if match:
-                servers[match.group("address")] = not bool(match.group("no"))
-        return tuple(address for address, enabled in servers.items() if enabled)
+            removed = re.fullmatch(r"(?:no|default) ntp authentication-key\s+(\S+)", command.text, re.IGNORECASE)
+            key = re.fullmatch(r"ntp authentication-key\s+(\S+)\s+(\S+)\s+(\S+)", command.text, re.IGNORECASE)
+            trust = re.fullmatch(r"(?P<no>(?:no|default)\s+)?ntp trusted(?:-key| key)\s+(\S+)", command.text, re.IGNORECASE)
+            if removed:
+                configured.pop(removed.group(1), None)
+            elif key:
+                key_id, algorithm, material = key.groups()
+                configured[key_id] = (
+                    algorithm.casefold(),
+                    bool(material),
+                    ConfigEvidence(
+                        f"ntp authentication-key {key_id} {algorithm.casefold()} <key redacted>",
+                        self.config_filepath,
+                        command.line_number,
+                    ),
+                )
+            elif trust:
+                key_id = trust.group(2)
+                if trust.group("no"):
+                    trusted.discard(key_id)
+                else:
+                    trusted.add(key_id)
+        return {
+            key_id: AristaNTPKey(
+                key_id=key_id,
+                algorithm=algorithm,
+                trusted=key_id in trusted,
+                material_present=material,
+                evidence=(evidence,),
+            )
+            for key_id, (algorithm, material, evidence) in configured.items()
+        }
+
+    def get_ntp_authentication_enabled(self) -> bool | None:
+        enabled: bool | None = False if self._release_tuple() is not None else None
+        for command in self.commands:
+            if re.fullmatch(r"ntp authenticate", command.text, re.IGNORECASE):
+                enabled = True
+            elif re.fullmatch(r"(?:no|default) ntp authenticate", command.text, re.IGNORECASE):
+                enabled = False
+        return enabled
+
+    def get_nts_profiles(self) -> dict[str, tuple[bool, tuple[ConfigEvidence, ...]]]:
+        profiles: dict[str, tuple[bool, tuple[ConfigEvidence, ...]]] = {}
+        for index, command in enumerate(self.commands):
+            match = re.fullmatch(r"ssl profile\s+(\S+)", command.text, re.IGNORECASE)
+            if not match:
+                continue
+            children = []
+            for child in self.commands[index + 1 :]:
+                if child.indent <= command.indent:
+                    break
+                children.append(child)
+            trust_commands = [
+                child
+                for child in children
+                if re.fullmatch(r"trust certificate\s+\S+", child.text, re.IGNORECASE)
+            ]
+            profiles[match.group(1).casefold()] = (
+                bool(trust_commands),
+                (self._evidence(command),) + tuple(self._evidence(item) for item in trust_commands),
+            )
+        return profiles
+
+    @staticmethod
+    def _ntp_server_parts(text: str) -> tuple[bool, str, str, str, str] | None:
+        tokens = text.split()
+        if tokens[:2] == ["ntp", "server"]:
+            removed = False
+            index = 2
+        elif tokens[:3] in (["no", "ntp", "server"], ["default", "ntp", "server"]):
+            removed = True
+            index = 3
+        else:
+            return None
+        vrf = "default"
+        if index < len(tokens) and tokens[index] == "vrf":
+            if index + 2 >= len(tokens):
+                return None
+            vrf = tokens[index + 1]
+            index += 2
+        if index >= len(tokens):
+            return None
+        address = tokens[index]
+        tail = tokens[index + 1 :]
+        key_id = ""
+        nts_profile = ""
+        if "key" in tail and tail.index("key") + 1 < len(tail):
+            key_id = tail[tail.index("key") + 1]
+        if "ssl" in tail and tail.index("ssl") + 2 < len(tail) and tail[tail.index("ssl") + 1] == "profile":
+            nts_profile = tail[tail.index("ssl") + 2]
+        return removed, vrf, address, key_id, nts_profile
+
+    def get_ntp_associations(self) -> list[AristaNTPAssociation]:
+        active: dict[tuple[str, str], tuple[str, str, ConfigEvidence]] = {}
+        for command in self.commands:
+            parsed = self._ntp_server_parts(command.text.casefold())
+            if parsed is None:
+                continue
+            removed, vrf, address, key_id, nts_profile = parsed
+            identity = (vrf, address)
+            if removed:
+                active.pop(identity, None)
+            else:
+                active[identity] = (key_id, nts_profile, self._evidence(command))
+        keys = self.get_ntp_keys()
+        profiles = self.get_nts_profiles()
+        global_auth = self.get_ntp_authentication_enabled()
+        associations = []
+        for (vrf, address), (key_id, nts_profile, server_evidence) in active.items():
+            key = keys.get(key_id)
+            profile = profiles.get(nts_profile)
+            if nts_profile:
+                if not profile or not profile[0] or self.supports_nts() is False:
+                    state = "unresolved"
+                elif self.supports_nts() is None:
+                    state = "unknown"
+                else:
+                    state = "authenticated"
+                algorithm = "nts"
+            elif global_auth is None:
+                state = "unknown"
+                algorithm = key.algorithm if key else ""
+            elif not global_auth or not key_id:
+                state = "unauthenticated"
+                algorithm = key.algorithm if key else ""
+            elif key is None or not key.trusted or not key.material_present:
+                state = "unresolved"
+                algorithm = key.algorithm if key else ""
+            else:
+                state = "authenticated"
+                algorithm = key.algorithm
+            evidence = (server_evidence,) + (key.evidence if key else ())
+            if profile:
+                evidence += profile[1]
+            associations.append(AristaNTPAssociation(
+                address=address,
+                vrf=vrf,
+                key_id=key_id,
+                nts_profile=nts_profile,
+                authentication_state=state,
+                algorithm=algorithm,
+                evidence=evidence,
+            ))
+        return associations
+
+    def get_ntp_servers(self) -> tuple[str, ...]:
+        return tuple(item.address for item in self.get_ntp_associations())
 
     def get_services(self) -> dict[str, bool]:
         endpoints = self.get_eapi_endpoints()
@@ -393,4 +883,11 @@ class AristaEOSParser(CiscoIOSParser):
         )
 
 
-__all__ = ["AristaCommand", "AristaEAPIEndpoint", "AristaEOSParser", "AristaSSHSettings"]
+__all__ = [
+    "AristaCommand",
+    "AristaEAPIEndpoint",
+    "AristaEOSParser",
+    "AristaNTPAssociation",
+    "AristaNTPKey",
+    "AristaSSHSettings",
+]

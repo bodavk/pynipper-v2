@@ -34,9 +34,10 @@ def test_public_asa_processor_emits_each_rule_once():
     parser = get_parser("ASA", config_file)
 
     issues = list(process_asa_conf(parser).values())
-    rule_ids = [issue.rule_id for issue in issues]
+    identities = [(issue.rule_id, issue.evidence) for issue in issues]
+    rule_ids = {issue.rule_id for issue in issues}
 
-    assert len(rule_ids) == len(set(rule_ids))
+    assert len(identities) == len(set(identities))
     assert "cisco.asa.management.telnet" in rule_ids
     assert "cisco.asa.logging.missing" in rule_ids
     assert "cisco.asa.snmp.default_community" in rule_ids
@@ -164,7 +165,7 @@ def test_enable_password_storage_is_classified_and_redacted(tmp_path):
     assert "UniqueValue2026" not in " ".join(finding.evidence)
 
     _, encrypted = _analyze_config(tmp_path, "enable password opaquehash encrypted\n")
-    assert "cisco.asa.credentials.weak_enable_password" not in {
+    assert "cisco.asa.credentials.weak_enable_password" in {
         issue.rule_id for issue in encrypted
     }
 
@@ -174,7 +175,7 @@ def test_enable_password_storage_is_classified_and_redacted(tmp_path):
     [
         ("enable password", "plaintext", True),
         ("enable password CiScO", "plaintext", True),
-        ("enable password opaquehash encrypted", "encrypted", False),
+        ("enable password opaquehash encrypted", "encrypted", True),
         ("enable password opaquehash pbkdf2", "pbkdf2", False),
     ],
 )
@@ -215,3 +216,45 @@ def test_snmpv3_auth_priv_is_distinguished(tmp_path):
         "snmp-server user monitor GROUP v3 auth sha secret priv aes 256 secret2\n",
     )
     assert "cisco.asa.snmp.v3_protection" not in {issue.rule_id for issue in issues}
+
+
+def test_snmpv3_users_resolve_groups_hosts_and_redact_each_secret(tmp_path):
+    parser, issues = _analyze_config(
+        tmp_path,
+        '''ASA Version 9.16(4)
+snmp-server group SECURE v3 priv
+snmp-server group AUTHONLY v3 auth
+snmp-server user monitor SECURE v3 auth sha-256 AUTHSECRET priv aes 256 PRIVSECRET
+snmp-server user weak AUTHONLY v3 auth md5 WEAKAUTH priv des WEAKPRIV
+snmp-server user orphan MISSING v3 auth sha-256 ORPHANAUTH priv aes 256 ORPHANPRIV
+snmp-server host management 192.0.2.20 version 3 monitor
+snmp-server host management 192.0.2.21 version 3 weak
+snmp-server host management 192.0.2.22 version 3 orphan
+''',
+    )
+    _, hosts, users = parser.get_snmp_configuration()
+    assert hosts[0].principal == "monitor"
+    assert {user.name: user.host_scopes for user in users} == {
+        "monitor": ("management:192.0.2.20",),
+        "weak": ("management:192.0.2.21",),
+        "orphan": ("management:192.0.2.22",),
+    }
+    snmp = [issue for issue in issues if issue.rule_id.startswith("cisco.asa.snmp.v3_")]
+    assert [(issue.rule_id, issue.observation.split("'")[1]) for issue in snmp] == [
+        ("cisco.asa.snmp.v3_protection", "weak"),
+        ("cisco.asa.snmp.v3_weak_algorithm", "weak"),
+        ("cisco.asa.snmp.v3_reference", "orphan"),
+    ]
+    evidence = " ".join(value for issue in snmp for value in issue.evidence)
+    assert all(secret not in evidence for secret in ("AUTHSECRET", "PRIVSECRET", "WEAKAUTH", "WEAKPRIV", "ORPHANAUTH", "ORPHANPRIV"))
+
+
+def test_snmp_sha1_policy_is_release_qualified(tmp_path):
+    base = '''snmp-server group SECURE v3 priv
+snmp-server user monitor SECURE v3 auth sha AUTHSECRET priv aes 128 PRIVSECRET
+snmp-server host management 192.0.2.20 version 3 monitor
+'''
+    _, old_issues = _analyze_config(tmp_path, "ASA Version 9.13(1)\n" + base)
+    _, new_issues = _analyze_config(tmp_path, "ASA Version 9.14(1)\n" + base)
+    assert "cisco.asa.snmp.v3_weak_algorithm" not in {issue.rule_id for issue in old_issues}
+    assert "cisco.asa.snmp.v3_weak_algorithm" in {issue.rule_id for issue in new_issues}

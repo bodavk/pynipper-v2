@@ -35,7 +35,7 @@ set version 22.4R1.10
 set system host-name weak-srx
 set system login user ops class super-user
 set system login user legacy class super-user
-set system login user legacy authentication encrypted-password "$1$secret"
+set system login user legacy authentication encrypted-password "$1$salt$hash"
 set system login retry-options tries-before-disconnect 8
 set system services ssh root-login deny
 set system services ssh ciphers [ aes256-ctr 3des-cbc ]
@@ -139,6 +139,42 @@ set system ntp server 192.0.2.20 key 2
     }
 
 
+def test_junos_ntp_mixed_associations_and_algorithms_are_independent(tmp_path):
+    parser = _junos(
+        tmp_path,
+        '''## Model: SRX345
+set version 22.4R1.10
+set system ntp authentication-key 1 type sha256 value "TOPSECRET"
+set system ntp trusted-key 1
+set system ntp server 192.0.2.20 key 1
+set system ntp authentication-key 2 type sha1 value "OTHERSECRET"
+set system ntp trusted-key 2
+set system ntp peer 192.0.2.21 key 2
+set system ntp server 192.0.2.22
+''',
+    )
+    associations = parser.get_ntp_associations()
+    assert [(item.role, item.address, item.authentication_state) for item in associations] == [
+        ("server", "192.0.2.20", "authenticated"),
+        ("server", "192.0.2.22", "unauthenticated"),
+        ("peer", "192.0.2.21", "authenticated"),
+    ]
+    findings = [
+        item for item in _issues(PluginJunOSBaseline, parser)
+        if item.rule_id.startswith("juniper.junos.ntp.")
+    ]
+    assert [item.rule_id for item in findings] == [
+        "juniper.junos.ntp.authentication",
+        "juniper.junos.ntp.weak_algorithm",
+    ]
+    assert "192.0.2.22" in findings[0].observation
+    assert "192.0.2.21" in findings[1].observation
+    assert all(
+        secret not in " ".join(evidence for item in findings for evidence in item.evidence)
+        for secret in ("TOPSECRET", "OTHERSECRET")
+    )
+
+
 def test_junos_deleted_and_inactive_weak_definitions_do_not_trigger(tmp_path):
     parser = _junos(
         tmp_path,
@@ -161,6 +197,30 @@ delete snmp community public
         "juniper.junos.services.legacy",
         "juniper.junos.snmp.legacy_community",
     }.intersection(explicit_rule_ids)
+
+
+def test_junos_logging_evaluates_each_destination_and_preserves_unknowns(tmp_path):
+    parser = _junos(
+        tmp_path,
+        '''set version 22.4R1.10
+set system syslog host 192.0.2.30 any informational
+set system syslog host 192.0.2.31 authorization warning
+set system syslog host 192.0.2.31 transport tls
+set system syslog host 192.0.2.32 authorization vendor-private-severity
+set system syslog host 192.0.2.33 any warning
+deactivate system syslog host 192.0.2.33
+''',
+    )
+    plugin = PluginJunOSBaseline()
+    plugin.check_logging(parser)
+    findings = plugin.get_issues()
+    assert len(findings) == 1
+    assert findings[0].rule_id == "juniper.junos.logging.event_coverage"
+    assert "192.0.2.31" in findings[0].observation
+    assert "192.0.2.30" not in findings[0].observation
+    assert "192.0.2.32" not in findings[0].observation
+    assert "192.0.2.33" not in findings[0].observation
+    assert "explicitly tls" in findings[0].observation
 
 
 def test_screenos_vulnerable_baseline_has_effective_scoped_findings(tmp_path):

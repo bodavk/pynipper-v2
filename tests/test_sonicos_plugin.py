@@ -151,3 +151,64 @@ def test_unauthenticated_ntp_and_removed_server_are_distinguished(tmp_path):
     records = parser.get_ntp_server_records()
     assert [(item.address, item.authenticated) for item in records] == [("192.0.2.31", False)]
     assert "sonicwall.sonicos.ntp.authentication" in {issue.rule_id for issue in _issues(parser)}
+
+
+def test_secure_ntp_server_does_not_mask_an_insecure_peer_and_secrets_are_redacted(tmp_path):
+    parser = _parse(
+        tmp_path,
+        SECURE.replace(
+            "ntp-server 192.0.2.30 md5 trust-key-no 1 key-number 1 password redacted",
+            "ntp-server 192.0.2.30 md5 trust-key-no 1 key-number 1 password TOPSECRET\n"
+            "ntp-server 192.0.2.31 md5 trust-key-no 2 key-number 3 password OTHERSECRET",
+        ),
+    )
+    records = parser.get_ntp_server_records()
+    assert [item.authenticated for item in records] == [True, False]
+    findings = [
+        item for item in _issues(parser)
+        if item.rule_id == "sonicwall.sonicos.ntp.authentication"
+    ]
+    assert len(findings) == 1
+    assert "192.0.2.31" in findings[0].observation
+    assert all(
+        secret not in " ".join(evidence.text for item in records for evidence in item.evidence)
+        for secret in ("TOPSECRET", "OTHERSECRET")
+    )
+
+
+def test_snmpv3_users_are_evaluated_independently_and_redacted(tmp_path):
+    parser = _parse(
+        tmp_path,
+        '''firmware-version SonicOS 7.1.2-7019
+interface X0
+  zone LAN
+  management snmp
+snmp user secure auth sha AUTHSECRET priv aes PRIVSECRET
+snmp user hidden auth sha priv aes
+snmp user weak auth md5 WEAKAUTH priv des WEAKPRIV
+''',
+    )
+    users = parser.get_snmpv3_users()
+    assert {user.name: user.authentication_key_state for user in users} == {
+        "secure": "present",
+        "hidden": "unknown",
+        "weak": "present",
+    }
+    findings = [issue for issue in _issues(parser) if issue.rule_id.startswith("sonicwall.sonicos.snmp.")]
+    assert [issue.rule_id for issue in findings] == ["sonicwall.sonicos.snmp.v3_weak_algorithm"]
+    evidence = " ".join(value for issue in findings for value in issue.evidence)
+    assert all(secret not in evidence for secret in ("AUTHSECRET", "PRIVSECRET", "WEAKAUTH", "WEAKPRIV"))
+
+
+def test_inactive_sonicos_snmp_users_are_not_graded(tmp_path):
+    parser = _parse(
+        tmp_path,
+        '''firmware-version SonicOS 7.1.2-7019
+interface X0
+  zone LAN
+  management https
+snmp user stale auth md5 SECRET priv des OTHER
+''',
+    )
+    assert parser.get_snmpv3_users()
+    assert not [issue for issue in _issues(parser) if issue.rule_id.startswith("sonicwall.sonicos.snmp.")]

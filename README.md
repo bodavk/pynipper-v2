@@ -16,15 +16,15 @@ The primary, regression-gated platforms are:
 | Fortinet | FortiGate / FortiOS | Target baseline |
 | Check Point | Firewall-1 legacy management exports | Target offline-policy baseline |
 | Juniper | Junos | Target baseline |
-| Juniper | ScreenOS | Target baseline; the platform is end-of-life |
+| Juniper | ScreenOS | Target baseline; EOL, with additional default-policy and session-control semantics qualified for 6.3 exports |
 
 PAN-OS, HP ProCurve/ArubaOS-Switch, SonicWall SonicOS 7 E-CLI, and Arista EOS have expanded, tested static baselines. Their support remains bounded by the documented input dialects and static-analysis limits. See [Supported devices](docs/SUPPORTED_DEVICES.md) for precise boundaries and [Architecture](docs/ARCHITECTURE.md) for the extension model.
 
 ## What the analyzer can and cannot prove
 
-The target pipelines inspect management exposure, authentication and credentials, logging, SNMP, NTP, cryptography/VPN, interfaces/control-plane protections, and policy breadth where those concepts exist in the supplied export.
+The target pipelines inspect management exposure, authentication and credentials, logging, SNMP, NTP, cryptography/VPN, interfaces/control-plane protections, policy breadth, and bounded BGP/OSPF routing trust where those concepts exist in the supplied export. FortiOS 7.4+ additionally resolves administrative RADIUS bindings and checks concrete RadSec identity/TLS failures without treating every legacy RADIUS path as insecure. FortiOS and PAN-OS active allow policies resolve attached inspection groups and profiles so an empty, explicitly non-blocking or invalid object cannot pass on its name alone. FortiOS IPv4/IPv6 local-in policy is assessed separately from transit policy, while FortiOS and Junos follow only active policy/interface VPN attachments to explicit IKE/IPsec proposal chains. Junos SRX zone-pair analysis is likewise separate from stateless firewall filters.
 
-This is static analysis. It cannot prove runtime reachability, policy installation, certificate validity, external authentication health, dynamic object membership, or controls that are not present in the configuration files. Check Point analysis has additional offline-export limits documented in the supported-device guide.
+This is static analysis. It cannot prove runtime reachability, policy installation, negotiated VPN transforms or peer identity, the certificate actually served or its live revocation status, external authentication health, dynamic object membership, or controls that are not present in the configuration files. PAN-OS and ASA can evaluate exported public certificate material reproducibly when the assessment policy supplies a timestamp, intended identity and approved exported trust-anchor fingerprints. Check Point analysis has additional offline-export limits documented in the supported-device guide.
 
 ## Requirements and installation
 
@@ -77,8 +77,11 @@ Useful options:
 | `-f`, `--output-filename` | Report path | `report.html` |
 | `-x`, `--offline` | Disable external Cisco advisory lookup | Online lookup is allowed when credentials exist |
 | `-c`, `--configuration` | Tool configuration containing optional API credentials | Bundled `default.conf` |
+| `--assessment-policy` | Optional JSON policy containing explicit roles, protected AAA paths, certificate time/identity/trust inputs, and category exclusions | Built-in policy; all contextual facts unknown and no exclusions |
 
 Accepted device IDs and aliases are generated from `src/devices/registry.py`; run `pynipper-ng --help` for the current list.
+
+See [Assessment policy](docs/ASSESSMENT_POLICY.md) for the validated JSON schema and its conservative scope rules. Excluded categories are recorded in the report and are never represented as compliant.
 
 ## Validation
 

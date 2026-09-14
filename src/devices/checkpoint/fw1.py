@@ -1,4 +1,6 @@
 import os
+import ipaddress
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Iterator, List, Optional, Tuple
@@ -67,6 +69,36 @@ class CheckPointLayer:
     rules: Tuple[CheckPointRule, ...]
 
 
+@dataclass(frozen=True, order=True)
+class CheckPointAddressInterval:
+    family: int
+    first: int
+    last: int
+
+
+@dataclass(frozen=True, order=True)
+class CheckPointServiceInterval:
+    protocol: str
+    first_port: int
+    last_port: int
+
+
+@dataclass(frozen=True)
+class CheckPointNetworkSemantics:
+    any: bool = False
+    intervals: Tuple[CheckPointAddressInterval, ...] = ()
+    complete: bool = True
+    unresolved: Tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class CheckPointServiceSemantics:
+    any: bool = False
+    intervals: Tuple[CheckPointServiceInterval, ...] = ()
+    complete: bool = True
+    unresolved: Tuple[str, ...] = ()
+
+
 class CheckPointFW1Parser(BaseDeviceParser):
 
     device_type = "CHECKPOINT_FW1"
@@ -79,6 +111,9 @@ class CheckPointFW1Parser(BaseDeviceParser):
         self.config_directory = config_directory
         self.files = self._locate_files()
         self.parsed_data = self._parse_files()
+        self._object_records_cache: Optional[
+            Tuple[Tuple[CheckPointObject, ...], Tuple[CheckPointService, ...]]
+        ] = None
 
     def _locate_files(self) -> dict:
         """Locates CheckPoint database files in the provided directory."""
@@ -407,6 +442,8 @@ class CheckPointFW1Parser(BaseDeviceParser):
                 yield from self._iter_object_candidates(child, path + (str(index),))
 
     def _object_records(self) -> Tuple[Tuple[CheckPointObject, ...], Tuple[CheckPointService, ...]]:
+        if self._object_records_cache is not None:
+            return self._object_records_cache
         document = self.parsed_data.get("objects")
         if document is None:
             return (), ()
@@ -475,13 +512,206 @@ class CheckPointFW1Parser(BaseDeviceParser):
                         evidence=evidence,
                     )
                 )
-        return tuple(objects), tuple(services)
+        self._object_records_cache = (tuple(objects), tuple(services))
+        return self._object_records_cache
 
     def get_policy_objects(self) -> Tuple[CheckPointObject, ...]:
         return self._object_records()[0]
 
     def get_service_objects(self) -> Tuple[CheckPointService, ...]:
         return self._object_records()[1]
+
+    @staticmethod
+    def _address_interval(record: CheckPointObject) -> Optional[CheckPointAddressInterval]:
+        if not record.address:
+            return None
+        try:
+            if record.last_address:
+                first = ipaddress.ip_address(record.address)
+                last = ipaddress.ip_address(record.last_address)
+                if first.version != last.version or int(first) > int(last):
+                    return None
+                return CheckPointAddressInterval(first.version, int(first), int(last))
+            if record.netmask:
+                network = ipaddress.ip_network(
+                    f"{record.address}/{record.netmask}", strict=False
+                )
+                return CheckPointAddressInterval(
+                    network.version,
+                    int(network.network_address),
+                    int(network.broadcast_address),
+                )
+            address = ipaddress.ip_address(record.address)
+            return CheckPointAddressInterval(address.version, int(address), int(address))
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _service_protocol(record: CheckPointService) -> Optional[str]:
+        raw = (record.protocol or record.kind).strip().casefold().replace("_", "-")
+        aliases = {
+            "1": "icmp",
+            "6": "tcp",
+            "17": "udp",
+            "58": "icmpv6",
+            "tcp-subservice": "tcp",
+        }
+        protocol = aliases.get(raw, raw)
+        if protocol in {"tcp", "udp", "icmp", "icmpv6"}:
+            return protocol
+        if protocol.isdigit() and 0 <= int(protocol) <= 255:
+            return protocol
+        return None
+
+    @staticmethod
+    def _port_intervals(value: Optional[str]) -> Optional[Tuple[Tuple[int, int], ...]]:
+        if value is None:
+            return None
+        intervals: List[Tuple[int, int]] = []
+        for raw_part in value.split(","):
+            part = raw_part.strip()
+            if not part:
+                return None
+            match = re.fullmatch(r"(<=|>=|<|>)\s*(\d+)", part)
+            if match:
+                operator, raw_number = match.groups()
+                number = int(raw_number)
+                if not 0 <= number <= 65535:
+                    return None
+                bounds = {
+                    "<": (0, number - 1),
+                    "<=": (0, number),
+                    ">": (number + 1, 65535),
+                    ">=": (number, 65535),
+                }[operator]
+                if bounds[0] > bounds[1]:
+                    return None
+                intervals.append(bounds)
+                continue
+            match = re.fullmatch(r"(\d+)\s*[-:]\s*(\d+)", part)
+            if match:
+                first, last = (int(item) for item in match.groups())
+                if not (0 <= first <= last <= 65535):
+                    return None
+                intervals.append((first, last))
+                continue
+            if part.isdigit():
+                number = int(part)
+                if not 0 <= number <= 65535:
+                    return None
+                intervals.append((number, number))
+                continue
+            return None
+        return tuple(intervals)
+
+    def resolve_network_semantics(
+        self, names: Tuple[str, ...], expansion_limit: int = 4096
+    ) -> CheckPointNetworkSemantics:
+        """Resolve static network/group references into bounded address intervals."""
+        index = {record.name.casefold(): record for record in self.get_policy_objects()}
+        intervals: set[CheckPointAddressInterval] = set()
+        unresolved: set[str] = set()
+        any_match = False
+        visited = 0
+
+        def visit(name: str, ancestors: frozenset[str]) -> None:
+            nonlocal any_match, visited
+            key = name.strip().casefold()
+            if key == "any":
+                any_match = True
+                return
+            if not key:
+                unresolved.add("<empty-network-reference>")
+                return
+            visited += 1
+            if visited > expansion_limit:
+                unresolved.add("<network-expansion-limit>")
+                return
+            if key in ancestors:
+                unresolved.add(name)
+                return
+            record = index.get(key)
+            if record is None:
+                unresolved.add(name)
+                return
+            if record.members:
+                for member in record.members:
+                    visit(member, ancestors | {key})
+                return
+            interval = self._address_interval(record)
+            if interval is None:
+                unresolved.add(record.name)
+                return
+            intervals.add(interval)
+
+        if not names:
+            unresolved.add("<empty-network-dimension>")
+        for name in names:
+            visit(name, frozenset())
+        return CheckPointNetworkSemantics(
+            any=any_match,
+            intervals=tuple(sorted(intervals)),
+            complete=not unresolved,
+            unresolved=tuple(sorted(unresolved, key=str.casefold)),
+        )
+
+    def resolve_service_semantics(
+        self, names: Tuple[str, ...], expansion_limit: int = 4096
+    ) -> CheckPointServiceSemantics:
+        """Resolve static service/group references into protocol/port intervals."""
+        index = {record.name.casefold(): record for record in self.get_service_objects()}
+        intervals: set[CheckPointServiceInterval] = set()
+        unresolved: set[str] = set()
+        any_match = False
+        visited = 0
+
+        def visit(name: str, ancestors: frozenset[str]) -> None:
+            nonlocal any_match, visited
+            key = name.strip().casefold()
+            if key == "any":
+                any_match = True
+                return
+            if not key:
+                unresolved.add("<empty-service-reference>")
+                return
+            visited += 1
+            if visited > expansion_limit:
+                unresolved.add("<service-expansion-limit>")
+                return
+            if key in ancestors:
+                unresolved.add(name)
+                return
+            record = index.get(key)
+            if record is None:
+                unresolved.add(name)
+                return
+            if record.members:
+                for member in record.members:
+                    visit(member, ancestors | {key})
+                return
+            protocol = self._service_protocol(record)
+            if protocol is None:
+                unresolved.add(record.name)
+                return
+            ports = self._port_intervals(record.port)
+            if ports is None:
+                if protocol not in {"icmp", "icmpv6"} and not protocol.isdigit():
+                    unresolved.add(record.name)
+                    return
+                ports = ((0, 65535),)
+            for first, last in ports:
+                intervals.add(CheckPointServiceInterval(protocol, first, last))
+
+        if not names:
+            unresolved.add("<empty-service-dimension>")
+        for name in names:
+            visit(name, frozenset())
+        return CheckPointServiceSemantics(
+            any=any_match,
+            intervals=tuple(sorted(intervals)),
+            complete=not unresolved,
+            unresolved=tuple(sorted(unresolved, key=str.casefold)),
+        )
 
     @staticmethod
     def _is_true(value: object) -> bool:
@@ -551,6 +781,10 @@ __all__ = [
     "CheckPointFW1Parser",
     "CheckPointLayer",
     "CheckPointObject",
+    "CheckPointAddressInterval",
+    "CheckPointNetworkSemantics",
     "CheckPointRule",
     "CheckPointService",
+    "CheckPointServiceInterval",
+    "CheckPointServiceSemantics",
 ]

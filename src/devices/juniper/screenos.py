@@ -7,7 +7,10 @@ from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.models import (
     ConfigEvidence,
     ConfigurationState,
+    CredentialMetadata,
+    CredentialStorageAssessment,
     CryptoSetting,
+    DefaultCredentialAssessment,
     LocalUser,
     LoggingDestination,
     ManagementService,
@@ -42,6 +45,8 @@ class ScreenOSPolicy:
     action: str = ""
     disabled: bool = False
     tracking: str = ""
+    auth_server: str = ""
+    auth_server_evidence: Optional[ConfigEvidence] = None
     evidence: list[ConfigEvidence] = field(default_factory=list)
 
 
@@ -59,6 +64,30 @@ class ScreenOSCommand:
     evidence: ConfigEvidence
 
 
+@dataclass(frozen=True)
+class ScreenOSFirewallPolicyState:
+    """ScreenOS 6.3 unmatched interzone-policy behavior."""
+
+    default_action: str
+    configured_policy_count: int
+    resolution_state: str
+    evidence: tuple[ConfigEvidence, ...] = ()
+
+
+@dataclass(frozen=True)
+class ScreenOSSessionControl:
+    """One effective administrative or authentication-user timeout."""
+
+    scope: str
+    name: str
+    uses: tuple[str, ...]
+    timeout_minutes: Optional[int]
+    value_source: str
+    resolution_state: str
+    active: bool
+    evidence: tuple[ConfigEvidence, ...] = ()
+
+
 class JuniperScreenOSParser(BaseDeviceParser):
 
     device_type = "SCREENOS"
@@ -73,6 +102,26 @@ class JuniperScreenOSParser(BaseDeviceParser):
         "snmp": "snmp",
         "ping": "ping",
     }
+    _KNOWN_DEFAULT_PASSWORD_HASHES = {
+        value.casefold()
+        for value in {
+            "nBh1JgrWI8BMcxVE1sfD3ZHtPvNqOn",
+            "nIEXLGrQKPGFclpK2srC+GItLBIaYn",
+            "nEgTC0rULyNDcfOHZsFDJSAtfiPqWn",
+            "nJBnMRrmG7cFc3ALdsWMLIKtWHC4ln",
+            "nL1kB1ryFpdIcuHBksgKNQLttDFjCn",
+            "nA0XKervNIgBctzLBsjNKyEtOcM5an",
+            "nFR1M7r3PBEHcA0FWs1JJ8LtBTOHIn",
+            "nDQFBzrfECTDcLFD7sRA2kMtP4FNwn",
+            "nH/vDirbE5GBcjdGoslAEBBtHFA6En",
+            "nMjFM0rdC9iOc+xIFsGEm3LtAeGZhn",
+            "nO8gOKrtJ/YMclhNlsoJCrCtllAL7n",
+            "nDC0GjreNnlGcIPHTsGOUAFt6BJZdn",
+            "nKv3LvrdAVtOcE5EcsGIpYBtniNbUn",
+            "nKVUM2rwMUzPcrkG5sWIHdCtqkAibn",
+        }
+    }
+    _KNOWN_DEFAULT_PASSWORDS = {"password", "netscreen", "admin", "administrator"}
 
     def __init__(self, config_filepath: str):
         super().__init__(config_filepath)
@@ -98,7 +147,7 @@ class JuniperScreenOSParser(BaseDeviceParser):
         evidence_text = text
         if redact:
             evidence_text = re.sub(
-                r"(?i)(password|secret|key|community)\s+\S+",
+                r'''(?i)(password|secret|key|community)\s+(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\S+)''',
                 r"\1 <redacted>",
                 evidence_text,
             )
@@ -147,6 +196,201 @@ class JuniperScreenOSParser(BaseDeviceParser):
             for command in self.effective_commands
             if self._is_token_prefix(normalized, command.tokens)
         ]
+
+    def is_screenos_63(self) -> bool:
+        """Return true only for the release family qualified by recovered manuals."""
+
+        return bool(re.search(r"(?:^|\D)6\.3(?:\.0)?(?:r\d+)?(?:\D|$)", self.version, re.I))
+
+    @staticmethod
+    def _timeout_value(command: Optional[ScreenOSCommand]) -> Optional[int]:
+        if command is None or not command.tokens:
+            return None
+        value = command.tokens[-1]
+        return int(value) if value.isdigit() else None
+
+    def get_firewall_policy_state(self) -> ScreenOSFirewallPolicyState:
+        """Resolve only the documented ScreenOS 6.3 unmatched-policy default."""
+
+        if not self.is_screenos_63():
+            return ScreenOSFirewallPolicyState(
+                default_action="unknown",
+                configured_policy_count=len(self.policies),
+                resolution_state="unsupported-release",
+            )
+        commands = self.get_effective_commands(("policy", "default-permit-all"))
+        if commands:
+            return ScreenOSFirewallPolicyState(
+                default_action="permit-all",
+                configured_policy_count=len(
+                    [policy for policy in self.policies.values() if not policy.disabled]
+                ),
+                resolution_state="explicit",
+                evidence=(commands[-1].evidence,),
+            )
+        return ScreenOSFirewallPolicyState(
+            default_action="deny-all",
+            configured_policy_count=len(
+                [policy for policy in self.policies.values() if not policy.disabled]
+            ),
+            resolution_state="documented-default",
+        )
+
+    def get_session_controls(self) -> tuple[ScreenOSSessionControl, ...]:
+        """Resolve ScreenOS 6.3 timeout domains and active AAA bindings."""
+
+        if not self.is_screenos_63():
+            return ()
+
+        controls: list[ScreenOSSessionControl] = []
+        console_commands = self.get_effective_commands(("console", "timeout"))
+        console_command = console_commands[-1] if console_commands else None
+        console_disabled = bool(self.get_effective_commands(("console", "disable")))
+        controls.append(
+            ScreenOSSessionControl(
+                scope="console-telnet",
+                name="console/Telnet",
+                uses=("console", "telnet"),
+                timeout_minutes=(
+                    self._timeout_value(console_command)
+                    if console_command is not None
+                    else 10
+                ),
+                value_source="explicit" if console_command else "documented-default",
+                resolution_state=(
+                    "known"
+                    if console_command is None or self._timeout_value(console_command) is not None
+                    else "invalid"
+                ),
+                active=not console_disabled or self.get_services()["telnet"],
+                evidence=(console_command.evidence,) if console_command else (),
+            )
+        )
+
+        web_commands = self.get_effective_commands(("admin", "auth", "web", "timeout"))
+        value_source = "explicit"
+        if not web_commands:
+            # Older exported configurations use the spelling corrected by the 6.3
+            # release-note erratum. Preserve it as an explicit legacy alias.
+            web_commands = self.get_effective_commands(("admin", "auth", "timeout"))
+            value_source = "explicit-legacy-alias" if web_commands else "documented-default"
+        web_command = web_commands[-1] if web_commands else None
+        controls.append(
+            ScreenOSSessionControl(
+                scope="web-management",
+                name="Web administration",
+                uses=("http", "https"),
+                timeout_minutes=(
+                    self._timeout_value(web_command) if web_command is not None else 10
+                ),
+                value_source=value_source,
+                resolution_state=(
+                    "known"
+                    if web_command is None or self._timeout_value(web_command) is not None
+                    else "invalid"
+                ),
+                active=self.get_services()["http"] or self.get_services()["https"],
+                evidence=(web_command.evidence,) if web_command else (),
+            )
+        )
+
+        bindings: dict[str, set[str]] = {}
+        binding_evidence: dict[str, list[ConfigEvidence]] = {}
+
+        def bind(name: str, use: str, evidence: ConfigEvidence) -> None:
+            normalized = name.casefold()
+            bindings.setdefault(normalized, set()).add(use)
+            binding_evidence.setdefault(normalized, []).append(evidence)
+
+        admin_bindings = self.get_effective_commands(("admin", "auth", "server"))
+        if admin_bindings and len(admin_bindings[-1].tokens) > 3:
+            bind(
+                admin_bindings[-1].tokens[3],
+                "administrator",
+                admin_bindings[-1].evidence,
+            )
+        user_bindings = self.get_effective_commands(("auth", "default", "auth", "server"))
+        if user_bindings and len(user_bindings[-1].tokens) > 4:
+            bind(
+                user_bindings[-1].tokens[4],
+                "authentication-user",
+                user_bindings[-1].evidence,
+            )
+
+        for policy in self.policies.values():
+            if (
+                policy.auth_server
+                and policy.auth_server_evidence is not None
+                and not policy.disabled
+            ):
+                bind(
+                    policy.auth_server,
+                    f"policy:{policy.policy_id}",
+                    policy.auth_server_evidence,
+                )
+
+        for command in self.effective_commands:
+            tokens = command.tokens
+            if tokens[:1] == ("interface",) and "dot1x" in tokens and "auth-server" in tokens:
+                server_index = tokens.index("auth-server")
+                if server_index + 1 < len(tokens):
+                    bind(
+                        tokens[server_index + 1],
+                        f"dot1x:{tokens[1]}",
+                        command.evidence,
+                    )
+
+        server_names = {
+            command.tokens[1]
+            for command in self.effective_commands
+            if command.tokens[:1] == ("auth-server",)
+            and len(command.tokens) > 2
+            and command.tokens[1] != "forced-timeout"
+        }
+        server_names.update(bindings)
+        for server_name in sorted(server_names):
+            commands = [
+                command
+                for command in self.effective_commands
+                if command.tokens[:2] == ("auth-server", server_name)
+            ]
+            timeout_commands = [
+                command
+                for command in commands
+                if len(command.tokens) > 3 and command.tokens[2] == "timeout"
+            ]
+            timeout_command = timeout_commands[-1] if timeout_commands else None
+            known_definition = bool(commands) or server_name == "local"
+            timeout = (
+                self._timeout_value(timeout_command)
+                if timeout_command is not None
+                else (10 if known_definition else None)
+            )
+            evidence = list(binding_evidence.get(server_name, ()))
+            if timeout_command:
+                evidence.append(timeout_command.evidence)
+            controls.append(
+                ScreenOSSessionControl(
+                    scope="authentication-server",
+                    name=server_name,
+                    uses=tuple(sorted(bindings.get(server_name, ()))),
+                    timeout_minutes=timeout,
+                    value_source="explicit" if timeout_command else "documented-default",
+                    resolution_state=(
+                        "unresolved"
+                        if not known_definition
+                        else (
+                            "known"
+                            if timeout_command is None
+                            or self._timeout_value(timeout_command) is not None
+                            else "invalid"
+                        )
+                    ),
+                    active=server_name in bindings,
+                    evidence=tuple(evidence),
+                )
+            )
+        return tuple(controls)
 
     def _parse(self) -> None:
         policy_context: Optional[str] = None
@@ -212,8 +456,11 @@ class JuniperScreenOSParser(BaseDeviceParser):
                     "evidence": [self._evidence(stripped, line_number)],
                 }
                 continue
-            if len(tokens) >= 4 and lowered[:3] == ["set", "admin", "user"]:
-                self._parse_user(tokens, lowered, stripped, line_number)
+            if len(tokens) >= 4 and lowered[1:3] == ["admin", "user"]:
+                if operation == "unset" and len(tokens) == 4:
+                    self.users.pop(tokens[3], None)
+                elif operation == "set":
+                    self._parse_user(tokens, lowered, stripped, line_number)
                 continue
 
             if len(tokens) >= 5 and lowered[:2] == ["set", "address"]:
@@ -343,6 +590,16 @@ class JuniperScreenOSParser(BaseDeviceParser):
         if operation == "set" and remainder == ["disable"]:
             policy.disabled = True
             return policy_id
+        if remainder[:2] == ["auth", "server"]:
+            if operation == "set" and len(tokens) >= 7:
+                policy.auth_server = tokens[6]
+                policy.auth_server_evidence = self._evidence(
+                    raw_line, line_number, redact=True
+                )
+            elif operation == "unset":
+                policy.auth_server = ""
+                policy.auth_server_evidence = None
+            return policy_id
         if operation == "set" and "from" in remainder and "to" in remainder:
             from_index = lowered.index("from")
             to_index = lowered.index("to", from_index + 1)
@@ -358,6 +615,13 @@ class JuniperScreenOSParser(BaseDeviceParser):
                 policy.action = lowered[to_index + 5]
             if "log" in lowered[to_index + 6:]:
                 policy.tracking = "log"
+            for index in range(to_index + 6, len(lowered) - 2):
+                if lowered[index : index + 2] == ["auth", "server"]:
+                    policy.auth_server = tokens[index + 2]
+                    policy.auth_server_evidence = self._evidence(
+                        raw_line, line_number, redact=True
+                    )
+                    break
         return policy_id
 
     def _parse_policy_continuation(
@@ -389,6 +653,13 @@ class JuniperScreenOSParser(BaseDeviceParser):
             policy.disabled = operation == "set"
         elif command == "log":
             policy.tracking = " ".join(tokens[1:]) if operation == "set" else ""
+        elif command == "auth" and len(tokens) >= 4 and lowered[2] == "server":
+            policy.auth_server = tokens[3] if operation == "set" else ""
+            policy.auth_server_evidence = (
+                self._evidence(raw_line, line_number, redact=True)
+                if operation == "set"
+                else None
+            )
 
     def _effective_native_lines(self) -> list[str]:
         lines = []
@@ -422,6 +693,54 @@ class JuniperScreenOSParser(BaseDeviceParser):
 
     def get_users(self) -> list[dict]:
         return list(self.users.values())
+
+    def get_credential_metadata(self) -> list[CredentialMetadata]:
+        """Classify only ScreenOS properties proven by the legacy export."""
+
+        primary_name = "primary admin"
+        for command in self.get_effective_commands(("admin", "name")):
+            if len(command.tokens) > 2:
+                primary_name = command.tokens[2]
+
+        credentials: dict[str, CredentialMetadata] = {}
+        for command in self.effective_commands:
+            tokens = command.tokens
+            if tokens[:2] == ("admin", "password"):
+                account = primary_name
+                value = tokens[2] if len(tokens) > 2 else ""
+            elif tokens[:2] == ("admin", "user") and "password" in tokens:
+                account = tokens[2] if len(tokens) > 2 else "unknown"
+                index = tokens.index("password")
+                value = tokens[index + 1] if index + 1 < len(tokens) else ""
+            else:
+                continue
+
+            if not value:
+                storage = CredentialStorageAssessment.EMPTY
+                default = DefaultCredentialAssessment.MATCH
+                storage_type = "empty"
+            elif value in self._KNOWN_DEFAULT_PASSWORDS:
+                storage = CredentialStorageAssessment.PLAINTEXT
+                default = DefaultCredentialAssessment.MATCH
+                storage_type = "plaintext-known-default"
+            else:
+                storage = CredentialStorageAssessment.UNKNOWN
+                default = (
+                    DefaultCredentialAssessment.MATCH
+                    if value in self._KNOWN_DEFAULT_PASSWORD_HASHES
+                    else DefaultCredentialAssessment.NO_MATCH
+                )
+                storage_type = "screenos-opaque"
+            credentials[account.casefold()] = CredentialMetadata(
+                account=account,
+                context="local_user" if tokens[:2] == ("admin", "user") else "primary_admin",
+                method="password",
+                storage_type=storage_type,
+                storage_assessment=storage,
+                default_assessment=default,
+                evidence=(command.evidence,),
+            )
+        return list(credentials.values())
 
     def get_services(self) -> dict:
         enabled = set(self.global_management)

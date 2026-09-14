@@ -3,12 +3,29 @@ import re
 from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.issue import Finding, Severity
 from src.devices.common.base_parser import BaseDeviceParser
+from src.devices.common.models import CredentialStorageAssessment
 from src.devices.cisco.ios import CiscoIOSParser
 
 
 CISCO_IOS_HARDENING_GUIDE = (
     "https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html"
 )
+CISCO_IOS_SSH_ALGORITHM_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/routers/ios-xe/security-vpn/"
+    "security-vpn/m_sec-secure-shell-algorithm-ccc.html"
+)
+CISCO_IOS_SNMPV3_GUIDE = (
+    "https://www.cisco.com/c/en/us/support/docs/ip/"
+    "simple-network-management-protocol-snmp/20370-snmpsecurity-20370.html"
+)
+CISCO_IOS_ROUTING_HARDENING_GUIDE = (
+    "https://sec.cloudapps.cisco.com/security/center/resources/IOS_XE_hardening"
+)
+CISCO_IOS_OSPF_AUTH_GUIDE = (
+    "https://www.cisco.com/c/en/us/support/docs/ip/"
+    "open-shortest-path-first-ospf/13697-25.html"
+)
+CISCO_IOS_DISCOVERY_GUIDE = CISCO_IOS_HARDENING_GUIDE
 
 
 class PluginIOSBaseline(BasePlugin):
@@ -34,6 +51,7 @@ class PluginIOSBaseline(BasePlugin):
         recommendation: str,
         severity: Severity,
         evidence: tuple[str, ...],
+        references: tuple[str, ...] = (CISCO_IOS_HARDENING_GUIDE,),
     ) -> Finding:
         return Finding(
             rule_id=rule_id,
@@ -45,7 +63,7 @@ class PluginIOSBaseline(BasePlugin):
             recommendation=recommendation,
             severity=severity,
             evidence=evidence,
-            references=(CISCO_IOS_HARDENING_GUIDE,),
+            references=references,
         )
 
     def _global_lines(self, parser: BaseDeviceParser) -> list[str]:
@@ -111,68 +129,158 @@ class PluginIOSBaseline(BasePlugin):
             )
 
     def check_management_lines(self, parser: BaseDeviceParser) -> None:
-        native = parser.get_native_config()
-        for line_block in native.find_objects(r"^line vty(?:\s|$)"):
-            children = self._children(line_block)
-            transport = next(
-                (line for line in reversed(children) if line.startswith("transport input")),
-                "",
-            )
-            if not transport or any(token in transport.split()[2:] for token in ("telnet", "all")):
+        ios = self._ios(parser)
+        method_lists = ios.get_aaa_method_lists()
+        aaa_enabled = self._effective_toggle(
+            self._global_lines(parser), r"aaa new-model", r"no aaa new-model"
+        )
+        has_local_users = any(
+            item.context == "local_user" for item in ios.get_credential_metadata()
+        )
+        aaa_server_groups = ios.get_aaa_server_groups()
+
+        def backend_resolves(method_list, *, authentication: bool = False) -> bool:
+            methods = method_list.methods
+            for index, method in enumerate(methods):
+                if method.casefold() != "group":
+                    continue
+                if index + 1 >= len(methods):
+                    return False
+                group = methods[index + 1]
+                if group.casefold() not in {"radius", "tacacs+"} and group not in aaa_server_groups:
+                    return False
+            if authentication:
+                if any(method.casefold() == "none" for method in methods):
+                    return False
+                if any(method.casefold() == "local" for method in methods) and not has_local_users:
+                    return False
+            return bool(methods)
+
+        login_lists = {
+            item.name
+            for item in method_lists
+            if item.service == "login_authentication"
+            and backend_resolves(item, authentication=True)
+        }
+        exec_lists = {
+            item.name
+            for item in method_lists
+            if item.service == "exec_authorization" and backend_resolves(item)
+        }
+        command_lists = {
+            item.name
+            for item in method_lists
+            if item.service == "command_authorization"
+            and item.privilege_level == 15
+            and backend_resolves(item)
+        }
+
+        def authentication_resolves(line) -> bool:
+            if line.login_kind == "local":
+                return has_local_users
+            if aaa_enabled and line.login_kind == "aaa" and line.login_list:
+                return line.login_list in login_lists
+            return False
+
+        for line in ios.get_management_lines("vty"):
+            evidence = tuple(item.text for item in line.evidence)
+            if line.transports is None or any(
+                token in line.transports for token in ("telnet", "all")
+            ):
                 self.add_issue(
                     self._finding(
                         parser,
                         "cisco.ios.vty.telnet",
                         "VTY permits clear-text Telnet",
-                        f"{line_block.text.strip()} does not restrict inbound transport to SSH.",
+                        f"{line.line} does not explicitly restrict inbound transport to SSH.",
                         "Remote administrative credentials and commands may traverse the network without encryption.",
                         "Configure 'transport input ssh' on every VTY range.",
                         Severity.HIGH,
-                        (line_block.text.strip(), transport or "transport input default"),
+                        evidence or (line.line,),
                     )
                 )
-            timeout = next(
-                (line for line in reversed(children) if line.startswith("exec-timeout")),
-                "",
-            )
-            match = re.fullmatch(r"exec-timeout\s+(\d+)(?:\s+(\d+))?", timeout)
-            if match and int(match.group(1)) == 0 and int(match.group(2) or 0) == 0:
+            active = line.accepts_inbound_connections is not False
+            if active and (
+                line.timeout_configured
+                and not line.timeout_parse_error
+                and line.timeout_minutes == 0
+                and line.timeout_seconds == 0
+            ):
                 self.add_issue(
                     self._finding(
                         parser,
                         "cisco.ios.vty.session_timeout",
                         "VTY session timeout is disabled",
-                        f"{line_block.text.strip()} uses an unlimited exec-timeout.",
+                        f"{line.line} uses an unlimited exec-timeout.",
                         "Abandoned authenticated sessions can remain usable indefinitely.",
                         "Configure a finite 'exec-timeout', normally ten minutes or less.",
                         Severity.MEDIUM,
-                        (line_block.text.strip(), timeout),
+                        evidence or (line.line,),
                     )
                 )
-            if not any(
-                re.fullmatch(r"login (?:local|authentication\s+\S+)", line)
-                for line in children
-            ):
+            if active and not authentication_resolves(line):
+                reason = (
+                    f"references undefined AAA login list '{line.login_list}'"
+                    if line.login_kind == "aaa" and line.login_list
+                    else "lacks a resolvable local or AAA login binding"
+                )
                 self.add_issue(
                     self._finding(
                         parser,
                         "cisco.ios.vty.authentication",
                         "VTY authentication is not explicitly bound",
-                        f"{line_block.text.strip()} lacks 'login local' or an AAA login method list.",
+                        f"{line.line} {reason}.",
                         "The line may use an unintended password-only or default authentication path.",
                         "Bind each VTY range to a named AAA login method or explicit local authentication.",
                         Severity.HIGH,
-                        (line_block.text.strip(),),
+                        evidence or (line.line,),
+                    )
+                )
+            if aaa_enabled and active:
+                effective_exec = line.exec_authorization_list or (
+                    "default" if "default" in exec_lists else None
+                )
+                command_map = dict(line.command_authorization)
+                effective_commands = command_map.get(15) or (
+                    "default" if "default" in command_lists else None
+                )
+                missing = []
+                if not effective_exec or effective_exec not in exec_lists:
+                    missing.append("EXEC authorization")
+                if not effective_commands or effective_commands not in command_lists:
+                    missing.append("privilege-15 command authorization")
+                if missing:
+                    self.add_issue(
+                        self._finding(
+                            parser,
+                            "cisco.ios.vty.authorization",
+                            "VTY administrative authorization is incomplete",
+                            f"{line.line} lacks resolved {', '.join(missing)}.",
+                            "Authenticated administrators may receive unintended EXEC access or execute commands without centralized authorization.",
+                            "Define and bind resolved AAA EXEC and privilege-15 command authorization method lists.",
+                            Severity.HIGH,
+                            evidence or (line.line,),
+                        )
+                    )
+            if line.output_transports and any(
+                item in {"telnet", "rlogin", "all"} for item in line.output_transports
+            ):
+                self.add_issue(
+                    self._finding(
+                        parser,
+                        "cisco.ios.vty.insecure_output_transport",
+                        "VTY permits insecure outbound terminal transport",
+                        f"{line.line} explicitly permits an insecure outbound transport.",
+                        "An administrator can initiate clear-text reverse terminal sessions through the device.",
+                        "Set 'transport output ssh' or 'transport output none'.",
+                        Severity.MEDIUM,
+                        evidence or (line.line,),
                     )
                 )
 
-        for console in native.find_objects(r"^line con(?:sole)?(?:\s|$)"):
-            children = self._children(console)
-            timeout = next(
-                (line for line in reversed(children) if line.startswith("exec-timeout")),
-                "",
-            )
-            if timeout == "exec-timeout 0 0":
+        for console in ios.get_management_lines("console"):
+            evidence = tuple(item.text for item in console.evidence)
+            if console.timeout_minutes == 0 and console.timeout_seconds == 0:
                 self.add_issue(
                     self._finding(
                         parser,
@@ -182,59 +290,150 @@ class PluginIOSBaseline(BasePlugin):
                         "Unattended console sessions can remain authenticated indefinitely.",
                         "Configure a finite console exec-timeout.",
                         Severity.MEDIUM,
-                        (console.text.strip(), timeout),
+                        evidence or (console.line,),
+                    )
+                )
+            if not authentication_resolves(console):
+                self.add_issue(
+                    self._finding(
+                        parser,
+                        "cisco.ios.console.authentication",
+                        "Console authentication is not explicitly secured",
+                        f"{console.line} lacks a resolvable local or AAA login binding.",
+                        "Physical or terminal-server access may reach an unintended authentication path.",
+                        "Bind the console to a tested AAA login method with an appropriate local recovery path.",
+                        Severity.HIGH,
+                        evidence or (console.line,),
                     )
                 )
 
-    def check_credentials(self, parser: BaseDeviceParser) -> None:
-        lines = self._global_lines(parser)
-        for line in lines:
-            username = re.match(r"username\s+(\S+)\s+(.+)", line)
-            if not username:
-                continue
-            options = username.group(2)
-            password = re.search(r"(?:^|\s)password(?:\s+(\d+))?\s+", options)
-            secret = re.search(r"(?:^|\s)secret(?:\s+(\d+))?\s+", options)
-            weak = password is not None or (
-                secret is not None
-                and "algorithm-type " not in options
-                and (secret.group(1) or "0") in {"0", "5", "7"}
+        for auxiliary in ios.get_management_lines("aux"):
+            evidence = tuple(item.text for item in auxiliary.evidence)
+            fully_disabled = (
+                auxiliary.exec_enabled is False
+                and auxiliary.transports == ("none",)
+                and auxiliary.output_transports == ("none",)
             )
-            if weak:
-                storage_kind = "password" if password else "secret"
-                storage_type = (
-                    (password.group(1) or "0")
-                    if password
-                    else (secret.group(1) or "0")
+            if fully_disabled:
+                continue
+            self.add_issue(
+                self._finding(
+                    parser,
+                    "cisco.ios.auxiliary.enabled",
+                    "Auxiliary management line is not fully disabled",
+                    f"{auxiliary.line} does not combine 'no exec', 'transport input none', and 'transport output none'.",
+                    "An unused AUX port can provide an additional local, modem, or reverse-terminal management path.",
+                    "Disable the AUX line using the complete Cisco hardening sequence unless it has an approved operational use.",
+                    Severity.HIGH,
+                    evidence or (auxiliary.line,),
                 )
+            )
+            if auxiliary.exec_enabled is not False and not authentication_resolves(auxiliary):
+                self.add_issue(
+                    self._finding(
+                        parser,
+                        "cisco.ios.auxiliary.authentication",
+                        "Active auxiliary line lacks resolved authentication",
+                        f"{auxiliary.line} is not disabled and lacks a resolvable local or AAA login binding.",
+                        "A reachable AUX session may use an unintended or line-password authentication path.",
+                        "Disable the line or bind it to a tested AAA login method.",
+                        Severity.HIGH,
+                        evidence or (auxiliary.line,),
+                    )
+                )
+
+    def check_ssh_policy(self, parser: BaseDeviceParser) -> None:
+        ios = self._ios(parser)
+        if ios.get_ssh_state().value != "enabled":
+            return
+        weak_algorithms = {
+            "encryption": {"des", "3des", "3des-cbc", "aes128-cbc", "aes192-cbc", "aes256-cbc"},
+            "mac": {"hmac-md5", "hmac-md5-96", "hmac-sha1", "hmac-sha1-96"},
+            "kex": {"diffie-hellman-group1-sha1", "diffie-hellman-group14-sha1", "diffie-hellman-group-exchange-sha1"},
+            "hostkey": {"ssh-dss", "ssh-rsa"},
+        }
+        weak = []
+        evidence = []
+        for policy in ios.get_ssh_server_algorithms():
+            if policy.algorithms is None:
+                continue
+            selected = sorted(set(policy.algorithms) & weak_algorithms[policy.category])
+            if selected:
+                weak.append(f"{policy.category}: {', '.join(selected)}")
+                evidence.extend(item.text for item in policy.evidence)
+        if weak:
+            self.add_issue(
+                self._finding(
+                    parser,
+                    "cisco.ios.ssh.weak_algorithms",
+                    "SSH server explicitly permits weak algorithms",
+                    "The explicit SSH server policy includes " + "; ".join(weak) + ".",
+                    "Legacy SSH algorithms weaken confidentiality, integrity, key exchange, or host authentication.",
+                    "Restrict the SSH server to release-supported AES-CTR/GCM, SHA-2/EtM, modern KEX, and SHA-2/EdDSA host-key algorithms.",
+                    Severity.HIGH,
+                    tuple(evidence),
+                    (CISCO_IOS_SSH_ALGORITHM_GUIDE,),
+                )
+            )
+        key = ios.get_ssh_rsa_key_modulus()
+        if key.configured and key.value is not None and key.value < 2048:
+            self.add_issue(
+                self._finding(
+                    parser,
+                    "cisco.ios.ssh.weak_host_key",
+                    "Explicit SSH RSA host key is undersized",
+                    f"The recorded RSA key-generation command specifies a {key.value}-bit modulus.",
+                    "An undersized host key provides inadequate resistance to key recovery.",
+                    "Generate a release-supported RSA key of at least 2048 bits or a stronger supported host-key type.",
+                    Severity.HIGH,
+                    (key.raw_line,),
+                    (CISCO_IOS_SSH_ALGORITHM_GUIDE,),
+                )
+            )
+
+    def check_credentials(self, parser: BaseDeviceParser) -> None:
+        unsafe = {
+            CredentialStorageAssessment.EMPTY,
+            CredentialStorageAssessment.PLAINTEXT,
+            CredentialStorageAssessment.WEAK_HASH,
+            CredentialStorageAssessment.WEAK_REVERSIBLE,
+        }
+        for credential in parser.get_credential_metadata():
+            if credential.storage_assessment not in unsafe:
+                continue
+            if credential.context == "local_user":
                 self.add_issue(
                     self._finding(
                         parser,
                         "cisco.ios.credentials.local_storage",
                         "Local credential uses weak storage",
-                        f"User '{username.group(1)}' uses {storage_kind} storage type '{storage_type}'. The credential is redacted.",
+                        (
+                            f"User '{credential.account}' uses '{credential.method}' storage type "
+                            f"'{credential.storage_type}', classified as "
+                            f"'{credential.storage_assessment.value}'. The credential is redacted."
+                        ),
                         "Plaintext, reversible, or legacy hashes are more readily recovered from a configuration disclosure.",
                         "Use a supported strong secret algorithm and migrate administrative authentication to AAA.",
                         Severity.HIGH,
-                        (f"username {username.group(1)} <credential redacted>",),
+                        tuple(item.text for item in credential.evidence),
                     )
                 )
-        for line in lines:
-            match = re.fullmatch(r"enable\s+(password|secret)(?:\s+(\d+))?\s+.+", line)
-            if match and (match.group(1) == "password" or (match.group(2) or "0") in {"0", "5", "7"}):
+            elif credential.context == "enable":
                 self.add_issue(
                     self._finding(
                         parser,
                         "cisco.ios.credentials.enable_storage",
                         "Enable credential uses weak storage",
-                        "The enable credential uses plaintext, reversible, or legacy hash storage; its value is redacted.",
+                        (
+                            f"The enable credential uses storage type '{credential.storage_type}', "
+                            f"classified as '{credential.storage_assessment.value}'; its value is redacted."
+                        ),
                         "Configuration disclosure can expose or accelerate recovery of the privileged credential.",
                         "Replace it with a strong 'enable secret' algorithm and remove the enable password.",
                         Severity.HIGH,
-                        ("enable <credential redacted>",),
+                        tuple(item.text for item in credential.evidence),
                     )
                 )
-                break
 
     def check_snmp(self, parser: BaseDeviceParser) -> None:
         for line in self._global_lines(parser):
@@ -259,6 +458,105 @@ class PluginIOSBaseline(BasePlugin):
                     (f"snmp-server community <redacted> {access}",),
                 )
             )
+
+        views, groups, users = self._ios(parser).get_snmpv3_relationships()
+        view_map = {view.name.casefold(): view for view in views}
+        group_map = {group.name.casefold(): group for group in groups}
+        for user in users:
+            evidence = tuple(item.text for item in user.evidence)
+            if not user.group_resolved or (user.read_view and not user.read_view_resolved):
+                unresolved = (
+                    f"group '{user.group}'"
+                    if not user.group_resolved
+                    else f"read view '{user.read_view}'"
+                )
+                self.add_issue(
+                    self._finding(
+                        parser,
+                        "cisco.ios.snmp.v3_reference",
+                        "SNMPv3 user references an unresolved access object",
+                        f"SNMPv3 user '{user.name}' references unresolved {unresolved}.",
+                        "An unresolved group or view prevents the configuration from proving the intended SNMP access policy.",
+                        "Create the referenced SNMPv3 group/view or bind the user to an existing least-privileged object.",
+                        Severity.MEDIUM,
+                        evidence,
+                        (CISCO_IOS_SNMPV3_GUIDE,),
+                    )
+                )
+                continue
+
+            protection_gaps = []
+            if user.group_security_level != "priv":
+                protection_gaps.append(
+                    f"group security level is '{user.group_security_level or 'unknown'}'"
+                )
+            if not user.authentication:
+                protection_gaps.append("authentication is not configured")
+            if not user.privacy:
+                protection_gaps.append("privacy is not configured")
+            if protection_gaps:
+                self.add_issue(
+                    self._finding(
+                        parser,
+                        "cisco.ios.snmp.v3_protection",
+                        "SNMPv3 user lacks authPriv protection",
+                        f"SNMPv3 user '{user.name}' has " + "; ".join(protection_gaps) + ".",
+                        "SNMP management data may lack strong origin authentication or confidentiality.",
+                        "Use a v3 priv group and configure the user with supported authentication and AES privacy.",
+                        Severity.HIGH,
+                        evidence,
+                        (CISCO_IOS_SNMPV3_GUIDE,),
+                    )
+                )
+
+            weak = []
+            if user.authentication == "md5":
+                weak.append("MD5 authentication")
+            if user.privacy in {"des", "des56", "3des"}:
+                weak.append(f"{user.privacy.upper()} privacy")
+            if weak:
+                self.add_issue(
+                    self._finding(
+                        parser,
+                        "cisco.ios.snmp.v3_weak_algorithm",
+                        "SNMPv3 user uses a weak algorithm",
+                        f"SNMPv3 user '{user.name}' uses {', '.join(weak)}.",
+                        "Legacy SNMP authentication or privacy algorithms provide inadequate cryptographic strength.",
+                        "Use a supported SHA-family authentication algorithm and AES privacy; validate SHA-2 availability for the exact IOS XE platform and release.",
+                        Severity.MEDIUM,
+                        evidence,
+                        (CISCO_IOS_SNMPV3_GUIDE,),
+                    )
+                )
+
+            view = view_map.get(user.read_view.casefold()) if user.read_view else None
+            broad_view = not user.read_view or bool(
+                view
+                and set(view.included_subtrees) & {"iso", "internet", "1", "1.3.6.1"}
+                and not view.excluded_subtrees
+            )
+            group = group_map.get(user.group.casefold())
+            access_gaps = []
+            if not user.source_restricted:
+                access_gaps.append("no user or group source ACL")
+            if broad_view:
+                access_gaps.append("the default or an unrestricted read view")
+            if group and group.write_view:
+                access_gaps.append(f"write view '{group.write_view}'")
+            if access_gaps:
+                self.add_issue(
+                    self._finding(
+                        parser,
+                        "cisco.ios.snmp.v3_access_scope",
+                        "SNMPv3 user has broad access scope",
+                        f"SNMPv3 user '{user.name}' has " + "; ".join(access_gaps) + ".",
+                        "A compromised monitoring identity may query excessive MIB data, reach the agent from unintended networks, or modify managed objects.",
+                        "Apply a restrictive read view and source ACL; remove write access unless explicitly required.",
+                        Severity.HIGH if group and group.write_view else Severity.MEDIUM,
+                        evidence,
+                        (CISCO_IOS_SNMPV3_GUIDE,),
+                    )
+                )
 
     def check_logging(self, parser: BaseDeviceParser) -> None:
         lines = self._global_lines(parser)
@@ -305,9 +603,8 @@ class PluginIOSBaseline(BasePlugin):
             )
 
     def check_ntp(self, parser: BaseDeviceParser) -> None:
-        lines = self._global_lines(parser)
-        servers = [line for line in lines if re.fullmatch(r"ntp (?:server|peer)\s+.+", line)]
-        if not servers:
+        associations = self._ios(parser).get_ntp_associations()
+        if not associations:
             self.add_issue(
                 self._finding(
                     parser,
@@ -321,18 +618,24 @@ class PluginIOSBaseline(BasePlugin):
                 )
             )
             return
-        authentication = self._effective_toggle(lines, r"ntp authenticate", r"no ntp authenticate")
-        if not authentication or any(" key " not in f" {line} " for line in servers):
+        for association in associations:
+            if association.authentication_state == "authenticated":
+                continue
+            detail = (
+                "has no effective authenticated key binding"
+                if association.authentication_state == "unauthenticated"
+                else f"references missing or untrusted key '{association.key_id}'"
+            )
             self.add_issue(
                 self._finding(
                     parser,
                     "cisco.ios.ntp.authentication",
                     "NTP authentication is incomplete",
-                    "At least one configured NTP association lacks an authenticated key or global NTP authentication is disabled.",
+                    f"NTP {association.role} '{association.address}' in VRF '{association.vrf}' {detail}.",
                     "A spoofed time source can disrupt logs and time-dependent security controls.",
-                    "Enable NTP authentication and bind every server or peer to a trusted key.",
+                    "Enable NTP authentication and configure, trust, and bind a key for this association.",
                     Severity.MEDIUM,
-                    tuple(servers),
+                    tuple(item.text for item in association.evidence),
                 )
             )
 
@@ -475,11 +778,166 @@ class PluginIOSBaseline(BasePlugin):
                     )
                 )
 
+    def check_routing(self, parser: BaseDeviceParser) -> None:
+        ios = self._ios(parser)
+        for peer in ios.get_bgp_neighbors():
+            if not peer.active or peer.inheritance_unknown:
+                continue
+            scope = f"neighbor {peer.address} in {peer.address_family}, VRF {peer.vrf}"
+            evidence = tuple(item.text for item in peer.evidence)
+            if peer.authentication_state in {"unauthenticated", "unresolved"}:
+                detail = "has no authentication" if peer.authentication_state == "unauthenticated" else "has an unresolved authentication reference"
+                self.add_issue(self._finding(
+                    parser,
+                    "cisco.ios.routing.bgp.authentication",
+                    "BGP neighbor authentication is incomplete",
+                    f"BGP {scope} {detail}.",
+                    "An unauthenticated routing adjacency can permit spoofed session establishment or route injection from a reachable attacker.",
+                    "Configure peer authentication using a mechanism supported by the exact IOS/IOS XE release and the remote peer.",
+                    Severity.HIGH,
+                    evidence,
+                    (CISCO_IOS_ROUTING_HARDENING_GUIDE,),
+                ))
+            if peer.peer_role != "external":
+                continue
+            for direction, present in (("inbound", peer.inbound_policy), ("outbound", peer.outbound_policy)):
+                if present:
+                    continue
+                self.add_issue(self._finding(
+                    parser,
+                    f"cisco.ios.routing.bgp.{direction}_policy",
+                    f"External BGP neighbor lacks an {direction} route policy",
+                    f"External BGP {scope} has no explicit {direction} route-map, prefix-list, filter-list, or distribute-list.",
+                    "Unrestricted route exchange can admit or advertise unintended prefixes across a routing trust boundary.",
+                    f"Apply an explicit least-privilege {direction} route policy appropriate to this peer.",
+                    Severity.HIGH,
+                    evidence,
+                    (CISCO_IOS_ROUTING_HARDENING_GUIDE,),
+                ))
+            if not peer.prefix_limit:
+                self.add_issue(self._finding(
+                    parser,
+                    "cisco.ios.routing.bgp.prefix_limit",
+                    "External BGP neighbor has no maximum-prefix safeguard",
+                    f"External BGP {scope} has no explicit maximum-prefix control; no numeric threshold is inferred.",
+                    "An unexpectedly large route advertisement can consume routing resources or disrupt forwarding.",
+                    "Configure a peer-specific maximum-prefix value based on the documented expected route volume.",
+                    Severity.MEDIUM,
+                    evidence,
+                    (CISCO_IOS_ROUTING_HARDENING_GUIDE,),
+                ))
+
+        for interface in ios.get_ospf_interfaces():
+            if interface.shutdown or interface.passive or interface.authentication_state in {"authenticated", "unknown"}:
+                continue
+            evidence = tuple(item.text for item in interface.evidence)
+            if interface.authentication_state == "weak":
+                title = "OSPF interface uses simple-password authentication"
+                observation = f"OSPF process {interface.process_id}, interface {interface.interface}, area {interface.area} uses clear-text simple authentication."
+                recommendation = "Use message-digest or a supported key-chain algorithm consistently across the adjacency."
+                rule_id = "cisco.ios.routing.ospf.weak_authentication"
+            else:
+                title = "OSPF interface authentication is incomplete"
+                observation = f"OSPF process {interface.process_id}, interface {interface.interface}, area {interface.area} is {interface.authentication_state}."
+                recommendation = "Configure and validate OSPF authentication consistently across the adjacency."
+                rule_id = "cisco.ios.routing.ospf.authentication"
+            self.add_issue(self._finding(
+                parser, rule_id, title, observation,
+                "An unprotected routing adjacency can accept forged protocol packets from a reachable attacker.",
+                recommendation, Severity.HIGH if interface.authentication_state != "weak" else Severity.MEDIUM,
+                evidence, (CISCO_IOS_OSPF_AUTH_GUIDE,),
+            ))
+
+    def check_discovery(self, parser: BaseDeviceParser) -> None:
+        ios = self._ios(parser)
+        if ios.get_version() == "?":
+            return
+        for interface in ios.get_discovery_interfaces():
+            if not interface.active or interface.role != "external":
+                continue
+            directions = [
+                direction for direction, enabled in (
+                    ("transmit", interface.transmit), ("receive", interface.receive)
+                ) if enabled
+            ]
+            if not directions:
+                continue
+            evidence = tuple(item.text for item in interface.evidence) + (
+                f"assessment policy: {interface.interface} role external",
+            )
+            self.add_issue(self._finding(
+                parser,
+                f"cisco.ios.discovery.{interface.protocol}.external",
+                f"{interface.protocol.upper()} is enabled on an external interface",
+                f"Interface {interface.interface} is explicitly classified external and has {interface.protocol.upper()} {', '.join(directions)} enabled.",
+                "Discovery advertisements or learned topology can expose device identity and network structure across an untrusted boundary.",
+                f"Disable {interface.protocol.upper()} {', '.join(directions)} on this interface unless the assessment policy documents a required trusted use.",
+                Severity.MEDIUM,
+                evidence,
+                (CISCO_IOS_DISCOVERY_GUIDE,),
+            ))
+
+    def check_switch_edge(self, parser: BaseDeviceParser) -> None:
+        ios = self._ios(parser)
+        if ios.get_version() == "?":
+            return
+        for interface in ios.get_switch_edge_interfaces():
+            if not interface.active or interface.role != "access-edge" or interface.mode == "routed":
+                continue
+            evidence = tuple(item.text for item in interface.evidence) + (
+                f"assessment policy: {interface.interface} role access-edge",
+            )
+            if interface.mode == "trunk":
+                self.add_issue(self._finding(
+                    parser, "cisco.ios.layer2.access_edge_trunk",
+                    "Access-edge interface is configured as a trunk",
+                    f"Interface {interface.interface} is explicitly classified access-edge but its effective switchport mode is trunk.",
+                    "An unintended trunk can expose multiple VLANs to an endpoint and enable VLAN-hopping or segmentation bypass.",
+                    "Configure a static access VLAN, or reclassify the interface as an approved uplink with documented trunk scope.",
+                    Severity.HIGH, evidence, (CISCO_IOS_ROUTING_HARDENING_GUIDE,),
+                ))
+                continue
+            if interface.mode not in {"access", "switchport"}:
+                continue
+            if interface.dhcp_trusted or interface.arp_trusted:
+                trusted = ", ".join(
+                    name for name, enabled in (
+                        ("DHCP snooping", interface.dhcp_trusted),
+                        ("ARP inspection", interface.arp_trusted),
+                    ) if enabled
+                )
+                self.add_issue(self._finding(
+                    parser, "cisco.ios.layer2.access_edge_trust",
+                    "Access-edge interface is trusted by spoofing protections",
+                    f"Interface {interface.interface} is explicitly classified access-edge but is trusted for {trusted}.",
+                    "Trust bypasses validation intended to block rogue DHCP or forged ARP messages from endpoint-facing ports.",
+                    "Remove trust from this access edge; reserve trust for explicitly classified DHCP-server or uplink ports.",
+                    Severity.HIGH, evidence, (CISCO_IOS_ROUTING_HARDENING_GUIDE,),
+                ))
+            mechanisms = (
+                ("dhcp_snooping", interface.dhcp_snooping, "DHCP snooping for its access VLAN", interface.access_vlan is not None),
+                ("arp_inspection", interface.arp_inspection, "Dynamic ARP Inspection for its access VLAN", interface.access_vlan is not None),
+                ("source_guard", interface.source_guard, "IP Source Guard", True),
+                ("port_security", interface.port_security, "port security", True),
+            )
+            for suffix, present, label, applicable in mechanisms:
+                if present or not applicable:
+                    continue
+                self.add_issue(self._finding(
+                    parser, f"cisco.ios.layer2.access_edge.{suffix}",
+                    f"Access-edge interface lacks {label}",
+                    f"Interface {interface.interface} is explicitly classified access-edge but lacks {label}."
+                    + (f" Its effective access VLAN is {interface.access_vlan}." if interface.access_vlan else " Its access VLAN is unresolved."),
+                    "A connected endpoint may spoof addressing or identities, introduce a rogue service, or exceed the intended endpoint count.",
+                    f"Enable and validate {label} for this access edge where supported by the exact switch model and attachment design.",
+                    Severity.MEDIUM, evidence, (CISCO_IOS_ROUTING_HARDENING_GUIDE,),
+                ))
     def analyze(self, parser: BaseDeviceParser) -> None:
         if not self._applicable(parser):
             return
         self.check_aaa(parser)
         self.check_management_lines(parser)
+        self.check_ssh_policy(parser)
         self.check_credentials(parser)
         self.check_snmp(parser)
         self.check_logging(parser)
@@ -489,3 +947,6 @@ class PluginIOSBaseline(BasePlugin):
         self.check_interface_protections(parser)
         self.check_control_plane(parser)
         self.check_crypto(parser)
+        self.check_routing(parser)
+        self.check_discovery(parser)
+        self.check_switch_edge(parser)

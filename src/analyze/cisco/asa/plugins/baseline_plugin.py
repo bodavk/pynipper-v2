@@ -3,6 +3,7 @@ import re
 from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.issue import Finding, Severity
 from src.devices.common.base_parser import BaseDeviceParser
+from src.devices.common.models import CredentialStorageAssessment
 from src.devices.cisco.asa import CiscoASAParser
 
 
@@ -14,6 +15,27 @@ CISCO_ASA_CONFIGURATION_GUIDES = (
     "https://www.cisco.com/c/en/us/td/docs/security/asa/asa924/configuration/"
     "vpn/asa-924-vpn-config.pdf",
 )
+CISCO_ASA_AAA_REFERENCE = (
+    "https://www.cisco.com/c/en/us/td/docs/security/asa/asa-cli-reference/"
+    "A-H/asa-command-ref-A-H/aa-ac-commands.html",
+)
+CISCO_ASA_MANAGEMENT_REFERENCE = (
+    "https://www.cisco.com/c/en/us/td/docs/security/asa/asa924/configuration/"
+    "general/asa-924-general-config/admin-management.html",
+)
+CISCO_ASA_SSH_REFERENCE = (
+    "https://www.cisco.com/c/en/us/td/docs/security/asa/asa-cli-reference/"
+    "S/asa-command-ref-S/so-st-commands.html",
+)
+CISCO_ASA_NTP_REFERENCE = (
+    "https://www.cisco.com/c/en/us/td/docs/security/asa/asa-cli-reference/"
+    "I-R/asa-command-ref-I-R/n-commands.html",
+)
+CISCO_ASA_CERTIFICATE_REFERENCE = (
+    "https://www.cisco.com/c/en/us/td/docs/security/asa/asa916/configuration/"
+    "general/asa-916-general-config/basic-certs.html",
+)
+NIST_CRYPTO_TRANSITIONS = "https://csrc.nist.gov/pubs/sp/800/131/a/r2/final"
 
 
 class PluginASABaseline(BasePlugin):
@@ -29,7 +51,17 @@ class PluginASABaseline(BasePlugin):
         return [line.strip() for line in self._asa(parser).parser.ioscfg if line.strip()]
 
     @staticmethod
-    def _finding(parser, rule_id, title, observation, impact, recommendation, severity, evidence):
+    def _finding(
+        parser,
+        rule_id,
+        title,
+        observation,
+        impact,
+        recommendation,
+        severity,
+        evidence,
+        references=CISCO_ASA_CONFIGURATION_GUIDES,
+    ):
         return Finding(
             rule_id=rule_id,
             device=parser.device_type,
@@ -40,61 +72,145 @@ class PluginASABaseline(BasePlugin):
             recommendation=recommendation,
             severity=severity,
             evidence=evidence,
-            references=CISCO_ASA_CONFIGURATION_GUIDES,
+            references=references,
         )
 
     def check_aaa(self, parser: BaseDeviceParser) -> None:
         asa = self._asa(parser)
-        lines = self._lines(parser)
-        management = bool(
-            asa.get_management_grants("ssh")
-            or asa.get_management_grants("telnet")
-            or asa.get_management_grants("http")
-        )
-        if not management:
-            return
-        authentication = [
-            line for line in lines
-            if re.fullmatch(r"aaa authentication (?:ssh|telnet|http) console\s+.+", line)
-        ]
-        if not authentication:
+        active_protocols = {
+            protocol
+            for protocol in ("ssh", "telnet", "http")
+            if asa.get_management_grants(protocol)
+            and (protocol != "http" or asa.get_http_server_enabled())
+        }
+        bindings = {
+            (item.binding_type, item.protocol): item
+            for item in asa.get_administrative_aaa_bindings()
+        }
+        for protocol in sorted(active_protocols):
+            authentication = bindings.get(("authentication", protocol))
+            if authentication is None or not authentication.resolved:
+                detail = (
+                    "is missing"
+                    if authentication is None
+                    else f"references undefined server group '{authentication.server_group}'"
+                )
+                self.add_issue(self._finding(
+                    parser, "cisco.asa.aaa.management_authentication",
+                    "Management authentication binding is unresolved",
+                    f"Active {protocol.upper()} management {detail} for its AAA authentication binding.",
+                    "Management access may rely on an unintended authentication path or an unavailable server group.",
+                    "Bind the protocol to LOCAL with a defined local user, or to a defined resilient AAA server group with an appropriate LOCAL fallback.",
+                    Severity.HIGH,
+                    (authentication.raw_line,) if authentication else (f"active {protocol} management grant",),
+                    CISCO_ASA_AAA_REFERENCE,
+                ))
+            if protocol not in {"ssh", "telnet"}:
+                # ASA administrative-session accounting has no HTTP/ASDM keyword.
+                continue
+            accounting = bindings.get(("accounting", protocol))
+            if accounting is None or not accounting.resolved:
+                detail = (
+                    "is missing"
+                    if accounting is None
+                    else f"references undefined server group '{accounting.server_group}'"
+                )
+                self.add_issue(self._finding(
+                    parser, "cisco.asa.aaa.management_accounting",
+                    "Management accounting binding is unresolved",
+                    f"Active {protocol.upper()} management {detail} for its AAA session-accounting binding.",
+                    "Administrative sessions may not be attributable in a central audit trail.",
+                    "Configure administrative-session accounting to a defined RADIUS or TACACS+ server group for each supported protocol.",
+                    Severity.MEDIUM,
+                    (accounting.raw_line,) if accounting else (f"active {protocol} management grant",),
+                    CISCO_ASA_AAA_REFERENCE,
+                ))
+
+    def check_management_sessions_and_ssh(self, parser: BaseDeviceParser) -> None:
+        asa = self._asa(parser)
+        console_timeout = asa.get_console_timeout()
+        if console_timeout.value == 0:
+            evidence = (
+                (console_timeout.raw_line,)
+                if console_timeout.raw_line
+                else ("console timeout defaults to 0",)
+            )
             self.add_issue(self._finding(
-                parser, "cisco.asa.aaa.management_authentication",
-                "Centralized management authentication is missing",
-                "Remote management grants exist without an AAA authentication binding for SSH, Telnet, or HTTP.",
-                "Management access may rely solely on local or unintended authentication behavior.",
-                "Bind each enabled management protocol to a resilient AAA server group with LOCAL fallback.",
-                Severity.HIGH, ("Remote management grants configured",),
+                parser,
+                "cisco.asa.console.session_timeout",
+                "ASA console session timeout is disabled",
+                "The effective console timeout is 0 minutes, so authenticated serial or enable sessions do not time out.",
+                "An unattended privileged console session can remain available indefinitely.",
+                "Set a finite console timeout that meets the approved administrative-session policy.",
+                Severity.MEDIUM,
+                evidence,
+                CISCO_ASA_MANAGEMENT_REFERENCE,
             ))
-        accounting = [
-            line for line in lines
-            if re.fullmatch(r"aaa accounting (?:ssh|telnet|http) console\s+.+", line)
-        ]
-        if not accounting:
+
+        if not asa.get_management_grants("ssh"):
+            return
+        policy = asa.get_ssh_policy()
+        if policy.version is not None and policy.version != "2":
             self.add_issue(self._finding(
-                parser, "cisco.asa.aaa.management_accounting",
-                "Management AAA accounting is missing",
-                "Remote management is configured without AAA accounting for administrative sessions.",
-                "Administrative activity may not be attributable in a central audit trail.",
-                "Configure AAA accounting for every enabled management protocol.",
-                Severity.MEDIUM, tuple(authentication) or ("No management AAA accounting",),
+                parser,
+                "cisco.asa.ssh.protocol_version",
+                "ASA SSH policy permits version 1",
+                f"The {policy.version_source} SSH protocol state is '{policy.version}'.",
+                "SSH version 1 has obsolete protocol and cryptographic design weaknesses.",
+                "Restrict SSH to version 2; on releases where version 1 has been removed, retain the secure release default.",
+                Severity.HIGH,
+                tuple(item.text for item in policy.evidence) or (f"ASA {asa.get_version()} SSH default",),
+                CISCO_ASA_SSH_REFERENCE,
+            ))
+
+        weak = []
+        if policy.encryption is not None:
+            selected = sorted(set(policy.encryption) & {
+                "all", "low", "des-cbc", "3des-cbc", "aes128-cbc", "aes192-cbc", "aes256-cbc",
+            })
+            if selected:
+                weak.append("encryption: " + ", ".join(selected))
+        if policy.integrity is not None:
+            selected = sorted(set(policy.integrity) & {
+                "all", "low", "medium", "hmac-md5", "hmac-md5-96", "hmac-sha1-96",
+            })
+            if selected:
+                weak.append("integrity: " + ", ".join(selected))
+        if policy.key_exchange in {"dh-group1-sha1", "dh-group14-sha1"}:
+            weak.append("key exchange: " + policy.key_exchange)
+        if weak:
+            self.add_issue(self._finding(
+                parser,
+                "cisco.asa.ssh.weak_algorithms",
+                "ASA SSH policy explicitly permits weak algorithms",
+                "The explicit SSH configuration includes " + "; ".join(weak) + ".",
+                "Legacy SSH algorithms weaken confidentiality, integrity, or key-exchange strength.",
+                "Use the release-supported high/custom encryption and integrity selections and a modern ECDH/Curve25519 key-exchange group.",
+                Severity.HIGH,
+                tuple(item.text for item in policy.evidence),
+                CISCO_ASA_SSH_REFERENCE,
             ))
 
     def check_local_users(self, parser: BaseDeviceParser) -> None:
-        for line in self._lines(parser):
-            match = re.fullmatch(r"username\s+(\S+)\s+password(?:\s+(\S+))?(?:\s+(encrypted|pbkdf2))?(?:\s+privilege\s+\d+)?", line)
-            if not match:
-                continue
-            username, value, marker = match.group(1), match.group(2) or "", match.group(3) or "plaintext"
-            if marker != "plaintext" and value.casefold() not in {"cisco", "admin", "password"}:
+        unsafe = {
+            CredentialStorageAssessment.EMPTY,
+            CredentialStorageAssessment.PLAINTEXT,
+            CredentialStorageAssessment.WEAK_HASH,
+        }
+        for credential in self._asa(parser).get_local_credentials():
+            if credential.storage_assessment not in unsafe:
                 continue
             self.add_issue(self._finding(
                 parser, "cisco.asa.credentials.local_user_storage",
                 "Local administrator credential storage is unsafe",
-                f"Local user '{username}' uses {marker} or a known default value; the credential is redacted.",
+                (
+                    f"Local user '{credential.account}' uses format '{credential.storage_type}', "
+                    f"classified as '{credential.storage_assessment.value}'; the separate exact-default "
+                    f"comparison is '{credential.default_assessment.value}'. The credential is redacted."
+                ),
                 "Configuration disclosure can expose or accelerate compromise of a local administrative credential.",
-                "Use supported PBKDF2/encrypted storage with unique credentials and prefer centralized AAA.",
-                Severity.HIGH, (f"username {username} password <redacted> {marker}",),
+                "Use supported PBKDF2 storage with unique credentials and prefer centralized AAA.",
+                Severity.HIGH, tuple(item.text for item in credential.evidence),
             ))
 
     def check_http_management(self, parser: BaseDeviceParser) -> None:
@@ -128,7 +244,8 @@ class PluginASABaseline(BasePlugin):
                     "Restrict HTTP management to dedicated administration networks.",
                     Severity.HIGH, (grant.raw_line,),
                 ))
-        if not any(re.fullmatch(r"ssl trust-point\s+\S+(?:\s+\S+)?", line) for line in lines):
+        certificate_bindings = asa.get_management_certificate_bindings()
+        if not certificate_bindings:
             self.add_issue(self._finding(
                 parser, "cisco.asa.management.certificate",
                 "ASDM/HTTPS trustpoint is not explicitly assigned",
@@ -137,26 +254,127 @@ class PluginASABaseline(BasePlugin):
                 "Enroll a managed certificate and assign it with 'ssl trust-point'.",
                 Severity.MEDIUM, ("http server enable",),
             ))
+            return
+        for binding in certificate_bindings:
+            evidence = tuple(item.text for item in binding.evidence)
+            if not binding.trustpoint_configured:
+                self.add_issue(self._finding(
+                    parser, "cisco.asa.management.certificate_unresolved",
+                    "ASDM/HTTPS trustpoint reference is unresolved",
+                    f"SSL assigns trustpoint '{binding.trustpoint}'{f' on interface {binding.interface}' if binding.interface else ''}, but no matching crypto ca trustpoint object was parsed.",
+                    "The supplied configuration does not establish the certificate identity served to administrators.",
+                    "Define and enroll the referenced trustpoint, or supply the complete effective configuration containing it.",
+                    Severity.MEDIUM, evidence,
+                    CISCO_ASA_CERTIFICATE_REFERENCE,
+                ))
+            elif binding.certificate_chain_present and not binding.identity_certificate_present:
+                self.add_issue(self._finding(
+                    parser, "cisco.asa.management.certificate_identity_missing",
+                    "ASDM/HTTPS trustpoint has no identity certificate",
+                    f"Assigned trustpoint '{binding.trustpoint}' has a certificate-chain section but no non-CA identity certificate entry.",
+                    "A CA-only chain does not provide the device identity selected for HTTPS management.",
+                    "Enroll or import the intended identity certificate into the assigned trustpoint and retain its issuing chain.",
+                    Severity.MEDIUM, evidence,
+                    CISCO_ASA_CERTIFICATE_REFERENCE,
+                ))
+            elif binding.public_material_state == "malformed":
+                self.add_issue(self._finding(
+                    parser, "cisco.asa.management.certificate_material_malformed",
+                    "ASDM/HTTPS identity certificate material is malformed",
+                    f"Assigned trustpoint '{binding.trustpoint}' contains an identity-certificate entry whose exported hexadecimal DER cannot be parsed as X.509.",
+                    "Malformed identity material cannot establish the intended HTTPS management identity.",
+                    "Re-enroll or import the intended identity certificate and verify the complete trustpoint chain.",
+                    Severity.MEDIUM, evidence,
+                    CISCO_ASA_CERTIFICATE_REFERENCE,
+                ))
+            if binding.assessment is None:
+                continue
+            assessment = binding.assessment
+            metadata = assessment.metadata
+            if assessment.validity_state in {"expired", "not-yet-valid"}:
+                self.add_issue(self._finding(
+                    parser, "cisco.asa.management.certificate_validity",
+                    "ASDM/HTTPS certificate is outside its validity period",
+                    f"Trustpoint '{binding.trustpoint}' identity certificate is {assessment.validity_state} at the explicit assessment time; its validity interval is {metadata.not_before} through {metadata.not_after}.",
+                    "Administrators cannot validate an endpoint certificate outside its declared validity interval.",
+                    "Renew or replace the assigned identity certificate before its activation or expiration boundary.",
+                    Severity.HIGH, evidence,
+                    CISCO_ASA_CERTIFICATE_REFERENCE,
+                ))
+            if assessment.identity_state == "mismatch":
+                self.add_issue(self._finding(
+                    parser, "cisco.asa.management.certificate_identity",
+                    "ASDM/HTTPS certificate does not match the intended identity",
+                    f"Trustpoint '{binding.trustpoint}' identity certificate does not contain the explicitly declared management identity for interface '{binding.interface or 'default'}' in subjectAltName.",
+                    "Clients validating the intended hostname or address will reject the management endpoint identity.",
+                    "Enroll and assign a certificate whose subjectAltName contains the declared management DNS name or IP address.",
+                    Severity.HIGH, evidence,
+                    CISCO_ASA_CERTIFICATE_REFERENCE,
+                ))
+            if assessment.algorithm_state == "weak":
+                self.add_issue(self._finding(
+                    parser, "cisco.asa.management.certificate_algorithm",
+                    "ASDM/HTTPS certificate uses a legacy key or signature",
+                    f"Trustpoint '{binding.trustpoint}' identity certificate uses {metadata.public_key_algorithm} {metadata.public_key_size or 'intrinsic'} and signature hash {metadata.signature_hash_algorithm}.",
+                    "Legacy public-key sizes or certificate signatures provide inadequate cryptographic assurance.",
+                    "Replace the identity certificate with an organization-approved key and SHA-2-or-stronger signature supported by the ASA release.",
+                    Severity.HIGH, evidence,
+                    CISCO_ASA_CERTIFICATE_REFERENCE + (NIST_CRYPTO_TRANSITIONS,),
+                ))
+            if (
+                assessment.trust_state == "verification-failed"
+                and assessment.identity_state == "match"
+                and assessment.validity_state == "valid-at-assessment-time"
+            ):
+                self.add_issue(self._finding(
+                    parser, "cisco.asa.management.certificate_trust",
+                    "ASDM/HTTPS certificate chain does not validate to an approved anchor",
+                    f"Trustpoint '{binding.trustpoint}' certificate matches the intended identity and time boundary but cannot be validated to the explicitly approved exported trust-anchor fingerprint(s).",
+                    "The supplied certificate chain does not establish trust under the selected assessment policy.",
+                    "Install the correct issuing chain and approve only the intended root fingerprint after independent verification.",
+                    Severity.HIGH, evidence,
+                    CISCO_ASA_CERTIFICATE_REFERENCE,
+                ))
 
     def check_ntp(self, parser: BaseDeviceParser) -> None:
-        lines = self._lines(parser)
-        servers = [line for line in lines if re.fullmatch(r"ntp server\s+.+", line)]
-        if not servers:
+        asa = self._asa(parser)
+        associations = asa.get_ntp_associations()
+        if not associations:
             self.add_issue(self._finding(
                 parser, "cisco.asa.ntp.servers", "NTP synchronization is not configured",
                 "No NTP server is configured.",
                 "Incorrect time weakens event correlation, certificate validation, and forensic timelines.",
                 "Configure multiple trusted NTP servers.", Severity.MEDIUM,
                 ("No ntp server command",),
+                CISCO_ASA_NTP_REFERENCE,
             ))
-        elif any(" key " not in f" {line} " for line in servers):
-            self.add_issue(self._finding(
-                parser, "cisco.asa.ntp.authentication", "NTP authentication is incomplete",
-                "At least one NTP server is not bound to an authentication key.",
-                "A spoofed time source can disrupt logging and time-dependent controls.",
-                "Configure NTP authentication keys and reference a key on every server.",
-                Severity.MEDIUM, tuple(servers),
-            ))
+            return
+        release = asa._release_tuple(asa.get_version())
+        for association in associations:
+            evidence = tuple(item.text for item in association.evidence)
+            if association.authentication_state != "authenticated":
+                detail = (
+                    "is not configured for authenticated NTP"
+                    if association.authentication_state == "unauthenticated"
+                    else f"references missing or untrusted key '{association.key_id}'"
+                )
+                self.add_issue(self._finding(
+                    parser, "cisco.asa.ntp.authentication", "NTP authentication is incomplete",
+                    f"NTP server '{association.address}' {detail}.",
+                    "A spoofed time source can disrupt logging and time-dependent controls.",
+                    "Enable NTP authentication and configure, trust, and bind a key for every server.",
+                    Severity.MEDIUM, evidence,
+                    CISCO_ASA_NTP_REFERENCE,
+                ))
+            elif release is not None and release >= (9, 13) and association.algorithm in {"md5", "sha1"}:
+                self.add_issue(self._finding(
+                    parser, "cisco.asa.ntp.weak_algorithm", "NTP uses a legacy authentication algorithm",
+                    f"NTP server '{association.address}' uses '{association.algorithm}' on an ASA release supporting stronger alternatives.",
+                    "A legacy digest provides weaker protection against forged time updates.",
+                    "Use SHA-256, SHA-512, or AES-CMAC according to the approved interoperability policy.",
+                    Severity.MEDIUM, evidence,
+                    CISCO_ASA_NTP_REFERENCE,
+                ))
 
     def check_threat_detection(self, parser: BaseDeviceParser) -> None:
         lines = self._lines(parser)
@@ -233,9 +451,10 @@ class PluginASABaseline(BasePlugin):
             ))
 
     def analyze(self, parser: BaseDeviceParser) -> None:
-        if self._asa(parser).get_version() == "?":
+        if parser.device_type != "ASA" or self._asa(parser).get_version() == "?":
             return
         self.check_aaa(parser)
+        self.check_management_sessions_and_ssh(parser)
         self.check_local_users(parser)
         self.check_http_management(parser)
         self.check_ntp(parser)

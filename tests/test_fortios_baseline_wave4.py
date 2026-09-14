@@ -254,7 +254,7 @@ end
         "fortinet.fortios.snmp.legacy_community",
         "fortinet.fortios.snmp.v3_security",
         "fortinet.fortios.snmp.secure_user_missing",
-        "fortinet.fortios.ntp.authentication",
+        "fortinet.fortios.ntp.weak_algorithm",
         "fortinet.fortios.logging.events_filtered",
         "fortinet.fortios.policy.logging",
         "fortinet.fortios.policy.security_profiles",
@@ -515,3 +515,48 @@ end
     assert "fortinet.fortios.logging.events_filtered" not in {
         issue.rule_id for issue in disabled_issues
     }
+
+
+def test_log_filters_are_isolated_by_destination_and_vdom_scope(tmp_path):
+    config = '''config vdom
+edit root
+config log syslogd setting
+set status enable
+set server 192.0.2.20
+end
+config log syslogd filter
+set anomaly enable
+set forward-traffic enable
+set local-traffic enable
+set system enable
+set user enable
+end
+next
+edit branch
+config log syslogd setting
+set status enable
+set server 192.0.2.21
+end
+config log syslogd filter
+set user disable
+end
+config log syslogd2 setting
+set status disable
+set server 192.0.2.22
+end
+config log syslogd2 filter
+set anomaly disable
+end
+next
+end
+'''
+    _, issues = _issues(tmp_path, config)
+    findings = [
+        issue for issue in issues
+        if issue.rule_id == "fortinet.fortios.logging.events_filtered"
+    ]
+    assert len(findings) == 1
+    assert "'log syslogd setting'" in findings[0].observation
+    assert "scope 'branch'" in findings[0].observation
+    assert "user" in findings[0].observation
+    assert "anomaly" not in findings[0].observation

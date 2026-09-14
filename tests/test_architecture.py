@@ -136,7 +136,28 @@ def test_cli_offline_flag_disables_online_lookup(monkeypatch):
     assert main_module.main([
         "--device", "IOS_ROUTER", "--input", "unused.conf", "--offline"
     ]) == 0
-    assert calls[0][-1] is False
+    assert calls[0][-2] is False
+
+
+def test_cli_loads_explicit_assessment_policy(monkeypatch, tmp_path):
+    calls = []
+    policy = tmp_path / "policy.json"
+    policy.write_text(
+        '{"policy_version":"corp-v2","interface_roles":{"Gi0/0":"external"},'
+        '"excluded_categories":["snmp"]}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(main_module, "display_banner", lambda: None)
+    monkeypatch.setattr(main_module, "analyze_device", lambda *args: calls.append(args))
+
+    assert main_module.main([
+        "--device", "IOS_ROUTER", "--input", "unused.conf",
+        "--assessment-policy", str(policy),
+    ]) == 0
+    context = calls[0][-1]
+    assert context.policy_version == "corp-v2"
+    assert context.role_for_interface("gi0/0") == "external"
+    assert not context.permits_rule("cisco.ios.snmp.legacy_community")
 
 
 def test_unknown_device_is_rejected_by_factory(tmp_path):
@@ -181,7 +202,7 @@ def test_cisco_asa_parser_details():
     assert services["http"] is False
     
     # Verify ASA-specific fields
-    assert parser.get_enable_password() == "cisco123"
+    assert parser.get_enable_password() == "<redacted>"
     assert "public" in parser.get_snmp_communities()
     assert parser.get_logging_enabled() is False
     assert parser.get_ssl_min_version() == "tlsv1"

@@ -15,13 +15,17 @@ PANOS_POLICY_GUIDE = (
     "security-policy-best-practices/deploy-security-policy-best-practices/"
     "security-policy-rule-best-practices"
 )
+PANOS_SECURITY_PROFILES_GUIDE = (
+    "https://docs.paloaltonetworks.com/pan-os/11-1/pan-os-admin/policy/"
+    "security-profiles"
+)
 PANOS_LOG_FORWARDING_GUIDE = (
     "https://docs.paloaltonetworks.com/network-security/security-policy/"
     "administration/objects/log-forwarding"
 )
 PANOS_PASSWORD_GUIDE = (
-    "https://docs.paloaltonetworks.com/ngfw/getting-started/set-up-your-ngfws/"
-    "perform-the-initial-configuration-for-a-ngfw"
+    "https://origin-docs.paloaltonetworks.com/ngfw/help/12-1/"
+    "device/device-setup-management"
 )
 PANOS_HIERARCHY_GUIDE = (
     "https://docs.paloaltonetworks.com/ngfw/pan-os-cli-quick-start/"
@@ -39,6 +43,7 @@ PANOS_TLS_GUIDE = (
     "https://docs.paloaltonetworks.com/ngfw/administration/certificate-management/"
     "configure-ssl-tls-service-profile"
 )
+NIST_CRYPTO_TRANSITIONS = "https://csrc.nist.gov/pubs/sp/800/131/a/r2/final"
 PANOS_UPDATE_GUIDE = (
     "https://docs.paloaltonetworks.com/advanced-threat-prevention/administration/"
     "configure-threat-prevention/set-up-antivirus-anti-spyware-and-vulnerability-protection"
@@ -46,6 +51,10 @@ PANOS_UPDATE_GUIDE = (
 PANOS_SYSTEM_LOG_GUIDE = (
     "https://docs.paloaltonetworks.com/ngfw/administration/monitoring/"
     "configure-log-forwarding"
+)
+PANOS_NTP_GUIDE = (
+    "https://docs.paloaltonetworks.com/ngfw/getting-started/"
+    "initial-setup-configuration-ngfws"
 )
 
 
@@ -147,7 +156,8 @@ class PluginPANOSChecks(BasePlugin):
         panos = self._panos(parser)
         if panos.panorama_inheritance_unknown:
             return
-        if not panos.get_ntp_servers():
+        associations = panos.get_ntp_associations()
+        if not associations:
             self.add_issue(
                 Finding(
                     rule_id="paloalto.panos.ntp.servers",
@@ -159,9 +169,55 @@ class PluginPANOSChecks(BasePlugin):
                     recommendation="Configure redundant trusted primary and secondary NTP servers.",
                     severity=Severity.LOW,
                     evidence=("deviceconfig system ntp-servers absent",),
-                    references=(PANOS_CLI_GUIDE,),
+                    references=(PANOS_NTP_GUIDE,),
                 )
             )
+        else:
+            modern_algorithms = panos.supports_modern_ntp_algorithms()
+            for association in associations:
+                incomplete = association.authentication == "none" or (
+                    association.authentication == "symmetric-key"
+                    and (
+                        not association.key_id
+                        or not association.algorithm
+                        or association.key_material_state == "missing"
+                    )
+                )
+                if incomplete:
+                    self.add_issue(
+                        Finding(
+                            rule_id="paloalto.panos.ntp.authentication",
+                            device=parser.device_type,
+                            title="NTP association is not authenticated",
+                            observation=f"The {association.role} NTP server '{association.address}' in scope '{association.device_scope}' lacks a complete authentication configuration.",
+                            impact="Unauthenticated time responses can corrupt log chronology and time-dependent security behavior.",
+                            exploitability="A network-positioned attacker may spoof NTP responses if routing and filtering permit it.",
+                            recommendation="Configure complete per-server symmetric-key authentication using an algorithm supported by the installed PAN-OS release.",
+                            severity=Severity.MEDIUM,
+                            evidence=self._evidence(association.evidence),
+                            references=(PANOS_NTP_GUIDE,),
+                        )
+                    )
+                weak = association.authentication == "autokey" or (
+                    modern_algorithms is True
+                    and association.authentication == "symmetric-key"
+                    and association.algorithm in {"md5", "sha1"}
+                )
+                if weak:
+                    self.add_issue(
+                        Finding(
+                            rule_id="paloalto.panos.ntp.weak_algorithm",
+                            device=parser.device_type,
+                            title="NTP association uses a legacy authentication method",
+                            observation=f"The {association.role} NTP server '{association.address}' uses '{association.authentication if association.authentication == 'autokey' else association.algorithm}'.",
+                            impact="A legacy NTP authentication method provides weaker protection against forged time updates.",
+                            exploitability="A network-positioned attacker can target weaknesses in the configured authentication method.",
+                            recommendation="On PAN-OS 12.1.2 or later, use SHA-256 or SHA-512 symmetric-key authentication; upgrade older releases where the approved policy requires modern algorithms.",
+                            severity=Severity.MEDIUM,
+                            evidence=self._evidence(association.evidence),
+                            references=(PANOS_NTP_GUIDE,),
+                        )
+                    )
         if not panos.get_dns_servers():
             self.add_issue(
                 Finding(
@@ -193,15 +249,66 @@ class PluginPANOSChecks(BasePlugin):
                     recommendation="Configure an SNMPv3 user using SHA authentication and AES privacy, and restrict permitted manager IPs.",
                     severity=Severity.MEDIUM,
                     evidence=("attached SNMP management without secure SNMPv3 user",),
-                    references=(PANOS_CLI_GUIDE, PANOS_MANAGEMENT_GUIDE),
+                    references=(PANOS_HIERARCHY_GUIDE, PANOS_MANAGEMENT_GUIDE),
                 )
             )
+        if snmp_enabled:
+            snmp_release = panos._release_tuple(panos.get_version())
+            for user in panos.get_snmpv3_users():
+                evidence = self._evidence(user.evidence)
+                missing = []
+                if user.authentication in {"none", "noauth"}:
+                    missing.append("authentication")
+                if user.privacy in {"none", "nopriv"}:
+                    missing.append("privacy")
+                if missing:
+                    self.add_issue(
+                        Finding(
+                            rule_id="paloalto.panos.snmp.v3_protection",
+                            device=parser.device_type,
+                            title="SNMPv3 user lacks complete protection",
+                            observation=f"SNMPv3 user '{user.name}' in '{user.device_scope}' lacks {' and '.join(missing)}.",
+                            impact="SNMP management data may lack strong authentication or confidentiality.",
+                            exploitability="A reachable or on-path attacker can target an under-protected SNMP identity.",
+                            recommendation="Configure SHA-family authentication and AES privacy for every active SNMPv3 user.",
+                            severity=Severity.HIGH,
+                            evidence=evidence,
+                            references=(PANOS_HIERARCHY_GUIDE, PANOS_MANAGEMENT_GUIDE),
+                        )
+                    )
+                weak = []
+                if user.authentication == "md5" or (
+                    snmp_release is not None
+                    and snmp_release >= (11, 2, 0)
+                    and user.authentication in {"sha", "sha1", "sha-1"}
+                ):
+                    weak.append(f"{user.authentication.upper()} authentication")
+                if user.privacy in {"des", "3des"}:
+                    weak.append(f"{user.privacy.upper()} privacy")
+                if weak:
+                    self.add_issue(
+                        Finding(
+                            rule_id="paloalto.panos.snmp.v3_weak_algorithm",
+                            device=parser.device_type,
+                            title="SNMPv3 user uses weak algorithms",
+                            observation=f"SNMPv3 user '{user.name}' in '{user.device_scope}' uses {', '.join(weak)}.",
+                            impact="Legacy SNMPv3 algorithms provide inadequate cryptographic protection.",
+                            exploitability="A traffic observer can target weaknesses in legacy algorithms.",
+                            recommendation="Use a supported SHA-2 authentication option and AES privacy.",
+                            severity=Severity.MEDIUM,
+                            evidence=evidence,
+                            references=(PANOS_HIERARCHY_GUIDE,),
+                        )
+                    )
 
     def check_management_tls(self, parser: BaseDeviceParser) -> None:
         panos = self._panos(parser)
         if panos.panorama_inheritance_unknown:
             return
-        profiles = {profile.name: profile for profile in panos.get_ssl_tls_service_profiles()}
+        profiles = {
+            (profile.scope, profile.name): profile
+            for profile in panos.get_ssl_tls_service_profiles()
+        }
         https_scopes = {
             service.scope
             for service in panos.get_dedicated_management_services()
@@ -253,7 +360,9 @@ class PluginPANOSChecks(BasePlugin):
                     )
                 )
                 continue
-            profile = profiles.get(setting.profile)
+            profile = profiles.get((setting.device_scope, setting.profile)) or profiles.get(
+                ("shared", setting.profile)
+            )
             if profile is None:
                 self.add_issue(
                     Finding(
@@ -298,6 +407,107 @@ class PluginPANOSChecks(BasePlugin):
                         recommendation="Set the management profile minimum to TLS 1.2 or TLS 1.3 where supported.",
                         severity=Severity.HIGH,
                         evidence=profile_evidence,
+                        references=(PANOS_TLS_GUIDE,),
+                    )
+                )
+
+        for binding in panos.get_management_certificate_bindings():
+            evidence = self._evidence(binding.evidence)
+            if binding.resolution == "unresolved":
+                self.add_issue(
+                    Finding(
+                        rule_id="paloalto.panos.management.certificate_unresolved",
+                        device=parser.device_type,
+                        title="Management certificate object is unresolved",
+                        observation=f"Management HTTPS in '{binding.device_scope}' references certificate '{binding.certificate}' through {binding.source}, but no matching shared or device-scoped certificate object was parsed.",
+                        impact="The supplied export does not establish which certificate material authenticates the management endpoint.",
+                        exploitability="An incomplete or inherited object can conceal an unintended management identity.",
+                        recommendation="Supply the complete effective configuration and ensure the attached certificate object exists in the applicable device or shared scope.",
+                        severity=Severity.MEDIUM,
+                        evidence=evidence,
+                        references=(PANOS_TLS_GUIDE,),
+                    )
+                )
+            elif binding.public_material_state == "malformed":
+                self.add_issue(
+                    Finding(
+                        rule_id="paloalto.panos.management.certificate_material_malformed",
+                        device=parser.device_type,
+                        title="Management certificate material is malformed",
+                        observation=f"Attached certificate object '{binding.certificate}' in '{binding.object_scope}' contains public material that is not a structurally encoded certificate value.",
+                        impact="Malformed certificate material cannot establish the intended management endpoint identity.",
+                        exploitability="Administrators may encounter failed validation or fall back to accepting an unintended identity.",
+                        recommendation="Re-import the public certificate and verify the management SSL/TLS profile references the intended object.",
+                        severity=Severity.MEDIUM,
+                        evidence=evidence,
+                        references=(PANOS_TLS_GUIDE,),
+                    )
+                )
+            if binding.assessment is None:
+                continue
+            assessment = binding.assessment
+            metadata = assessment.metadata
+            if assessment.validity_state in {"expired", "not-yet-valid"}:
+                self.add_issue(
+                    Finding(
+                        rule_id="paloalto.panos.management.certificate_validity",
+                        device=parser.device_type,
+                        title="Management certificate is outside its validity period",
+                        observation=f"Attached certificate '{binding.certificate}' is {assessment.validity_state} at the explicit assessment time; its validity interval is {metadata.not_before} through {metadata.not_after}.",
+                        impact="Administrators cannot validate an endpoint certificate outside its declared validity interval.",
+                        exploitability="Certificate warnings can condition administrators to bypass identity validation or can interrupt managed access.",
+                        recommendation="Renew or replace the attached management certificate and verify the complete chain before its activation boundary.",
+                        severity=Severity.HIGH,
+                        evidence=evidence,
+                        references=(PANOS_TLS_GUIDE,),
+                    )
+                )
+            if assessment.identity_state == "mismatch":
+                self.add_issue(
+                    Finding(
+                        rule_id="paloalto.panos.management.certificate_identity",
+                        device=parser.device_type,
+                        title="Management certificate does not match the intended identity",
+                        observation=f"Attached certificate '{binding.certificate}' does not contain the explicitly declared management identity for scope '{binding.device_scope}' in its subjectAltName values.",
+                        impact="Clients validating the intended hostname or address will reject the management endpoint identity.",
+                        exploitability="Identity-validation failures can encourage unsafe certificate-warning bypasses.",
+                        recommendation="Issue and attach a certificate whose subjectAltName contains the declared management DNS name or IP address.",
+                        severity=Severity.HIGH,
+                        evidence=evidence,
+                        references=(PANOS_TLS_GUIDE,),
+                    )
+                )
+            if assessment.algorithm_state == "weak":
+                self.add_issue(
+                    Finding(
+                        rule_id="paloalto.panos.management.certificate_algorithm",
+                        device=parser.device_type,
+                        title="Management certificate uses a legacy key or signature",
+                        observation=f"Attached certificate '{binding.certificate}' uses {metadata.public_key_algorithm} {metadata.public_key_size or 'intrinsic'} and signature hash {metadata.signature_hash_algorithm}.",
+                        impact="Legacy public-key sizes or certificate signatures provide inadequate cryptographic assurance.",
+                        exploitability="An attacker may target known weaknesses in undersized keys or deprecated signature hashes.",
+                        recommendation="Replace the certificate with an organization-approved key and SHA-2-or-stronger signature consistent with current platform support.",
+                        severity=Severity.HIGH,
+                        evidence=evidence,
+                        references=(PANOS_TLS_GUIDE, NIST_CRYPTO_TRANSITIONS),
+                    )
+                )
+            if (
+                assessment.trust_state == "verification-failed"
+                and assessment.identity_state == "match"
+                and assessment.validity_state == "valid-at-assessment-time"
+            ):
+                self.add_issue(
+                    Finding(
+                        rule_id="paloalto.panos.management.certificate_trust",
+                        device=parser.device_type,
+                        title="Management certificate chain does not validate to an approved anchor",
+                        observation=f"Attached certificate '{binding.certificate}' matches the intended identity and time boundary but cannot be validated to the explicitly approved exported trust-anchor fingerprint(s).",
+                        impact="The supplied certificate chain does not establish trust under the selected assessment policy.",
+                        exploitability="Clients using the approved trust policy may reject the endpoint or administrators may bypass warnings.",
+                        recommendation="Attach the correct issuing chain and approve only the intended root fingerprint after independent verification.",
+                        severity=Severity.HIGH,
+                        evidence=evidence,
                         references=(PANOS_TLS_GUIDE,),
                     )
                 )
@@ -368,6 +578,10 @@ class PluginPANOSChecks(BasePlugin):
             (profile.scope, profile.name): profile
             for profile in panos.get_log_forwarding_profiles()
         }
+        inspections = {
+            (inspection.rule_scope, inspection.rule_position, inspection.rule_name): inspection
+            for inspection in panos.get_security_inspection()
+        }
         for rule in panos.get_security_rules():
             if not rule.enabled or rule.action != "allow":
                 continue
@@ -436,9 +650,92 @@ class PluginPANOSChecks(BasePlugin):
                         references=(PANOS_POLICY_GUIDE,),
                     )
                 )
+                continue
+
+            inspection = inspections.get((rule.scope, rule.position, rule.name))
+            if inspection is None:
+                continue
+            attachment_evidence = evidence + (
+                f"{rule.scope}: {inspection.attachment_mode} {inspection.attachment_name}",
+            )
+            if inspection.resolution_state == "unresolved":
+                self.add_issue(
+                    Finding(
+                        rule_id="paloalto.panos.policy.security_profile_unresolved",
+                        device=parser.device_type,
+                        title="Allow rule references an unresolved security profile group",
+                        observation=f"Enabled allow rule '{rule.name}' in '{rule.scope}' references security profile group '{inspection.attachment_name}', but no same-vsys or shared definition is present.",
+                        impact="The static export does not prove that threat inspection is attached to the permitted traffic.",
+                        exploitability="Traffic matching the rule may avoid the intended threat-prevention controls if the reference is invalid.",
+                        recommendation="Attach an existing same-vsys or shared Security Profile Group and verify its member profiles.",
+                        severity=Severity.HIGH,
+                        evidence=attachment_evidence,
+                        references=(PANOS_POLICY_GUIDE, PANOS_SECURITY_PROFILES_GUIDE),
+                    )
+                )
+                continue
+            if inspection.resolution_state == "empty":
+                self.add_issue(
+                    Finding(
+                        rule_id="paloalto.panos.policy.security_profile_ineffective",
+                        device=parser.device_type,
+                        title="Allow rule uses an empty security profile group",
+                        observation=f"Enabled allow rule '{rule.name}' in '{rule.scope}' references group '{inspection.attachment_name}', but the resolved group has no profile members.",
+                        impact="An empty group does not provide the threat, malware, URL, file, or data inspection implied by its attachment.",
+                        exploitability="Malicious content can traverse traffic matched by the rule without the intended profile controls.",
+                        recommendation="Populate the group with the approved inspection profiles or attach suitable individual profiles.",
+                        severity=Severity.HIGH,
+                        evidence=attachment_evidence,
+                        references=(PANOS_SECURITY_PROFILES_GUIDE,),
+                    )
+                )
+
+            for profile in inspection.profiles:
+                profile_evidence = evidence + self._evidence(profile.evidence) + (
+                    f"{rule.scope}: {profile.profile_type} profile {profile.name}",
+                )
+                if profile.resolution_state == "unresolved":
+                    self.add_issue(
+                        Finding(
+                            rule_id="paloalto.panos.policy.security_profile_unresolved",
+                            device=parser.device_type,
+                            title="Allow rule references an unresolved security profile",
+                            observation=f"Enabled allow rule '{rule.name}' in '{rule.scope}' references {profile.profile_type} profile '{profile.name}', but no same-vsys, shared, or known built-in definition is present.",
+                            impact="The static export does not prove that the referenced inspection function can be applied.",
+                            exploitability="Traffic matching the rule may avoid this inspection control if the reference is invalid.",
+                            recommendation=f"Attach an existing {profile.profile_type} profile in the rule's vsys or shared scope.",
+                            severity=Severity.HIGH,
+                            evidence=profile_evidence,
+                            references=(PANOS_POLICY_GUIDE, PANOS_SECURITY_PROFILES_GUIDE),
+                        )
+                    )
+                elif profile.content_state in {"empty", "nonblocking"}:
+                    reason = (
+                        "has no exported inspection settings"
+                        if profile.content_state == "empty"
+                        else "contains only explicitly non-blocking actions: "
+                        + ", ".join(profile.actions)
+                    )
+                    self.add_issue(
+                        Finding(
+                            rule_id="paloalto.panos.policy.security_profile_ineffective",
+                            device=parser.device_type,
+                            title="Allow rule uses an ineffective security profile",
+                            observation=f"Enabled allow rule '{rule.name}' in '{rule.scope}' uses {profile.profile_type} profile '{profile.name}', which {reason}.",
+                            impact="The attached profile does not block the threats its name may imply.",
+                            exploitability="Matching malicious content can be permitted or merely logged by the explicitly weak profile.",
+                            recommendation=f"Configure '{profile.name}' with reviewed blocking or reset actions appropriate to the protected traffic.",
+                            severity=Severity.HIGH,
+                            evidence=profile_evidence,
+                            references=(PANOS_SECURITY_PROFILES_GUIDE,),
+                        )
+                    )
 
     def check_password_policy(self, parser: BaseDeviceParser) -> None:
-        policy = self._panos(parser).get_password_policy()
+        panos = self._panos(parser)
+        if panos.panorama_inheritance_unknown:
+            return
+        policy = panos.get_password_policy()
         weaknesses = []
         if policy.enabled is not True:
             weaknesses.append("complexity is absent or disabled")
@@ -471,6 +768,45 @@ class PluginPANOSChecks(BasePlugin):
             )
         )
 
+    def check_password_reuse_and_username(self, parser: BaseDeviceParser) -> None:
+        panos = self._panos(parser)
+        if panos.panorama_inheritance_unknown:
+            return
+        policy = panos.get_password_policy()
+        if policy.enabled is not True:
+            return
+        evidence = self._evidence(policy.evidence)
+        if policy.history_count == 0:
+            self.add_issue(
+                Finding(
+                    rule_id="paloalto.panos.credentials.password_history_disabled",
+                    device=parser.device_type,
+                    title="Management password reuse prevention is disabled",
+                    observation="The explicit local password history count is 0, so previous administrator passwords are not retained for reuse prevention.",
+                    impact="Administrators can immediately recycle a previously exposed or guessed password.",
+                    exploitability="An attacker may regain access when a known password is reused after a nominal password change.",
+                    recommendation="Set a nonzero password history count that meets the approved organizational password policy.",
+                    severity=Severity.MEDIUM,
+                    evidence=evidence,
+                    references=(PANOS_PASSWORD_GUIDE,),
+                )
+            )
+        if policy.blocks_username is False:
+            self.add_issue(
+                Finding(
+                    rule_id="paloalto.panos.credentials.username_inclusion_allowed",
+                    device=parser.device_type,
+                    title="Administrator passwords may contain the username",
+                    observation="The explicit local password policy disables username-inclusion blocking.",
+                    impact="Passwords derived from account names are easier to predict and target with focused guessing.",
+                    exploitability="An attacker who knows an administrator username can prioritize closely related password candidates.",
+                    recommendation="Enable Block Username Inclusion for the local administrator password policy.",
+                    severity=Severity.MEDIUM,
+                    evidence=evidence,
+                    references=(PANOS_PASSWORD_GUIDE,),
+                )
+            )
+
     def check_panorama_scope(self, parser: BaseDeviceParser) -> None:
         panos = self._panos(parser)
         if not panos.panorama_inheritance_unknown:
@@ -494,6 +830,7 @@ class PluginPANOSChecks(BasePlugin):
         self.check_management(parser)
         self.check_security_rules(parser)
         self.check_password_policy(parser)
+        self.check_password_reuse_and_username(parser)
         self.check_administration(parser)
         self.check_platform_services(parser)
         self.check_management_tls(parser)

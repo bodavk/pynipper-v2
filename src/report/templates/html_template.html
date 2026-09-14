@@ -28,6 +28,17 @@
                     Each issue includes a stable rule ID, severity, observation, impact,
                     exploitability, remediation guidance, and available evidence and references.
                 </p>
+                {% if assessment_policy %}
+                    <p>
+                        <strong>Assessment policy:</strong>
+                        {{ assessment_policy['policy-version'] }}
+                        ({{ assessment_policy['provenance'] }}).
+                        Device role: {{ assessment_policy['device-role'] }}.
+                        Excluded categories:
+                        {{ assessment_policy['excluded-categories']|join(', ') if assessment_policy['excluded-categories'] else 'none' }}.
+                        Excluded categories were not assessed and are not implied secure.
+                    </p>
+                {% endif %}
             </section>
 
             <section id="security-issues">

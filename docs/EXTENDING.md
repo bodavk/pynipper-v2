@@ -26,6 +26,7 @@ Prefer a typed parser method or normalized record over regex inside the plugin. 
 - Guard numeric and structured conversions.
 - Redact passwords, keys, communities, and tokens before returning evidence.
 - Return explicit unknown or parse-error state when the export is insufficient.
+- Gate documented defaults and legacy command aliases to the exact verified release family; an OS name alone is not applicability evidence.
 
 If the shared normalized model lacks a concept, add the smallest generally meaningful typed field. If the concept is vendor-specific, expose a typed vendor-parser method instead of weakening the common contract.
 
@@ -57,6 +58,12 @@ class PluginExampleChecks(BasePlugin):
 ```
 
 Do not emit a generic finding for several unrelated causes. Split disabled, absent, malformed, weak, and overly broad states when they require different remediation.
+
+For policy-attached inspection, model the rule-to-group-to-profile relationship in the parser. Resolve local scope before inherited shared/global scope, never borrow a same-name object from another tenant scope, and grade only enabled rules and attached objects. Keep unresolved controller inheritance distinct from a locally invalid reference. Profile configuration can establish an empty or explicitly non-blocking static state, but it cannot establish license health, content freshness, or actual runtime inspection.
+
+Do not reuse a nearby policy model merely because its syntax has similar words. Transit, local/self traffic, stateless filters and stateful zone policies need separate records when their matching or attachment semantics differ. Resolve static address/service/application groups inside the parser, preserve tenant/VDOM/zone scope, and require complete positive resolution before proving an unrestricted rule.
+
+For VPN checks, start from an active policy or interface attachment and follow named references to the effective gateway, policy and proposal objects. Ignore unreferenced weak definitions and inactive tunnels. Report an unresolved active chain separately from an explicitly weak configured transform, and never describe configured proposals as the live negotiated security association.
 
 ### 4. Register explicitly
 
@@ -92,6 +99,8 @@ Required behavior:
 - ensure evidence is sanitized before plugins receive it.
 
 Use immutable dataclasses for recurring typed vendor records. Avoid dictionaries whose keys or value meanings differ by code path.
+
+For credential syntax, return secret-free `CredentialMetadata` from the parser. Classify only formats the export proves, keep exact default-fingerprint matching separate from storage quality, and leave future or opaque formats `UNKNOWN`. Do not infer plaintext length or composition from a hash, expose a decoded reversible value, or put the supplied value in evidence, diagnostics, exceptions, or logs. Ordered account replacement and removal are parser responsibilities.
 
 ### 3. Add plugins and a processor
 
@@ -130,6 +139,8 @@ At minimum, add:
 - exact `Finding` assertions for rule ID, severity, observation, evidence, and references;
 - a public-pipeline duplicate test;
 - paired permanent corpus cases once the device is promoted to target-baseline status.
+
+If a check depends on deployment context, consume the immutable `AssessmentContext` attached to the parser. Extend the validated policy schema only when the concept is cross-platform and its precedence is unambiguous. Never infer an external, internal, edge, or trusted role from an interface name. Certificate checks likewise require explicit inputs: a timezone-aware `assessment_time` for reproducible validity, a scoped intended management identity for SAN matching, and approved SHA-256 trust-anchor fingerprints for offline chain verification. Missing inputs remain unknown, not secure or vulnerable. Tests must cover explicit roles, unknown role, inactive objects, conflicting/invalid input, report provenance, and exact temporal boundaries where applicable. See [`ASSESSMENT_POLICY.md`](ASSESSMENT_POLICY.md).
 
 ### 7. Update documentation in the same change
 

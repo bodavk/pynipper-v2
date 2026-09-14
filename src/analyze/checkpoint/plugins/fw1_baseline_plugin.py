@@ -7,11 +7,13 @@ from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.issue import Finding, Severity
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.checkpoint.fw1 import (
+    CheckPointNetworkSemantics,
     CheckPointFW1Parser,
     CheckPointLayer,
     CheckPointObject,
     CheckPointRule,
     CheckPointService,
+    CheckPointServiceSemantics,
 )
 
 
@@ -444,16 +446,6 @@ class PluginCheckPointBaseline(BasePlugin):
                 )
 
     @classmethod
-    def _dimension_covers(cls, prior: frozenset[str], current: frozenset[str]) -> bool:
-        if not prior or not current:
-            return False
-        if prior == cls._ANY:
-            return True
-        if current == cls._ANY:
-            return prior == cls._ANY
-        return bool(prior) and bool(current) and current.issubset(prior)
-
-    @classmethod
     def _install_covers(cls, prior: tuple[str, ...], current: tuple[str, ...]) -> bool:
         prior_set = {value.casefold() for value in prior}
         current_set = {value.casefold() for value in current}
@@ -461,10 +453,79 @@ class PluginCheckPointBaseline(BasePlugin):
             return True
         return "any" in prior_set
 
+    @staticmethod
+    def _ranges_cover(
+        prior: tuple[tuple[int, int], ...], current: tuple[tuple[int, int], ...]
+    ) -> bool:
+        if not prior or not current:
+            return False
+        merged: list[tuple[int, int]] = []
+        for first, last in sorted(prior):
+            if not merged or first > merged[-1][1] + 1:
+                merged.append((first, last))
+            else:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], last))
+        return all(
+            any(prior_first <= first and prior_last >= last for prior_first, prior_last in merged)
+            for first, last in current
+        )
+
+    @classmethod
+    def _network_semantics_cover(
+        cls, prior: CheckPointNetworkSemantics, current: CheckPointNetworkSemantics
+    ) -> bool:
+        if not prior.complete or not current.complete:
+            return False
+        if prior.any:
+            return True
+        if current.any:
+            return False
+        families = {interval.family for interval in current.intervals}
+        return bool(families) and all(
+            cls._ranges_cover(
+                tuple(
+                    (interval.first, interval.last)
+                    for interval in prior.intervals
+                    if interval.family == family
+                ),
+                tuple(
+                    (interval.first, interval.last)
+                    for interval in current.intervals
+                    if interval.family == family
+                ),
+            )
+            for family in families
+        )
+
+    @classmethod
+    def _service_semantics_cover(
+        cls, prior: CheckPointServiceSemantics, current: CheckPointServiceSemantics
+    ) -> bool:
+        if not prior.complete or not current.complete:
+            return False
+        if prior.any:
+            return True
+        if current.any:
+            return False
+        protocols = {interval.protocol for interval in current.intervals}
+        return bool(protocols) and all(
+            cls._ranges_cover(
+                tuple(
+                    (interval.first_port, interval.last_port)
+                    for interval in prior.intervals
+                    if interval.protocol == protocol
+                ),
+                tuple(
+                    (interval.first_port, interval.last_port)
+                    for interval in current.intervals
+                    if interval.protocol == protocol
+                ),
+            )
+            for protocol in protocols
+        )
+
     def check_shadowing(self, parser: BaseDeviceParser) -> None:
         checkpoint = self._checkpoint(parser)
-        object_index = self._index(checkpoint.get_policy_objects())
-        service_index = self._index(checkpoint.get_service_objects())
         for layer in checkpoint.get_policy_layers():
             previous: list[CheckPointRule] = []
             for rule in layer.rules:
@@ -477,9 +538,9 @@ class PluginCheckPointBaseline(BasePlugin):
                     previous.append(rule)
                     continue
                 current_dimensions = (
-                    self._expand(rule.sources, object_index),
-                    self._expand(rule.destinations, object_index),
-                    self._expand(rule.services, service_index),
+                    checkpoint.resolve_network_semantics(rule.sources),
+                    checkpoint.resolve_network_semantics(rule.destinations),
+                    checkpoint.resolve_service_semantics(rule.services),
                 )
                 for earlier in previous:
                     if (
@@ -494,13 +555,20 @@ class PluginCheckPointBaseline(BasePlugin):
                     ):
                         continue
                     earlier_dimensions = (
-                        self._expand(earlier.sources, object_index),
-                        self._expand(earlier.destinations, object_index),
-                        self._expand(earlier.services, service_index),
+                        checkpoint.resolve_network_semantics(earlier.sources),
+                        checkpoint.resolve_network_semantics(earlier.destinations),
+                        checkpoint.resolve_service_semantics(earlier.services),
                     )
-                    if not all(
-                        self._dimension_covers(prior, current)
-                        for prior, current in zip(earlier_dimensions, current_dimensions)
+                    if not (
+                        self._network_semantics_cover(
+                            earlier_dimensions[0], current_dimensions[0]
+                        )
+                        and self._network_semantics_cover(
+                            earlier_dimensions[1], current_dimensions[1]
+                        )
+                        and self._service_semantics_cover(
+                            earlier_dimensions[2], current_dimensions[2]
+                        )
                     ):
                         continue
                     same_action = earlier.action == rule.action

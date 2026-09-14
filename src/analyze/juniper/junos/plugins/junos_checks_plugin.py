@@ -18,6 +18,15 @@ JUNIPER_SSH_REFERENCE = (
     "https://www.juniper.net/documentation/us/en/software/junos/cli-reference/"
     "topics/ref/statement/ssh-edit-system.html"
 )
+JUNIPER_SECURITY_POLICY_GUIDE = (
+    "https://www.juniper.net/documentation/us/en/software/junos/"
+    "security-policies/topics/topic-map/security-policy-configuration.html"
+)
+JUNIPER_IPSEC_GUIDE = (
+    "https://www.juniper.net/documentation/us/en/software/junos/vpn-ipsec/"
+    "topics/topic-map/security-ipsec-vpn-configuration-overview.html"
+)
+IETF_IKEV2_ALGORITHM_GUIDANCE = "https://www.rfc-editor.org/rfc/rfc8247.html"
 
 
 class PluginJunOSChecks(BasePlugin):
@@ -126,7 +135,107 @@ class PluginJunOSChecks(BasePlugin):
             )
         )
 
+    def check_stateful_policies(self, parser: BaseDeviceParser) -> None:
+        for policy in self._junos(parser).get_security_policies():
+            if (
+                not policy.active
+                or policy.action != "permit"
+                or policy.inheritance_unknown
+                or policy.source_resolution != "wildcard"
+                or policy.destination_resolution != "wildcard"
+                or policy.application_resolution not in {"wildcard", "default-any"}
+            ):
+                continue
+            application = (
+                ", ".join(policy.applications)
+                if policy.applications
+                else "the omitted application default (any)"
+            )
+            tunnel = f" through IPsec VPN '{policy.tunnel}'" if policy.tunnel else ""
+            self.add_issue(
+                Finding(
+                    rule_id="juniper.junos.policy.broad_permit",
+                    device=parser.device_type,
+                    title="Broad SRX security policy permits all traffic",
+                    observation=f"Active policy '{policy.name}' at position {policy.position} from zone '{policy.from_zone}' to '{policy.to_zone}' permits wildcard sources, wildcard destinations, and {application}{tunnel}.",
+                    impact="The stateful policy does not restrict hosts or applications within its zone-pair scope.",
+                    severity=Severity.CRITICAL,
+                    exploitability="Any source entering the source zone can attempt any application toward any destination in the destination zone allowed by routing and surrounding controls.",
+                    recommendation="Replace wildcard address and application matches with explicitly required objects and applications, preserving an ordered terminal deny policy.",
+                    evidence=tuple(item.text for item in policy.evidence),
+                    references=(JUNIPER_SECURITY_POLICY_GUIDE,),
+                )
+            )
+
+    def check_ipsec_vpns(self, parser: BaseDeviceParser) -> None:
+        junos = self._junos(parser)
+        inheritance_unknown = any("apply-groups" in item for item in junos.diagnostics)
+        weak_encryption = {"des-cbc", "3des-cbc"}
+        weak_authentication = {"md5", "sha1", "hmac-md5-96", "hmac-sha1-96"}
+        weak_groups = {"group1", "group2", "group5", "group22", "group23", "group24"}
+        for vpn in junos.get_ipsec_vpns():
+            if not vpn.active:
+                continue
+            evidence = tuple(item.text for item in vpn.evidence) or (
+                f"security ipsec vpn {vpn.name}",
+            )
+            if vpn.resolution_state == "unresolved":
+                if inheritance_unknown:
+                    continue
+                self.add_issue(
+                    Finding(
+                        rule_id="juniper.junos.vpn.unresolved",
+                        device=parser.device_type,
+                        title="Attached SRX IPsec VPN has an unresolved proposal chain",
+                        observation=f"Active VPN '{vpn.name}' attached to {', '.join(vpn.attachments) or vpn.bind_interface or 'an active binding'} does not resolve through an enabled gateway, IKE policy/proposal, and IPsec policy/proposal chain.",
+                        impact="The static configuration does not define a complete local negotiation policy for the intended protected path.",
+                        severity=Severity.HIGH,
+                        exploitability="A missing or inactive reference can prevent the protected tunnel from establishing and may cause traffic to follow an unintended alternative path.",
+                        recommendation="Resolve every VPN, gateway, IKE policy/proposal and IPsec policy/proposal reference, then verify peer identity and selectors.",
+                        evidence=evidence,
+                        references=(JUNIPER_IPSEC_GUIDE,),
+                    )
+                )
+                continue
+            weak_ike_encryption = sorted(set(vpn.ike_encryption).intersection(weak_encryption))
+            weak_ipsec_encryption = sorted(set(vpn.ipsec_encryption).intersection(weak_encryption))
+            weak_auth = sorted(
+                set(vpn.ike_authentication + vpn.ipsec_authentication).intersection(
+                    weak_authentication
+                )
+            )
+            weak_dh = sorted(
+                set(vpn.ike_dh_groups + vpn.pfs_dh_groups).intersection(weak_groups)
+            )
+            weaknesses = []
+            if weak_ike_encryption:
+                weaknesses.append("IKE encryption " + ", ".join(weak_ike_encryption))
+            if weak_ipsec_encryption:
+                weaknesses.append("IPsec encryption " + ", ".join(weak_ipsec_encryption))
+            if weak_auth:
+                weaknesses.append("authentication " + ", ".join(weak_auth))
+            if weak_dh:
+                weaknesses.append("DH/PFS " + ", ".join(weak_dh))
+            if not weaknesses:
+                continue
+            self.add_issue(
+                Finding(
+                    rule_id="juniper.junos.vpn.weak_proposal",
+                    device=parser.device_type,
+                    title="Attached SRX IPsec VPN permits weak cryptography",
+                    observation=f"Active VPN '{vpn.name}' resolves to {'; '.join(weaknesses)}.",
+                    impact="Legacy encryption, integrity algorithms, or small Diffie-Hellman groups weaken the confidentiality and integrity of the VPN.",
+                    severity=Severity.HIGH,
+                    exploitability="An attacker capable of recording or interfering with tunnel negotiation or ciphertext may benefit from the explicitly permitted legacy transforms.",
+                    recommendation="Use AES or an approved AEAD mode, SHA-256 or stronger integrity, and DH group 14 or an approved stronger group on both peers.",
+                    evidence=evidence,
+                    references=(JUNIPER_IPSEC_GUIDE, IETF_IKEV2_ALGORITHM_GUIDANCE),
+                )
+            )
+
     def analyze(self, parser: BaseDeviceParser) -> None:
         self.check_management(parser)
         self.check_broad_filters(parser)
         self.check_ssh_root(parser)
+        self.check_stateful_policies(parser)
+        self.check_ipsec_vpns(parser)

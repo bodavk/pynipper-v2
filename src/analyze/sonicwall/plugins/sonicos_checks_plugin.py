@@ -161,7 +161,8 @@ class PluginSonicOSChecks(BasePlugin):
 
     def check_operations(self, parser: BaseDeviceParser) -> None:
         sonic = self._sonic(parser)
-        if sonic.get_services()["snmp"] and not sonic.has_secure_snmpv3_user():
+        snmp_enabled = sonic.get_services()["snmp"]
+        if snmp_enabled and not sonic.has_secure_snmpv3_user():
             self.add_issue(
                 Finding(
                     rule_id="sonicwall.sonicos.snmp.secure_user_missing",
@@ -176,6 +177,49 @@ class PluginSonicOSChecks(BasePlugin):
                     references=(SONICOS_SYSTEM_GUIDE, SONICOS_CLI_GUIDE),
                 )
             )
+        if snmp_enabled:
+            for user in sonic.get_snmpv3_users():
+                evidence = tuple(item.text for item in user.evidence)
+                missing = []
+                if user.authentication == "none":
+                    missing.append("authentication")
+                if user.privacy == "none":
+                    missing.append("privacy")
+                if missing:
+                    self.add_issue(
+                        Finding(
+                            rule_id="sonicwall.sonicos.snmp.v3_protection",
+                            device=parser.device_type,
+                            title="SNMPv3 user lacks complete protection",
+                            observation=f"SNMPv3 user '{user.name}' lacks {' and '.join(missing)}.",
+                            impact="SNMP management traffic may lack origin authentication or confidentiality.",
+                            exploitability="A reachable or on-path attacker can target an under-protected identity.",
+                            recommendation="Configure SHA authentication and AES privacy for every SNMPv3 user.",
+                            severity=Severity.HIGH,
+                            evidence=evidence,
+                            references=(SONICOS_SYSTEM_GUIDE, SONICOS_CLI_GUIDE),
+                        )
+                    )
+                weak = []
+                if user.authentication == "md5":
+                    weak.append("MD5 authentication")
+                if user.privacy in {"des", "3des"}:
+                    weak.append(f"{user.privacy.upper()} privacy")
+                if weak:
+                    self.add_issue(
+                        Finding(
+                            rule_id="sonicwall.sonicos.snmp.v3_weak_algorithm",
+                            device=parser.device_type,
+                            title="SNMPv3 user uses weak algorithms",
+                            observation=f"SNMPv3 user '{user.name}' uses {', '.join(weak)}.",
+                            impact="Legacy SNMPv3 algorithms provide inadequate cryptographic protection.",
+                            exploitability="A traffic observer can target weaknesses in legacy algorithms.",
+                            recommendation="Use SHA authentication and AES privacy.",
+                            severity=Severity.MEDIUM,
+                            evidence=evidence,
+                            references=(SONICOS_SYSTEM_GUIDE, SONICOS_CLI_GUIDE),
+                        )
+                    )
         if not sonic.get_syslog_destinations():
             self.add_issue(
                 Finding(
@@ -207,21 +251,24 @@ class PluginSonicOSChecks(BasePlugin):
                     references=(SONICOS_CLI_GUIDE,),
                 )
             )
-        elif not any(server.authenticated for server in ntp_servers):
-            self.add_issue(
-                Finding(
-                    rule_id="sonicwall.sonicos.ntp.authentication",
-                    device=parser.device_type,
-                    title="NTP servers lack authentication",
-                    observation="Active NTP server entries do not include a parsed authentication algorithm and trusted key reference.",
-                    impact="Unauthenticated time responses can corrupt log chronology and time-dependent authentication behavior.",
-                    exploitability="A network-positioned attacker may spoof NTP responses if routing and filtering permit it.",
-                    recommendation="Configure trusted NTP servers with supported authentication keys and restrict management-plane reachability.",
-                    severity=Severity.MEDIUM,
-                    evidence=tuple(item.text for server in ntp_servers for item in server.evidence),
-                    references=(SONICOS_CLI_GUIDE,),
+        else:
+            for server in ntp_servers:
+                if server.authenticated:
+                    continue
+                self.add_issue(
+                    Finding(
+                        rule_id="sonicwall.sonicos.ntp.authentication",
+                        device=parser.device_type,
+                        title="NTP server lacks complete authentication",
+                        observation=f"Active NTP server '{server.address}' lacks matching trust/key numbers, MD5 selection, or configured key material.",
+                        impact="Unauthenticated time responses can corrupt log chronology and time-dependent authentication behavior.",
+                        exploitability="A network-positioned attacker may spoof NTP responses if routing and filtering permit it.",
+                        recommendation="Configure the platform-supported authenticated NTP fields for every custom server and restrict management-plane reachability.",
+                        severity=Severity.MEDIUM,
+                        evidence=tuple(item.text for item in server.evidence),
+                        references=(SONICOS_CLI_GUIDE,),
+                    )
                 )
-            )
         services = sonic.get_security_services()
         disabled = [name for name, state in services.items() if state is False]
         if disabled:

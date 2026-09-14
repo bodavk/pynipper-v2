@@ -22,7 +22,11 @@ def process_asa_conf(parser: BaseDeviceParser) -> dict:
         plugin.analyze(parser)
         found_issues.extend(plugin.get_issues())
 
-    issues = _generate_section(_deduplicate_findings(found_issues), issues, 0)
+    issues = _generate_section(
+        parser.assessment_context.filter_findings(_deduplicate_findings(found_issues)),
+        issues,
+        0,
+    )
 
     return issues
 

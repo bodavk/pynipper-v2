@@ -4,21 +4,34 @@
       "name": "cisco-ios-vulnerable",
       "device": "IOS_ROUTER",
       "input": "cisco_ios/vulnerable.conf",
+      "assessment_policy": {
+        "policy_version": "regression-v1",
+        "interface_roles": {"GigabitEthernet0/0": "external"}
+      },
       "expected_rule_ids": [
         "cisco.ios.aaa.new_model",
+        "cisco.ios.auxiliary.authentication",
+        "cisco.ios.auxiliary.enabled",
         "cisco.ios.banner.login",
+        "cisco.ios.console.authentication",
         "cisco.ios.console.session_timeout",
         "cisco.ios.control_plane.copp",
         "cisco.ios.credentials.enable_storage",
         "cisco.ios.credentials.local_storage",
         "cisco.ios.crypto.legacy_ike",
         "cisco.ios.crypto.legacy_ipsec",
+        "cisco.ios.discovery.cdp.external",
         "cisco.ios.http.access_restriction",
         "cisco.ios.http.cleartext_service",
         "cisco.ios.interface.ip_hardening",
         "cisco.ios.ip.source_route",
         "cisco.ios.logging.remote_destination",
         "cisco.ios.ntp.authentication",
+        "cisco.ios.routing.bgp.authentication",
+        "cisco.ios.routing.bgp.inbound_policy",
+        "cisco.ios.routing.bgp.outbound_policy",
+        "cisco.ios.routing.bgp.prefix_limit",
+        "cisco.ios.routing.ospf.authentication",
         "cisco.ios.services.unnecessary",
         "cisco.ios.snmp.legacy_community",
         "cisco.ios.ssh.authentication_retries",
@@ -29,12 +42,16 @@
         "cisco.ios.vty.session_timeout",
         "cisco.ios.vty.telnet"
       ],
-      "expected_finding_count": 23
+      "expected_finding_count": 32
     },
     {
       "name": "cisco-ios-secure",
       "device": "IOS_ROUTER",
       "input": "cisco_ios/secure.conf",
+      "assessment_policy": {
+        "policy_version": "regression-v1",
+        "interface_roles": {"GigabitEthernet0/0": "external"}
+      },
       "expected_rule_ids": [],
       "expected_finding_count": 0
     },
@@ -42,6 +59,10 @@
       "name": "cisco-iosxe-vulnerable",
       "device": "IOS_XE",
       "input": "cisco_iosxe/vulnerable.conf",
+      "assessment_policy": {
+        "policy_version": "regression-v1",
+        "interface_roles": {"GigabitEthernet1": "access-edge"}
+      },
       "expected_rule_ids": [
         "cisco.ios.aaa.new_model",
         "cisco.ios.banner.login",
@@ -49,6 +70,10 @@
         "cisco.ios.http.access_restriction",
         "cisco.ios.http.cleartext_service",
         "cisco.ios.ip.source_route",
+        "cisco.ios.layer2.access_edge.arp_inspection",
+        "cisco.ios.layer2.access_edge.dhcp_snooping",
+        "cisco.ios.layer2.access_edge.port_security",
+        "cisco.ios.layer2.access_edge.source_guard",
         "cisco.ios.logging.remote_destination",
         "cisco.ios.ntp.servers",
         "cisco.ios.ssh.authentication_retries",
@@ -56,15 +81,21 @@
         "cisco.ios.ssh.protocol_version",
         "cisco.ios.ssh.vty_access_restriction",
         "cisco.ios.vty.authentication",
-        "cisco.iosxe.crypto.legacy_ikev2",
-        "cisco.iosxe.macsec.missing"
+        "cisco.iosxe.crypto.legacy_ikev2"
       ],
-      "expected_finding_count": 15
+      "expected_finding_count": 18
     },
     {
       "name": "cisco-iosxe-secure",
       "device": "IOS_XE",
       "input": "cisco_iosxe/secure.conf",
+      "assessment_policy": {
+        "policy_version": "regression-v1",
+        "interface_roles": {
+          "GigabitEthernet1": "access-edge",
+          "Port-channel10": "uplink"
+        }
+      },
       "expected_rule_ids": [],
       "expected_finding_count": 0
     },
@@ -75,6 +106,8 @@
       "expected_rule_ids": [
         "cisco.asa.aaa.management_accounting",
         "cisco.asa.aaa.management_authentication",
+        "cisco.asa.aaa.management_authentication",
+        "cisco.asa.console.session_timeout",
         "cisco.asa.credentials.local_user_storage",
         "cisco.asa.crypto.legacy_transform",
         "cisco.asa.crypto.legacy_vpn",
@@ -87,7 +120,7 @@
         "cisco.asa.ntp.authentication",
         "cisco.asa.threat_detection.basic"
       ],
-      "expected_finding_count": 13
+      "expected_finding_count": 15
     },
     {
       "name": "cisco-asa-secure",
@@ -106,6 +139,9 @@
         "fortinet.fortios.admin.mfa",
         "fortinet.fortios.admin.session_timeout",
         "fortinet.fortios.admin.trusted_hosts",
+        "fortinet.fortios.aaa.radsec_server_identity",
+        "fortinet.fortios.aaa.radsec_tls_version",
+        "fortinet.fortios.aaa.radius_message_authenticator",
         "fortinet.fortios.crypto.admin_ssh_v1",
         "fortinet.fortios.crypto.dh_parameters",
         "fortinet.fortios.crypto.ssl_static_key_ciphers",
@@ -122,12 +158,16 @@
         "fortinet.fortios.ssh.weak_enc_algo",
         "fortinet.fortios.tls.minimum_version"
       ],
-      "expected_finding_count": 20
+      "expected_finding_count": 23
     },
     {
       "name": "fortios-secure",
       "device": "FORTIOS",
       "input": "fortios/secure.conf",
+      "assessment_policy": {
+        "policy_version": "regression-v1",
+        "protected_aaa_profiles": ["root:LEGACY-PROTECTED"]
+      },
       "expected_rule_ids": [],
       "expected_finding_count": 0
     },
@@ -135,25 +175,39 @@
       "name": "junos-vulnerable",
       "device": "JUNOS",
       "input": "junos/vulnerable.conf",
+      "assessment_policy": {
+        "policy_version": "regression-v1",
+        "interface_roles": {"ge-0/0/0": "external"}
+      },
       "expected_rule_ids": [
         "juniper.junos.authentication.centralized",
         "juniper.junos.authentication.lockout",
         "juniper.junos.control_plane.lo0_filter",
+        "juniper.junos.discovery.lldp.external",
         "juniper.junos.filter.broad_accept",
         "juniper.junos.interfaces.redirects",
         "juniper.junos.logging.remote_destination",
         "juniper.junos.management.insecure_protocol",
         "juniper.junos.ntp.authentication",
+        "juniper.junos.routing.bgp.authentication",
+        "juniper.junos.routing.bgp.inbound_policy",
+        "juniper.junos.routing.bgp.outbound_policy",
+        "juniper.junos.routing.bgp.prefix_limit",
+        "juniper.junos.routing.ospf.authentication",
         "juniper.junos.snmp.legacy_community",
         "juniper.junos.ssh.root_login",
         "juniper.junos.ssh.weak_ciphers"
       ],
-      "expected_finding_count": 11
+      "expected_finding_count": 17
     },
     {
       "name": "junos-secure",
       "device": "JUNOS",
       "input": "junos/secure.conf",
+      "assessment_policy": {
+        "policy_version": "regression-v1",
+        "interface_roles": {"ge-0/0/0": "external"}
+      },
       "expected_rule_ids": [],
       "expected_finding_count": 0
     },
@@ -165,7 +219,9 @@
         "juniper.screenos.administration.login_attempts",
         "juniper.screenos.administration.login_banner",
         "juniper.screenos.administration.manager_sources",
+        "juniper.screenos.administration.remote_session_timeout",
         "juniper.screenos.administration.session_timeout",
+        "juniper.screenos.administration.web_session_timeout",
         "juniper.screenos.credentials.default_or_empty",
         "juniper.screenos.https.legacy_cipher",
         "juniper.screenos.lifecycle.end_of_life",
@@ -174,12 +230,13 @@
         "juniper.screenos.management.telnet",
         "juniper.screenos.ntp.servers",
         "juniper.screenos.policy.broad_permit",
+        "juniper.screenos.policy.default_permit",
         "juniper.screenos.policy.unlogged_permit",
         "juniper.screenos.snmp.legacy_community",
         "juniper.screenos.ssh.protocol_version",
         "juniper.screenos.vpn.weak_proposal"
       ],
-      "expected_finding_count": 16
+      "expected_finding_count": 19
     },
     {
       "name": "screenos-hardened",
@@ -207,9 +264,10 @@
         "checkpoint.fw1.policy.sensitive_accept_untracked",
         "checkpoint.fw1.policy.sensitive_accept_untracked",
         "checkpoint.fw1.policy.shadowed_rule",
+        "checkpoint.fw1.policy.shadowed_rule",
         "checkpoint.fw1.policy.shadowed_rule"
       ],
-      "expected_finding_count": 13
+      "expected_finding_count": 14
     },
     {
       "name": "checkpoint-fw1-secure",
@@ -256,8 +314,10 @@
       "name": "junos-hierarchical-variant",
       "device": "JUNOS",
       "input": "junos/hierarchical_variant.conf",
-      "expected_rule_ids": [],
-      "expected_finding_count": 0
+      "expected_rule_ids": [
+        "juniper.junos.logging.event_coverage"
+      ],
+      "expected_finding_count": 1
     },
     {
       "name": "screenos-syntax-variants",
@@ -275,6 +335,8 @@
       "expected_rule_ids": [
         "paloalto.panos.admin.centralized_authentication",
         "paloalto.panos.credentials.password_complexity",
+        "paloalto.panos.credentials.password_history_disabled",
+        "paloalto.panos.credentials.username_inclusion_allowed",
         "paloalto.panos.dns.servers",
         "paloalto.panos.management.http",
         "paloalto.panos.management.unrestricted_secure_service",
@@ -288,7 +350,7 @@
         "paloalto.panos.updates.threat_content",
         "paloalto.panos.logging.system_forwarding"
       ],
-      "expected_finding_count": 14
+      "expected_finding_count": 16
     },
     {
       "name": "panos-secure",
@@ -310,8 +372,15 @@
       "name": "hp-procurve-vulnerable",
       "device": "HP_PROCURVE",
       "input": "hp_procurve/vulnerable.conf",
+      "assessment_policy": {
+        "policy_version": "regression-v1",
+        "interface_roles": {"1": "access-edge"}
+      },
       "expected_rule_ids": [
         "hp.procurve.authentication.centralized",
+        "hp.procurve.layer2.access_edge.arp_protection",
+        "hp.procurve.layer2.access_edge.port_security",
+        "hp.procurve.layer2.access_edge.source_lockdown",
         "hp.procurve.logging.remote_destination",
         "hp.procurve.management.http",
         "hp.procurve.management.source_restriction",
@@ -324,12 +393,16 @@
         "hp.procurve.credentials.password_complexity",
         "hp.procurve.layer2.dhcp_snooping"
       ],
-      "expected_finding_count": 12
+      "expected_finding_count": 15
     },
     {
       "name": "hp-procurve-secure",
       "device": "HP_PROCURVE",
       "input": "hp_procurve/secure.conf",
+      "assessment_policy": {
+        "policy_version": "regression-v1",
+        "interface_roles": {"1": "access-edge"}
+      },
       "expected_rule_ids": [],
       "expected_finding_count": 0
     },
@@ -352,12 +425,13 @@
         "arista.eos.ssh.empty_passwords",
         "arista.eos.ssh.weak_algorithms",
         "arista.eos.ssh.source_restriction",
+        "arista.eos.credentials.local_storage",
         "arista.eos.logging.remote_destination",
         "arista.eos.ntp.servers",
         "arista.eos.snmp.default_community",
         "arista.eos.snmp.secure_user_missing"
       ],
-      "expected_finding_count": 11
+      "expected_finding_count": 12
     },
     {
       "name": "arista-eos-secure",

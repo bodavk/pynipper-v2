@@ -345,3 +345,165 @@ def test_negation_field_variants_and_future_expiry_are_handled(tmp_path):
     assert "checkpoint.fw1.policy.expired_rule" not in {
         issue.rule_id for issue in issues
     }
+
+
+SEMANTIC_OBJECTS = r'''(:objects (
+  :network-objects (
+    :Wide-Net (:type (network) :ipaddr (10.0.0.0) :netmask (255.0.0.0))
+    :Narrow-Net (:type (address-range) :ipaddr-first (10.20.0.0)
+      :ipaddr-last (10.20.255.255))
+    :App-Range (:type (address-range) :ipaddr-first (192.0.2.0)
+      :ipaddr-last (192.0.2.127))
+    :App-Host (:type (host) :ipaddr (192.0.2.42))
+    :Partial-A (:type (address-range) :ipaddr-first (198.51.100.0)
+      :ipaddr-last (198.51.100.127))
+    :Partial-B (:type (network) :ipaddr (198.51.100.0) :netmask (255.255.255.0))
+    :Equal-Net-A (:type (network) :ipaddr (203.0.113.0) :netmask (255.255.255.0))
+    :Equal-Net-B (:type (address-range) :ipaddr-first (203.0.113.0)
+      :ipaddr-last (203.0.113.255))
+  )
+  :services (
+    :Web-Range (:type (tcp) :port (8000-8999))
+    :Web-Subrange (:type (tcp) :port (8440-8450))
+    :Web-Single (:type (tcp) :port (8443))
+    :Disjoint-Service (:type (tcp) :port (9443))
+    :Partial-Service-A (:type (tcp) :port (8000-8100))
+    :Partial-Service-B (:type (tcp) :port (8000-8200))
+  )
+))'''
+
+
+def test_parser_resolves_bounded_network_and_service_semantics(tmp_path):
+    parser = _parser(tmp_path, SECURE_RULES, SEMANTIC_OBJECTS)
+
+    network = parser.resolve_network_semantics(("Wide-Net", "App-Host"))
+    service = parser.resolve_service_semantics(("Web-Range", "Web-Single"))
+
+    assert network.complete is True
+    assert [(item.family, item.last - item.first) for item in network.intervals] == [
+        (4, 2**24 - 1),
+        (4, 0),
+    ]
+    assert service.complete is True
+    assert [
+        (item.protocol, item.first_port, item.last_port)
+        for item in service.intervals
+    ] == [("tcp", 8000, 8999), ("tcp", 8443, 8443)]
+
+
+def test_semantic_subnet_range_and_port_containment_reuses_shadow_ids(tmp_path):
+    rules = r'''(:rule-base (:Network-Layer (
+      :type (ordered-layer) :implicit-cleanup-action (drop)
+      :rule-1 (:name (Semantic-parent) :src (Wide-Net) :dst (Equal-Net-A)
+        :services (Web-Range) :action (accept) :track (Log)
+        :install-on (Policy-Targets))
+      :rule-2 (:name (Semantic-shadow) :src (Narrow-Net) :dst (Equal-Net-B)
+        :services (Web-Subrange) :action (drop) :track (Log)
+        :install-on (Policy-Targets))
+      :rule-3 (:name (Semantic-redundant) :src (Narrow-Net) :dst (Equal-Net-B)
+        :services (Web-Single) :action (accept) :track (Log)
+        :install-on (Policy-Targets))
+      :rule-4 (:name (Cleanup) :src (Any) :dst (Any) :services (Any)
+        :action (drop) :track (Log) :install-on (Policy-Targets))
+    )))'''
+    parser = _parser(tmp_path, rules, SEMANTIC_OBJECTS)
+    findings = list(process_checkpoint_fw1_conf(parser).values())
+    semantic = [
+        finding for finding in findings
+        if finding.rule_id in {
+            "checkpoint.fw1.policy.shadowed_rule",
+            "checkpoint.fw1.policy.redundant_rule",
+        }
+    ]
+
+    assert [finding.rule_id for finding in semantic] == [
+        "checkpoint.fw1.policy.shadowed_rule",
+        "checkpoint.fw1.policy.redundant_rule",
+    ]
+    assert "Semantic-shadow" in semantic[0].observation
+    assert "Semantic-redundant" in semantic[1].observation
+    identities = [(finding.rule_id, finding.evidence) for finding in findings]
+    assert len(identities) == len(set(identities))
+
+
+def test_partial_or_disjoint_semantics_do_not_prove_shadowing(tmp_path):
+    rules = r'''(:rule-base (:Network-Layer (
+      :type (ordered-layer) :implicit-cleanup-action (drop)
+      :rule-1 (:name (Partial-parent) :src (Partial-A) :dst (App-Range)
+        :services (Partial-Service-A) :action (accept) :track (Log))
+      :rule-2 (:name (Partial-child) :src (Partial-B) :dst (App-Host)
+        :services (Partial-Service-B) :action (drop) :track (Log))
+      :rule-3 (:name (Disjoint-service) :src (Narrow-Net) :dst (App-Host)
+        :services (Disjoint-Service) :action (drop) :track (Log))
+      :rule-4 (:name (Cleanup) :src (Any) :dst (Any) :services (Any)
+        :action (drop) :track (Log))
+    )))'''
+    _, issues = _issues(tmp_path, rules, SEMANTIC_OBJECTS)
+
+    assert not {
+        "checkpoint.fw1.policy.shadowed_rule",
+        "checkpoint.fw1.policy.redundant_rule",
+    }.intersection(issue.rule_id for issue in issues)
+
+
+def test_unresolved_malformed_and_cyclic_semantics_remain_unproven(tmp_path):
+    objects = r'''(:objects (
+      :network-objects (
+        :Cycle-A (:type (group) :members (Cycle-B))
+        :Cycle-B (:type (group) :members (Cycle-A))
+        :Bad-Net (:type (network) :ipaddr (not-an-address)
+          :netmask (255.255.255.0))
+      )
+      :services (
+        :Bad-Service (:type (tcp) :port (not-a-port))
+      )
+    ))'''
+    rules = r'''(:rule-base (:Network-Layer (
+      :rule-1 (:name (Unresolved-parent) :src (Cycle-A) :dst (Any)
+        :services (Any) :action (accept) :track (Log))
+      :rule-2 (:name (Unresolved-child) :src (Cycle-B) :dst (Any)
+        :services (Any) :action (drop) :track (Log))
+      :rule-3 (:name (Malformed-parent) :src (Bad-Net) :dst (Any)
+        :services (Bad-Service) :action (accept) :track (Log))
+      :rule-4 (:name (Malformed-child) :src (Bad-Net) :dst (Any)
+        :services (Bad-Service) :action (drop) :track (Log))
+    )))'''
+    parser, issues = _issues(tmp_path, rules, objects)
+
+    assert parser.resolve_network_semantics(("Cycle-A",)).complete is False
+    assert parser.resolve_network_semantics(("Bad-Net",)).complete is False
+    assert parser.resolve_network_semantics(()).complete is False
+    assert parser.resolve_service_semantics(("Bad-Service",)).complete is False
+    assert not {
+        "checkpoint.fw1.policy.shadowed_rule",
+        "checkpoint.fw1.policy.redundant_rule",
+    }.intersection(issue.rule_id for issue in issues)
+
+
+def test_time_install_scope_and_layer_boundaries_block_semantic_comparison(tmp_path):
+    rules = r'''(:rule-base (
+      :Layer-A (
+        :type (ordered-layer)
+        :rule-1 (:name (Timed-parent) :src (Wide-Net) :dst (App-Range)
+          :services (Web-Range) :time (Business-Hours) :action (accept)
+          :install-on (Gateway-A) :track (Log))
+        :rule-2 (:name (Different-time) :src (Narrow-Net) :dst (App-Host)
+          :services (Web-Single) :time (Always) :action (drop)
+          :install-on (Gateway-A) :track (Log))
+        :rule-3 (:name (Different-install) :src (Narrow-Net) :dst (App-Host)
+          :services (Web-Single) :time (Business-Hours) :action (drop)
+          :install-on (Gateway-B) :track (Log))
+      )
+      :Layer-B (
+        :type (ordered-layer)
+        :rule-1 (:name (Different-layer) :src (Narrow-Net) :dst (App-Host)
+          :services (Web-Single) :time (Business-Hours) :action (drop)
+          :install-on (Gateway-A) :track (Log))
+      )
+    ))'''
+    _, issues = _issues(tmp_path, rules, SEMANTIC_OBJECTS)
+
+    assert not {
+        "checkpoint.fw1.policy.shadowed_rule",
+        "checkpoint.fw1.policy.redundant_rule",
+    }.intersection(issue.rule_id for issue in issues)

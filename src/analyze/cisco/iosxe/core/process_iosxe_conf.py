@@ -28,7 +28,7 @@ def process_iosxe_conf(parser: BaseDeviceParser) -> dict:
         plugin = plugin_class()
         plugin.analyze(parser)
         findings.extend(plugin.get_issues())
-    return _generate_section(_deduplicate(findings), {}, 0)
+    return _generate_section(parser.assessment_context.filter_findings(_deduplicate(findings)), {}, 0)
 
 
 def _generate_section(issues: list, issue_dict: dict, index: int) -> dict:

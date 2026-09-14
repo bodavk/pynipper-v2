@@ -5,6 +5,7 @@ import array
 import json
 
 from .common.types import ReportType
+from src.common.assessment import AssessmentContext
 
 TEMPLATE_FILE = "html_template.html"
 
@@ -28,6 +29,7 @@ def _generate_html_report(filename: str, issues: dict, vulns: array, data: dict)
     date = datetime.datetime.now().date()
     device_type = data["device-type"]
     hostname = data["hostname"]
+    assessment_policy = data.get("assessment-policy", AssessmentContext().to_dict())
 
     template_loader = FileSystemLoader(os.path.dirname(
         os.path.abspath(__file__)) + "/templates")
@@ -44,7 +46,8 @@ def _generate_html_report(filename: str, issues: dict, vulns: array, data: dict)
         hostname=hostname,
         date=date,
         issues=issues,
-        vulns=vulns
+        vulns=vulns,
+        assessment_policy=assessment_policy,
     )
 
     html_file.write(text)
@@ -58,13 +61,16 @@ def _generate_json_report(filename: str, issues: dict, vulns: array, data: dict)
     hostname = data["hostname"]
     date = datetime.datetime.now()
 
-    data = {}
-    data["device-type"] = device_type
-    data["hostname"] = hostname
-    data["date"] = date
+    report_data = {}
+    report_data["device-type"] = device_type
+    report_data["hostname"] = hostname
+    report_data["date"] = date
+    report_data["assessment-policy"] = data.get(
+        "assessment-policy", AssessmentContext().to_dict()
+    )
 
     vulns_dict = {}
-    vulns_dict["data"] = data
+    vulns_dict["data"] = report_data
     vulns_dict["vulnerabilities"] = vulns
     vulns_dict["security-audit"] = issues
     json_text = json.dumps(

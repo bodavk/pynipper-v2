@@ -24,6 +24,27 @@ class ConfigurationState(str, Enum):
     UNKNOWN = "unknown"
 
 
+class CredentialStorageAssessment(str, Enum):
+    """What the supplied configuration proves about credential storage."""
+
+    EMPTY = "empty"
+    PLAINTEXT = "plaintext"
+    WEAK_REVERSIBLE = "weak_reversible"
+    WEAK_HASH = "weak_hash"
+    APPROVED_REVERSIBLE = "approved_reversible"
+    APPROVED_HASH = "approved_hash"
+    UNKNOWN = "unknown"
+    MALFORMED = "malformed"
+
+
+class DefaultCredentialAssessment(str, Enum):
+    """Exact known-default comparison, deliberately separate from strength."""
+
+    MATCH = "match"
+    NO_MATCH = "no_match"
+    NOT_EVALUATED = "not_evaluated"
+
+
 @dataclass(frozen=True)
 class ConfigEvidence:
     text: str
@@ -37,6 +58,31 @@ class ConfigEvidence:
             raise ValueError("Evidence source must not be empty")
         if self.line_number is not None and self.line_number < 1:
             raise ValueError("Evidence line_number must be positive")
+
+
+@dataclass(frozen=True)
+class CredentialMetadata:
+    """Secret-free metadata produced at a parser's credential boundary."""
+
+    account: str
+    context: str
+    method: str
+    storage_type: str
+    storage_assessment: CredentialStorageAssessment
+    default_assessment: DefaultCredentialAssessment
+    evidence: Tuple[ConfigEvidence, ...] = field(default_factory=tuple)
+
+    @property
+    def is_default(self) -> bool:
+        """Compatibility view for older parser consumers."""
+
+        return self.default_assessment == DefaultCredentialAssessment.MATCH
+
+    @property
+    def raw_line_redacted(self) -> str:
+        """Compatibility view for the former ASA credential record."""
+
+        return self.evidence[0].text if self.evidence else "credential <redacted>"
 
 
 T = TypeVar("T")
@@ -208,7 +254,10 @@ class NormalizedConfig:
 __all__ = [
     "ConfigEvidence",
     "ConfigurationState",
+    "CredentialMetadata",
+    "CredentialStorageAssessment",
     "CryptoSetting",
+    "DefaultCredentialAssessment",
     "KnowledgeState",
     "LocalUser",
     "LoggingDestination",

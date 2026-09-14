@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 
 from .models import NormalizedConfig
+from src.common.assessment import AssessmentContext
 
 
 class BaseDeviceParser(ABC):
@@ -9,6 +10,12 @@ class BaseDeviceParser(ABC):
 
     def __init__(self, config_filepath: str):
         self.config_filepath = config_filepath
+        self.assessment_context = AssessmentContext()
+
+    def set_assessment_context(self, context: AssessmentContext) -> None:
+        if not isinstance(context, AssessmentContext):
+            raise TypeError("context must be an AssessmentContext")
+        self.assessment_context = context
 
     @abstractmethod
     def get_hostname(self) -> str:

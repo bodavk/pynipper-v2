@@ -5,12 +5,14 @@ from src.report.report import generate_report
 from src.error.files_errors import PynipperConfigurationFileNotFound
 
 
-def analyze_iosxe_device(device, input_filename, output_filename, output_type, configuration, online):
+def analyze_iosxe_device(device, input_filename, output_filename, output_type, configuration, online, assessment_context=None):
 
     print("[1/4] Initializing pynipper-ng (Cisco IOS-XE)")
     
     # Instantiate pluggable IOS-XE parser
     parser = get_parser(device, input_filename)
+    if assessment_context is not None:
+        parser.set_assessment_context(assessment_context)
     
     if not os.path.isfile(configuration):
         raise PynipperConfigurationFileNotFound(
@@ -29,6 +31,7 @@ def analyze_iosxe_device(device, input_filename, output_filename, output_type, c
     data = {}
     data['hostname'] = parser.get_hostname()
     data['device-type'] = str(device)
+    data['assessment-policy'] = parser.assessment_context.to_dict()
 
     # Generate report
     print("[4/4] Generating report")

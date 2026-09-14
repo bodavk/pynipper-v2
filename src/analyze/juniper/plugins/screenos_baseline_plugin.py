@@ -5,11 +5,23 @@ from collections import defaultdict
 from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.issue import Finding, Severity
 from src.devices.common.base_parser import BaseDeviceParser
+from src.devices.common.models import (
+    CredentialStorageAssessment,
+    DefaultCredentialAssessment,
+)
 from src.devices.juniper.screenos import JuniperScreenOSParser, ScreenOSCommand
 
 
 SCREENOS_DOCUMENTATION = (
     "https://www.juniper.net/documentation/product/us/en/screenos/6.3.0/"
+)
+SCREENOS_IPV4_CLI = (
+    "https://www.juniper.net/documentation/software/screenos/"
+    "screenos6.3.0/630_ipv4_cli.pdf"
+)
+SCREENOS_R27_RELEASE_NOTES = (
+    "https://www.juniper.net/documentation/software/screenos/"
+    "screenos6.3.0/rn-630r27-rev01.pdf"
 )
 JUNIPER_IPSEC_GUIDE = (
     "https://www.juniper.net/documentation/us/en/software/junos/vpn-ipsec/"
@@ -26,26 +38,6 @@ ORIGINAL_SNMP_REFERENCE = (
 
 class PluginScreenOSBaseline(BasePlugin):
     """Restore high-value ScreenOS checks while respecting set/unset state."""
-
-    _KNOWN_DEFAULT_PASSWORD_HASHES = {
-        value.casefold()
-        for value in {
-            "nBh1JgrWI8BMcxVE1sfD3ZHtPvNqOn",
-            "nIEXLGrQKPGFclpK2srC+GItLBIaYn",
-            "nEgTC0rULyNDcfOHZsFDJSAtfiPqWn",
-            "nJBnMRrmG7cFc3ALdsWMLIKtWHC4ln",
-            "nL1kB1ryFpdIcuHBksgKNQLttDFjCn",
-            "nA0XKervNIgBctzLBsjNKyEtOcM5an",
-            "nFR1M7r3PBEHcA0FWs1JJ8LtBTOHIn",
-            "nDQFBzrfECTDcLFD7sRA2kMtP4FNwn",
-            "nH/vDirbE5GBcjdGoslAEBBtHFA6En",
-            "nMjFM0rdC9iOc+xIFsGEm3LtAeGZhn",
-            "nO8gOKrtJ/YMclhNlsoJCrCtllAL7n",
-            "nDC0GjreNnlGcIPHTsGOUAFt6BJZdn",
-            "nKv3LvrdAVtOcE5EcsGIpYBtniNbUn",
-            "nKVUM2rwMUzPcrkG5sWIHdCtqkAibn",
-        }
-    }
 
     @staticmethod
     def _screenos(parser: BaseDeviceParser) -> JuniperScreenOSParser:
@@ -132,21 +124,92 @@ class PluginScreenOSBaseline(BasePlugin):
                 )
             )
 
-        timeout_commands = self._commands(parser, ("console", "timeout"))
-        if timeout_commands:
-            value = timeout_commands[-1].tokens[-1]
-            if value.isdigit() and (int(value) == 0 or int(value) > 10):
+        session_controls = screenos.get_session_controls()
+        for control in session_controls:
+            if (
+                not control.active
+                or control.resolution_state != "known"
+                or control.timeout_minutes is None
+                or (0 < control.timeout_minutes <= 10)
+            ):
+                continue
+            evidence = tuple(item.text for item in control.evidence)
+            if control.scope == "console-telnet":
                 self.add_issue(
                     self._finding(
                         parser,
                         "juniper.screenos.administration.session_timeout",
                         "Administrative session timeout is excessive",
-                        f"The effective console/SSH/Telnet timeout is {value} minutes; the target maximum is 10 minutes.",
+                        f"The effective console/Telnet timeout is {control.timeout_minutes} minutes; zero disables the timeout and the target maximum is 10 minutes.",
                         "Abandoned authenticated sessions can remain usable for an excessive period.",
                         "Set console timeout to a policy-approved value of 10 minutes or less.",
                         Severity.MEDIUM,
-                        self._evidence(timeout_commands[-1:]),
-                        (SCREENOS_DOCUMENTATION, ORIGINAL_ADMIN_REFERENCE),
+                        evidence or ("ScreenOS 6.3 console timeout state",),
+                        (SCREENOS_DOCUMENTATION, SCREENOS_IPV4_CLI),
+                    )
+                )
+            elif control.scope == "web-management":
+                self.add_issue(
+                    self._finding(
+                        parser,
+                        "juniper.screenos.administration.web_session_timeout",
+                        "Web administrative session timeout is excessive",
+                        f"The effective Web administrative timeout is {control.timeout_minutes} minutes; zero disables the timeout and the target maximum is 10 minutes.",
+                        "An abandoned authenticated WebUI session can remain usable for an excessive period.",
+                        "Set admin auth web timeout to a policy-approved value of 10 minutes or less.",
+                        Severity.MEDIUM,
+                        evidence or ("ScreenOS 6.3 Web administration timeout state",),
+                        (
+                            SCREENOS_DOCUMENTATION,
+                            SCREENOS_IPV4_CLI,
+                            SCREENOS_R27_RELEASE_NOTES,
+                        ),
+                    )
+                )
+            elif control.scope == "authentication-server":
+                uses = ", ".join(control.uses)
+                rule_id = (
+                    "juniper.screenos.administration.remote_session_timeout"
+                    if "administrator" in control.uses
+                    else "juniper.screenos.authentication.session_timeout"
+                )
+                title = (
+                    "Remote administrator session timeout is excessive"
+                    if "administrator" in control.uses
+                    else "Authentication-user timeout is excessive"
+                )
+                self.add_issue(
+                    self._finding(
+                        parser,
+                        rule_id,
+                        title,
+                        f"Bound authentication server '{control.name}' is used by {uses} with an effective timeout of {control.timeout_minutes} minutes; zero disables reauthentication timeout.",
+                        "A stolen authenticated session or cached authentication state can remain useful for an excessive period.",
+                        "Set the bound auth-server timeout to a policy-approved value of 10 minutes or less.",
+                        Severity.MEDIUM,
+                        evidence or (f"bound auth-server {control.name}",),
+                        (SCREENOS_DOCUMENTATION, SCREENOS_IPV4_CLI),
+                    )
+                )
+
+        for control in session_controls:
+            if (
+                control.scope == "authentication-server"
+                and control.active
+                and control.resolution_state == "unresolved"
+            ):
+                self.add_issue(
+                    self._finding(
+                        parser,
+                        "juniper.screenos.authentication.server_reference",
+                        "Active authentication-server reference is unresolved",
+                        f"Authentication server '{control.name}' is referenced by {', '.join(control.uses)}, but no matching server object is present in the export.",
+                        "The static export cannot establish the authentication source or its effective session policy.",
+                        "Export the complete auth-server configuration and correct or remove the unresolved binding.",
+                        Severity.HIGH,
+                        tuple(item.text for item in control.evidence)
+                        or (f"unresolved auth-server {control.name}",),
+                        (SCREENOS_DOCUMENTATION, SCREENOS_IPV4_CLI),
                     )
                 )
 
@@ -230,30 +293,25 @@ class PluginScreenOSBaseline(BasePlugin):
                 )
 
     def check_credentials_and_banner(self, parser: BaseDeviceParser) -> None:
-        credential_commands = self._commands(parser, ("admin", "password"))
-        credential_commands += self._commands(parser, ("admin", "user"))
-        for command in credential_commands:
-            tokens = command.tokens
-            if "password" not in tokens:
-                continue
-            index = tokens.index("password")
-            value = tokens[index + 1] if index + 1 < len(tokens) else ""
+        for credential in self._screenos(parser).get_credential_metadata():
             if (
-                not value
-                or value.casefold() in {"password", "netscreen", "admin", "administrator"}
-                or value.casefold() in self._KNOWN_DEFAULT_PASSWORD_HASHES
+                credential.storage_assessment == CredentialStorageAssessment.EMPTY
+                or credential.default_assessment == DefaultCredentialAssessment.MATCH
             ):
-                username = tokens[2] if tokens[:2] == ("admin", "user") and len(tokens) > 2 else "primary admin"
                 self.add_issue(
                     self._finding(
                         parser,
                         "juniper.screenos.credentials.default_or_empty",
                         "Administrator credential is empty or a known default",
-                        f"The {username} credential matches an empty or known default value; the value is redacted.",
+                        (
+                            f"The {credential.context} credential for '{credential.account}' has storage "
+                            f"classification '{credential.storage_assessment.value}' and exact-default "
+                            f"comparison '{credential.default_assessment.value}'; the value is redacted."
+                        ),
                         "Default administrative credentials can provide immediate privileged access.",
                         "Set a unique high-entropy credential, restrict manager sources, and plan platform migration.",
                         Severity.CRITICAL,
-                        (command.evidence.text,),
+                        tuple(item.text for item in credential.evidence),
                         (SCREENOS_DOCUMENTATION,),
                     )
                 )
@@ -388,6 +446,24 @@ class PluginScreenOSBaseline(BasePlugin):
                 )
             )
 
+    def check_policy_default(self, parser: BaseDeviceParser) -> None:
+        state = self._screenos(parser).get_firewall_policy_state()
+        if state.resolution_state != "explicit" or state.default_action != "permit-all":
+            return
+        self.add_issue(
+            self._finding(
+                parser,
+                "juniper.screenos.policy.default_permit",
+                "Unmatched interzone traffic is permitted by default",
+                f"ScreenOS 6.3 default-permit-all is explicitly enabled; {state.configured_policy_count} enabled explicit policies are present, but unmatched interzone traffic bypasses them and is permitted.",
+                "Traffic that fails to match an interzone or global policy can cross the firewall without an explicit allow rule.",
+                "Unset policy default-permit-all and create narrowly scoped explicit permit policies.",
+                Severity.CRITICAL,
+                tuple(item.text for item in state.evidence),
+                (SCREENOS_DOCUMENTATION, SCREENOS_IPV4_CLI),
+            )
+        )
+
     def check_vpn_crypto(self, parser: BaseDeviceParser) -> None:
         commands = self._screenos(parser).effective_commands
         references: set[str] = set()
@@ -448,6 +524,7 @@ class PluginScreenOSBaseline(BasePlugin):
         self.check_administration(parser)
         self.check_snmp(parser)
         self.check_policy_logging(parser)
+        self.check_policy_default(parser)
         self.check_vpn_crypto(parser)
         if not self._applicable(parser):
             return

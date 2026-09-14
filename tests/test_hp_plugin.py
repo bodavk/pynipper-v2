@@ -28,7 +28,9 @@ radius-server host 192.0.2.10 key ciphertext
 logging 192.0.2.20
 timesync sntp
 sntp unicast
-sntp server priority 1 192.0.2.30
+sntp authentication
+sntp authentication key-id 55 authentication-mode md5 key-value ciphertext trusted
+sntp server priority 1 192.0.2.30 3 key-id 55
 snmpv3 user monitor auth sha auth-secret priv aes privacy-secret
 password configuration-control
 vlan 10 name "USERS"
@@ -142,3 +144,86 @@ def test_accounting_and_vlan_negations_are_effective(tmp_path):
     rule_ids = {issue.rule_id for issue in _issues(parser)}
     assert "hp.procurve.authentication.accounting" in rule_ids
     assert "hp.procurve.layer2.dhcp_snooping" in rule_ids
+
+
+def test_sntp_associations_resolve_each_trusted_key_and_redact_material(tmp_path):
+    parser = _parse(
+        tmp_path,
+        "; J9772A Configuration Editor; Created on release #YA.16.11.0001\n"
+        "sntp authentication\n"
+        "sntp authentication key-id 55 authentication-mode md5 key-value TOPSECRET trusted\n"
+        "sntp server priority 1 192.0.2.30 3 key-id 55\n"
+        "sntp server priority 2 192.0.2.31 3\n",
+    )
+    associations = parser.get_sntp_associations()
+    assert [item.authentication_state for item in associations] == [
+        "authenticated",
+        "unauthenticated",
+    ]
+    plugin = PluginHPChecks()
+    plugin.check_advanced_baseline(parser)
+    findings = [item for item in plugin.get_issues() if item.rule_id.startswith("hp.procurve.ntp.")]
+    assert [item.rule_id for item in findings] == ["hp.procurve.ntp.authentication"]
+    assert "192.0.2.31" in findings[0].observation
+    assert "TOPSECRET" not in " ".join(
+        evidence.text for item in associations for evidence in item.evidence
+    )
+
+
+def test_sntp_deleted_key_and_per_server_key_removal_are_effective(tmp_path):
+    parser = _parse(
+        tmp_path,
+        "; J9772A Configuration Editor; Created on release #YA.16.11.0001\n"
+        "sntp authentication\n"
+        "sntp authentication key-id 55 authentication-mode md5 key-value secret trusted\n"
+        "sntp server priority 1 192.0.2.30 3 key-id 55\n"
+        "no sntp authentication key-id 55\n"
+        "sntp server priority 2 192.0.2.31 3 key-id 55\n"
+        "no sntp server priority 2 192.0.2.31 3 key-id 55\n",
+    )
+    associations = parser.get_sntp_associations()
+    assert [(item.address, item.authentication_state) for item in associations] == [
+        ("192.0.2.30", "unresolved"),
+        ("192.0.2.31", "unauthenticated"),
+    ]
+
+
+def test_unknown_aos_s_family_preserves_sntp_authentication_as_unknown(tmp_path):
+    parser = _parse(tmp_path, "hostname unknown\nsntp server priority 1 192.0.2.30\n")
+    assert parser.get_sntp_associations()[0].authentication_state == "unknown"
+    assert not any(
+        item.rule_id in {"hp.procurve.ntp.authentication", "hp.procurve.ntp.key_resolution"}
+        for item in _issues(parser)
+    )
+
+
+def test_snmpv3_each_user_and_hidden_key_state_are_independent(tmp_path):
+    parser = _parse(
+        tmp_path,
+        '; J9772A Configuration Editor; Created on release #YA.16.11.0001\n'
+        'ip authorized-managers 192.0.2.0 255.255.255.0 access manager\n'
+        'snmpv3 user secure auth sha AUTHSECRET priv aes PRIVSECRET\n'
+        'snmpv3 user hidden auth sha priv aes\n'
+        'snmpv3 user weak auth md5 WEAKAUTH priv des WEAKPRIV\n',
+    )
+    users = parser.get_snmpv3_users()
+    assert {user.name: user.authentication_key_state for user in users} == {
+        "secure": "present",
+        "hidden": "unknown",
+        "weak": "present",
+    }
+    findings = [issue for issue in _issues(parser) if issue.rule_id.startswith("hp.procurve.snmp.v3_")]
+    assert [issue.rule_id for issue in findings] == ["hp.procurve.snmp.v3_weak_algorithm"]
+    evidence = " ".join(value for issue in findings for value in issue.evidence)
+    assert all(secret not in evidence for secret in ("AUTHSECRET", "PRIVSECRET", "WEAKAUTH", "WEAKPRIV"))
+
+
+def test_explicitly_disabled_snmpv3_agent_is_not_graded(tmp_path):
+    parser = _parse(
+        tmp_path,
+        '; J9772A Configuration Editor; Created on release #YA.16.11.0001\n'
+        'no snmpv3 enable\n'
+        'snmpv3 user stale auth md5 SECRET priv des OTHER\n',
+    )
+    assert parser.get_snmpv3_agent_state() is False
+    assert not [issue for issue in _issues(parser) if issue.rule_id.startswith("hp.procurve.snmp.v3_")]

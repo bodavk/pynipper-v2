@@ -1,6 +1,7 @@
 from src.analyze.cisco.iosxe.core.process_iosxe_conf import process_iosxe_conf
 from src.analyze.cisco.iosxe.plugins.iosxe_checks_plugin import PluginIOSXEChecks
 from src.devices.cisco.iosxe import CiscoIOSXEParser
+from src.common.assessment import AssessmentContext
 
 
 def _analyze(tmp_path, config):
@@ -27,6 +28,17 @@ interface GigabitEthernet3
 """
     _, issues = _analyze(tmp_path, config)
     macsec = [issue for issue in issues if issue.rule_id == "cisco.iosxe.macsec.missing"]
+    assert macsec == []
+
+    path = tmp_path / "scoped-iosxe.conf"
+    path.write_text(config, encoding="utf-8")
+    parser = CiscoIOSXEParser(str(path))
+    parser.set_assessment_context(AssessmentContext.from_mapping({
+        "interface_roles": {"GigabitEthernet3": "uplink"}
+    }))
+    plugin = PluginIOSXEChecks()
+    plugin.check_macsec(parser)
+    macsec = plugin.get_issues()
     assert len(macsec) == 1
     assert macsec[0].evidence[0] == "interface GigabitEthernet3"
 
@@ -139,7 +151,7 @@ crypto ikev2 policy 10
 
     assert "cisco.ios.http.cleartext_service" in rule_ids
     assert "cisco.ios.ssh.protocol_version" in rule_ids
-    assert "cisco.iosxe.macsec.missing" in rule_ids
+    assert "cisco.iosxe.macsec.missing" not in rule_ids
     assert "cisco.iosxe.crypto.legacy_ikev2" in rule_ids
     assert len(rule_ids) == len(set(rule_ids))
     assert all(issue.device == "IOS_XE" for issue in issues)

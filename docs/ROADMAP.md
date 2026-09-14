@@ -18,11 +18,14 @@
 
 - Closed T-030 with PAN-OS management SSL/TLS profile and certificate resolution, minimum TLS policy, automatic threat-content installation, system-log forwarding, and normalized TLS evidence.
 - Closed T-032 with ArubaOS-Switch password control, centralized accounting and DHCP-snooping coverage; Arista explicit SSH algorithms, empty-password policy, service ACL and exec authorization; and SonicOS authenticated NTP plus Capture ATP dependency/applicability checks.
-- Kept live certificate validity, licensing/subscription state, and time-sensitive firmware currency out of static absence findings when the supported export cannot prove them.
+- Kept served-certificate/revocation state, licensing/subscription state, and time-sensitive firmware currency out of static absence findings when the supported export cannot prove them.
 - Retained the 32-case permanent corpus and expanded the complete suite to 367 passing tests.
 
 ## Next planning cycle
 
+- GAP-004 is complete: Check Point FW1 now uses bounded static network/service semantics for conservative same-layer shadow and redundancy analysis.
+- GAP-006 through GAP-016 are complete at their documented static boundaries, including routing/discovery trust, access-edge protection, administrative AAA transport, management-certificate material, effective PAN-OS/FortiOS inspection-profile resolution, FortiOS local-in policy and attached FortiOS/Junos VPN proposal chains, Junos SRX zone-pair policy analysis, and release-gated ScreenOS 6.3 default-policy/session-control analysis.
+- GAP-017 is next: complete administrative-policy evidence on secondary platforms one supported export family at a time.
 - Rank additions using observed configuration volume, false-positive/false-negative feedback, authoritative documentation, and fixture availability.
 - Decide separately whether to add missing legacy dialects, new platforms, or an opt-in live-state/advisory layer.
 - Add anonymized customer-derived grammar fixtures whenever a newly observed syntax family is safely available.

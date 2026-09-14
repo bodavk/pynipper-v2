@@ -8,6 +8,7 @@ from .common.banner import display_banner
 from .devices import get_device_choices
 from .report.common.types import ReportType
 from .analyze.analyze_device import analyze_device
+from .common.assessment import AssessmentContext
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -45,13 +46,23 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help="Disable external software-advisory lookups",
                         dest="offline", action='store_true'
                         )
+    parser.add_argument('--assessment-policy',
+                        help="Optional JSON assessment policy with explicit roles and exclusions",
+                        dest="assessment_policy", action="store", type=str
+                        )
 
     args = parser.parse_args(argv)
 
     args_dict = vars(args)
 
+    assessment_context = (
+        AssessmentContext.from_file(args_dict["assessment_policy"])
+        if args_dict["assessment_policy"]
+        else AssessmentContext()
+    )
     analyze_device(args_dict["device_type"], args_dict["input_file"], args_dict["output_file"],
-                   args_dict["output_type"], args_dict["conf_file"], not args_dict["offline"]
+                   args_dict["output_type"], args_dict["conf_file"], not args_dict["offline"],
+                   assessment_context
                    )
 
     return 0

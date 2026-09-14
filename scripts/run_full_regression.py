@@ -38,6 +38,7 @@ from src.analyze.arista.core.process_arista_conf import process_arista_conf  # n
 from src.analyze.sonicwall.core.process_sonicos_conf import process_sonicos_conf  # noqa: E402
 from src.devices import get_parser  # noqa: E402
 from src.devices.registry import validate_device_registry  # noqa: E402
+from src.common.assessment import AssessmentContext  # noqa: E402
 
 
 CORPUS_ROOT = REPOSITORY_ROOT / "tests" / "test_data" / "regression"
@@ -86,6 +87,13 @@ def _analyze_case(case: dict) -> tuple[list[str], int]:
         raise AssertionError(f"Corpus input does not exist: {config_path}")
 
     parser = get_parser(device, str(config_path))
+    if "assessment_policy" in case:
+        parser.set_assessment_context(
+            AssessmentContext.from_mapping(
+                case["assessment_policy"],
+                provenance=f"regression manifest: {case['name']}",
+            )
+        )
     parser.get_normalized_config()
     with redirect_stdout(StringIO()):
         findings = list(processor(parser).values())

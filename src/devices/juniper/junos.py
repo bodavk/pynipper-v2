@@ -7,7 +7,10 @@ from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.models import (
     ConfigEvidence,
     ConfigurationState,
+    CredentialMetadata,
+    CredentialStorageAssessment,
     CryptoSetting,
+    DefaultCredentialAssessment,
     LocalUser,
     LoggingDestination,
     ManagementService,
@@ -42,6 +45,117 @@ class JunosFirewallTerm:
     protocols: tuple[str, ...]
     actions: tuple[str, ...]
     attachments: tuple[str, ...]
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class JunosSyslogSelector:
+    facility: str
+    severity: str | None
+    evidence: ConfigEvidence
+
+
+@dataclass(frozen=True)
+class JunosSyslogDestination:
+    address: str
+    selectors: tuple[JunosSyslogSelector, ...]
+    transport: str | None
+    port: str | None
+    source_address: str | None
+    routing_instance: str | None
+    has_unknown_selector: bool
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class JunosNTPAssociation:
+    role: str
+    address: str
+    key_id: str
+    authentication_state: str
+    algorithm: str
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class JunosBGPNeighbor:
+    """Effective Junos BGP neighbor state in a routing-instance/family."""
+
+    address: str
+    group: str
+    peer_role: str
+    routing_instance: str
+    address_family: str
+    active: bool
+    authentication_state: str
+    authentication_method: str
+    inbound_policy: bool
+    outbound_policy: bool
+    prefix_limit: bool
+    inheritance_unknown: bool
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class JunosOSPFInterface:
+    process: str
+    interface: str
+    area: str
+    routing_instance: str
+    passive: bool
+    active: bool
+    authentication_state: str
+    authentication_method: str
+    key_reference: str
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class JunosDiscoveryInterface:
+    interface: str
+    protocol: str
+    transmit: bool
+    receive: bool
+    active: bool
+    role: str
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class JunosSecurityPolicy:
+    from_zone: str
+    to_zone: str
+    name: str
+    position: int
+    active: bool
+    sources: tuple[str, ...]
+    destinations: tuple[str, ...]
+    applications: tuple[str, ...]
+    action: str
+    tunnel: str
+    log_events: tuple[str, ...]
+    source_resolution: str
+    destination_resolution: str
+    application_resolution: str
+    inheritance_unknown: bool
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class JunosIPSecVPN:
+    name: str
+    active: bool
+    attachments: tuple[str, ...]
+    bind_interface: str
+    resolution_state: str
+    ike_proposals: tuple[str, ...]
+    ike_encryption: tuple[str, ...]
+    ike_authentication: tuple[str, ...]
+    ike_dh_groups: tuple[str, ...]
+    ipsec_proposals: tuple[str, ...]
+    ipsec_encryption: tuple[str, ...]
+    ipsec_authentication: tuple[str, ...]
+    pfs_dh_groups: tuple[str, ...]
     evidence: tuple[ConfigEvidence, ...]
 
 
@@ -91,12 +205,17 @@ class JunOSParser(BaseDeviceParser):
 
     def _evidence(self, text: str, line_number: int) -> ConfigEvidence:
         redacted = re.sub(
-            r"(?i)((?:encrypted-password|plain-text-password|authentication-password|privacy-password|secret)\s+)\S+",
+            r'''(?i)((?:encrypted-password|plain-text-password|authentication-password|privacy-password|secret)\s+)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\S+)''',
             r"\1<redacted>",
             text,
         )
         redacted = re.sub(
-            r"(?i)((?:authentication-key|pre-shared-key)\b.*?\b(?:value|ascii-text)\s+)\S+",
+            r'''(?i)((?:authentication-key|pre-shared-key)\b.*?\b(?:value|ascii-text)\s+)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\S+)''',
+            r"\1<redacted>",
+            redacted,
+        )
+        redacted = re.sub(
+            r'''(?i)((?:authentication-key|simple-password|\bkey)\s+)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\S+)''',
             r"\1<redacted>",
             redacted,
         )
@@ -375,6 +494,106 @@ class JunOSParser(BaseDeviceParser):
                     user["authentication"] = path[auth_index + 1]
         return list(users.values())
 
+    @staticmethod
+    def _credential_storage(method: str, value: str) -> CredentialStorageAssessment:
+        if method == "plain-text-password":
+            return (
+                CredentialStorageAssessment.PLAINTEXT
+                if value
+                else CredentialStorageAssessment.UNKNOWN
+            )
+        if method != "encrypted-password":
+            return CredentialStorageAssessment.UNKNOWN
+        if not value:
+            return CredentialStorageAssessment.MALFORMED
+        lowered = value.casefold()
+        if lowered.startswith(("$1$", "$md5$")):
+            return (
+                CredentialStorageAssessment.WEAK_HASH
+                if len(value.split("$")) >= 4
+                else CredentialStorageAssessment.MALFORMED
+            )
+        if lowered.startswith("$9$"):
+            return (
+                CredentialStorageAssessment.WEAK_REVERSIBLE
+                if len(value) > 3
+                else CredentialStorageAssessment.MALFORMED
+            )
+        if lowered.startswith(("$5$", "$6$")):
+            return (
+                CredentialStorageAssessment.APPROVED_HASH
+                if len(value.split("$")) >= 4
+                else CredentialStorageAssessment.MALFORMED
+            )
+        if lowered.startswith("$8$"):
+            return (
+                CredentialStorageAssessment.APPROVED_REVERSIBLE
+                if len(value.split("$")) >= 9
+                else CredentialStorageAssessment.MALFORMED
+            )
+        return (
+            CredentialStorageAssessment.UNKNOWN
+            if value.startswith("$")
+            else CredentialStorageAssessment.MALFORMED
+        )
+
+    @staticmethod
+    def _credential_default(
+        storage: CredentialStorageAssessment, value: str
+    ) -> DefaultCredentialAssessment:
+        if value.casefold() in {"admin", "juniper", "password", "root"}:
+            return DefaultCredentialAssessment.MATCH
+        if storage in {
+            CredentialStorageAssessment.PLAINTEXT,
+            CredentialStorageAssessment.MALFORMED,
+            CredentialStorageAssessment.UNKNOWN,
+        }:
+            return DefaultCredentialAssessment.NO_MATCH
+        return DefaultCredentialAssessment.NOT_EVALUATED
+
+    def get_credential_metadata(self) -> list[CredentialMetadata]:
+        """Expose secret-free properties for effective local and root credentials."""
+
+        credentials: dict[tuple[str, str], CredentialMetadata] = {}
+        for statement in self.statements:
+            if not statement.active:
+                continue
+            path = statement.path
+            context = ""
+            account = ""
+            auth_index = -1
+            if path[:3] == ("system", "login", "user") and len(path) > 5:
+                account = path[3]
+                context = "local_user"
+                if path[4] != "authentication":
+                    continue
+                auth_index = 4
+            elif path[:2] == ("system", "root-authentication") and len(path) > 2:
+                account = "root"
+                context = "root"
+                auth_index = 1
+            else:
+                continue
+            method = path[auth_index + 1]
+            if method not in {"plain-text-password", "encrypted-password"}:
+                continue
+            value = path[auth_index + 2] if len(path) > auth_index + 2 else ""
+            storage = self._credential_storage(method, value)
+            credentials[(context, account)] = CredentialMetadata(
+                account=account,
+                context=context,
+                method=method,
+                storage_type=(
+                    value.split("$", 2)[1]
+                    if value.startswith("$") and "$" in value[1:]
+                    else method
+                ),
+                storage_assessment=storage,
+                default_assessment=self._credential_default(storage, value),
+                evidence=(statement.evidence,),
+            )
+        return list(credentials.values())
+
     def get_services(self) -> dict:
         paths = self._active_paths()
         return {
@@ -460,31 +679,765 @@ class JunOSParser(BaseDeviceParser):
             for (family, filter_name, term_name), data in term_data.items()
         ]
 
+    @staticmethod
+    def _unique(values: list[str]) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(values))
+
+    def _address_resolution(
+        self,
+        references: tuple[str, ...],
+        zone: str,
+        address_objects: dict[tuple[str, str], tuple[str, ...]],
+        address_sets: dict[tuple[str, str], tuple[str, ...]],
+        zone_books: dict[str, str],
+    ) -> str:
+        if not references:
+            return "unresolved"
+        wildcards = {"any", "any-ipv4", "any-ipv6", "0.0.0.0/0", "::/0", "0::/0"}
+        if all(reference.casefold() in wildcards for reference in references):
+            return "wildcard"
+        book = zone_books.get(zone, zone)
+
+        def resolve(
+            name: str,
+            seen: set[tuple[str, str]],
+            definition_book: str | None = None,
+        ) -> tuple[str, ...] | None:
+            if name.casefold() in wildcards:
+                return (name,)
+            candidate_books = (
+                (definition_book, "global")
+                if definition_book and definition_book != "global"
+                else (definition_book,)
+                if definition_book
+                else (book, "global")
+            )
+            for candidate_book in dict.fromkeys(candidate_books):
+                key = (candidate_book, name)
+                if key in seen:
+                    return None
+                if key in address_objects:
+                    return address_objects[key]
+                if key in address_sets:
+                    resolved: list[str] = []
+                    for member in address_sets[key]:
+                        child = resolve(member, seen | {key}, candidate_book)
+                        if child is None:
+                            return None
+                        resolved.extend(child)
+                    return tuple(resolved)
+            return None
+
+        expanded: list[str] = []
+        for reference in references:
+            values = resolve(reference, set())
+            if values is None:
+                return "unresolved"
+            expanded.extend(values)
+        return (
+            "wildcard"
+            if expanded and all(value.casefold() in wildcards for value in expanded)
+            else "resolved"
+        )
+
+    def get_security_policies(self) -> list[JunosSecurityPolicy]:
+        """Return zone-pair SRX policies separately from stateless filters."""
+
+        address_objects: dict[tuple[str, str], list[str]] = {}
+        address_sets: dict[tuple[str, str], list[str]] = {}
+        zone_books: dict[str, str] = {}
+        applications: set[str] = set()
+        application_sets: dict[str, list[str]] = {}
+        for statement in self.statements:
+            if not statement.active:
+                continue
+            path = statement.path
+            if path[:2] == ("security", "address-book") and len(path) >= 5:
+                book = path[2]
+                if path[3] == "attach" and len(path) > 5 and path[4] == "zone":
+                    zone_books[path[5]] = book
+                elif path[3] == "address":
+                    address_objects.setdefault((book, path[4]), []).extend(path[5:6])
+                elif path[3] == "address-set" and len(path) > 6 and path[5] == "address":
+                    address_sets.setdefault((book, path[4]), []).append(path[6])
+            elif (
+                path[:3] == ("security", "zones", "security-zone")
+                and len(path) >= 7
+                and path[4] == "address-book"
+            ):
+                zone = path[3]
+                if path[5] == "address":
+                    address_objects.setdefault((zone, path[6]), []).extend(path[7:8])
+                elif path[5] == "address-set" and len(path) > 8 and path[7] == "address":
+                    address_sets.setdefault((zone, path[6]), []).append(path[8])
+            elif path[:2] == ("applications", "application") and len(path) > 2:
+                applications.add(path[2])
+            elif (
+                path[:2] == ("applications", "application-set")
+                and len(path) > 4
+                and path[3] in {"application", "application-set"}
+            ):
+                application_sets.setdefault(path[2], []).append(path[4])
+
+        policies: dict[tuple[str, str, str], dict] = {}
+        positions: dict[tuple[str, str], int] = {}
+        policy_prefix = ("security", "policies", "from-zone")
+        inheritance_unknown = any(
+            statement.active and "apply-groups" in statement.path
+            for statement in self.statements
+        )
+        for statement in self.statements:
+            path = statement.path
+            if path[:3] != policy_prefix or len(path) < 8 or path[4] != "to-zone":
+                continue
+            from_zone, to_zone = path[3], path[5]
+            if path[6] != "policy":
+                continue
+            name = path[7]
+            key = (from_zone, to_zone, name)
+            if key not in policies:
+                pair = (from_zone, to_zone)
+                positions[pair] = positions.get(pair, 0) + 1
+                policies[key] = {
+                    "position": positions[pair],
+                    "active": False,
+                    "sources": [],
+                    "destinations": [],
+                    "applications": [],
+                    "action": "",
+                    "tunnel": "",
+                    "logs": [],
+                    "evidence": [],
+                }
+            data = policies[key]
+            data["evidence"].append(statement.evidence)
+            if not statement.active:
+                continue
+            data["active"] = True
+            suffix = path[8:]
+            if len(suffix) >= 3 and suffix[:2] == ("match", "source-address"):
+                data["sources"].append(suffix[2])
+            elif len(suffix) >= 3 and suffix[:2] == ("match", "destination-address"):
+                data["destinations"].append(suffix[2])
+            elif len(suffix) >= 3 and suffix[:2] == ("match", "application"):
+                data["applications"].append(suffix[2])
+            elif len(suffix) >= 2 and suffix[0] == "then":
+                if suffix[1] in {"permit", "deny", "reject"}:
+                    data["action"] = suffix[1]
+                if "ipsec-vpn" in suffix:
+                    index = suffix.index("ipsec-vpn")
+                    if index + 1 < len(suffix):
+                        data["tunnel"] = suffix[index + 1]
+                if "log" in suffix:
+                    index = suffix.index("log")
+                    if index + 1 < len(suffix):
+                        data["logs"].append(suffix[index + 1])
+
+        address_object_values = {
+            key: tuple(values) for key, values in address_objects.items()
+        }
+        address_set_values = {key: tuple(values) for key, values in address_sets.items()}
+
+        def application_resolution(values: tuple[str, ...]) -> str:
+            if not values or all(value.casefold() == "any" for value in values):
+                return "default-any" if not values else "wildcard"
+
+            def resolved(name: str, seen: set[str]) -> bool:
+                if name.casefold().startswith("junos-") or name in applications:
+                    return True
+                if name in seen or name not in application_sets:
+                    return False
+                return all(
+                    resolved(member, seen | {name})
+                    for member in application_sets[name]
+                )
+
+            return "resolved" if all(resolved(value, set()) for value in values) else "unresolved"
+
+        return [
+            JunosSecurityPolicy(
+                from_zone=from_zone,
+                to_zone=to_zone,
+                name=name,
+                position=data["position"],
+                active=data["active"],
+                sources=self._unique(data["sources"]),
+                destinations=self._unique(data["destinations"]),
+                applications=self._unique(data["applications"]),
+                action=data["action"],
+                tunnel=data["tunnel"],
+                log_events=self._unique(data["logs"]),
+                source_resolution=self._address_resolution(
+                    self._unique(data["sources"]),
+                    from_zone,
+                    address_object_values,
+                    address_set_values,
+                    zone_books,
+                ),
+                destination_resolution=self._address_resolution(
+                    self._unique(data["destinations"]),
+                    to_zone,
+                    address_object_values,
+                    address_set_values,
+                    zone_books,
+                ),
+                application_resolution=application_resolution(
+                    self._unique(data["applications"])
+                ),
+                inheritance_unknown=inheritance_unknown,
+                evidence=tuple(data["evidence"]),
+            )
+            for (from_zone, to_zone, name), data in policies.items()
+        ]
+
+    def get_ipsec_vpns(self) -> list[JunosIPSecVPN]:
+        """Resolve attached or interface-bound SRX VPN proposal chains."""
+
+        policies = self.get_security_policies()
+        policy_attachments: dict[str, list[str]] = {}
+        for policy in policies:
+            if policy.active and policy.action == "permit" and policy.tunnel:
+                policy_attachments.setdefault(policy.tunnel, []).append(
+                    f"{policy.from_zone}->{policy.to_zone}:{policy.name}"
+                )
+
+        def objects(prefix: tuple[str, ...]) -> dict[str, dict]:
+            result: dict[str, dict] = {}
+            for statement in self.statements:
+                path = statement.path
+                if not self._is_prefix(prefix, path) or len(path) <= len(prefix):
+                    continue
+                name = path[len(prefix)]
+                item = result.setdefault(
+                    name,
+                    {"present": False, "active": False, "paths": [], "evidence": []},
+                )
+                item["present"] = True
+                item["evidence"].append(statement.evidence)
+                if statement.active:
+                    item["active"] = True
+                    item["paths"].append(path[len(prefix) + 1 :])
+            return result
+
+        ike_proposals = objects(("security", "ike", "proposal"))
+        ike_policies = objects(("security", "ike", "policy"))
+        ike_gateways = objects(("security", "ike", "gateway"))
+        ipsec_proposals = objects(("security", "ipsec", "proposal"))
+        ipsec_policies = objects(("security", "ipsec", "policy"))
+        vpns = objects(("security", "ipsec", "vpn"))
+
+        def values(item: dict | None, field: tuple[str, ...]) -> tuple[str, ...]:
+            if not item:
+                return ()
+            output = []
+            for path in item["paths"]:
+                for index in range(len(path) - len(field)):
+                    if path[index : index + len(field)] == field:
+                        value_index = index + len(field)
+                        if value_index < len(path):
+                            output.append(path[value_index])
+            return self._unique(output)
+
+        candidate_names = set(policy_attachments)
+        candidate_names.update(
+            name
+            for name, item in vpns.items()
+            if values(item, ("bind-interface",))
+        )
+        records = []
+        for name in sorted(candidate_names):
+            vpn = vpns.get(name)
+            attachments = tuple(policy_attachments.get(name, ()))
+            if vpn is not None and not vpn["active"]:
+                active = False
+            else:
+                active = bool(attachments or values(vpn, ("bind-interface",)))
+            bind_interface = next(iter(values(vpn, ("bind-interface",))), "")
+            gateway_name = next(iter(values(vpn, ("ike", "gateway"))), "")
+            ipsec_policy_name = next(
+                iter(values(vpn, ("ike", "ipsec-policy"))), ""
+            )
+            gateway = ike_gateways.get(gateway_name)
+            ike_policy_name = next(iter(values(gateway, ("ike-policy",))), "")
+            ike_policy = ike_policies.get(ike_policy_name)
+            selected_ike_proposals = values(ike_policy, ("proposals",))
+            selected_ike_sets = values(ike_policy, ("proposal-set",))
+            selected_ipsec_policy = ipsec_policies.get(ipsec_policy_name)
+            selected_ipsec_proposals = values(
+                selected_ipsec_policy, ("proposals",)
+            )
+            selected_ipsec_sets = values(selected_ipsec_policy, ("proposal-set",))
+            chain_objects = (vpn, gateway, ike_policy, selected_ipsec_policy)
+            resolution_state = (
+                "resolved"
+                if all(item is not None and item["active"] for item in chain_objects)
+                and bool(selected_ike_proposals or selected_ike_sets)
+                and bool(selected_ipsec_proposals or selected_ipsec_sets)
+                else "unresolved"
+            )
+            ike_definitions = [ike_proposals.get(item) for item in selected_ike_proposals]
+            ipsec_definitions = [
+                ipsec_proposals.get(item) for item in selected_ipsec_proposals
+            ]
+            if any(item is None or not item["active"] for item in ike_definitions + ipsec_definitions):
+                resolution_state = "unresolved"
+            elif resolution_state == "resolved" and (
+                selected_ike_sets or selected_ipsec_sets
+            ):
+                resolution_state = "vendor-default"
+            evidence: list[ConfigEvidence] = []
+            for item in chain_objects + tuple(ike_definitions) + tuple(ipsec_definitions):
+                if item:
+                    evidence.extend(item["evidence"])
+            records.append(
+                JunosIPSecVPN(
+                    name=name,
+                    active=active,
+                    attachments=attachments,
+                    bind_interface=bind_interface,
+                    resolution_state=resolution_state,
+                    ike_proposals=selected_ike_proposals,
+                    ike_encryption=self._unique(
+                        [value for item in ike_definitions for value in values(item, ("encryption-algorithm",))]
+                    ),
+                    ike_authentication=self._unique(
+                        [value for item in ike_definitions for value in values(item, ("authentication-algorithm",))]
+                    ),
+                    ike_dh_groups=self._unique(
+                        [value for item in ike_definitions for value in values(item, ("dh-group",))]
+                    ),
+                    ipsec_proposals=selected_ipsec_proposals,
+                    ipsec_encryption=self._unique(
+                        [value for item in ipsec_definitions for value in values(item, ("encryption-algorithm",))]
+                    ),
+                    ipsec_authentication=self._unique(
+                        [value for item in ipsec_definitions for value in values(item, ("authentication-algorithm",))]
+                    ),
+                    pfs_dh_groups=values(
+                        selected_ipsec_policy,
+                        ("perfect-forward-secrecy", "keys"),
+                    ),
+                    evidence=tuple(dict.fromkeys(evidence)),
+                )
+            )
+        return records
+
     def get_native_config(self) -> list[str]:
         return self.config
 
-    def get_logging_destinations(self) -> list[LoggingDestination]:
+    def get_ntp_associations(self) -> list[JunosNTPAssociation]:
+        trusted = {
+            item.path[3]
+            for item in self.get_active_statements(("system", "ntp", "trusted-key"))
+            if len(item.path) > 3
+        }
+        keys: dict[str, tuple[str, bool, tuple[ConfigEvidence, ...]]] = {}
+        for item in self.get_active_statements(("system", "ntp", "authentication-key")):
+            if len(item.path) <= 3:
+                continue
+            key_id = item.path[3]
+            suffix = item.path[4:]
+            algorithm = ""
+            material_present = False
+            if "type" in suffix and suffix.index("type") + 1 < len(suffix):
+                algorithm = suffix[suffix.index("type") + 1].casefold()
+            if "value" in suffix and suffix.index("value") + 1 < len(suffix):
+                material_present = True
+            prior = keys.get(key_id)
+            evidence = (prior[2] if prior else ()) + (item.evidence,)
+            keys[key_id] = (
+                algorithm or (prior[0] if prior else ""),
+                material_present or (prior[1] if prior else False),
+                evidence,
+            )
+        configured_associations: dict[
+            tuple[str, str], tuple[str, tuple[ConfigEvidence, ...]]
+        ] = {}
+        for role in ("server", "peer"):
+            for item in self.get_active_statements(("system", "ntp", role)):
+                if len(item.path) <= 3:
+                    continue
+                address = item.path[3]
+                suffix = item.path[4:]
+                previous = configured_associations.get((role, address), ("", ()))
+                key_id = previous[0]
+                if "key" in suffix and suffix.index("key") + 1 < len(suffix):
+                    key_id = suffix[suffix.index("key") + 1]
+                configured_associations[(role, address)] = (
+                    key_id,
+                    previous[1] + (item.evidence,),
+                )
+        associations = []
+        for (role, address), (key_id, association_evidence) in configured_associations.items():
+            key = keys.get(key_id)
+            if not key_id:
+                state = "unauthenticated"
+            elif key is None or key_id not in trusted or not key[0] or not key[1]:
+                state = "unresolved"
+            else:
+                state = "authenticated"
+            associations.append(JunosNTPAssociation(
+                role=role,
+                address=address,
+                key_id=key_id,
+                authentication_state=state,
+                algorithm=key[0] if key else "",
+                evidence=association_evidence + (key[2] if key else ()),
+            ))
+        return associations
+
+    @staticmethod
+    def _routing_scope(path: tuple[str, ...], protocol: str) -> tuple[str, int] | None:
+        marker = ("protocols", protocol)
+        for index in range(len(path) - 1):
+            if path[index:index + 2] == marker:
+                if index >= 2 and path[index - 2] == "routing-instances":
+                    return path[index - 1], index
+                return "default", index
+        return None
+
+    def _routing_keychains(self) -> dict[str, tuple[int, set[str], tuple[ConfigEvidence, ...]]]:
+        chains: dict[str, dict] = {}
+        prefix = ("security", "authentication-key-chains", "key-chain")
+        for statement in self.get_active_statements(prefix):
+            path = statement.path
+            if len(path) < 4:
+                continue
+            name = path[3]
+            data = chains.setdefault(name, {"keys": set(), "algorithms": set(), "evidence": []})
+            data["evidence"].append(statement.evidence)
+            if "key" in path[4:]:
+                key_index = path.index("key", 4)
+                if key_index + 1 < len(path):
+                    data["keys"].add(path[key_index + 1])
+            for keyword in ("authentication-algorithm", "algorithm"):
+                if keyword in path[4:]:
+                    index = path.index(keyword, 4)
+                    if index + 1 < len(path):
+                        data["algorithms"].add(path[index + 1].casefold())
+        return {
+            name: (len(data["keys"]), data["algorithms"], tuple(data["evidence"]))
+            for name, data in chains.items()
+        }
+
+    def get_bgp_neighbors(self) -> list[JunosBGPNeighbor]:
+        """Resolve Junos group inheritance without expanding apply-groups."""
+
+        groups: dict[tuple[str, str], dict] = {}
+        neighbors: dict[tuple[str, str, str], dict] = {}
+        keychains = self._routing_keychains()
+        global_unknown = any(
+            statement.active and "apply-groups" in statement.path
+            for statement in self.statements
+        )
+        for statement in self.statements:
+            if not statement.active:
+                continue
+            scoped = self._routing_scope(statement.path, "bgp")
+            if scoped is None:
+                continue
+            routing_instance, index = scoped
+            tail = statement.path[index + 2:]
+            if len(tail) < 2 or tail[0] != "group":
+                continue
+            group = tail[1]
+            group_data = groups.setdefault((routing_instance, group), {"props": {}, "family_props": {}, "families": set(), "evidence": []})
+            group_data["evidence"].append(statement.evidence)
+            if "neighbor" in tail[2:]:
+                neighbor_index = tail.index("neighbor", 2)
+                if neighbor_index + 1 >= len(tail):
+                    continue
+                address = tail[neighbor_index + 1]
+                data = neighbors.setdefault((routing_instance, group, address), {"props": {}, "family_props": {}, "families": set(), "evidence": []})
+                data["evidence"].append(statement.evidence)
+                prop_tail = tail[neighbor_index + 2:]
+            else:
+                data = group_data
+                prop_tail = tail[2:]
+            family = ""
+            if "family" in prop_tail:
+                family_index = prop_tail.index("family")
+                family = " ".join(prop_tail[family_index + 1:family_index + 3])
+                if family:
+                    data["families"].add(family)
+            selected_props = data["family_props"].setdefault(family, {}) if family else data["props"]
+            for field in ("type", "peer-as", "authentication-key", "authentication-key-chain", "authentication-algorithm", "import", "export"):
+                if field in prop_tail:
+                    field_index = prop_tail.index(field)
+                    value = prop_tail[field_index + 1] if field_index + 1 < len(prop_tail) else ""
+                    selected_props[field] = value
+            if "shutdown" in prop_tail:
+                selected_props["shutdown"] = True
+            if "prefix-limit" in prop_tail or "accepted-prefix-limit" in prop_tail:
+                selected_props["prefix-limit"] = True
+
+        records: list[JunosBGPNeighbor] = []
+        for (routing_instance, group, address), neighbor in sorted(neighbors.items()):
+            parent = groups[(routing_instance, group)]
+
+            def prop(name: str, family: str = ""):
+                for source in (
+                    neighbor["family_props"].get(family, {}),
+                    parent["family_props"].get(family, {}),
+                    neighbor["props"],
+                    parent["props"],
+                ):
+                    if name in source:
+                        return source[name]
+                return ""
+
+            families = neighbor["families"] or parent["families"] or {"inet unicast"}
+            peer_type = prop("type")
+            peer_role = peer_type if peer_type in {"external", "internal"} else "unknown"
+            static_key = bool(prop("authentication-key"))
+            chain_name = prop("authentication-key-chain")
+            algorithm = str(prop("authentication-algorithm")).casefold()
+            chain = keychains.get(chain_name) if chain_name else None
+            if static_key:
+                auth_state, auth_method = "authenticated", "md5"
+            elif chain_name:
+                if chain is None or chain[0] == 0 or not algorithm:
+                    auth_state = "unresolved"
+                elif algorithm not in {"ao", "md5"}:
+                    auth_state = "unknown"
+                else:
+                    auth_state = "authenticated"
+                auth_method = algorithm
+            else:
+                auth_state, auth_method = "unauthenticated", ""
+            evidence = tuple(dict.fromkeys(parent["evidence"] + neighbor["evidence"] + (list(chain[2]) if chain else [])))
+            for family in sorted(families):
+                records.append(JunosBGPNeighbor(
+                    address=address,
+                    group=group,
+                    peer_role=peer_role,
+                    routing_instance=routing_instance,
+                    address_family=family,
+                    active=not bool(prop("shutdown")),
+                    authentication_state=auth_state,
+                    authentication_method=auth_method,
+                    inbound_policy=bool(prop("import", family)),
+                    outbound_policy=bool(prop("export", family)),
+                    prefix_limit=bool(prop("prefix-limit", family)),
+                    inheritance_unknown=global_unknown,
+                    evidence=evidence,
+                ))
+        return records
+
+    def get_ospf_interfaces(self) -> list[JunosOSPFInterface]:
+        """Return explicit OSPFv2 interface state; OSPFv3/IPsec is separate."""
+
+        keychains = self._routing_keychains()
+        records: dict[tuple[str, str, str], dict] = {}
+        unknown_inheritance = any(
+            statement.active and "apply-groups" in statement.path
+            for statement in self.statements
+        )
+        for statement in self.statements:
+            if not statement.active:
+                continue
+            scoped = self._routing_scope(statement.path, "ospf")
+            if scoped is None:
+                continue
+            routing_instance, index = scoped
+            tail = statement.path[index + 2:]
+            if len(tail) < 4 or tail[0] != "area" or "interface" not in tail:
+                continue
+            area = tail[1]
+            interface_index = tail.index("interface")
+            if interface_index + 1 >= len(tail) or tail[interface_index + 1] == "all":
+                continue
+            interface = tail[interface_index + 1]
+            data = records.setdefault((routing_instance, area, interface), {"passive": False, "disable": False, "mode": "", "chain": "", "key": False, "unknown": unknown_inheritance, "evidence": []})
+            data["evidence"].append(statement.evidence)
+            remainder = tail[interface_index + 2:]
+            if "passive" in remainder:
+                data["passive"] = True
+            if "disable" in remainder:
+                data["disable"] = True
+            if "authentication" in remainder:
+                auth_index = remainder.index("authentication")
+                auth_tail = remainder[auth_index + 1:]
+                if auth_tail:
+                    data["mode"] = auth_tail[0].casefold()
+                    if data["mode"] == "key-chain" and len(auth_tail) > 1:
+                        data["chain"] = auth_tail[1]
+                    if "key" in auth_tail or data["mode"] == "simple-password":
+                        data["key"] = len(auth_tail) > 1
+
+        output = []
+        for (routing_instance, area, interface), data in sorted(records.items()):
+            mode = data["mode"]
+            chain = keychains.get(data["chain"]) if data["chain"] else None
+            if data["unknown"] and not mode:
+                state = "unknown"
+            elif not mode:
+                state = "unauthenticated"
+            elif mode == "simple-password":
+                state = "weak" if data["key"] else "unresolved"
+            elif mode == "md5":
+                state = "authenticated" if data["key"] else "unresolved"
+            elif mode == "key-chain":
+                if not chain or chain[0] == 0:
+                    state = "unresolved"
+                elif chain[1] and not chain[1].issubset({"hmac-sha-1", "hmac-sha-256", "hmac-sha-384", "hmac-sha-512", "md5"}):
+                    state = "unknown"
+                else:
+                    state = "authenticated"
+            else:
+                state = "unknown"
+            evidence = list(data["evidence"])
+            if chain:
+                evidence.extend(chain[2])
+            output.append(JunosOSPFInterface(
+                process="ospf",
+                interface=interface,
+                area=area,
+                routing_instance=routing_instance,
+                passive=bool(data["passive"]),
+                active=not bool(data["disable"]),
+                authentication_state=state,
+                authentication_method=mode,
+                key_reference=str(data["chain"]),
+                evidence=tuple(dict.fromkeys(evidence)),
+            ))
+        return output
+
+    def get_discovery_interfaces(self) -> list[JunosDiscoveryInterface]:
+        """Resolve Junos LLDP all-interface inheritance and local overrides."""
+
+        lldp = self.get_active_statements(("protocols", "lldp"))
+        globally_disabled = any(statement.path == ("protocols", "lldp", "disable") for statement in lldp)
+        all_statements = [
+            statement for statement in lldp
+            if statement.path[:4] == ("protocols", "lldp", "interface", "all")
+        ]
+        all_enabled = bool(all_statements) and not any(
+            "disable" in statement.path[4:] for statement in all_statements
+        )
+        specific: dict[str, list[JunosStatement]] = {}
+        for statement in lldp:
+            path = statement.path
+            if len(path) >= 4 and path[:3] == ("protocols", "lldp", "interface") and path[3] != "all":
+                specific.setdefault(path[3], []).append(statement)
+
+        configured_interfaces = {
+            statement.path[1]
+            for statement in self.get_active_statements(("interfaces",))
+            if len(statement.path) > 1 and statement.path[1] != "interface-range"
+        }
+        configured_interfaces.update(name for name, _ in self.assessment_context.interface_roles)
+        records = []
+        for interface in sorted(configured_interfaces):
+            statements = specific.get(interface, [])
+            enabled = all_enabled
+            if statements:
+                enabled = not any("disable" in statement.path[4:] for statement in statements)
+            if globally_disabled:
+                enabled = False
+            interface_statements = self.get_active_statements(("interfaces", interface))
+            active = not any("disable" in statement.path[2:] for statement in interface_statements)
+            evidence = tuple(
+                dict.fromkeys(all_statements + statements)
+            )
+            records.append(JunosDiscoveryInterface(
+                interface=interface,
+                protocol="lldp",
+                transmit=enabled,
+                receive=enabled,
+                active=active,
+                role=self.assessment_context.role_for_interface(interface),
+                evidence=tuple(statement.evidence for statement in evidence) + tuple(
+                    statement.evidence for statement in interface_statements
+                    if "disable" in statement.path[2:]
+                ),
+            ))
+        return records
+
+    def get_syslog_destinations(self) -> list[JunosSyslogDestination]:
+        """Return effective per-host selectors without inferring transport defaults."""
+
         hosts: dict[str, dict] = {}
         prefix = ("system", "syslog", "host")
+        severities = {
+            "any", "emergency", "alert", "critical", "error", "warning",
+            "notice", "info", "informational", "none",
+        }
+        properties = {
+            "allow-duplicates", "exclude", "explicit-priority", "facility-override",
+            "log-prefix", "match", "port", "routing-instance", "source-address",
+            "structured-data", "transport",
+        }
         for statement in self.get_active_statements(prefix):
             if len(statement.path) < 4:
                 continue
             address = statement.path[3]
-            data = hosts.setdefault(address, {"severities": [], "evidence": []})
+            data = hosts.setdefault(
+                address,
+                {
+                    "selectors": [],
+                    "transport": None,
+                    "port": None,
+                    "source_address": None,
+                    "routing_instance": None,
+                    "unknown_selector": False,
+                    "evidence": [],
+                },
+            )
             data["evidence"].append(statement.evidence)
-            if len(statement.path) > 5:
-                severity = statement.path[5]
-                if severity not in data["severities"]:
-                    data["severities"].append(severity)
+            if len(statement.path) < 5:
+                continue
+            field = statement.path[4].casefold()
+            value = statement.path[5] if len(statement.path) > 5 else None
+            if field == "transport":
+                data["transport"] = value
+            elif field == "port":
+                data["port"] = value
+            elif field == "source-address":
+                data["source_address"] = value
+            elif field == "routing-instance":
+                data["routing_instance"] = value
+            elif len(statement.path) > 5 and statement.path[5].casefold() in severities:
+                selector = JunosSyslogSelector(
+                    facility=statement.path[4].casefold(),
+                    severity=statement.path[5].casefold(),
+                    evidence=statement.evidence,
+                )
+                if selector not in data["selectors"]:
+                    data["selectors"].append(selector)
+            elif field not in properties and len(statement.path) > 5:
+                # The syntax resembles a facility selector, but its severity is
+                # outside the verified Junos vocabulary. Preserve uncertainty.
+                data["unknown_selector"] = True
+        return [
+            JunosSyslogDestination(
+                address=address,
+                selectors=tuple(data["selectors"]),
+                transport=data["transport"],
+                port=data["port"],
+                source_address=data["source_address"],
+                routing_instance=data["routing_instance"],
+                has_unknown_selector=data["unknown_selector"],
+                evidence=tuple(data["evidence"]),
+            )
+            for address, data in hosts.items()
+        ]
+
+    def get_logging_destinations(self) -> list[LoggingDestination]:
         return [
             LoggingDestination(
                 destination_type="syslog",
                 state=ConfigurationState.ENABLED,
-                address=address,
-                severity=",".join(data["severities"]) or None,
-                evidence=tuple(data["evidence"]),
+                address=destination.address,
+                severity=",".join(
+                    selector.severity
+                    for selector in destination.selectors
+                    if selector.severity is not None
+                ) or None,
+                scope=destination.routing_instance or "default",
+                evidence=destination.evidence,
             )
-            for address, data in hosts.items()
+            for destination in self.get_syslog_destinations()
         ]
 
     def get_crypto_settings(self) -> list[CryptoSetting]:

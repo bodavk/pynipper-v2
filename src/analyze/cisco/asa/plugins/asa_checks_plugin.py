@@ -1,6 +1,7 @@
 from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.issue import Finding, Severity
 from src.devices.common.base_parser import BaseDeviceParser
+from src.devices.common.models import CredentialStorageAssessment
 from src.devices.cisco.asa import CiscoASAParser
 
 
@@ -13,8 +14,8 @@ CISCO_ASA_PASSWORD_REFERENCE = (
     "A-H/asa-command-ref-A-H/e-commands.html"
 )
 CISCO_ASA_SNMP_GUIDE = (
-    "https://www.cisco.com/c/en/us/td/docs/security/asa/asa916/configuration/"
-    "general/asa-916-general-config/monitor-snmp.html"
+    "https://www.cisco.com/c/en/us/td/docs/security/asa/asa917/configuration/"
+    "general/asa-917-general-config/monitor-snmp.html"
 )
 CISCO_ASA_LOGGING_GUIDE = (
     "https://www.cisco.com/c/en/us/td/docs/security/asa/asa916/configuration/"
@@ -60,15 +61,22 @@ class PluginASAChecks(BasePlugin):
         credential = self._asa(parser).get_enable_credential()
         if credential is None:
             return
-        if credential.storage_type != "plaintext" and not credential.is_default:
+        if credential.storage_assessment not in {
+            CredentialStorageAssessment.EMPTY,
+            CredentialStorageAssessment.PLAINTEXT,
+            CredentialStorageAssessment.WEAK_HASH,
+        }:
             return
-        problem = "a known default value" if credential.is_default else "plaintext storage"
         self.add_issue(
             Finding(
                 rule_id="cisco.asa.credentials.weak_enable_password",
                 device=parser.device_type,
-                title="Unsafe enable credential storage or default",
-                observation=f"The enable credential uses {problem}. The secret value has been redacted.",
+                title="Unsafe enable credential storage",
+                observation=(
+                    f"The enable credential uses format '{credential.storage_type}', classified as "
+                    f"'{credential.storage_assessment.value}'; the separate exact-default comparison "
+                    f"is '{credential.default_assessment.value}'. The secret value has been redacted."
+                ),
                 impact="A recoverable or default credential can enable administrative privilege escalation.",
                 severity=Severity.HIGH,
                 exploitability="Default values are easily guessed; plaintext values are exposed if the configuration is obtained.",
@@ -133,22 +141,73 @@ class PluginASAChecks(BasePlugin):
                 )
             )
 
-        incomplete_users = [user for user in users if user.endswith("incomplete")]
-        if incomplete_users:
-            self.add_issue(
-                Finding(
-                    rule_id="cisco.asa.snmp.v3_protection",
-                    device=parser.device_type,
-                    title="SNMPv3 user lacks authentication or privacy",
-                    observation="At least one SNMPv3 user does not specify both authentication and privacy.",
-                    impact="SNMP data or credentials may lack confidentiality or strong origin authentication.",
-                    severity=Severity.MEDIUM,
-                    exploitability="An attacker requires SNMP reachability or traffic-path access.",
-                    recommendation="Configure SNMPv3 users with strong authentication and privacy algorithms.",
-                    evidence=tuple(incomplete_users),
-                    references=(CISCO_ASA_SNMP_GUIDE,),
+        release = self._asa(parser)._release_tuple(parser.get_version())
+        for user in users:
+            if not user.active:
+                continue
+            evidence = tuple(item.text for item in user.evidence)
+            if not user.group_resolved:
+                self.add_issue(
+                    Finding(
+                        rule_id="cisco.asa.snmp.v3_reference",
+                        device=parser.device_type,
+                        title="SNMPv3 user references an unknown group",
+                        observation=f"SNMPv3 user '{user.name}' references group '{user.group}', which is not active in the supplied configuration.",
+                        impact="The effective security level for this identity cannot be established.",
+                        severity=Severity.MEDIUM,
+                        exploitability="A configuration error may leave monitoring unavailable or operating outside the intended policy.",
+                        recommendation="Create the intended v3 group or bind the user to an existing v3 priv group.",
+                        evidence=evidence,
+                        references=(CISCO_ASA_SNMP_GUIDE,),
+                    )
                 )
-            )
+                continue
+
+            gaps = []
+            if user.group_security_level != "priv":
+                gaps.append(f"group security level '{user.group_security_level}'")
+            if not user.authentication:
+                gaps.append("missing authentication")
+            if not user.privacy:
+                gaps.append("missing privacy")
+            if gaps:
+                self.add_issue(
+                    Finding(
+                        rule_id="cisco.asa.snmp.v3_protection",
+                        device=parser.device_type,
+                        title="SNMPv3 user lacks authentication or privacy",
+                        observation=f"SNMPv3 user '{user.name}' has " + ", ".join(gaps) + ".",
+                        impact="SNMP data or credentials may lack confidentiality or strong origin authentication.",
+                        severity=Severity.MEDIUM,
+                        exploitability="An attacker requires SNMP reachability or traffic-path access.",
+                        recommendation="Use a v3 priv group and configure both authentication and AES privacy.",
+                        evidence=evidence,
+                        references=(CISCO_ASA_SNMP_GUIDE,),
+                    )
+                )
+
+            weak = []
+            if user.authentication == "md5":
+                weak.append("MD5 authentication")
+            elif release is not None and release >= (9, 14) and user.authentication in {"sha", "sha-1"}:
+                weak.append("SHA-1 authentication despite SHA-256 support")
+            if user.privacy in {"des", "3des"}:
+                weak.append(f"{user.privacy.upper()} privacy")
+            if weak:
+                self.add_issue(
+                    Finding(
+                        rule_id="cisco.asa.snmp.v3_weak_algorithm",
+                        device=parser.device_type,
+                        title="SNMPv3 user uses a weak algorithm",
+                        observation=f"SNMPv3 user '{user.name}' uses {', '.join(weak)}.",
+                        impact="Legacy authentication or privacy algorithms provide inadequate cryptographic strength.",
+                        severity=Severity.MEDIUM,
+                        exploitability="A traffic observer can target weaknesses in legacy SNMPv3 cryptography.",
+                        recommendation="Use SHA-256 or a stronger release-supported authentication algorithm and AES privacy.",
+                        evidence=evidence,
+                        references=(CISCO_ASA_SNMP_GUIDE,),
+                    )
+                )
 
     def check_snmp_communities(self, parser: BaseDeviceParser) -> None:
         self.check_snmp(parser)

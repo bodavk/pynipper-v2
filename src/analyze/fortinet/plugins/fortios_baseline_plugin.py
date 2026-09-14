@@ -61,6 +61,35 @@ FORTINET_INSPECTION_GUIDE = (
     "https://docs.fortinet.com/document/fortigate/7.2.0/administration-guide/721410/"
     "inspection-modes"
 )
+FORTINET_PROFILE_GROUP_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.2.6/cli-reference/283620/"
+    "config-firewall-profile-group"
+)
+FORTINET_IPS_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.2.0/cli-reference/407620/"
+    "config-ips-sensor"
+)
+FORTINET_RADSEC_GUIDE = (
+    "https://docs.fortinet.com/document/fortigate/7.6.5/administration-guide/"
+    "729374/configuring-a-radsec-client"
+)
+FORTINET_RADIUS_GUIDE = (
+    "https://docs.fortinet.com/document/fortigate/7.6.5/administration-guide/"
+    "759080/configuring-a-radius-server"
+)
+FORTINET_LOCAL_IN_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.2.1/cli-reference/328620/"
+    "config-firewall-local-in-policy"
+)
+FORTINET_PHASE1_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.2.0/cli-reference/365620/"
+    "config-vpn-ipsec-phase1"
+)
+FORTINET_PHASE2_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.2.2/cli-reference/372620/"
+    "config-vpn-ipsec-phase2-interface"
+)
+IETF_IKEV2_ALGORITHM_GUIDANCE = "https://www.rfc-editor.org/rfc/rfc8247.html"
 
 
 class PluginFortiOSBaseline(BasePlugin):
@@ -73,16 +102,6 @@ class PluginFortiOSBaseline(BasePlugin):
         "0:0:0:0:0:0:0:0/0",
     }
     _MFA_METHODS = {"email", "fortitoken", "fortitoken-cloud", "sms"}
-    _PROFILE_FIELDS = {
-        "application-list",
-        "av-profile",
-        "dnsfilter-profile",
-        "file-filter-profile",
-        "ips-sensor",
-        "profile-group",
-        "ssl-ssh-profile",
-        "webfilter-profile",
-    }
     _WEAK_SSH = {
         "ssh-enc-algo": {
             "3des-cbc",
@@ -621,10 +640,8 @@ class PluginFortiOSBaseline(BasePlugin):
                     ),
                 ).lower()
                 has_key = bool(self._text(server.get("key"))) and bool(self._text(server.get("key-id")))
-                if authentication != "enable" or not has_key or key_type in {"md5", "sha1"}:
+                if authentication != "enable" or not has_key:
                     detail = "authentication disabled" if authentication != "enable" else "key binding incomplete"
-                    if key_type in {"md5", "sha1"}:
-                        detail = f"legacy {key_type} authentication"
                     self.add_issue(
                         self._finding(
                             parser,
@@ -638,9 +655,27 @@ class PluginFortiOSBaseline(BasePlugin):
                             (FORTINET_NTP_GUIDE, FORTINET_NTP_AUTH_GUIDE),
                         )
                     )
+                if authentication == "enable" and has_key and key_type in {"md5", "sha1"}:
+                    self.add_issue(
+                        self._finding(
+                            parser,
+                            "fortinet.fortios.ntp.weak_algorithm",
+                            "Custom NTP server uses a legacy algorithm",
+                            f"NTP server '{name}' in scope '{scope}' uses legacy {key_type} authentication; key material is redacted.",
+                            "A legacy digest provides weaker protection against forged time updates.",
+                            "Use SHA-256 NTPv4 authentication where supported by the exact FortiOS release.",
+                            Severity.MEDIUM,
+                            self._evidence(fortios, path + ("ntpserver", name), f"ntpserver {name}"),
+                            (FORTINET_NTP_GUIDE, FORTINET_NTP_AUTH_GUIDE),
+                        )
+                    )
 
     def check_logging_and_policy_profiles(self, parser: BaseDeviceParser) -> None:
         fortios = self._fortios(parser)
+        inspections = {
+            (inspection.scope, inspection.policy_name): inspection
+            for inspection in fortios.get_security_inspection()
+        }
         wan_by_scope: dict[str, set[str]] = defaultdict(set)
         for scope, name, settings, _ in fortios.iter_interfaces():
             if self._enabled(settings) and (
@@ -671,9 +706,16 @@ class PluginFortiOSBaseline(BasePlugin):
                         (FORTINET_HARDENING,),
                     )
                 )
-            has_profile = self._text(settings.get("utm-status"), "disable").lower() == "enable" and any(
-                self._text(settings.get(field)) for field in self._PROFILE_FIELDS
+            utm_enabled = self._text(settings.get("utm-status"), "disable").lower() == "enable"
+            group_attached = (
+                self._text(settings.get("profile-type"), "single").lower() == "group"
+                and bool(self._text(settings.get("profile-group")))
             )
+            individual_attached = any(
+                self._text(settings.get(field))
+                for field in fortios.inspection_profile_fields()
+            )
+            has_profile = utm_enabled and (group_attached or individual_attached)
             if not has_profile:
                 self.add_issue(
                     self._finding(
@@ -688,6 +730,83 @@ class PluginFortiOSBaseline(BasePlugin):
                         (FORTINET_INSPECTION_GUIDE, FORTINET_HARDENING),
                     )
                 )
+                continue
+
+            inspection = inspections.get((scope, name))
+            if inspection is None:
+                continue
+            policy_evidence = self._evidence(fortios, path, f"firewall policy {name}")
+            attachment_evidence = policy_evidence + (
+                f"{scope}: {inspection.attachment_mode} {inspection.attachment_name}",
+            )
+            if inspection.resolution_state == "unresolved":
+                self.add_issue(
+                    self._finding(
+                        parser,
+                        "fortinet.fortios.policy.security_profile_unresolved",
+                        "Internet-bound policy references an unresolved profile group",
+                        f"Enabled accept policy '{name}' in scope '{scope}' references profile group '{inspection.attachment_name}', but no same-VDOM, global, or root definition is present.",
+                        "The static export does not prove that the intended UTM controls can be applied.",
+                        "Attach an existing profile group in the applicable VDOM or global scope and verify its members.",
+                        Severity.HIGH,
+                        attachment_evidence,
+                        (FORTINET_PROFILE_GROUP_REFERENCE, FORTINET_INSPECTION_GUIDE),
+                    )
+                )
+                continue
+            if inspection.resolution_state == "empty":
+                self.add_issue(
+                    self._finding(
+                        parser,
+                        "fortinet.fortios.policy.security_profile_ineffective",
+                        "Internet-bound policy uses an empty profile group",
+                        f"Enabled accept policy '{name}' in scope '{scope}' references group '{inspection.attachment_name}', but the resolved group contains no supported threat-inspection profile members.",
+                        "An empty group does not provide the threat inspection implied by its attachment.",
+                        "Populate the group with reviewed IPS, antivirus, web, application, DNS, file, or other required inspection profiles.",
+                        Severity.HIGH,
+                        attachment_evidence,
+                        (FORTINET_PROFILE_GROUP_REFERENCE, FORTINET_HARDENING),
+                    )
+                )
+
+            for profile in inspection.profiles:
+                profile_evidence = policy_evidence + tuple(
+                    item.text for item in profile.evidence
+                ) + (f"{scope}: {profile.profile_type} profile {profile.name}",)
+                if profile.resolution_state == "unresolved":
+                    self.add_issue(
+                        self._finding(
+                            parser,
+                            "fortinet.fortios.policy.security_profile_unresolved",
+                            "Internet-bound policy references an unresolved security profile",
+                            f"Enabled accept policy '{name}' in scope '{scope}' references {profile.profile_type} '{profile.name}', but no same-VDOM, global, root, or known built-in definition is present.",
+                            "The static export does not prove that this inspection function can be applied.",
+                            f"Attach an existing {profile.profile_type} in the applicable scope.",
+                            Severity.HIGH,
+                            profile_evidence,
+                            (FORTINET_INSPECTION_GUIDE, FORTINET_PROFILE_GROUP_REFERENCE),
+                        )
+                    )
+                elif profile.content_state in {"empty", "nonblocking"}:
+                    reason = (
+                        "has no exported inspection settings"
+                        if profile.content_state == "empty"
+                        else "contains only explicitly non-blocking actions: "
+                        + ", ".join(profile.actions)
+                    )
+                    self.add_issue(
+                        self._finding(
+                            parser,
+                            "fortinet.fortios.policy.security_profile_ineffective",
+                            "Internet-bound policy uses an ineffective security profile",
+                            f"Enabled accept policy '{name}' in scope '{scope}' uses {profile.profile_type} '{profile.name}', which {reason}.",
+                            "The attached profile does not block the threats its name may imply.",
+                            f"Configure '{profile.name}' with reviewed blocking actions appropriate to the protected traffic.",
+                            Severity.HIGH,
+                            profile_evidence,
+                            (FORTINET_IPS_REFERENCE, FORTINET_HARDENING),
+                        )
+                    )
 
         destination_filters = (
             ("log syslogd setting", "log syslogd filter"),
@@ -906,6 +1025,196 @@ class PluginFortiOSBaseline(BasePlugin):
                         )
                     )
 
+    def check_aaa_transport(self, parser: BaseDeviceParser) -> None:
+        """Assess only active administrative RADIUS bindings with known 7.4+ semantics."""
+
+        fortios = self._fortios(parser)
+        for profile in fortios.get_aaa_server_profiles():
+            if not profile.is_bound_for_administration or not profile.radsec_supported:
+                continue
+            binding = (
+                f"administrators {', '.join(profile.administrators)} through group(s) "
+                f"{', '.join(profile.administrator_groups)}"
+            )
+            evidence = tuple(item.text for item in profile.evidence) or (
+                f"config user radius / edit {profile.name}",
+            )
+
+            if profile.transport == "tls":
+                identity_gaps = []
+                if not profile.ca_certificate:
+                    identity_gaps.append("no CA trust-anchor reference")
+                if profile.server_identity_check == "disable":
+                    identity_gaps.append("server identity checking is explicitly disabled")
+                if identity_gaps:
+                    self.add_issue(
+                        self._finding(
+                            parser,
+                            "fortinet.fortios.aaa.radsec_server_identity",
+                            "RadSec server identity validation is incomplete",
+                            f"RADIUS profile '{profile.name}' in scope '{profile.scope}' uses TLS for {binding}, but has {', and '.join(identity_gaps)}.",
+                            "A TLS channel without an anchored and verified server identity can be terminated by an unintended or impersonating endpoint.",
+                            "Import the issuing CA, reference it with ca-cert, and keep server-identity-check enabled; ensure the configured server name or IP is present in the certificate identity.",
+                            Severity.HIGH,
+                            evidence,
+                            (FORTINET_RADSEC_GUIDE,),
+                        )
+                    )
+
+                minimum = (profile.tls_minimum_version or "default").lower()
+                if minimum in {"sslv3", "tlsv1", "tlsv1-1"}:
+                    self.add_issue(
+                        self._finding(
+                            parser,
+                            "fortinet.fortios.aaa.radsec_tls_version",
+                            "RadSec permits a legacy TLS version",
+                            f"RADIUS profile '{profile.name}' in scope '{profile.scope}' uses tls-min-proto-version '{profile.tls_minimum_version}' for {binding}.",
+                            "Legacy TLS versions weaken the confidentiality and integrity of administrative authentication traffic.",
+                            "Set tls-min-proto-version to TLSv1-2 or TLSv1-3 as supported by both peers.",
+                            Severity.HIGH,
+                            evidence,
+                            (FORTINET_RADSEC_GUIDE,),
+                        )
+                    )
+                continue
+
+            if (
+                profile.transport in {"udp", "tcp"}
+                and profile.require_message_authenticator == "disable"
+            ):
+                path = "a separately declared protected path" if profile.protected_path else "an unknown network path"
+                self.add_issue(
+                    self._finding(
+                        parser,
+                        "fortinet.fortios.aaa.radius_message_authenticator",
+                        "RADIUS message-authenticator validation is disabled",
+                        f"RADIUS profile '{profile.name}' in scope '{profile.scope}' uses {profile.transport.upper()} over {path} for {binding} and explicitly disables require-message-authenticator.",
+                        "Forged or modified RADIUS responses may be accepted when protocol message validation is disabled.",
+                        "Enable require-message-authenticator and confirm the RADIUS server supports and emits the attribute; use RadSec or an explicitly protected path where transport confidentiality is required.",
+                        Severity.HIGH,
+                        evidence,
+                        (FORTINET_RADIUS_GUIDE,),
+                    )
+                )
+
+    def check_local_in_policy(self, parser: BaseDeviceParser) -> None:
+        fortios = self._fortios(parser)
+        sensitive_services = {
+            "all",
+            "ftp",
+            "http",
+            "https",
+            "snmp",
+            "ssh",
+            "telnet",
+        }
+        wildcards = {
+            "ipv4": {"0.0.0.0/0", "all", "all_ipv4"},
+            "ipv6": {"::/0", "0::/0", "all", "all6", "all_ipv6"},
+        }
+        for policy in fortios.get_local_in_policies():
+            if not policy.enabled or policy.action != "accept":
+                continue
+            if policy.source_negated or policy.service_negated:
+                continue
+            sources = {value.casefold() for value in policy.sources}
+            services = {value.casefold() for value in policy.services}
+            if not sources.intersection(wildcards[policy.family]):
+                continue
+            if not services.intersection(sensitive_services):
+                continue
+            if policy.schedule.casefold() != "always":
+                continue
+            evidence = tuple(item.text for item in policy.evidence) or (
+                f"firewall local-in-policy{'' if policy.family == 'ipv4' else '6'} {policy.name}",
+            )
+            self.add_issue(
+                self._finding(
+                    parser,
+                    "fortinet.fortios.local_in.unrestricted_management",
+                    "Local-in policy permits unrestricted management traffic",
+                    f"Enabled {policy.family} local-in policy '{policy.name}' at position {policy.position} in scope '{policy.scope}' accepts unrestricted sources for sensitive service(s) {', '.join(sorted(services.intersection(sensitive_services)))} on interface '{policy.interface}' with the always schedule.",
+                    "A broad local-device rule exposes administrative or monitoring services beyond an explicitly trusted source set.",
+                    "Replace the wildcard source with approved management networks and retain an explicit deny policy after required local services.",
+                    Severity.HIGH,
+                    evidence,
+                    (FORTINET_HARDENING, FORTINET_LOCAL_IN_REFERENCE),
+                )
+            )
+
+    @staticmethod
+    def _weak_ipsec_proposal(value: str) -> bool:
+        proposal = value.casefold()
+        return (
+            proposal.startswith(("des-", "3des-", "null-"))
+            or "-md5" in proposal
+            or "-sha1" in proposal
+            or proposal.endswith("-null")
+        )
+
+    def check_ipsec_tunnels(self, parser: BaseDeviceParser) -> None:
+        for tunnel in self._fortios(parser).get_ipsec_tunnels():
+            if not tunnel.active:
+                continue
+            evidence = tuple(item.text for item in tunnel.evidence) or (
+                f"vpn ipsec phase2 {tunnel.name} -> {tunnel.phase1_name or '<missing>'}",
+            )
+            if tunnel.resolution_state == "unresolved":
+                self.add_issue(
+                    self._finding(
+                        parser,
+                        "fortinet.fortios.vpn.unresolved",
+                        "Enabled IPsec phase2 has an unresolved phase1 binding",
+                        f"Enabled phase2 '{tunnel.name}' in scope '{tunnel.scope}' references phase1 '{tunnel.phase1_name or '<missing>'}', which is not defined in the same scope.",
+                        "The configured tunnel cannot establish the intended protected path through a valid local phase1 definition.",
+                        "Reference an enabled phase1 definition in the same VDOM and review its peer identity and cryptographic policy.",
+                        Severity.HIGH,
+                        evidence,
+                        (FORTINET_PHASE1_REFERENCE, FORTINET_PHASE2_REFERENCE),
+                    )
+                )
+                continue
+
+            weaknesses = []
+            weak_phase1 = sorted(
+                value for value in tunnel.phase1_proposals if self._weak_ipsec_proposal(value)
+            )
+            weak_phase2 = sorted(
+                value for value in tunnel.phase2_proposals if self._weak_ipsec_proposal(value)
+            )
+            weak_dh = sorted(
+                {value for value in tunnel.phase1_dh_groups + tunnel.phase2_dh_groups if value in {"1", "2", "5", "22", "23", "24"}}
+            )
+            if weak_phase1:
+                weaknesses.append("weak phase1 proposal(s) " + ", ".join(weak_phase1))
+            if weak_phase2:
+                weaknesses.append("weak phase2 proposal(s) " + ", ".join(weak_phase2))
+            if weak_dh:
+                weaknesses.append("legacy DH group(s) " + ", ".join(weak_dh))
+            if tunnel.pfs == "disable":
+                weaknesses.append("PFS explicitly disabled")
+            if tunnel.replay == "disable":
+                weaknesses.append("anti-replay explicitly disabled")
+            if not weaknesses:
+                continue
+            self.add_issue(
+                self._finding(
+                    parser,
+                    "fortinet.fortios.vpn.weak_proposal",
+                    "Enabled IPsec tunnel uses weak cryptographic settings",
+                    f"Phase2 '{tunnel.name}' bound to phase1 '{tunnel.phase1_name}' in scope '{tunnel.scope}' has: {'; '.join(weaknesses)}.",
+                    "Legacy algorithms, small Diffie-Hellman groups, missing forward secrecy, or disabled replay protection weaken tunnel confidentiality and integrity.",
+                    "Use AES-GCM or AES with SHA-256 or stronger, DH group 14 or an approved stronger group, PFS, and anti-replay according to peer compatibility and policy.",
+                    Severity.HIGH,
+                    evidence,
+                    (
+                        FORTINET_PHASE1_REFERENCE,
+                        FORTINET_PHASE2_REFERENCE,
+                        IETF_IKEV2_ALGORITHM_GUIDANCE,
+                    ),
+                )
+            )
+
     def analyze(self, parser: BaseDeviceParser) -> None:
         self.check_administrators(parser)
         self.check_management_crypto(parser)
@@ -915,6 +1224,9 @@ class PluginFortiOSBaseline(BasePlugin):
         self.check_password_and_session_policy(parser)
         self.check_ntp(parser)
         self.check_dos_policies(parser)
+        self.check_aaa_transport(parser)
+        self.check_local_in_policy(parser)
+        self.check_ipsec_tunnels(parser)
 
 
 __all__ = ["PluginFortiOSBaseline"]

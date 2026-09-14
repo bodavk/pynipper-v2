@@ -37,14 +37,20 @@ class PluginIOSXEChecks(BasePlugin):
     def _children(parent) -> list[str]:
         return [child.text.strip() for child in parent.children]
 
-    def _macsec_candidate(self, interface) -> bool:
+    def _macsec_candidate(self, parser: BaseDeviceParser, interface) -> bool:
         name = interface.re_match_typed(r"^interface\s+(\S+)", default="")
         if not name.startswith(self._L2_INTERFACE_TYPES):
             return False
         children = self._children(interface)
         if "shutdown" in children:
             return False
-        return any(line == "switchport" or line.startswith("switchport ") for line in children)
+        switchport = any(line == "switchport" or line.startswith("switchport ") for line in children)
+        explicit_intent = any(
+            line.startswith("mka ") or re.fullmatch(r"macsec(?:\s+.*)?", line)
+            for line in children
+        )
+        role = parser.assessment_context.role_for_interface(name)
+        return switchport and (explicit_intent or role in {"uplink", "external"})
 
     @staticmethod
     def _named_blocks(conf_parse, prefix: str) -> dict[str, object]:
@@ -65,7 +71,7 @@ class PluginIOSXEChecks(BasePlugin):
         }
 
         for interface in conf_parse.find_objects(r"^interface\s+"):
-            if not self._macsec_candidate(interface):
+            if not self._macsec_candidate(parser, interface):
                 continue
             children = self._children(interface)
             policy_match = next(

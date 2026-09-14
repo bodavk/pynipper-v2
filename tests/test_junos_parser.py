@@ -194,6 +194,33 @@ deactivate system services web-management
     assert all("telnet" not in line for line in parser.get_native_config())
 
 
+def test_syslog_destinations_preserve_selectors_scope_transport_and_deletion(tmp_path):
+    parser = _parse(
+        tmp_path,
+        "logging.conf",
+        """set system syslog host 192.0.2.30 authorization info
+set system syslog host 192.0.2.30 interactive-commands any
+set system syslog host 192.0.2.30 transport tls
+set system syslog host 192.0.2.30 port 6514
+set system syslog host 192.0.2.30 source-address 192.0.2.1
+set system syslog host 192.0.2.30 routing-instance MGMT
+set system syslog host 192.0.2.31 any warning
+delete system syslog host 192.0.2.31
+""",
+    )
+    destination = parser.get_syslog_destinations()[0]
+    assert destination.address == "192.0.2.30"
+    assert [(item.facility, item.severity) for item in destination.selectors] == [
+        ("authorization", "info"),
+        ("interactive-commands", "any"),
+    ]
+    assert destination.transport == "tls"
+    assert destination.port == "6514"
+    assert destination.source_address == "192.0.2.1"
+    assert destination.routing_instance == "MGMT"
+    assert parser.get_logging_destinations()[0].scope == "MGMT"
+
+
 def test_delete_clears_deactivated_state_before_recreation(tmp_path):
     parser = _parse(
         tmp_path,

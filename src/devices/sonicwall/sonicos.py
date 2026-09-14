@@ -75,6 +75,20 @@ class SonicVPNPolicy:
 class SonicNTPServer:
     address: str
     authenticated: bool
+    algorithm: str
+    trusted_key_id: str
+    key_id: str
+    key_material_present: bool
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class SonicSNMPUser:
+    name: str
+    authentication: str
+    privacy: str
+    authentication_key_state: str
+    privacy_key_state: str
     evidence: tuple[ConfigEvidence, ...]
 
 
@@ -285,14 +299,40 @@ class SonicOSParser(BaseDeviceParser):
                 if match.group("no"):
                     servers.pop(address.casefold(), None)
                     continue
-                tokens = {token.casefold() for token in self._tokens(command.text)}
-                authenticated = bool(tokens & {"md5", "sha", "sha1", "sha256"}) and bool(
-                    tokens & {"key-number", "trust-key-no", "authentication"}
+                tokens = self._tokens(command.text)
+                folded = [token.casefold() for token in tokens]
+                algorithm = next(
+                    (item for item in folded if item in {"md5", "sha", "sha1", "sha256"}),
+                    "",
+                )
+                def option(name: str) -> str:
+                    if name not in folded or folded.index(name) + 1 >= len(tokens):
+                        return ""
+                    return tokens[folded.index(name) + 1]
+
+                trusted_key_id = option("trust-key-no")
+                key_id = option("key-number")
+                key_material_present = bool(option("password"))
+                authenticated = bool(
+                    algorithm
+                    and trusted_key_id
+                    and key_id
+                    and trusted_key_id == key_id
+                    and key_material_present
+                )
+                summary = (
+                    f"ntp-server {address} {algorithm or 'no-auth'}; trust-key-no "
+                    f"{trusted_key_id or 'missing'}; key-number {key_id or 'missing'}; "
+                    f"key material {'configured' if key_material_present else 'missing'}"
                 )
                 servers[address.casefold()] = SonicNTPServer(
                     address=address,
                     authenticated=authenticated,
-                    evidence=(self._evidence(command),),
+                    algorithm=algorithm,
+                    trusted_key_id=trusted_key_id,
+                    key_id=key_id,
+                    key_material_present=key_material_present,
+                    evidence=(ConfigEvidence(summary, self.config_filepath, command.line_number),),
                 )
         return list(servers.values())
 
@@ -314,14 +354,58 @@ class SonicOSParser(BaseDeviceParser):
         return states
 
     def has_secure_snmpv3_user(self) -> bool:
+        return any(
+            user.authentication in {"sha", "sha256", "sha384", "sha512"}
+            and user.privacy in {"aes", "aes128", "aes192", "aes256", "aes_cfb128"}
+            for user in self.get_snmpv3_users()
+        )
+
+    def get_snmpv3_users(self) -> list[SonicSNMPUser]:
+        users: dict[str, SonicSNMPUser] = {}
         for command in self.commands:
-            if re.fullmatch(
-                r"snmp(?:-server)?\s+user\s+\S+.*\bauth\s+(?:sha|sha256|sha384|sha512)\b.*\bpriv\s+(?:aes|aes128|aes192|aes256)\b.*",
+            match = re.fullmatch(
+                r"(?P<no>no\s+)?snmp(?:-server)?\s+user\s+(?P<name>\S+)(?:\s+(?P<rest>.*))?",
                 command.text,
                 re.IGNORECASE,
-            ):
-                return True
-        return False
+            )
+            if not match:
+                continue
+            name = match.group("name")
+            if match.group("no"):
+                users.pop(name.casefold(), None)
+                continue
+            tokens = self._tokens(match.group("rest") or "")
+            folded = [token.casefold() for token in tokens]
+
+            def option(keyword: str) -> tuple[str, str]:
+                if keyword not in folded:
+                    return "none", "missing"
+                index = folded.index(keyword) + 1
+                if index >= len(folded):
+                    return "unknown", "unknown"
+                algorithm = folded[index]
+                index += 1
+                if index < len(folded) and folded[index] in {"0", "7", "encrypted"}:
+                    index += 1
+                state = "present" if index < len(folded) and folded[index] not in {"auth", "priv"} else "unknown"
+                return algorithm, state
+
+            authentication, auth_state = option("auth")
+            privacy, privacy_state = option("priv")
+            users[name.casefold()] = SonicSNMPUser(
+                name=name,
+                authentication=authentication,
+                privacy=privacy,
+                authentication_key_state=auth_state,
+                privacy_key_state=privacy_state,
+                evidence=(ConfigEvidence(
+                    f"snmp user {name} auth {authentication} <key {auth_state}> "
+                    f"priv {privacy} <key {privacy_state}>",
+                    self.config_filepath,
+                    command.line_number,
+                ),),
+            )
+        return list(users.values())
 
     def get_users(self) -> list[dict]:
         # The E-CLI custom export does not prove whether the built-in password

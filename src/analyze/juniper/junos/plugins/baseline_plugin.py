@@ -5,6 +5,7 @@ from collections import defaultdict
 from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.issue import Finding, Severity
 from src.devices.common.base_parser import BaseDeviceParser
+from src.devices.common.models import CredentialStorageAssessment
 from src.devices.juniper.junos import JunOSParser, JunosStatement
 
 
@@ -30,7 +31,11 @@ JUNIPER_SNMP_GUIDE = (
 )
 JUNIPER_SYSLOG_GUIDE = (
     "https://www.juniper.net/documentation/us/en/software/junos/"
-    "network-mgmt/topics/topic-map/syslog-over-tls.html"
+    "network-mgmt/topics/topic-map/system-logging.html"
+)
+JUNIPER_SYSLOG_HOST_REFERENCE = (
+    "https://www.juniper.net/documentation/us/en/software/junos/cli-reference/"
+    "topics/ref/statement/host-edit-system.html"
 )
 JUNIPER_NTP_GUIDE = (
     "https://www.juniper.net/documentation/us/en/software/junos/"
@@ -43,6 +48,18 @@ JUNIPER_FILTER_GUIDE = (
 JUNIPER_REDIRECT_REFERENCE = (
     "https://www.juniper.net/documentation/us/en/software/junos/cli-reference/"
     "topics/ref/statement/no-redirects-edit-system.html"
+)
+JUNIPER_BGP_SECURITY_GUIDE = (
+    "https://www.juniper.net/documentation/us/en/software/junos/"
+    "bgp/topics/topic-map/bgp_security.html"
+)
+JUNIPER_OSPF_AUTH_GUIDE = (
+    "https://www.juniper.net/documentation/us/en/software/junos/"
+    "ospf/topics/topic-map/configuring-ospf-authentication.html"
+)
+JUNIPER_LLDP_GUIDE = (
+    "https://www.juniper.net/documentation/us/en/software/junos/"
+    "multicast-l2/topics/task/layer-2-services-lldp-configuring.html"
 )
 
 
@@ -195,32 +212,29 @@ class PluginJunOSBaseline(BasePlugin):
                     )
                 )
 
-        for statement in self._statements(parser, ("system", "login", "user")):
-            path = statement.path
-            if "authentication" not in path:
-                continue
-            auth_index = path.index("authentication")
-            suffix = path[auth_index + 1 :]
-            if not suffix:
-                continue
-            method = suffix[0]
-            value = suffix[1] if len(suffix) > 1 else ""
-            weak = method == "plain-text-password" or (
-                method == "encrypted-password"
-                and value.startswith(("$1$", "$9$", "$md5$"))
-            )
-            if weak:
-                username = path[3] if len(path) > 3 else "unknown"
+        unsafe = {
+            CredentialStorageAssessment.EMPTY,
+            CredentialStorageAssessment.PLAINTEXT,
+            CredentialStorageAssessment.WEAK_HASH,
+            CredentialStorageAssessment.WEAK_REVERSIBLE,
+        }
+        for credential in self._junos(parser).get_credential_metadata():
+            if credential.storage_assessment in unsafe:
                 self.add_issue(
                     self._finding(
                         parser,
                         "juniper.junos.authentication.weak_storage",
                         "Administrative credential uses weak storage",
-                        f"User '{username}' uses '{method}' with a plaintext, reversible, or legacy representation; the value is redacted.",
+                        (
+                            f"The {credential.context} credential for '{credential.account}' uses "
+                            f"'{credential.method}' format '{credential.storage_type}', classified as "
+                            f"'{credential.storage_assessment.value}'; the separate exact-default "
+                            f"comparison is '{credential.default_assessment.value}'. The value is redacted."
+                        ),
                         "Configuration disclosure can expose or accelerate recovery of the credential.",
                         "Replace the credential with a supported strong hash or SSH public key.",
                         Severity.HIGH,
-                        (statement.evidence.text,),
+                        tuple(item.text for item in credential.evidence),
                         (JUNIPER_AUTH_GUIDE,),
                     )
                 )
@@ -356,26 +370,55 @@ class PluginJunOSBaseline(BasePlugin):
             )
 
     def check_logging(self, parser: BaseDeviceParser) -> None:
-        destinations = self._junos(parser).get_logging_destinations()
-        if destinations:
-            return
-        self.add_issue(
-            self._finding(
-                parser,
-                "juniper.junos.logging.remote_destination",
-                "Remote system logging is not configured",
-                "No effective system syslog host destination is present.",
-                "Locally stored events can be lost during compromise or device failure.",
-                "Configure protected remote syslog destinations; use TLS on supported releases.",
-                Severity.MEDIUM,
-                ("system syslog host absent",),
-                (JUNIPER_SYSLOG_GUIDE,),
+        destinations = self._junos(parser).get_syslog_destinations()
+        if not destinations:
+            self.add_issue(
+                self._finding(
+                    parser,
+                    "juniper.junos.logging.remote_destination",
+                    "Remote system logging is not configured",
+                    "No effective system syslog host destination is present.",
+                    "Locally stored events can be lost during compromise or device failure.",
+                    "Configure protected remote syslog destinations; use an approved transport on supported releases.",
+                    Severity.MEDIUM,
+                    ("system syslog host absent",),
+                    (JUNIPER_SYSLOG_GUIDE,),
+                )
             )
-        )
+            return
+
+        accepted_severities = {"any", "info", "informational"}
+        for destination in destinations:
+            covered = {
+                facility
+                for facility in ("authorization", "interactive-commands")
+                if any(
+                    selector.severity in accepted_severities
+                    and selector.facility in {"any", facility}
+                    for selector in destination.selectors
+                )
+            }
+            if len(covered) == 2 or destination.has_unknown_selector:
+                continue
+            missing = sorted({"authorization", "interactive-commands"} - covered)
+            scope = destination.routing_instance or "default"
+            self.add_issue(
+                self._finding(
+                    parser,
+                    "juniper.junos.logging.event_coverage",
+                    "Remote syslog destination omits security-relevant events",
+                    f"Syslog host '{destination.address}' in routing-instance scope '{scope}' lacks verified informational-or-broader coverage for: {', '.join(missing)}. Its transport is {'explicitly ' + destination.transport if destination.transport else 'not established by the export'}.",
+                    "Authentication and administrative-command activity may be absent from this destination, creating a monitoring blind spot even when another host is complete.",
+                    "Configure authorization and interactive-commands selectors at an approved severity, or an equivalently broad any selector, for each required destination.",
+                    Severity.MEDIUM,
+                    tuple(item.text for item in destination.evidence),
+                    (JUNIPER_SYSLOG_GUIDE, JUNIPER_SYSLOG_HOST_REFERENCE),
+                )
+            )
 
     def check_ntp(self, parser: BaseDeviceParser) -> None:
-        associations = self._statements(parser, ("system", "ntp", "server"))
-        associations += self._statements(parser, ("system", "ntp", "peer"))
+        junos = self._junos(parser)
+        associations = junos.get_ntp_associations()
         if not associations:
             self.add_issue(
                 self._finding(
@@ -391,39 +434,45 @@ class PluginJunOSBaseline(BasePlugin):
                 )
             )
             return
-        trusted = self._statements(parser, ("system", "ntp", "trusted-key"))
-        auth_keys = self._statements(parser, ("system", "ntp", "authentication-key"))
-        trusted_ids = {item.path[3] for item in trusted if len(item.path) > 3}
-        configured_ids = {item.path[3] for item in auth_keys if len(item.path) > 3}
-        association_ids = []
-        for item in associations:
-            if "key" not in item.path[4:]:
-                association_ids.append("")
-                continue
-            key_index = item.path.index("key", 4)
-            association_ids.append(
-                item.path[key_index + 1] if key_index + 1 < len(item.path) else ""
-            )
-        incomplete = any(
-            not key_id
-            or key_id not in trusted_ids
-            or key_id not in configured_ids
-            for key_id in association_ids
+        model = self._junos(parser).get_model().casefold()
+        legacy_only = model.startswith(
+            ("ex4300", "ex4600", "qfx5100")
         )
-        if incomplete:
-            self.add_issue(
-                self._finding(
-                    parser,
-                    "juniper.junos.ntp.authentication",
-                    "NTP authentication is incomplete",
-                    "At least one NTP association lacks a key, or no matching authentication/trusted key state is configured.",
-                    "A spoofed time source can disrupt logs and time-sensitive security behavior.",
-                    "Configure authentication-key and trusted-key, then bind each association to a trusted key ID.",
-                    Severity.MEDIUM,
-                    self._texts(associations + trusted + auth_keys),
-                    (JUNIPER_NTP_GUIDE,),
+        for association in associations:
+            evidence = tuple(item.text for item in association.evidence)
+            if association.authentication_state != "authenticated":
+                detail = (
+                    "has no key binding"
+                    if association.authentication_state == "unauthenticated"
+                    else f"references unresolved or untrusted key '{association.key_id}'"
                 )
-            )
+                self.add_issue(
+                    self._finding(
+                        parser,
+                        "juniper.junos.ntp.authentication",
+                        "NTP authentication is incomplete",
+                        f"NTP {association.role} '{association.address}' {detail}.",
+                        "A spoofed time source can disrupt logs and time-sensitive security behavior.",
+                        "Configure authentication-key and trusted-key, then bind this association to the trusted key ID.",
+                        Severity.MEDIUM,
+                        evidence,
+                        (JUNIPER_NTP_GUIDE,),
+                    )
+                )
+            elif model != "?" and not legacy_only and association.algorithm in {"md5", "sha1"}:
+                self.add_issue(
+                    self._finding(
+                        parser,
+                        "juniper.junos.ntp.weak_algorithm",
+                        "NTP association uses a legacy authentication algorithm",
+                        f"NTP {association.role} '{association.address}' uses '{association.algorithm}'.",
+                        "A legacy digest provides weaker protection against forged time updates.",
+                        "Use SHA-256 where supported by the exact Junos platform and release.",
+                        Severity.MEDIUM,
+                        evidence,
+                        (JUNIPER_NTP_GUIDE,),
+                    )
+                )
 
     def check_routing_engine_filter(self, parser: BaseDeviceParser) -> None:
         attachments = [
@@ -466,6 +515,106 @@ class PluginJunOSBaseline(BasePlugin):
             )
         )
 
+    def check_routing(self, parser: BaseDeviceParser) -> None:
+        junos = self._junos(parser)
+        for peer in junos.get_bgp_neighbors():
+            if not peer.active or peer.inheritance_unknown:
+                continue
+            scope = (
+                f"neighbor {peer.address} in group {peer.group}, "
+                f"family {peer.address_family}, routing-instance {peer.routing_instance}"
+            )
+            evidence = tuple(item.text for item in peer.evidence)
+            if peer.authentication_state in {"unauthenticated", "unresolved"}:
+                detail = "has no authentication" if peer.authentication_state == "unauthenticated" else "has an unresolved authentication key-chain or algorithm"
+                self.add_issue(self._finding(
+                    parser,
+                    "juniper.junos.routing.bgp.authentication",
+                    "BGP neighbor authentication is incomplete",
+                    f"BGP {scope} {detail}.",
+                    "An unauthenticated routing adjacency can permit spoofed session establishment or route injection from a reachable attacker.",
+                    "Configure an authentication-key or a fully defined authentication key-chain and supported algorithm on the peer group.",
+                    Severity.HIGH,
+                    evidence,
+                    (JUNIPER_BGP_SECURITY_GUIDE,),
+                ))
+            if peer.peer_role != "external":
+                continue
+            for direction, present in (("inbound", peer.inbound_policy), ("outbound", peer.outbound_policy)):
+                if present:
+                    continue
+                self.add_issue(self._finding(
+                    parser,
+                    f"juniper.junos.routing.bgp.{direction}_policy",
+                    f"External BGP neighbor lacks an {direction} policy",
+                    f"External BGP {scope} has no explicit {direction} policy at neighbor or group scope.",
+                    "Unrestricted route exchange can admit or advertise unintended prefixes across a routing trust boundary.",
+                    f"Apply a least-privilege {direction} routing policy appropriate to this peer.",
+                    Severity.HIGH,
+                    evidence,
+                    (JUNIPER_BGP_SECURITY_GUIDE,),
+                ))
+            if not peer.prefix_limit:
+                self.add_issue(self._finding(
+                    parser,
+                    "juniper.junos.routing.bgp.prefix_limit",
+                    "External BGP neighbor has no prefix limit",
+                    f"External BGP {scope} has no explicit prefix-limit; no numeric threshold is inferred.",
+                    "An unexpectedly large route advertisement can consume routing resources or disrupt forwarding.",
+                    "Configure an accepted-prefix-limit or prefix-limit based on the documented expected route volume.",
+                    Severity.MEDIUM,
+                    evidence,
+                    (JUNIPER_BGP_SECURITY_GUIDE,),
+                ))
+
+        for interface in junos.get_ospf_interfaces():
+            if not interface.active or interface.passive or interface.authentication_state in {"authenticated", "unknown"}:
+                continue
+            evidence = tuple(item.text for item in interface.evidence)
+            if interface.authentication_state == "weak":
+                rule_id = "juniper.junos.routing.ospf.weak_authentication"
+                title = "OSPF interface uses simple-password authentication"
+                observation = f"OSPF interface {interface.interface}, area {interface.area}, routing-instance {interface.routing_instance} uses simple-password authentication."
+                recommendation = "Use MD5 or a release-supported key-chain algorithm consistently across the OSPFv2 adjacency."
+                severity = Severity.MEDIUM
+            else:
+                rule_id = "juniper.junos.routing.ospf.authentication"
+                title = "OSPF interface authentication is incomplete"
+                observation = f"OSPF interface {interface.interface}, area {interface.area}, routing-instance {interface.routing_instance} is {interface.authentication_state}."
+                recommendation = "Configure and validate OSPFv2 authentication consistently across the adjacency."
+                severity = Severity.HIGH
+            self.add_issue(self._finding(
+                parser, rule_id, title, observation,
+                "An unprotected routing adjacency can accept forged protocol packets from a reachable attacker.",
+                recommendation, severity, evidence, (JUNIPER_OSPF_AUTH_GUIDE,),
+            ))
+
+    def check_discovery(self, parser: BaseDeviceParser) -> None:
+        junos = self._junos(parser)
+        if junos.parse_error or junos.get_version() == "?":
+            return
+        for interface in junos.get_discovery_interfaces():
+            if (
+                not interface.active
+                or interface.role != "external"
+                or not (interface.transmit or interface.receive)
+            ):
+                continue
+            evidence = tuple(item.text for item in interface.evidence) + (
+                f"assessment policy: {interface.interface} role external",
+            )
+            self.add_issue(self._finding(
+                parser,
+                "juniper.junos.discovery.lldp.external",
+                "LLDP is enabled on an external interface",
+                f"Interface {interface.interface} is explicitly classified external and has LLDP transmit and receive enabled.",
+                "LLDP can expose device identity and topology information across an untrusted boundary.",
+                "Disable LLDP on this interface unless the assessment policy documents a required trusted use.",
+                Severity.MEDIUM,
+                evidence,
+                (JUNIPER_LLDP_GUIDE,),
+            ))
+
     def analyze(self, parser: BaseDeviceParser) -> None:
         self.check_ssh_algorithms(parser)
         self.check_additional_services(parser)
@@ -477,3 +626,5 @@ class PluginJunOSBaseline(BasePlugin):
         self.check_ntp(parser)
         self.check_routing_engine_filter(parser)
         self.check_redirects(parser)
+        self.check_routing(parser)
+        self.check_discovery(parser)
