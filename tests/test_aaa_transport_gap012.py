@@ -1,6 +1,8 @@
 from src.analyze.fortinet.plugins.fortios_baseline_plugin import PluginFortiOSBaseline
+from src.analyze.juniper.junos.plugins.baseline_plugin import PluginJunOSBaseline
 from src.common.assessment import AssessmentContext
 from src.devices.fortinet.fortios import FortiOSParser
+from src.devices.juniper.junos import JunOSParser
 
 
 def _parser(tmp_path, config, context=None):
@@ -14,6 +16,21 @@ def _parser(tmp_path, config, context=None):
 
 def _findings(parser):
     plugin = PluginFortiOSBaseline()
+    plugin.check_aaa_transport(parser)
+    return plugin.get_issues()
+
+
+def _junos_parser(tmp_path, config, context=None):
+    path = tmp_path / "junos-aaa.conf"
+    path.write_text(config, encoding="utf-8")
+    parser = JunOSParser(str(path))
+    if context is not None:
+        parser.set_assessment_context(context)
+    return parser
+
+
+def _junos_findings(parser):
+    plugin = PluginJunOSBaseline()
     plugin.check_aaa_transport(parser)
     return plugin.get_issues()
 
@@ -208,3 +225,107 @@ def test_assessment_policy_validates_exact_protected_aaa_selectors():
             pass
         else:
             raise AssertionError("invalid protected AAA profile selectors must fail closed")
+
+
+def test_junos_resolves_complete_administrative_radsec_without_secrets(tmp_path):
+    parser = _junos_parser(
+        tmp_path,
+        '''set version 24.4R2
+set system authentication-order [ radius password ]
+set system radius-server 192.0.2.10 port 2083
+set system radius-server 192.0.2.10 tls trusted-ca-group CORP-AAA-CA
+set system radius-server 192.0.2.10 tls mutual-authentication certificate-id JUNOS-CLIENT
+set system radius-server 192.0.2.10 secret "DoNotLeak"
+''',
+    )
+    profiles = parser.get_aaa_transport_profiles()
+    assert len(profiles) == 1
+    assert profiles[0].roles == ("authentication",)
+    assert profiles[0].transport == "tls"
+    assert profiles[0].port == "2083"
+    assert profiles[0].trusted_ca_group == "CORP-AAA-CA"
+    assert profiles[0].client_certificate_id == "JUNOS-CLIENT"
+    assert _junos_findings(parser) == []
+    assert "DoNotLeak" not in repr(profiles)
+
+
+def test_junos_radsec_reports_missing_server_and_client_identity_bindings(tmp_path):
+    parser = _junos_parser(
+        tmp_path,
+        '''set version 24.4R2
+set system authentication-order [ radius password ]
+set system radius-server 192.0.2.10 port 2083
+set system radius-server 192.0.2.10 tls mutual-authentication
+''',
+    )
+    assert [item.rule_id for item in _junos_findings(parser)] == [
+        "juniper.junos.aaa.radsec_trust",
+        "juniper.junos.aaa.radsec_client_certificate",
+    ]
+
+
+def test_junos_plain_radius_grades_only_explicit_message_authenticator_disable(tmp_path):
+    context = AssessmentContext.from_mapping({
+        "protected_aaa_profiles": ["system:192.0.2.10"],
+    })
+    parser = _junos_parser(
+        tmp_path,
+        '''set version 24.4R2
+set system authentication-order [ radius password ]
+set system radius-server 192.0.2.10 no-message-authenticator
+set system radius-server 192.0.2.11 secret "$9$hidden"
+''',
+        context,
+    )
+    profiles = {item.address: item for item in parser.get_aaa_transport_profiles()}
+    assert profiles["192.0.2.10"].protected_path is True
+    assert profiles["192.0.2.11"].message_authenticator == "unknown"
+    findings = _junos_findings(parser)
+    assert [item.rule_id for item in findings] == [
+        "juniper.junos.aaa.radius_message_authenticator"
+    ]
+    assert "separately declared protected path" in findings[0].observation
+
+
+def test_junos_unbound_radius_definition_is_not_graded_as_admin_transport(tmp_path):
+    parser = _junos_parser(
+        tmp_path,
+        '''set version 24.4R2
+set system authentication-order password
+set system radius-server 192.0.2.10 tls mutual-authentication
+''',
+    )
+    assert parser.get_aaa_transport_profiles() == ()
+    assert _junos_findings(parser) == []
+
+
+def test_junos_accounting_specific_radsec_and_inheritance_boundary(tmp_path):
+    parser = _junos_parser(
+        tmp_path,
+        '''set version 24.4R2
+set system authentication-order [ radius password ]
+set system radius-server 192.0.2.10 no-message-authenticator
+set system accounting destination radius server 192.0.2.20 accounting-port 2083
+set system accounting destination radius server 192.0.2.20 tls trusted-ca-group CORP-AAA-CA
+set system accounting destination radius server 192.0.2.20 secret "DoNotLeak"
+''',
+    )
+    profiles = parser.get_aaa_transport_profiles()
+    assert [(item.address, item.roles, item.transport) for item in profiles] == [
+        ("192.0.2.10", ("authentication",), "udp"),
+        ("192.0.2.20", ("accounting",), "tls"),
+    ]
+    assert [item.rule_id for item in _junos_findings(parser)] == [
+        "juniper.junos.aaa.radius_message_authenticator"
+    ]
+    assert "DoNotLeak" not in repr(profiles)
+
+    inherited = _junos_parser(
+        tmp_path,
+        '''set version 24.4R2
+set apply-groups AAA-TRANSPORT
+set system authentication-order radius
+set system radius-server 192.0.2.10 tls
+''',
+    )
+    assert _junos_findings(inherited) == []

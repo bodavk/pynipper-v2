@@ -105,7 +105,7 @@ def test_fortios_parser_populates_normalized_security_model(tmp_path):
     [
         ("end\n", "no open config block"),
         ("config system global\nset hostname fw\n", "unclosed block"),
-        ("config system admin\nedit admin\nend\n", "no open config block"),
+        ("config system admin\nedit admin\nend\nnext\n", "no open edit block"),
         ('config system global\nset hostname "unterminated\nend\n', "Invalid quoting"),
     ],
 )

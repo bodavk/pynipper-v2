@@ -3,6 +3,12 @@
 from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.issue import Finding, Severity
 from src.devices.common.base_parser import BaseDeviceParser
+from src.devices.common.policy_semantics import (
+    ProofState,
+    network_covers,
+    service_covers,
+    static_values_cover,
+)
 from src.devices.sonicwall.sonicos import SonicOSParser
 
 
@@ -357,6 +363,96 @@ class PluginSonicOSChecks(BasePlugin):
                     )
                 )
 
+    def check_policy_effectiveness(self, parser: BaseDeviceParser) -> None:
+        """Report only statically proven first-match policy relationships."""
+        earlier_rules = []
+        for rule in self._sonic(parser).get_access_rules():
+            evidence = tuple(item.text for item in rule.evidence) or (
+                f"access rule {rule.name}",
+            )
+            unrestricted = (
+                rule.source_networks.any
+                and rule.destination_networks.any
+                and rule.services.any
+                and self._is_any(rule.from_zone)
+                and self._is_any(rule.to_zone)
+                and rule.schedule.casefold() in {"", "any", "always-on"}
+                and not rule.unsupported_predicates
+            )
+            if not rule.enabled:
+                if rule.action == "allow" and unrestricted:
+                    self.add_issue(Finding(
+                        rule_id="sonicwall.sonicos.policy.disabled_permissive_rule",
+                        device=parser.device_type,
+                        title="Disabled permissive SonicOS access rule remains configured",
+                        observation=f"Disabled access rule '{rule.name}' at position {rule.position} retains an unrestricted allow action.",
+                        impact="Stale permissive policy obscures intent and can create broad exposure if re-enabled.",
+                        exploitability="The rule is disabled in the supplied configuration; exploitation requires reactivation.",
+                        recommendation="Remove the obsolete rule or narrow and document it before reactivation.",
+                        severity=Severity.LOW,
+                        evidence=evidence,
+                        references=(SONICOS_POLICY_GUIDE, SONICOS_CLI_GUIDE),
+                    ))
+                continue
+
+            if rule.action == "allow" and rule.services.any and not unrestricted:
+                self.add_issue(Finding(
+                    rule_id="sonicwall.sonicos.policy.broad_service",
+                    device=parser.device_type,
+                    title="SonicOS access rule is unrestricted by service",
+                    observation=f"Enabled access rule '{rule.name}' at position {rule.position} permits Any service within its zone and address scope.",
+                    impact="Unnecessary protocols and destination ports can cross the policy boundary.",
+                    exploitability="A matching source can attempt any service reachable in the destination scope.",
+                    recommendation="Replace Any with the smallest required services or reviewed service group.",
+                    severity=Severity.MEDIUM,
+                    evidence=evidence,
+                    references=(SONICOS_POLICY_GUIDE, SONICOS_CLI_GUIDE),
+                ))
+
+            if not rule.proof_eligible:
+                continue
+            for earlier in earlier_rules:
+                if earlier.family != rule.family:
+                    continue
+                if not all(
+                    state == ProofState.PROVEN
+                    for state in (
+                        static_values_cover((earlier.from_zone,), (rule.from_zone,)),
+                        static_values_cover((earlier.to_zone,), (rule.to_zone,)),
+                        network_covers(earlier.source_networks, rule.source_networks),
+                        network_covers(
+                            earlier.destination_networks, rule.destination_networks
+                        ),
+                        service_covers(earlier.services, rule.services),
+                    )
+                ):
+                    continue
+                same_action = earlier.action == rule.action
+                if same_action and earlier.behavior_signature != rule.behavior_signature:
+                    continue
+                self.add_issue(Finding(
+                    rule_id=(
+                        "sonicwall.sonicos.policy.redundant_rule"
+                        if same_action
+                        else "sonicwall.sonicos.policy.shadowed_rule"
+                    ),
+                    device=parser.device_type,
+                    title=(
+                        "SonicOS access rule is redundant"
+                        if same_action
+                        else "SonicOS access rule is shadowed"
+                    ),
+                    observation=f"Access rule '{rule.name}' at position {rule.position} is fully covered by earlier rule '{earlier.name}' at position {earlier.position} with {'equivalent behavior' if same_action else 'a different terminal action'}.",
+                    impact="The later rule cannot alter first-match enforcement for the statically proven traffic scope and obscures policy intent.",
+                    exploitability="A conflicting shadowed rule can give reviewers a false impression of enforced access control.",
+                    recommendation="Remove or reorder the rule after validating address/service objects, logging, and operational intent.",
+                    severity=Severity.LOW if same_action else Severity.HIGH,
+                    evidence=evidence + tuple(item.text for item in earlier.evidence),
+                    references=(SONICOS_POLICY_GUIDE, SONICOS_CLI_GUIDE),
+                ))
+                break
+            earlier_rules.append(rule)
+
     def check_vpn(self, parser: BaseDeviceParser) -> None:
         for policy in self._sonic(parser).get_vpn_policies():
             if not policy.enabled:
@@ -542,5 +638,6 @@ class PluginSonicOSChecks(BasePlugin):
         self.check_management(parser)
         self.check_administration(parser)
         self.check_access_rules(parser)
+        self.check_policy_effectiveness(parser)
         self.check_vpn(parser)
         self.check_operations(parser)

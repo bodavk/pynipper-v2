@@ -2,6 +2,12 @@
 
 from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.issue import Finding, Severity
+from src.devices.common.policy_semantics import (
+    ProofState,
+    network_covers,
+    service_covers,
+    static_values_cover,
+)
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.paloalto.panos import PaloAltoPANOSParser, PanosSecurityRule
 
@@ -70,6 +76,9 @@ class PluginPANOSChecks(BasePlugin):
     """Evaluate only attached local-firewall state that the XML proves."""
 
     _UNTRUSTED_ZONES = {"untrust", "external", "internet", "public", "wan"}
+    _TERMINAL_ACTIONS = {
+        "allow", "deny", "drop", "reset-both", "reset-client", "reset-server"
+    }
 
     @staticmethod
     def _panos(parser: BaseDeviceParser) -> PaloAltoPANOSParser:
@@ -827,9 +836,26 @@ class PluginPANOSChecks(BasePlugin):
             for inspection in panos.get_security_inspection()
         }
         for rule in panos.get_security_rules():
-            if not rule.enabled or rule.action != "allow":
-                continue
             evidence = self._evidence(rule.evidence)
+            if not rule.enabled:
+                if rule.action == "allow" and self._broad(rule):
+                    self.add_issue(
+                        Finding(
+                            rule_id="paloalto.panos.policy.disabled_permissive_rule",
+                            device=parser.device_type,
+                            title="Disabled permissive rule remains in the policy",
+                            observation=f"Disabled rule '{rule.name}' at position {rule.position} in '{rule.scope}' is an unrestricted allow rule.",
+                            impact="Stale permissive rules obscure policy intent and can create broad exposure if re-enabled without review.",
+                            exploitability="The rule is not active in the supplied configuration; exploitation requires it to be enabled.",
+                            recommendation="Remove the obsolete rule or document, narrow, and periodically review it before any reactivation.",
+                            severity=Severity.LOW,
+                            evidence=evidence,
+                            references=(PANOS_POLICY_GUIDE,),
+                        )
+                    )
+                continue
+            if rule.action != "allow":
+                continue
             if self._broad(rule):
                 self.add_issue(
                     Finding(
@@ -841,6 +867,21 @@ class PluginPANOSChecks(BasePlugin):
                         exploitability="Any matching source can reach any routable destination and application permitted by surrounding infrastructure.",
                         recommendation="Replace wildcard match dimensions with explicit zones, addresses, users, applications, and application-default service where appropriate.",
                         severity=Severity.CRITICAL,
+                        evidence=evidence,
+                        references=(PANOS_POLICY_GUIDE,),
+                    )
+                )
+            elif self._all_any(rule.applications) and self._all_any(rule.services):
+                self.add_issue(
+                    Finding(
+                        rule_id="paloalto.panos.policy.broad_service",
+                        device=parser.device_type,
+                        title="Allow rule permits every application and service",
+                        observation=f"Enabled allow rule '{rule.name}' in '{rule.scope}' uses Any for both application and service.",
+                        impact="The rule permits all identifiable applications on all ports within its remaining network and identity scope.",
+                        exploitability="A reachable source can use unnecessary or unexpected protocols through the rule.",
+                        recommendation="Constrain the rule to approved applications and use application-default or reviewed explicit services as appropriate.",
+                        severity=Severity.MEDIUM,
                         evidence=evidence,
                         references=(PANOS_POLICY_GUIDE,),
                     )
@@ -861,6 +902,7 @@ class PluginPANOSChecks(BasePlugin):
                         evidence=evidence,
                         references=(PANOS_LOG_FORWARDING_GUIDE,),
                     )
+
                 )
 
             if not rule.log_end:
@@ -975,6 +1017,80 @@ class PluginPANOSChecks(BasePlugin):
                         )
                     )
 
+    @staticmethod
+    def _static_effectiveness_comparable(rule: PanosSecurityRule) -> bool:
+        """Limit proof to rules without dynamic or time-dependent predicates."""
+        return (
+            not rule.source_negated
+            and not rule.destination_negated
+            and rule.schedule.casefold() in {"none", "any"}
+            and bool(rule.applications)
+            and all(value.casefold() == "any" for value in rule.applications)
+            and bool(rule.source_users)
+            and all(value.casefold() == "any" for value in rule.source_users)
+            and bool(rule.categories)
+            and all(value.casefold() == "any" for value in rule.categories)
+        )
+
+    def _rule_covers(
+        self,
+        panos: PaloAltoPANOSParser,
+        prior: PanosSecurityRule,
+        current: PanosSecurityRule,
+    ) -> bool:
+        if not self._static_effectiveness_comparable(prior) or not self._static_effectiveness_comparable(current):
+            return False
+        return all(
+            state == ProofState.PROVEN
+            for state in (
+                static_values_cover(prior.from_zones, current.from_zones),
+                static_values_cover(prior.to_zones, current.to_zones),
+                network_covers(
+                    panos.resolve_network_semantics(prior.sources, device_scope=prior.device_scope, scope=prior.scope),
+                    panos.resolve_network_semantics(current.sources, device_scope=current.device_scope, scope=current.scope),
+                ),
+                network_covers(
+                    panos.resolve_network_semantics(prior.destinations, device_scope=prior.device_scope, scope=prior.scope),
+                    panos.resolve_network_semantics(current.destinations, device_scope=current.device_scope, scope=current.scope),
+                ),
+                service_covers(
+                    panos.resolve_service_semantics(prior.services, device_scope=prior.device_scope, scope=prior.scope),
+                    panos.resolve_service_semantics(current.services, device_scope=current.device_scope, scope=current.scope),
+                ),
+            )
+        )
+
+    def check_rule_effectiveness(self, parser: BaseDeviceParser) -> None:
+        panos = self._panos(parser)
+        if panos.panorama_inheritance_unknown or panos.has_nat_policy():
+            return
+        previous_by_scope: dict[tuple[str, str, str], list[PanosSecurityRule]] = {}
+        for rule in panos.get_security_rules():
+            scope = (rule.device_scope, rule.scope, rule.rulebase)
+            previous = previous_by_scope.setdefault(scope, [])
+            if not rule.enabled or rule.action not in self._TERMINAL_ACTIONS:
+                continue
+            for earlier in previous:
+                if not self._rule_covers(panos, earlier, rule):
+                    continue
+                same_action = earlier.action == rule.action
+                self.add_issue(
+                    Finding(
+                        rule_id="paloalto.panos.policy.redundant_rule" if same_action else "paloalto.panos.policy.shadowed_rule",
+                        device=parser.device_type,
+                        title="Rule is redundant" if same_action else "Rule is shadowed",
+                        observation=f"Rule '{rule.name}' at position {rule.position} in '{rule.scope}/{rule.rulebase}' is fully covered by earlier rule '{earlier.name}' at position {earlier.position} with {'the same' if same_action else 'a different'} terminal action.",
+                        impact="The later rule cannot alter enforcement for the statically proven traffic scope and obscures policy intent.",
+                        exploitability="A conflicting shadowed rule can give reviewers a false impression of enforced access control; an equivalent rule adds operational ambiguity.",
+                        recommendation="Remove or reorder the rule after validating the committed policy and any externally managed dynamic state.",
+                        severity=Severity.LOW if same_action else Severity.HIGH,
+                        evidence=self._evidence(rule.evidence) + self._evidence(earlier.evidence),
+                        references=(PANOS_POLICY_GUIDE,),
+                    )
+                )
+                break
+            previous.append(rule)
+
     def check_password_policy(self, parser: BaseDeviceParser) -> None:
         panos = self._panos(parser)
         if panos.panorama_inheritance_unknown:
@@ -1073,6 +1189,7 @@ class PluginPANOSChecks(BasePlugin):
     def analyze(self, parser: BaseDeviceParser) -> None:
         self.check_management(parser)
         self.check_security_rules(parser)
+        self.check_rule_effectiveness(parser)
         self.check_password_policy(parser)
         self.check_password_reuse_and_username(parser)
         self.check_administration(parser)

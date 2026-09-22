@@ -34,6 +34,16 @@ def test_assessment_context_validates_roles_fields_and_categories():
         _context(trusted_certificate_sha256=["not-a-fingerprint"])
     with pytest.raises(ValueError, match="non-empty scope"):
         _context(management_certificate_identities={"": "fw.example.test"})
+    with pytest.raises(ValueError, match="configuration_backup_scope"):
+        _context(configuration_backup_scope="maybe-external")
+    with pytest.raises(ValueError, match="minimum_plaintext_credential_length"):
+        _context(minimum_plaintext_credential_length=0)
+    with pytest.raises(ValueError, match="must be an integer"):
+        _context(minimum_plaintext_credential_length="12")
+    with pytest.raises(ValueError, match="64 hexadecimal"):
+        _context(credential_blocklist_sha256=["not-a-fingerprint"])
+    with pytest.raises(ValueError, match="must be a string list"):
+        _context(credential_blocklist_sha256="not-a-list")
 
 
 def test_default_policy_is_deterministic_and_unknown_role_is_not_external():
@@ -42,6 +52,11 @@ def test_default_policy_is_deterministic_and_unknown_role_is_not_external():
     assert first == second
     assert first.role_for_interface("GigabitEthernet0/0") == "unknown"
     assert first.filter_findings([]) == []
+    assert first.configuration_backup_scope == "unspecified"
+    assert first.to_dict()["configuration-backup-scope"] == "unspecified"
+    assert first.minimum_plaintext_credential_length is None
+    assert first.to_dict()["minimum-plaintext-credential-length"] is None
+    assert first.to_dict()["credential-blocklist-sha256-count"] == 0
     assert first.to_dict()["scope-note"].endswith("not implied secure.")
 
 

@@ -14,6 +14,12 @@ from src.devices.common.models import (
     NormalizedValue,
     SecurityPolicy,
 )
+from src.devices.common.policy_semantics import (
+    AddressInterval,
+    NetworkSemantics,
+    ServiceInterval,
+    ServiceSemantics,
+)
 from .parser import CheckPointDocument, CheckPointFileParser
 
 
@@ -69,34 +75,10 @@ class CheckPointLayer:
     rules: Tuple[CheckPointRule, ...]
 
 
-@dataclass(frozen=True, order=True)
-class CheckPointAddressInterval:
-    family: int
-    first: int
-    last: int
-
-
-@dataclass(frozen=True, order=True)
-class CheckPointServiceInterval:
-    protocol: str
-    first_port: int
-    last_port: int
-
-
-@dataclass(frozen=True)
-class CheckPointNetworkSemantics:
-    any: bool = False
-    intervals: Tuple[CheckPointAddressInterval, ...] = ()
-    complete: bool = True
-    unresolved: Tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class CheckPointServiceSemantics:
-    any: bool = False
-    intervals: Tuple[CheckPointServiceInterval, ...] = ()
-    complete: bool = True
-    unresolved: Tuple[str, ...] = ()
+CheckPointAddressInterval = AddressInterval
+CheckPointServiceInterval = ServiceInterval
+CheckPointNetworkSemantics = NetworkSemantics
+CheckPointServiceSemantics = ServiceSemantics
 
 
 class CheckPointFW1Parser(BaseDeviceParser):

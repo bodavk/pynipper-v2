@@ -60,13 +60,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         if args_dict["assessment_policy"]
         else AssessmentContext()
     )
-    analyze_device(args_dict["device_type"], args_dict["input_file"], args_dict["output_file"],
+    result = analyze_device(args_dict["device_type"], args_dict["input_file"], args_dict["output_file"],
                    args_dict["output_type"], args_dict["conf_file"], not args_dict["offline"],
                    assessment_context
                    )
 
-    return 0
+    return result or 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

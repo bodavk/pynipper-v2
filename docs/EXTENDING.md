@@ -1,6 +1,6 @@
 # Extending pynipper-v2
 
-This guide covers adding a check to an existing platform and adding a new device family. Read [Architecture](ARCHITECTURE.md), [Normalized parser contract](agent_notes/NORMALIZED_PARSER_CONTRACT.md), and the closest existing parser/plugins before editing code. The architecture document contains the durable decisions that govern effective-state reconstruction, evidence handling, references, and the static-analysis boundary.
+This guide covers adding a check to an existing platform and adding a new device family. Read [Architecture](ARCHITECTURE.md), especially its parser contract and durable engineering decisions, and the closest existing parser/plugins before editing code.
 
 ## Adding a check to an existing platform
 
@@ -16,6 +16,8 @@ Before coding, record:
 - what the supplied static export cannot prove.
 
 Choose a stable rule ID using `<vendor>.<os>.<area>.<condition>`. Do not encode severity, a transient benchmark version, or an object name in the ID.
+
+Qualify the control against the actual export and tested release before treating omission as a finding. A current vendor guide does not establish an older release's defaults, and a policy-only export cannot establish device or operating-system posture. Organization-specific thresholds, licensed benchmark/profile mappings, and controls lacking verified source text require separate human approval; do not imply CIS conformance from an unlicensed or unverified mapping. Explicit insecure values may be assessed when authoritative evidence supports them, while missing, inherited, unsupported, or unexpanded state stays unknown.
 
 ### 2. Extend parsing when necessary
 
@@ -155,8 +157,8 @@ Update:
 - `src/devices/README.md` for parser maturity;
 - `src/analyze/README.md` for implemented analysis;
 - `docs/SUPPORTED_DEVICES.md` for the user-facing support boundary;
-- `docs/STATUS.md` for roadmap status;
-- `CHANGELOG.md` or the active implementation log.
+- `docs/ARCHITECTURE.md` or `docs/ASSESSMENT_POLICY.md` when a lasting contract or policy boundary changes;
+- `CHANGELOG.md` for notable user-facing behavior changes.
 
 Use “basic/partial” until secure/vulnerable/edge cases and the public pipeline are verified. Registry reachability alone is not verified security coverage.
 

@@ -1,13 +1,11 @@
 """Effective-state Arista EOS management and operational baseline checks."""
 
 from src.analyze.common.base_plugin import BasePlugin
+from src.analyze.common.credentials import credential_policy_from_context, evaluate_credential
 from src.analyze.common.issue import Finding, Severity
 from src.devices.arista.eos import AristaEOSParser
 from src.devices.common.base_parser import BaseDeviceParser
-from src.devices.common.models import (
-    CredentialStorageAssessment,
-    DefaultCredentialAssessment,
-)
+from src.devices.common.models import CredentialStorageAssessment
 
 
 ARISTA_SESSION_GUIDE = "https://www.arista.com/en/um-eos/eos-session-management-commands"
@@ -18,6 +16,8 @@ ARISTA_SECURITY_GUIDE = "https://www.arista.com/en/um-eos/eos-security"
 ARISTA_USER_SECURITY_GUIDE = "https://www.arista.com/en/um-eos/eos-user-security"
 ARISTA_DISPLAY_GUIDE = "https://www.arista.com/en/um-eos/eos-managing-display-attributes"
 ARISTA_TLS_GUIDE = "https://www.arista.com/en/um-eos/eos-control-plane-security"
+ARISTA_CONTROL_PLANE_GUIDE = "https://www.arista.com/en/um-eos/eos-traffic-management"
+ARISTA_CONTROL_PLANE_ACL_GUIDE = "https://www.arista.com/en/um-eos/eos-data-transfer"
 
 
 class PluginAristaChecks(BasePlugin):
@@ -564,20 +564,11 @@ class PluginAristaChecks(BasePlugin):
                 )
 
     def check_credentials(self, parser: BaseDeviceParser) -> None:
-        unsafe = {
-            CredentialStorageAssessment.EMPTY,
-            CredentialStorageAssessment.PLAINTEXT,
-            CredentialStorageAssessment.WEAK_HASH,
-            CredentialStorageAssessment.WEAK_REVERSIBLE,
-        }
+        policy = credential_policy_from_context(parser.assessment_context)
         for credential in self._eos(parser).get_credential_metadata():
-            if credential.storage_assessment not in unsafe:
+            result = evaluate_credential(credential, policy)
+            if not result.unsafe_storage:
                 continue
-            default_result = {
-                DefaultCredentialAssessment.MATCH: "matched an exact known-default fingerprint",
-                DefaultCredentialAssessment.NO_MATCH: "did not match the exact known-default list",
-                DefaultCredentialAssessment.NOT_EVALUATED: "was not applicable to this representation",
-            }[credential.default_assessment]
             self.add_issue(
                 Finding(
                     rule_id="arista.eos.credentials.local_storage",
@@ -585,8 +576,10 @@ class PluginAristaChecks(BasePlugin):
                     title="Local credential uses unsafe storage",
                     observation=(
                         f"User '{credential.account}' has storage classified as "
-                        f"'{credential.storage_assessment.value}' from format "
-                        f"'{credential.storage_type}'; the separate default comparison {default_result}."
+                        f"'{result.storage_assessment.value}' from format "
+                        f"'{credential.storage_type}' under credential policy '{result.policy_version}'; "
+                        f"the separate default comparison {result.default_summary}, and the blocklist "
+                        f"comparison {result.blocklist_summary}."
                     ),
                     impact="An empty, plaintext, reversible, or legacy-hashed local credential can enable account compromise.",
                     exploitability="An attacker may use an empty/default credential directly or recover exposed weakly stored material.",
@@ -600,6 +593,29 @@ class PluginAristaChecks(BasePlugin):
                     references=(ARISTA_SECURITY_GUIDE,),
                 )
             )
+
+        for credential in self._eos(parser).get_additional_credential_metadata():
+            result = evaluate_credential(credential, policy)
+            if not result.unsafe_storage:
+                continue
+            token = credential.context == "terminattr_ingestauth"
+            self.add_issue(Finding(
+                rule_id=("arista.eos.credentials.terminattr_literal" if token
+                         else "arista.eos.credentials.radius_storage"),
+                device=parser.device_type,
+                title="Literal TerminAttr ingestion token in configuration" if token else "RADIUS key uses unsafe storage",
+                observation=(
+                    f"The {'TerminAttr ingestion token' if token else 'RADIUS shared key'} at "
+                    f"'{credential.account}' is stored as '{result.storage_assessment.value}' "
+                    f"under credential policy '{result.policy_version}'. Its value is redacted."
+                ),
+                impact="Configuration disclosure can expose or permit recovery of this authentication material.",
+                exploitability="An attacker who obtains the configuration may acquire the authentication material; runtime reachability and reuse are not inferred.",
+                recommendation="Rotate the value and use an appropriately protected authentication method where supported.",
+                severity=Severity.HIGH,
+                evidence=tuple(item.text for item in credential.evidence),
+                references=(ARISTA_USER_SECURITY_GUIDE,),
+            ))
 
     def check_operations(self, parser: BaseDeviceParser) -> None:
         eos = self._eos(parser)
@@ -687,6 +703,92 @@ class PluginAristaChecks(BasePlugin):
                         )
                     )
 
+    def check_control_plane(self, parser: BaseDeviceParser) -> None:
+        eos = self._eos(parser)
+        for acl in eos.get_control_plane_acls():
+            evidence = tuple(item.text for item in acl.evidence)
+            if acl.resolution_state == "undefined":
+                self.add_issue(Finding(
+                    rule_id="arista.eos.control_plane.acl_reference",
+                    device=parser.device_type,
+                    title="Control-plane ACL reference is unresolved",
+                    observation=f"The {acl.family} control-plane attachment references undefined ACL '{acl.name}'.",
+                    impact="The intended control-plane traffic restriction cannot be established from the configuration.",
+                    exploitability="Unexpected sources may reach switch control-plane services if the attachment is rejected or ineffective.",
+                    recommendation="Define the referenced ACL in the matching address family and verify its active control-plane attachment.",
+                    severity=Severity.HIGH,
+                    evidence=evidence,
+                    references=(ARISTA_CONTROL_PLANE_ACL_GUIDE,),
+                ))
+            elif acl.protection_state == "empty":
+                self.add_issue(Finding(
+                    rule_id="arista.eos.control_plane.acl_empty",
+                    device=parser.device_type,
+                    title="Attached control-plane ACL is empty",
+                    observation=f"The attached {acl.family} ACL '{acl.name}' contains no active permit or deny entries.",
+                    impact="An empty attachment does not demonstrate an intentional, reviewable control-plane access boundary.",
+                    exploitability="Platform handling or later edits may expose control-plane traffic beyond the intended sources.",
+                    recommendation="Populate the ACL with explicit required traffic and a reviewed default disposition.",
+                    severity=Severity.HIGH,
+                    evidence=evidence,
+                    references=(ARISTA_CONTROL_PLANE_ACL_GUIDE,),
+                ))
+            elif acl.protection_state == "no-enforcement":
+                self.add_issue(Finding(
+                    rule_id="arista.eos.control_plane.acl_no_enforcement",
+                    device=parser.device_type,
+                    title="Control-plane ACL permits all traffic",
+                    observation=f"The attached {acl.family} ACL '{acl.name}' reaches an unconditional permit without a preceding restrictive rule.",
+                    impact="The custom ACL does not narrow traffic delivered to the switch control plane.",
+                    exploitability="Any routed source can continue to send traffic toward protected control-plane services.",
+                    recommendation="Restrict the ACL to documented protocols and trusted source ranges, retaining required operational traffic.",
+                    severity=Severity.MEDIUM,
+                    evidence=evidence,
+                    references=(ARISTA_CONTROL_PLANE_ACL_GUIDE,),
+                ))
+
+        policy = eos.get_copp_policy()
+        for policy_class in policy.classes:
+            evidence = tuple(item.text for item in policy_class.evidence)
+            if policy_class.selector_state == "undefined-class":
+                self.add_issue(Finding(
+                    rule_id="arista.eos.control_plane.copp_class_reference",
+                    device=parser.device_type,
+                    title="CoPP policy references an undefined class",
+                    observation=f"The always-attached '{policy.name}' policy references custom class '{policy_class.name}', which is not defined.",
+                    impact="Traffic intended for the class cannot be proven to receive its control-plane rate policy.",
+                    exploitability="Unclassified traffic may reach the CPU outside the intended custom protection path.",
+                    recommendation="Define the control-plane class and its ACL selector, or remove the stale policy entry.",
+                    severity=Severity.HIGH,
+                    evidence=evidence,
+                    references=(ARISTA_CONTROL_PLANE_GUIDE,),
+                ))
+            elif policy_class.selector_state in {"empty-class", "empty-selector", "undefined-selector"}:
+                self.add_issue(Finding(
+                    rule_id="arista.eos.control_plane.copp_class_reference",
+                    device=parser.device_type,
+                    title="CoPP class traffic selector is unresolved",
+                    observation=f"Custom class '{policy_class.name}' in '{policy.name}' has selector state '{policy_class.selector_state}' for ACL '{policy_class.selector_reference or 'none'}'.",
+                    impact="The class cannot identify the traffic intended for its control-plane treatment.",
+                    exploitability="Relevant CPU-bound traffic may bypass the intended custom rate control.",
+                    recommendation="Attach a populated IPv4 or IPv6 ACL selector to the class.",
+                    severity=Severity.HIGH,
+                    evidence=evidence,
+                    references=(ARISTA_CONTROL_PLANE_GUIDE,),
+                ))
+            elif policy_class.selector_state == "resolved" and policy_class.enforcement_state == "no-enforcement":
+                self.add_issue(Finding(
+                    rule_id="arista.eos.control_plane.copp_class_no_enforcement",
+                    device=parser.device_type,
+                    title="Custom CoPP class has no rate action",
+                    observation=f"Custom class '{policy_class.name}' resolves its selector but has no explicit numeric shape or bandwidth action in '{policy.name}'.",
+                    impact="The exported override does not demonstrate rate enforcement for the selected traffic.",
+                    exploitability="Selected traffic may consume control-plane resources without the intended custom limit.",
+                    recommendation="Configure and operationally validate shape/bandwidth values appropriate to the platform and workload.",
+                    severity=Severity.MEDIUM,
+                    evidence=evidence,
+                    references=(ARISTA_CONTROL_PLANE_GUIDE,),
+                ))
     def analyze(self, parser: BaseDeviceParser) -> None:
         self.check_management_api(parser)
         self.check_authentication(parser)
@@ -695,3 +797,4 @@ class PluginAristaChecks(BasePlugin):
         self.check_credentials(parser)
         self.check_snmp(parser)
         self.check_operations(parser)
+        self.check_control_plane(parser)

@@ -1,6 +1,7 @@
 import re
 import shlex
 import base64
+import ipaddress
 from dataclasses import dataclass
 from typing import Optional
 from ciscoconfparse import CiscoConfParse
@@ -12,11 +13,28 @@ from src.common.certificates import (
     load_public_certificate,
 )
 from src.devices.common.base_parser import BaseDeviceParser
+from src.devices.common.policy_semantics import (
+    AddressInterval,
+    NetworkSemantics,
+    ServiceInterval,
+    ServiceSemantics,
+)
 from src.devices.common.models import (
+    BlocklistCredentialAssessment,
     ConfigEvidence,
+    ConfigurationState,
     CredentialMetadata,
     CredentialStorageAssessment,
+    CryptoSetting,
     DefaultCredentialAssessment,
+    LocalUser,
+    LoggingDestination,
+    ManagementService,
+    NetworkInterface,
+    NormalizedCollection,
+    NormalizedConfig,
+    NormalizedValue,
+    SecurityPolicy,
 )
 
 
@@ -77,6 +95,19 @@ class ASANTPAssociation:
     key_id: str
     authentication_state: str
     algorithm: str
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class ASAConnectionLimitPolicy:
+    """Effective MPF connection limits from an attached ASA policy class."""
+
+    policy_name: str
+    policy_type: str
+    class_name: str
+    attachment_scopes: tuple[str, ...]
+    limits: tuple[tuple[str, int | None], ...]
+    invalid_values: tuple[str, ...]
     evidence: tuple[ConfigEvidence, ...]
 
 
@@ -145,6 +176,13 @@ class ASAACLEntry:
     destination: str
     inactive: bool
     raw_line: str
+    service_qualifiers: tuple[str, ...] = ()
+    time_range: str = ""
+    logging: bool = False
+    behavior_signature: tuple[str, ...] = ()
+    unsupported_predicates: tuple[str, ...] = ()
+    configured_line: Optional[int] = None
+    sequence: int = 0
 
     @property
     def is_broad_permit(self) -> bool:
@@ -157,14 +195,64 @@ class ASAACLEntry:
         )
 
 
+@dataclass(frozen=True)
+class ASAIPsecTransformBinding:
+    transform_name: str
+    declaration: str | None
+    map_binding: str
+    map_attachment: str
+    interface: str
+
+
+@dataclass(frozen=True)
+class ASASSLServicePolicy:
+    active_interfaces: tuple[str, ...]
+    server_minimum: str | None
+    server_minimum_valid: bool
+    client_minimum: str | None
+    weak_cipher_commands: tuple[str, ...]
+    unknown_cipher_commands: tuple[str, ...]
+    evidence: tuple[ConfigEvidence, ...]
+
+
 class CiscoASAParser(BaseDeviceParser):
 
     device_type = "ASA"
+    _MAX_ACL_OBJECT_EXPANSION = 4096
+    _ASA_PROTOCOLS = {
+        "ah", "eigrp", "esp", "gre", "icmp", "icmp6", "igmp", "igrp",
+        "ipinip", "ipsec", "nos", "ospf", "pcp", "pim", "pptp", "sctp",
+        "snp", "tcp", "udp",
+    }
+    _ASA_PORTS = {
+        "ftp-data": 20,
+        "ftp": 21,
+        "ssh": 22,
+        "telnet": 23,
+        "smtp": 25,
+        "domain": 53,
+        "dns": 53,
+        "www": 80,
+        "http": 80,
+        "pop3": 110,
+        "ntp": 123,
+        "imap4": 143,
+        "snmp": 161,
+        "snmptrap": 162,
+        "https": 443,
+        "isakmp": 500,
+        "ldap": 389,
+        "ldaps": 636,
+        "syslog": 514,
+    }
 
     def __init__(self, config_filepath: str):
         super().__init__(config_filepath)
+        with open(config_filepath, "r", encoding="utf-8", errors="replace") as source:
+            self._source_lines = source.read().splitlines()
         # ciscoconfparse supports 'asa' syntax
         self.parser = CiscoConfParse(config_filepath, syntax='asa')
+        self._acl_object_cache: Optional[dict[str, dict]] = None
 
     def get_hostname(self) -> str:
         host = self.parser.find_objects("^hostname")
@@ -212,6 +300,90 @@ class CiscoASAParser(BaseDeviceParser):
 
     def get_native_config(self) -> CiscoConfParse:
         return self.parser
+
+    def get_active_ipsec_transform_bindings(self) -> tuple[ASAIPsecTransformBinding, ...]:
+        """Resolve declared transforms through effective, interface-attached crypto maps."""
+        declarations: dict[str, str] = {}
+        transform_refs: dict[tuple[str, str, str], tuple[tuple[str, ...], str]] = {}
+        dynamic_refs: dict[tuple[str, str], tuple[str, str]] = {}
+        attachments: dict[tuple[str, str], str] = {}
+        for source_line in self._source_lines:
+            line = source_line.strip()
+            if not line or line.startswith("!"):
+                continue
+            words = line.split()
+            removal = words[0].lower() == "no"
+            body = words[1:] if removal else words
+            lower = [word.lower() for word in body]
+            if len(body) >= 4 and lower[:3] == ["crypto", "ipsec", "transform-set"]:
+                key = body[3].casefold()
+                if removal:
+                    declarations.pop(key, None)
+                else:
+                    declarations[key] = line
+            elif len(body) >= 5 and lower[:4] == ["crypto", "ipsec", "ikev1", "transform-set"]:
+                key = body[4].casefold()
+                if removal:
+                    declarations.pop(key, None)
+                else:
+                    declarations[key] = line
+            elif len(body) >= 3 and lower[:2] == ["crypto", "map"]:
+                map_name = body[2].casefold()
+                if len(body) >= 5 and lower[3] == "interface":
+                    key = (map_name, body[4].casefold())
+                    if removal:
+                        attachments.pop(key, None)
+                    else:
+                        attachments[key] = line
+                elif len(body) >= 4:
+                    sequence = body[3]
+                    if removal and len(body) == 4:
+                        for key in tuple(transform_refs):
+                            if key[0] == "static" and key[1:3] == (map_name, sequence):
+                                transform_refs.pop(key)
+                        dynamic_refs.pop((map_name, sequence), None)
+                    elif len(body) >= 8 and lower[4:7] == ["set", "ikev1", "transform-set"]:
+                        key = ("static", map_name, sequence)
+                        if removal:
+                            transform_refs.pop(key, None)
+                        else:
+                            transform_refs[key] = (tuple(body[7:]), line)
+                    elif len(body) >= 7 and lower[4:6] == ["ipsec-isakmp", "dynamic"]:
+                        key = (map_name, sequence)
+                        if removal:
+                            dynamic_refs.pop(key, None)
+                        else:
+                            dynamic_refs[key] = (body[6].casefold(), line)
+            elif len(body) >= 4 and lower[:2] == ["crypto", "dynamic-map"]:
+                key = ("dynamic", body[2].casefold(), body[3])
+                if removal and len(body) == 4:
+                    transform_refs.pop(key, None)
+                elif len(body) >= 8 and lower[4:7] == ["set", "ikev1", "transform-set"]:
+                    if removal:
+                        transform_refs.pop(key, None)
+                    else:
+                        transform_refs[key] = (tuple(body[7:]), line)
+
+        results: list[ASAIPsecTransformBinding] = []
+        for (map_name, interface), attachment in attachments.items():
+            for (kind, candidate_map, sequence), (names, binding) in transform_refs.items():
+                if kind != "static" or candidate_map != map_name:
+                    continue
+                for name in names:
+                    declaration = declarations.get(name.casefold())
+                    results.append(ASAIPsecTransformBinding(name, declaration, binding, attachment, interface))
+            for (candidate_map, _), (dynamic_map, parent_binding) in dynamic_refs.items():
+                if candidate_map != map_name:
+                    continue
+                for (kind, candidate_dynamic, _), (names, binding) in transform_refs.items():
+                    if kind != "dynamic" or candidate_dynamic != dynamic_map:
+                        continue
+                    for name in names:
+                        declaration = declarations.get(name.casefold())
+                        results.append(ASAIPsecTransformBinding(
+                            name, declaration, f"{parent_binding}; {binding}", attachment, interface,
+                        ))
+        return tuple(results)
 
     def _global_lines(self) -> list[str]:
         return [line.strip() for line in self.parser.ioscfg if line.strip()]
@@ -616,6 +788,111 @@ class CiscoASAParser(BaseDeviceParser):
             ))
         return associations
 
+    def get_connection_limit_policies(self) -> tuple[ASAConnectionLimitPolicy, ...]:
+        """Resolve configured MPF limits only when their policy is attached.
+
+        ASA uses zero for an unlimited connection value.  This accessor does
+        not invent a suitable nonzero rate or treat an unattached policy map as
+        effective configuration.
+        """
+
+        attachments: dict[str, dict[str, str]] = {}
+        for line in self._global_lines():
+            removed = re.fullmatch(
+                r"no service-policy\s+(\S+)\s+(global|interface\s+\S+|\S+)",
+                line,
+                re.IGNORECASE,
+            )
+            if removed:
+                name = removed.group(1).casefold()
+                scope = removed.group(2).casefold()
+                if scope != "global" and not scope.startswith("interface "):
+                    scope = f"interface {scope}"
+                attachments.setdefault(name, {}).pop(scope, None)
+                continue
+            configured = re.fullmatch(
+                r"service-policy\s+(\S+)\s+(global|interface\s+\S+|\S+)",
+                line,
+                re.IGNORECASE,
+            )
+            if configured:
+                name = configured.group(1).casefold()
+                scope = configured.group(2).casefold()
+                if scope != "global" and not scope.startswith("interface "):
+                    scope = f"interface {scope}"
+                attachments.setdefault(name, {})[scope] = line
+
+        limit_names = {
+            "conn-max",
+            "embryonic-conn-max",
+            "per-client-embryonic-max",
+            "per-client-max",
+        }
+        policies: list[ASAConnectionLimitPolicy] = []
+        current_policy: tuple[str, str] | None = None
+        current_class = ""
+        for line_number, raw_line in enumerate(self._source_lines, start=1):
+            stripped = raw_line.strip()
+            if not stripped or stripped.startswith("!"):
+                continue
+            if not raw_line[:1].isspace():
+                match = re.fullmatch(
+                    r"policy-map(?:\s+type\s+(management)(?:\s+first-match)?)?\s+(\S+)",
+                    stripped,
+                    re.IGNORECASE,
+                )
+                current_policy = (
+                    (match.group(1) or "regular").casefold(),
+                    match.group(2),
+                ) if match else None
+                current_class = ""
+                continue
+            if current_policy is None:
+                continue
+            class_match = re.fullmatch(r"class\s+(\S+)", stripped, re.IGNORECASE)
+            if class_match:
+                current_class = class_match.group(1)
+                continue
+            if not current_class or not stripped.casefold().startswith("set connection "):
+                continue
+            tokens = stripped.split()[2:]
+            limits: list[tuple[str, int | None]] = []
+            invalid: list[str] = []
+            index = 0
+            while index < len(tokens):
+                keyword = tokens[index].casefold()
+                if keyword not in limit_names:
+                    index += 1
+                    continue
+                raw_value = tokens[index + 1] if index + 1 < len(tokens) else ""
+                value = int(raw_value) if raw_value.isdigit() else None
+                if value is None or not 0 <= value <= 2_000_000:
+                    invalid.append(f"{keyword} {raw_value or '<missing>'}")
+                    value = None
+                limits.append((keyword, value))
+                index += 2
+            if not limits and not invalid:
+                continue
+            policy_type, policy_name = current_policy
+            scopes = tuple(attachments.get(policy_name.casefold(), ()))
+            if not scopes:
+                continue
+            evidence = [ConfigEvidence(stripped, self.config_filepath, line_number)]
+            evidence.extend(
+                ConfigEvidence(text, self.config_filepath, None)
+                for text in attachments[policy_name.casefold()].values()
+            )
+            policies.append(ASAConnectionLimitPolicy(
+                policy_name=policy_name,
+                policy_type=policy_type,
+                class_name=current_class,
+                attachment_scopes=scopes,
+                limits=tuple(limits),
+                invalid_values=tuple(invalid),
+                evidence=tuple(evidence),
+            ))
+        return tuple(policies)
+
     # Helper methods specific to ASA audit checks
     def get_enable_password(self) -> str:
         """Compatibility accessor that never returns credential material."""
@@ -650,7 +927,7 @@ class CiscoASAParser(BaseDeviceParser):
 
     def get_enable_credential(self) -> Optional[ASACredential]:
         selected: Optional[ASACredential] = None
-        for line_number, line in enumerate(self.parser.ioscfg, start=1):
+        for line_number, line in enumerate(self._source_lines, start=1):
             stripped = line.strip()
             if stripped == "no enable password":
                 selected = None
@@ -669,6 +946,16 @@ class CiscoASAParser(BaseDeviceParser):
                 storage_type=storage_type,
                 storage_assessment=storage,
                 default_assessment=self._default_assessment(storage, value),
+                plaintext_length=(
+                    len(value)
+                    if storage == CredentialStorageAssessment.PLAINTEXT
+                    else None
+                ),
+                blocklist_assessment=BlocklistCredentialAssessment.from_optional_match(
+                    self.assessment_context.plaintext_credential_blocklisted(value)
+                    if storage == CredentialStorageAssessment.PLAINTEXT
+                    else None
+                ),
                 evidence=(ConfigEvidence(
                     f"enable password <redacted> {marker}".rstrip(),
                     self.config_filepath,
@@ -679,22 +966,30 @@ class CiscoASAParser(BaseDeviceParser):
 
     def get_local_credentials(self) -> list[CredentialMetadata]:
         credentials: dict[str, CredentialMetadata] = {}
-        for line_number, raw_line in enumerate(self.parser.ioscfg, start=1):
+        for line_number, raw_line in enumerate(self._source_lines, start=1):
             stripped = raw_line.strip()
             removal = re.fullmatch(r"no\s+username\s+(\S+)(?:\s+.*)?", stripped, re.IGNORECASE)
             if removal:
                 credentials.pop(removal.group(1).casefold(), None)
                 continue
-            match = re.fullmatch(
-                r"username\s+(\S+)\s+password(?:\s+(\S+))?(?:\s+(encrypted|pbkdf2))?(?:\s+privilege\s+\d+)?",
-                stripped,
-                re.IGNORECASE,
-            )
-            if not match:
+            try:
+                tokens = shlex.split(stripped)
+            except ValueError:
                 continue
-            account = match.group(1)
-            value = match.group(2) or ""
-            marker = (match.group(3) or "plaintext").casefold()
+            lowered = [token.casefold() for token in tokens]
+            if len(tokens) < 3 or lowered[0] != "username" or "password" not in lowered[2:]:
+                continue
+            account = tokens[1]
+            password_index = lowered.index("password", 2)
+            value = ""
+            if password_index + 1 < len(tokens) and lowered[password_index + 1] not in {
+                "encrypted", "pbkdf2", "privilege"
+            }:
+                value = tokens[password_index + 1]
+            marker = next(
+                (token for token in lowered[password_index + 1:] if token in {"encrypted", "pbkdf2"}),
+                "plaintext",
+            )
             storage = self._credential_assessment(marker, value)
             credentials[account.casefold()] = CredentialMetadata(
                 account=account,
@@ -703,6 +998,16 @@ class CiscoASAParser(BaseDeviceParser):
                 storage_type=marker,
                 storage_assessment=storage,
                 default_assessment=self._default_assessment(storage, value),
+                plaintext_length=(
+                    len(value)
+                    if storage == CredentialStorageAssessment.PLAINTEXT
+                    else None
+                ),
+                blocklist_assessment=BlocklistCredentialAssessment.from_optional_match(
+                    self.assessment_context.plaintext_credential_blocklisted(value)
+                    if storage == CredentialStorageAssessment.PLAINTEXT
+                    else None
+                ),
                 evidence=(ConfigEvidence(
                     f"username {account} password <redacted> {marker}",
                     self.config_filepath,
@@ -970,15 +1275,132 @@ class CiscoASAParser(BaseDeviceParser):
         return level
 
     def get_ssl_min_version(self) -> str:
-        version = ""
-        for raw_line in self.parser.ioscfg:
-            line = raw_line.strip()
-            match = re.fullmatch(r"ssl server-version\s+(\S+)(?:\s+\S+)?", line)
+        return self.get_ssl_service_policy().server_minimum or ""
+
+    def get_ssl_service_policy(self) -> ASASSLServicePolicy:
+        """Resolve explicit SSL policy and interface-attached WebVPN service state."""
+        configured_interfaces = {
+            item["nameif"].casefold(): item["nameif"] for item in self.get_interfaces()
+        }
+        # Some vendor examples flatten subcommands while retaining `!` block
+        # delimiters, which CiscoConfParse cannot represent as children.
+        in_interface = False
+        for source_line in self._source_lines:
+            line = source_line.strip()
+            if line.startswith("!"):
+                in_interface = False
+            elif re.fullmatch(r"interface\s+\S+", line, re.IGNORECASE):
+                in_interface = True
+            elif in_interface and (match := re.fullmatch(r"nameif\s+(\S+)", line, re.IGNORECASE)):
+                configured_interfaces[match.group(1).casefold()] = match.group(1)
+        active: dict[str, str] = {}
+        server_minimum: str | None = None
+        server_minimum_valid = True
+        client_minimum: str | None = None
+        legacy_cipher: str | None = None
+        protocol_ciphers: dict[str, str] = {}
+        evidence: list[ConfigEvidence] = []
+        in_webvpn = False
+        valid_server_versions = {
+            "any", "sslv3", "sslv3-only", "tlsv1", "tlsv1-only",
+            "tlsv1.1", "tlsv1.2", "tlsv1.3",
+        }
+
+        for line_number, source_line in enumerate(self._source_lines, start=1):
+            line = source_line.strip()
+            if not line:
+                continue
+            if line.startswith("!"):
+                in_webvpn = False
+                continue
+            if line.casefold() == "webvpn":
+                in_webvpn = True
+                continue
+            if line.casefold() == "no webvpn":
+                active.clear()
+                in_webvpn = False
+                continue
+
+            if in_webvpn:
+                match = re.fullmatch(r"enable\s+(\S+)(?:\s+tls-only)?", line, re.IGNORECASE)
+                if match:
+                    key = match.group(1).casefold()
+                    if key in configured_interfaces:
+                        active[key] = line
+                    continue
+                match = re.fullmatch(r"no enable(?:\s+(\S+))?", line, re.IGNORECASE)
+                if match:
+                    if match.group(1):
+                        active.pop(match.group(1).casefold(), None)
+                    else:
+                        active.clear()
+                    continue
+
+            match = re.fullmatch(r"ssl server-version\s+(\S+)(?:\s+\S+)?", line, re.IGNORECASE)
             if match:
-                version = match.group(1)
-            elif line == "no ssl server-version":
-                version = ""
-        return version
+                server_minimum = match.group(1).casefold()
+                server_minimum_valid = server_minimum in valid_server_versions
+                evidence.append(ConfigEvidence(line, self.config_filepath, line_number))
+                continue
+            if re.fullmatch(r"no ssl server-version(?:\s+.*)?", line, re.IGNORECASE):
+                server_minimum = None
+                server_minimum_valid = True
+                continue
+            match = re.fullmatch(r"ssl client-version\s+(\S+)", line, re.IGNORECASE)
+            if match:
+                client_minimum = match.group(1).casefold()
+                evidence.append(ConfigEvidence(line, self.config_filepath, line_number))
+                continue
+            if re.fullmatch(r"no ssl client-version(?:\s+.*)?", line, re.IGNORECASE):
+                client_minimum = None
+                continue
+            if re.fullmatch(r"ssl encryption\s+.+", line, re.IGNORECASE):
+                legacy_cipher = line
+                evidence.append(ConfigEvidence(line, self.config_filepath, line_number))
+                continue
+            if re.fullmatch(r"no ssl encryption(?:\s+.*)?", line, re.IGNORECASE):
+                legacy_cipher = None
+                continue
+            match = re.fullmatch(r"ssl cipher\s+(\S+)\s+(.+)", line, re.IGNORECASE)
+            if match:
+                protocol_ciphers[match.group(1).casefold()] = line
+                evidence.append(ConfigEvidence(line, self.config_filepath, line_number))
+                continue
+            match = re.fullmatch(r"no ssl cipher\s+(\S+)(?:\s+.*)?", line, re.IGNORECASE)
+            if match:
+                protocol_ciphers.pop(match.group(1).casefold(), None)
+
+        weak: list[str] = []
+        unknown: list[str] = []
+        weak_tokens = ("des-sha1", "3des-sha1", "rc4", "null", "md5")
+        if legacy_cipher and any(token in legacy_cipher.casefold().split() for token in weak_tokens):
+            weak.append(legacy_cipher)
+        for protocol, command in protocol_ciphers.items():
+            if protocol == "default":
+                continue
+            setting = command.split(maxsplit=3)[3].strip().strip('"').casefold()
+            if setting in {"all", "low", "medium"}:
+                weak.append(command)
+            elif setting in {"fips", "high"}:
+                continue
+            elif setting.startswith("custom ") or command.casefold().startswith(f"ssl cipher {protocol} custom"):
+                suite = setting.removeprefix("custom ").strip('"')
+                if any(token in suite for token in ("null", "rc4", "md5", "des-cbc", "3des", ":all", "all:")):
+                    weak.append(command)
+            else:
+                unknown.append(command)
+
+        for key, command in active.items():
+            evidence.append(ConfigEvidence(command, self.config_filepath, None))
+        return ASASSLServicePolicy(
+            active_interfaces=tuple(configured_interfaces[key] for key in active),
+            server_minimum=server_minimum,
+            server_minimum_valid=server_minimum_valid,
+            client_minimum=client_minimum,
+            weak_cipher_commands=tuple(weak),
+            unknown_cipher_commands=tuple(unknown),
+            evidence=tuple(evidence),
+        )
 
     def get_interfaces(self) -> list[dict]:
         interfaces = []
@@ -1046,6 +1468,7 @@ class CiscoASAParser(BaseDeviceParser):
 
     def get_acl_entries(self, acl_name: Optional[str] = None) -> list[ASAACLEntry]:
         entries: dict[str, ASAACLEntry] = {}
+        sequence = 0
         for raw_line in self.parser.ioscfg:
             line = raw_line.strip()
             negated = line.startswith("no access-list ")
@@ -1067,7 +1490,11 @@ class CiscoASAParser(BaseDeviceParser):
             if len(tokens) < 5 or (acl_name and tokens[1] != acl_name):
                 continue
             index = 2
+            configured_line = None
             if index < len(tokens) and tokens[index] == "line":
+                if index + 1 >= len(tokens) or not tokens[index + 1].isdigit():
+                    continue
+                configured_line = int(tokens[index + 1])
                 index += 2
             if index >= len(tokens) or tokens[index] != "extended":
                 continue
@@ -1080,11 +1507,45 @@ class CiscoASAParser(BaseDeviceParser):
                 continue
             protocol = tokens[index].lower()
             index += 1
-            if protocol == "object-group" and index < len(tokens):
-                protocol = f"object-group {tokens[index]}"
+            if protocol in {"object", "object-group"} and index < len(tokens):
+                protocol = f"{protocol} {tokens[index]}"
                 index += 1
             source, index = self._consume_acl_address(tokens, index)
-            destination, _ = self._consume_acl_address(tokens, index)
+            destination, index = self._consume_acl_address(tokens, index)
+            tail = tokens[index:]
+            lowered_tail = [token.casefold() for token in tail]
+            option_indexes = [
+                lowered_tail.index(option)
+                for option in ("log", "time-range", "inactive")
+                if option in lowered_tail
+            ]
+            qualifier_end = min(option_indexes, default=len(tail))
+            qualifiers = tuple(lowered_tail[:qualifier_end])
+            time_range = ""
+            if "time-range" in lowered_tail:
+                time_index = lowered_tail.index("time-range")
+                if time_index + 1 < len(tail):
+                    time_range = tail[time_index + 1]
+            logging = "log" in lowered_tail and not (
+                lowered_tail.index("log") + 1 < len(lowered_tail)
+                and lowered_tail[lowered_tail.index("log") + 1] == "disable"
+            )
+            behavior_signature: tuple[str, ...] = ()
+            if logging:
+                log_index = lowered_tail.index("log")
+                log_end = min(
+                    (
+                        lowered_tail.index(option, log_index + 1)
+                        for option in ("time-range", "inactive")
+                        if option in lowered_tail[log_index + 1 :]
+                    ),
+                    default=len(lowered_tail),
+                )
+                behavior_signature = tuple(lowered_tail[log_index:log_end])
+            unsupported = tuple(
+                token for token in lowered_tail
+                if token in {"security-group", "user-group", "object-group-network-service"}
+            )
             entry = ASAACLEntry(
                 acl_name=tokens[1],
                 action=action,
@@ -1093,10 +1554,636 @@ class CiscoASAParser(BaseDeviceParser):
                 destination=destination.lower(),
                 inactive="inactive" in [token.lower() for token in tokens],
                 raw_line=effective_line,
+                service_qualifiers=qualifiers,
+                time_range=time_range,
+                logging=logging,
+                behavior_signature=behavior_signature,
+                unsupported_predicates=unsupported,
+                configured_line=configured_line,
+                sequence=sequence,
             )
+            sequence += 1
             key = " ".join(tokens)
             if negated:
                 entries.pop(key, None)
             else:
                 entries[key] = entry
-        return list(entries.values())
+        return sorted(
+            entries.values(),
+            key=lambda item: (
+                item.acl_name.casefold(),
+                item.configured_line is None,
+                item.configured_line if item.configured_line is not None else item.sequence,
+                item.sequence,
+            ),
+        )
+
+    def _acl_object_state(self) -> dict[str, dict]:
+        """Reconstruct effective ASA network/service object definitions in source order."""
+
+        if self._acl_object_cache is not None:
+            return self._acl_object_cache
+        state: dict[str, dict] = {
+            "network_objects": {},
+            "network_groups": {},
+            "service_objects": {},
+            "service_groups": {},
+            "protocol_groups": {},
+        }
+        lines = self._source_lines
+        index = 0
+        while index < len(lines):
+            raw = lines[index]
+            if raw[:1].isspace() or not raw.strip():
+                index += 1
+                continue
+            header = raw.strip()
+            children: list[str] = []
+            cursor = index + 1
+            while cursor < len(lines) and lines[cursor][:1].isspace():
+                if lines[cursor].strip():
+                    children.append(lines[cursor].strip())
+                cursor += 1
+
+            removed = re.fullmatch(r"(?:no|clear configure) object network\s+(\S+)", header)
+            if removed:
+                state["network_objects"].pop(removed.group(1).casefold(), None)
+                index = cursor
+                continue
+            removed = re.fullmatch(r"(?:no|clear configure) object service\s+(\S+)", header)
+            if removed:
+                state["service_objects"].pop(removed.group(1).casefold(), None)
+                index = cursor
+                continue
+            removed = re.fullmatch(
+                r"(?:no|clear configure) object-group (network|service|protocol)\s+(\S+)(?:\s+.*)?",
+                header,
+            )
+            if removed:
+                bucket = {
+                    "network": "network_groups",
+                    "service": "service_groups",
+                    "protocol": "protocol_groups",
+                }[removed.group(1)]
+                state[bucket].pop(removed.group(2).casefold(), None)
+                index = cursor
+                continue
+
+            network_object = re.fullmatch(r"object network\s+(\S+)", header)
+            service_object = re.fullmatch(r"object service\s+(\S+)", header)
+            network_group = re.fullmatch(r"object-group network\s+(\S+)", header)
+            service_group = re.fullmatch(
+                r"object-group service\s+(\S+)(?:\s+(tcp|udp|tcp-udp))?", header
+            )
+            protocol_group = re.fullmatch(r"object-group protocol\s+(\S+)", header)
+            if network_object:
+                key = network_object.group(1).casefold()
+                definition = state["network_objects"].get(key)
+                for child in children:
+                    if re.fullmatch(r"(?:no|default) (?:host|subnet|range|fqdn)(?:\s+.*)?", child):
+                        definition = None
+                    elif child.split(maxsplit=1)[0].casefold() in {"host", "subnet", "range", "fqdn"}:
+                        definition = child
+                state["network_objects"][key] = definition
+            elif service_object:
+                key = service_object.group(1).casefold()
+                definition = state["service_objects"].get(key)
+                for child in children:
+                    if re.fullmatch(r"(?:no|default) service(?:\s+.*)?", child):
+                        definition = None
+                    elif child.startswith("service "):
+                        definition = child
+                state["service_objects"][key] = definition
+            elif network_group:
+                key = network_group.group(1).casefold()
+                members = list(state["network_groups"].get(key, ()))
+                for child in children:
+                    if child.startswith(("network-object ", "group-object ")):
+                        if child not in members:
+                            members.append(child)
+                    elif child.startswith(("no network-object ", "no group-object ")):
+                        positive = child[3:]
+                        members = [item for item in members if item.casefold() != positive.casefold()]
+                state["network_groups"][key] = tuple(members)
+            elif service_group:
+                key = service_group.group(1).casefold()
+                data = state["service_groups"].setdefault(
+                    key, {"protocol": None, "members": ()}
+                )
+                protocol = service_group.group(2) or data["protocol"]
+                members = list(data["members"])
+                for child in children:
+                    if child.startswith(("service-object ", "port-object ", "group-object ")):
+                        if child not in members:
+                            members.append(child)
+                    elif child.startswith(("no service-object ", "no port-object ", "no group-object ")):
+                        positive = child[3:]
+                        members = [item for item in members if item.casefold() != positive.casefold()]
+                state["service_groups"][key] = {
+                    "protocol": protocol,
+                    "members": tuple(members),
+                }
+            elif protocol_group:
+                key = protocol_group.group(1).casefold()
+                members = list(state["protocol_groups"].get(key, ()))
+                for child in children:
+                    if child.startswith(("protocol-object ", "group-object ")):
+                        if child not in members:
+                            members.append(child)
+                    elif child.startswith(("no protocol-object ", "no group-object ")):
+                        positive = child[3:]
+                        members = [item for item in members if item.casefold() != positive.casefold()]
+                state["protocol_groups"][key] = tuple(members)
+            index = cursor
+        self._acl_object_cache = state
+        return state
+
+    @staticmethod
+    def _network_literal(tokens: list[str]) -> NetworkSemantics | None:
+        if not tokens:
+            return None
+        folded = [token.casefold() for token in tokens]
+        if folded in (["any"], ["any4"]):
+            return NetworkSemantics(intervals=(AddressInterval(4, 0, (1 << 32) - 1),))
+        if folded == ["any6"]:
+            return NetworkSemantics(intervals=(AddressInterval(6, 0, (1 << 128) - 1),))
+        if folded[0] == "subnet":
+            tokens, folded = tokens[1:], folded[1:]
+        try:
+            if len(tokens) == 2 and folded[0] == "host":
+                address = ipaddress.ip_address(tokens[1])
+                return NetworkSemantics(intervals=(AddressInterval(
+                    address.version, int(address), int(address)
+                ),))
+            if len(tokens) == 3 and folded[0] == "range":
+                first, last = ipaddress.ip_address(tokens[1]), ipaddress.ip_address(tokens[2])
+                if first.version != last.version or int(first) > int(last):
+                    return None
+                return NetworkSemantics(intervals=(AddressInterval(
+                    first.version, int(first), int(last)
+                ),))
+            if len(tokens) == 1:
+                network = ipaddress.ip_network(tokens[0], strict=False)
+                return NetworkSemantics(intervals=(AddressInterval(
+                    network.version, int(network.network_address), int(network.broadcast_address)
+                ),))
+            if len(tokens) == 2 and folded[0] not in {
+                "object", "object-group", "interface", "fqdn", "eq", "range", "lt", "gt", "neq"
+            }:
+                network = ipaddress.ip_network((tokens[0], tokens[1]), strict=False)
+                return NetworkSemantics(intervals=(AddressInterval(
+                    network.version, int(network.network_address), int(network.broadcast_address)
+                ),))
+        except ValueError:
+            return None
+        return None
+
+    @staticmethod
+    def _combine_network_semantics(
+        items: list[NetworkSemantics], unresolved_default: str
+    ) -> NetworkSemantics:
+        intervals: list[AddressInterval] = []
+        unresolved: list[str] = []
+        for item in items:
+            intervals.extend(item.intervals)
+            unresolved.extend(item.unresolved)
+            if not item.complete and not item.unresolved:
+                unresolved.append(unresolved_default)
+        if unresolved or not intervals:
+            return NetworkSemantics(
+                intervals=tuple(sorted(set(intervals))),
+                complete=False,
+                unresolved=tuple(dict.fromkeys(unresolved or (unresolved_default,))),
+            )
+        return NetworkSemantics(intervals=tuple(sorted(set(intervals))))
+
+    def _resolve_acl_network_tokens(
+        self,
+        tokens: list[str],
+        stack: frozenset[tuple[str, str]],
+        budget: list[int],
+    ) -> NetworkSemantics:
+        literal = self._network_literal(tokens)
+        if literal is not None:
+            return literal
+        if len(tokens) != 2 or tokens[0].casefold() not in {"object", "object-group"}:
+            return NetworkSemantics(
+                complete=False, unresolved=(" ".join(tokens) or "<empty-address>",)
+            )
+        kind = "object" if tokens[0].casefold() == "object" else "group"
+        name = tokens[1]
+        key = (kind, name.casefold())
+        if key in stack or budget[0] <= 0:
+            return NetworkSemantics(complete=False, unresolved=(name,))
+        budget[0] -= 1
+        state = self._acl_object_state()
+        next_stack = stack | {key}
+        if kind == "object":
+            definition = state["network_objects"].get(name.casefold())
+            if not definition or str(definition).casefold().startswith("fqdn "):
+                return NetworkSemantics(complete=False, unresolved=(name,))
+            resolved = self._network_literal(str(definition).split())
+            return resolved or NetworkSemantics(complete=False, unresolved=(name,))
+        members = state["network_groups"].get(name.casefold())
+        if not members:
+            return NetworkSemantics(complete=False, unresolved=(name,))
+        results = []
+        for member in members:
+            member_tokens = member.split()
+            if member_tokens[0].casefold() == "group-object" and len(member_tokens) == 2:
+                target = ["object-group", member_tokens[1]]
+            elif [item.casefold() for item in member_tokens[:2]] == ["network-object", "object"] and len(member_tokens) == 3:
+                target = ["object", member_tokens[2]]
+            elif member_tokens[0].casefold() == "network-object":
+                target = member_tokens[1:]
+            else:
+                target = member_tokens
+            results.append(self._resolve_acl_network_tokens(target, next_stack, budget))
+        return self._combine_network_semantics(results, name)
+
+    def resolve_acl_network(self, value: str) -> NetworkSemantics:
+        """Resolve literal and bounded static ASA network objects/groups."""
+
+        return self._resolve_acl_network_tokens(
+            value.split(), frozenset(), [self._MAX_ACL_OBJECT_EXPANSION]
+        )
+
+    @classmethod
+    def _port_number(cls, value: str) -> int | None:
+        folded = value.casefold()
+        if folded.isdigit():
+            number = int(folded)
+            return number if 0 <= number <= 65535 else None
+        return cls._ASA_PORTS.get(folded)
+
+    @classmethod
+    def _port_ranges(cls, qualifiers: list[str]) -> tuple[tuple[int, int], ...] | None:
+        if not qualifiers:
+            return ((0, 65535),)
+        operator = qualifiers[0].casefold()
+        values = [cls._port_number(value) for value in qualifiers[1:]]
+        if operator == "eq" and len(values) == 1 and values[0] is not None:
+            return ((values[0], values[0]),)
+        if operator == "range" and len(values) == 2 and None not in values and values[0] <= values[1]:
+            return ((values[0], values[1]),)
+        if operator == "lt" and len(values) == 1 and values[0] is not None and values[0] > 0:
+            return ((0, values[0] - 1),)
+        if operator == "gt" and len(values) == 1 and values[0] is not None and values[0] < 65535:
+            return ((values[0] + 1, 65535),)
+        if operator == "neq" and len(values) == 1 and values[0] is not None:
+            result = []
+            if values[0] > 0:
+                result.append((0, values[0] - 1))
+            if values[0] < 65535:
+                result.append((values[0] + 1, 65535))
+            return tuple(result) or None
+        return None
+
+    def _service_from_tokens(
+        self,
+        tokens: list[str],
+        stack: frozenset[tuple[str, str]],
+        budget: list[int],
+        default_protocol: str | None = None,
+    ) -> ServiceSemantics:
+        if not tokens:
+            return ServiceSemantics(complete=False, unresolved=("<empty-service>",))
+        folded = [token.casefold() for token in tokens]
+        if folded[0] in {"service", "service-object", "protocol-object", "port-object"}:
+            command = folded.pop(0)
+            tokens = tokens[1:]
+            if command == "port-object":
+                if default_protocol is None:
+                    return ServiceSemantics(complete=False, unresolved=("port-object",))
+                folded.insert(0, default_protocol.casefold())
+                tokens.insert(0, default_protocol)
+        if len(tokens) == 2 and folded[0] == "object":
+            return self._resolve_acl_service_reference(
+                "object", tokens[1], stack, budget
+            )
+        if len(tokens) == 2 and folded[0] == "object-group":
+            return self._resolve_acl_service_reference(
+                "group", tokens[1], stack, budget
+            )
+        protocol = folded[0]
+        qualifiers = folded[1:]
+        if protocol in {"ip", "any", "any4", "any6"} and not qualifiers:
+            return ServiceSemantics(any=True)
+        protocols = ("tcp", "udp") if protocol == "tcp-udp" else (protocol,)
+        if "source" in qualifiers:
+            return ServiceSemantics(
+                complete=False, unresolved=(" ".join(tokens),)
+            )
+        if qualifiers[:1] == ["destination"]:
+            qualifiers = qualifiers[1:]
+        if protocol in {"tcp", "udp", "tcp-udp"}:
+            ranges = self._port_ranges(qualifiers)
+            if ranges is None:
+                return ServiceSemantics(
+                    complete=False, unresolved=(" ".join(tokens),)
+                )
+            return ServiceSemantics(intervals=tuple(
+                ServiceInterval(member_protocol, first, last)
+                for member_protocol in protocols
+                for first, last in ranges
+            ))
+        if protocol in {"icmp", "icmp6", "ipv6-icmp"}:
+            canonical = "icmp6" if protocol == "ipv6-icmp" else protocol
+            if not qualifiers:
+                return ServiceSemantics(intervals=(ServiceInterval(canonical, 0, 65535),))
+            if len(qualifiers) == 1 and qualifiers[0].isdigit() and 0 <= int(qualifiers[0]) <= 255:
+                value = int(qualifiers[0])
+                return ServiceSemantics(intervals=(ServiceInterval(canonical, value, value),))
+            return ServiceSemantics(complete=False, unresolved=(" ".join(tokens),))
+        numeric_protocol = protocol.isdigit() and 0 <= int(protocol) <= 255
+        if not qualifiers and (protocol in self._ASA_PROTOCOLS or numeric_protocol):
+            canonical = {"6": "tcp", "17": "udp", "1": "icmp", "58": "icmp6"}.get(
+                protocol, f"ip-{protocol}" if protocol.isdigit() else protocol
+            )
+            return ServiceSemantics(intervals=(ServiceInterval(canonical, 0, 65535),))
+        return ServiceSemantics(complete=False, unresolved=(" ".join(tokens),))
+
+    @staticmethod
+    def _combine_service_semantics(
+        items: list[ServiceSemantics], unresolved_default: str
+    ) -> ServiceSemantics:
+        intervals: list[ServiceInterval] = []
+        unresolved: list[str] = []
+        for item in items:
+            if item.any:
+                return ServiceSemantics(any=True)
+            intervals.extend(item.intervals)
+            unresolved.extend(item.unresolved)
+            if not item.complete and not item.unresolved:
+                unresolved.append(unresolved_default)
+        if unresolved or not intervals:
+            return ServiceSemantics(
+                intervals=tuple(sorted(set(intervals))),
+                complete=False,
+                unresolved=tuple(dict.fromkeys(unresolved or (unresolved_default,))),
+            )
+        return ServiceSemantics(intervals=tuple(sorted(set(intervals))))
+
+    def _resolve_acl_service_reference(
+        self,
+        kind: str,
+        name: str,
+        stack: frozenset[tuple[str, str]],
+        budget: list[int],
+    ) -> ServiceSemantics:
+        key = (kind, name.casefold())
+        if key in stack or budget[0] <= 0:
+            return ServiceSemantics(complete=False, unresolved=(name,))
+        budget[0] -= 1
+        state = self._acl_object_state()
+        next_stack = stack | {key}
+        if kind == "object":
+            definition = state["service_objects"].get(name.casefold())
+            if not definition:
+                return ServiceSemantics(complete=False, unresolved=(name,))
+            return self._service_from_tokens(
+                str(definition).split(), next_stack, budget
+            )
+        data = state["service_groups"].get(name.casefold())
+        if data:
+            members = data["members"]
+            if not members:
+                return ServiceSemantics(complete=False, unresolved=(name,))
+            results = []
+            for member in members:
+                tokens = member.split()
+                folded = [item.casefold() for item in tokens]
+                if folded[:1] == ["group-object"] and len(tokens) == 2:
+                    results.append(self._resolve_acl_service_reference(
+                        "group", tokens[1], next_stack, budget
+                    ))
+                elif folded[:2] == ["service-object", "object"] and len(tokens) == 3:
+                    results.append(self._resolve_acl_service_reference(
+                        "object", tokens[2], next_stack, budget
+                    ))
+                else:
+                    results.append(self._service_from_tokens(
+                        tokens, next_stack, budget, data["protocol"]
+                    ))
+            return self._combine_service_semantics(results, name)
+        members = state["protocol_groups"].get(name.casefold())
+        if members:
+            results = []
+            for member in members:
+                tokens = member.split()
+                if [item.casefold() for item in tokens[:1]] == ["group-object"] and len(tokens) == 2:
+                    results.append(self._resolve_acl_service_reference(
+                        "group", tokens[1], next_stack, budget
+                    ))
+                else:
+                    results.append(self._service_from_tokens(tokens, next_stack, budget))
+            return self._combine_service_semantics(results, name)
+        return ServiceSemantics(complete=False, unresolved=(name,))
+
+    def resolve_acl_service(self, entry: ASAACLEntry) -> ServiceSemantics:
+        """Resolve bounded ASA protocols, destination ports and static service groups."""
+
+        if entry.unsupported_predicates:
+            return ServiceSemantics(
+                complete=False, unresolved=entry.unsupported_predicates
+            )
+        protocol_tokens = entry.protocol.split()
+        if len(protocol_tokens) == 2 and protocol_tokens[0].casefold() == "object-group":
+            if entry.service_qualifiers:
+                return ServiceSemantics(
+                    complete=False, unresolved=(entry.protocol,)
+                )
+            return self._resolve_acl_service_reference(
+                "group", protocol_tokens[1], frozenset(),
+                [self._MAX_ACL_OBJECT_EXPANSION],
+            )
+        if len(protocol_tokens) == 2 and protocol_tokens[0].casefold() == "object":
+            if entry.service_qualifiers:
+                return ServiceSemantics(complete=False, unresolved=(entry.protocol,))
+            return self._resolve_acl_service_reference(
+                "object", protocol_tokens[1], frozenset(),
+                [self._MAX_ACL_OBJECT_EXPANSION],
+            )
+        qualifiers = list(entry.service_qualifiers)
+        if len(qualifiers) == 2 and qualifiers[0] == "object-group":
+            resolved = self._resolve_acl_service_reference(
+                "group", qualifiers[1], frozenset(),
+                [self._MAX_ACL_OBJECT_EXPANSION],
+            )
+            protocol = entry.protocol.casefold()
+            if resolved.complete and not resolved.any and any(
+                item.protocol.casefold() != protocol for item in resolved.intervals
+            ):
+                return ServiceSemantics(
+                    complete=False, unresolved=(" ".join(qualifiers),)
+                )
+            return resolved
+        return self._service_from_tokens(
+            [entry.protocol, *qualifiers], frozenset(),
+            [self._MAX_ACL_OBJECT_EXPANSION],
+        )
+
+    def get_normalized_config(self) -> NormalizedConfig:
+        """Expose only ASA state already reconstructed by native parser methods."""
+
+        hostname = self.get_hostname()
+        version = self.get_version()
+
+        management_services: list[ManagementService] = []
+        for protocol in ("telnet", "ssh"):
+            for grant in self.get_management_grants(protocol):
+                source = (
+                    grant.source
+                    if grant.address_family == "ipv6"
+                    else f"{grant.source} {grant.mask}"
+                )
+                management_services.append(ManagementService(
+                    protocol=protocol,
+                    state=ConfigurationState.ENABLED,
+                    interface=grant.interface,
+                    permitted_sources=(source,),
+                    evidence=(ConfigEvidence(
+                        f"{protocol} {source} {grant.interface}", self.config_filepath
+                    ),),
+                ))
+        if self.get_http_server_enabled():
+            for grant in self.get_management_grants("http"):
+                source = (
+                    grant.source
+                    if grant.address_family == "ipv6"
+                    else f"{grant.source} {grant.mask}"
+                )
+                management_services.append(ManagementService(
+                    protocol="https",
+                    state=ConfigurationState.ENABLED,
+                    interface=grant.interface,
+                    permitted_sources=(source,),
+                    evidence=(ConfigEvidence(
+                        f"http {source} {grant.interface}", self.config_filepath
+                    ),),
+                ))
+
+        users = tuple(
+            LocalUser(
+                username=credential.account,
+                state=ConfigurationState.CONFIGURED,
+                privilege=next(
+                    (
+                        item["privilege"] for item in self.get_users()
+                        if item["username"].casefold() == credential.account.casefold()
+                    ),
+                    None,
+                ),
+                authentication=credential.method,
+                evidence=credential.evidence,
+            )
+            for credential in self.get_local_credentials()
+        )
+
+        interfaces: list[NetworkInterface] = []
+        for block in self.parser.find_objects("^interface"):
+            name = block.re_match_typed(r"^interface\s+(\S+)", default="")
+            if not name:
+                continue
+            zone = ""
+            addresses: list[str] = []
+            state = ConfigurationState.UNKNOWN
+            evidence = [ConfigEvidence(f"interface {name}", self.config_filepath)]
+            for child in block.children:
+                command = child.text.strip()
+                match = re.fullmatch(r"nameif\s+(\S+)", command)
+                if match:
+                    zone = match.group(1)
+                if command == "shutdown":
+                    state = ConfigurationState.DISABLED
+                elif command == "no shutdown":
+                    state = ConfigurationState.ENABLED
+                address = re.fullmatch(r"ip address\s+(\S+)\s+(\S+)(?:\s+.*)?", command)
+                if address:
+                    addresses.append(f"{address.group(1)} {address.group(2)}")
+                ipv6 = re.fullmatch(r"ipv6 address\s+(\S+)(?:\s+.*)?", command)
+                if ipv6:
+                    addresses.append(ipv6.group(1))
+            if zone:
+                interfaces.append(NetworkInterface(
+                    name=name,
+                    state=state,
+                    zone=zone,
+                    addresses=tuple(addresses),
+                    evidence=tuple(evidence),
+                ))
+
+        bindings: dict[str, list[dict]] = {}
+        for binding in self.get_acl_bindings():
+            bindings.setdefault(binding["acl_name"], []).append(binding)
+        policies: list[SecurityPolicy] = []
+        positions: dict[str, int] = {}
+        for entry in self.get_acl_entries():
+            positions[entry.acl_name] = positions.get(entry.acl_name, 0) + 1
+            for binding in bindings.get(entry.acl_name, []):
+                policies.append(SecurityPolicy(
+                    name=f"{entry.acl_name}:{positions[entry.acl_name]}",
+                    state=(
+                        ConfigurationState.DISABLED
+                        if entry.inactive else ConfigurationState.ENABLED
+                    ),
+                    action=entry.action,
+                    position=positions[entry.acl_name],
+                    scope=f"{binding['interface']}:{binding['direction']}",
+                    source_interfaces=(binding["interface"],),
+                    sources=(entry.source,),
+                    destinations=(entry.destination,),
+                    services=(entry.protocol,),
+                    evidence=(ConfigEvidence(
+                        re.sub(r"\s+", " ", entry.raw_line).strip(), self.config_filepath
+                    ),),
+                ))
+
+        logging_destinations: list[LoggingDestination] = []
+        for line in self.get_logging_hosts():
+            match = re.fullmatch(r"logging host\s+(\S+)\s+(\S+)(?:\s+.*)?", line)
+            if match:
+                logging_destinations.append(LoggingDestination(
+                    destination_type="syslog",
+                    state=ConfigurationState.ENABLED,
+                    address=match.group(2),
+                    severity=self.get_logging_trap_level(),
+                    scope=match.group(1),
+                    evidence=(ConfigEvidence(
+                        f"logging host {match.group(1)} {match.group(2)}",
+                        self.config_filepath,
+                    ),),
+                ))
+
+        ssl_version = self.get_ssl_min_version()
+        crypto = (
+            (CryptoSetting(
+                name="ssl-server-minimum-version",
+                value=ssl_version,
+                state=ConfigurationState.CONFIGURED,
+                evidence=(ConfigEvidence(
+                    f"ssl server-version {ssl_version}", self.config_filepath
+                ),),
+            ),)
+            if ssl_version else ()
+        )
+        return NormalizedConfig(
+            device_type=self.device_type,
+            hostname=(
+                NormalizedValue.known(hostname)
+                if hostname != "?" else NormalizedValue.unknown("Hostname is absent")
+            ),
+            device_model=NormalizedValue.unknown(
+                "ASA hardware model is not parsed from the supported configuration export"
+            ),
+            software_version=(
+                NormalizedValue.known(version)
+                if version != "?" else NormalizedValue.unknown("ASA software version is absent")
+            ),
+            management_services=NormalizedCollection.known(*management_services),
+            users=NormalizedCollection.known(*users),
+            interfaces=NormalizedCollection.known(*interfaces),
+            policies=NormalizedCollection.known(*policies),
+            logging_destinations=NormalizedCollection.known(*logging_destinations),
+            crypto_settings=NormalizedCollection.known(*crypto),
+        )

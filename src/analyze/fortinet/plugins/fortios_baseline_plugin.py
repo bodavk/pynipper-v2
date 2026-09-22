@@ -6,6 +6,12 @@ import re
 from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.issue import Finding, Severity
 from src.devices.common.base_parser import BaseDeviceParser
+from src.devices.common.policy_semantics import (
+    ProofState,
+    network_covers,
+    service_covers,
+    static_values_cover,
+)
 from src.devices.fortinet.fortios import FortiDict, FortiOSParser
 
 
@@ -57,6 +63,23 @@ FORTINET_DOS_GUIDE = (
     "https://docs.fortinet.com/document/fortigate/7.2.11/administration-guide/771644/"
     "configuring-a-dos-policy"
 )
+FORTINET_CONFIGURATION_BACKUP_GUIDE = (
+    "https://docs.fortinet.com/document/fortigate/7.6.5/administration-guide/"
+    "702257/configuration-backups-and-reset"
+)
+FORTINET_LOCAL_CERTIFICATE_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.0.19/cli-reference/"
+    "556354036/config-vpn-certificate-local"
+)
+FORTINET_CA_CERTIFICATE_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.6.6/cli-reference/"
+    "144962638/config-vpn-certificate-ca"
+)
+NIST_CRYPTO_TRANSITIONS = "https://csrc.nist.gov/pubs/sp/800/131/a/r2/final"
+FORTINET_AUTO_SCRIPT_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.4.1/cli-reference/64620/"
+    "config-system-auto-script"
+)
 FORTINET_INSPECTION_GUIDE = (
     "https://docs.fortinet.com/document/fortigate/7.2.0/administration-guide/721410/"
     "inspection-modes"
@@ -64,6 +87,22 @@ FORTINET_INSPECTION_GUIDE = (
 FORTINET_PROFILE_GROUP_REFERENCE = (
     "https://docs.fortinet.com/document/fortigate/7.2.6/cli-reference/283620/"
     "config-firewall-profile-group"
+)
+FORTINET_ADDRESS_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.6.4/cli-reference/306021697/"
+    "config-firewall-address"
+)
+FORTINET_ADDRESS_GROUP_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.6.0/cli-reference/301511994/"
+    "config-firewall-addrgrp"
+)
+FORTINET_SERVICE_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.6.6/cli-reference/198499981/"
+    "config-firewall-service-custom"
+)
+FORTINET_SERVICE_GROUP_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.6.3/cli-reference/242456538/"
+    "config-firewall-service-group"
 )
 FORTINET_IPS_REFERENCE = (
     "https://docs.fortinet.com/document/fortigate/7.2.0/cli-reference/407620/"
@@ -475,6 +514,105 @@ class PluginFortiOSBaseline(BasePlugin):
                     )
                 )
 
+    def check_management_certificates(self, parser: BaseDeviceParser) -> None:
+        fortios = self._fortios(parser)
+        if not any(
+            self._enabled(settings)
+            and "https" in {value.casefold() for value in self._values(settings, "allowaccess")}
+            for _, _, settings, _ in fortios.iter_interfaces()
+        ):
+            return
+        references = (
+            FORTINET_GLOBAL_REFERENCE,
+            FORTINET_LOCAL_CERTIFICATE_REFERENCE,
+            FORTINET_CA_CERTIFICATE_REFERENCE,
+        )
+        for binding in fortios.get_management_certificate_bindings():
+            evidence = tuple(item.text for item in binding.evidence) or (
+                f"admin-server-cert {binding.certificate}",
+            )
+            if binding.reference_state == "unavailable":
+                continue
+            if binding.reference_state != "resolved":
+                self.add_issue(self._finding(
+                    parser,
+                    "fortinet.fortios.https.certificate_unresolved",
+                    "Administrative HTTPS certificate reference is unresolved",
+                    f"Scope '{binding.scope}' selects admin-server-cert '{binding.certificate}', but no matching supplied local-certificate object is resolved.",
+                    "The configuration export does not establish the certificate identity selected for administrative HTTPS.",
+                    "Include the referenced local-certificate object in the export or correct admin-server-cert to select the intended installed certificate.",
+                    Severity.MEDIUM,
+                    evidence,
+                    references,
+                ))
+                continue
+            if binding.public_material_state == "malformed":
+                self.add_issue(self._finding(
+                    parser,
+                    "fortinet.fortios.https.certificate_material_malformed",
+                    "Administrative HTTPS certificate material is malformed",
+                    f"The exported public material for admin-server-cert '{binding.certificate}' in scope '{binding.scope}' cannot be parsed as X.509.",
+                    "The supplied export cannot establish the selected certificate's identity, validity, or cryptographic strength.",
+                    "Re-import or renew the intended certificate and verify that a complete public certificate is present in the audit export.",
+                    Severity.HIGH,
+                    evidence,
+                    references,
+                ))
+                continue
+            if binding.assessment is None or binding.metadata is None:
+                continue
+
+            assessment = binding.assessment
+            metadata = binding.metadata
+            if assessment.validity_state in {"expired", "not-yet-valid"}:
+                self.add_issue(self._finding(
+                    parser,
+                    "fortinet.fortios.https.certificate_validity",
+                    "Administrative HTTPS certificate is outside its validity period",
+                    f"Certificate '{binding.certificate}' is {assessment.validity_state} at the explicit assessment time; its interval is {metadata.not_before} through {metadata.not_after}.",
+                    "Administrators cannot validate an endpoint certificate outside its declared validity interval.",
+                    "Renew or replace the selected certificate before its activation or expiration boundary.",
+                    Severity.HIGH,
+                    evidence,
+                    references,
+                ))
+            if assessment.identity_state == "mismatch":
+                self.add_issue(self._finding(
+                    parser,
+                    "fortinet.fortios.https.certificate_identity",
+                    "Administrative HTTPS certificate does not match the intended identity",
+                    f"Certificate '{binding.certificate}' does not contain the explicitly declared management identity for scope '{binding.scope}' in subjectAltName.",
+                    "Administrators can receive hostname or IP identity errors and may learn to bypass certificate warnings.",
+                    "Enroll and select a certificate whose subjectAltName contains the declared management DNS name or IP address.",
+                    Severity.HIGH,
+                    evidence,
+                    references,
+                ))
+            if assessment.algorithm_state == "weak":
+                self.add_issue(self._finding(
+                    parser,
+                    "fortinet.fortios.https.certificate_algorithm",
+                    "Administrative HTTPS certificate uses a legacy key or signature",
+                    f"Certificate '{binding.certificate}' uses {metadata.public_key_algorithm} {metadata.public_key_size or 'intrinsic'} and signature hash {metadata.signature_hash_algorithm}.",
+                    "Legacy public-key sizes or certificate signatures provide inadequate cryptographic assurance.",
+                    "Replace the certificate with an organization-approved key and SHA-2-or-stronger signature supported by the FortiOS release.",
+                    Severity.HIGH,
+                    evidence,
+                    references + (NIST_CRYPTO_TRANSITIONS,),
+                ))
+            if assessment.trust_state == "verification-failed":
+                self.add_issue(self._finding(
+                    parser,
+                    "fortinet.fortios.https.certificate_trust",
+                    "Administrative HTTPS certificate chain does not validate to an approved anchor",
+                    f"Certificate '{binding.certificate}' matches the declared identity and time boundary but cannot be validated to the explicitly approved exported trust-anchor fingerprint(s).",
+                    "The supplied public certificate set does not establish trust under the selected assessment policy.",
+                    "Supply the complete issuing chain and approved anchor, or replace the certificate with one chaining to the approved PKI.",
+                    Severity.HIGH,
+                    evidence,
+                    references,
+                ))
+
     def check_snmp(self, parser: BaseDeviceParser) -> None:
         fortios = self._fortios(parser)
         snmp_interfaces = [
@@ -850,6 +988,178 @@ class PluginFortiOSBaseline(BasePlugin):
                         )
                     )
 
+    def check_policy_effectiveness(self, parser: BaseDeviceParser) -> None:
+        """Report independent hygiene and only statically proven first-match effects."""
+
+        fortios = self._fortios(parser)
+        prior_by_scope: dict[tuple[str, str], list] = defaultdict(list)
+        references = (
+            FORTINET_HARDENING,
+            FORTINET_ADDRESS_REFERENCE,
+            FORTINET_ADDRESS_GROUP_REFERENCE,
+            FORTINET_SERVICE_REFERENCE,
+            FORTINET_SERVICE_GROUP_REFERENCE,
+        )
+        for policy in fortios.get_firewall_policy_semantics():
+            evidence = tuple(item.text for item in policy.evidence) or (
+                f"firewall policy {policy.name}",
+            )
+            if not policy.enabled:
+                if (
+                    policy.action == "accept"
+                    and policy.source_networks.any
+                    and policy.destination_networks.any
+                    and policy.services.any
+                    and policy.schedule.casefold() == "always"
+                    and not policy.source_negated
+                    and not policy.destination_negated
+                    and not policy.service_negated
+                ):
+                    self.add_issue(self._finding(
+                        parser,
+                        "fortinet.fortios.policy.disabled_permissive_rule",
+                        "Disabled permissive firewall policy remains configured",
+                        f"Disabled {policy.family} policy '{policy.name}' at position {policy.position} in scope '{policy.scope}' retains an all-address, all-service accept action.",
+                        "Stale permissive policy obscures intent and can create broad exposure if re-enabled.",
+                        "Remove the obsolete policy or narrow and document it before reactivation.",
+                        Severity.LOW,
+                        evidence,
+                        references,
+                    ))
+                continue
+
+            if (
+                policy.action == "accept"
+                and policy.services.any
+                and not (policy.source_networks.any and policy.destination_networks.any)
+            ):
+                self.add_issue(self._finding(
+                    parser,
+                    "fortinet.fortios.policy.broad_service",
+                    "Firewall policy is unrestricted by service",
+                    f"Enabled {policy.family} accept policy '{policy.name}' at position {policy.position} in scope '{policy.scope}' permits all services within its address and interface scope.",
+                    "Unnecessary protocols and destination ports can cross the policy boundary.",
+                    "Replace ALL with the smallest required service objects or a reviewed service group.",
+                    Severity.MEDIUM,
+                    evidence,
+                    references,
+                ))
+
+            key = (policy.scope.casefold(), policy.family)
+            if not policy.proof_eligible:
+                continue
+            for earlier in prior_by_scope[key]:
+                if not all(
+                    state == ProofState.PROVEN
+                    for state in (
+                        static_values_cover(
+                            earlier.source_interfaces,
+                            policy.source_interfaces,
+                            any_value="any",
+                        ),
+                        static_values_cover(
+                            earlier.destination_interfaces,
+                            policy.destination_interfaces,
+                            any_value="any",
+                        ),
+                        network_covers(earlier.source_networks, policy.source_networks),
+                        network_covers(
+                            earlier.destination_networks, policy.destination_networks
+                        ),
+                        service_covers(earlier.services, policy.services),
+                    )
+                ):
+                    continue
+                same_action = earlier.action == policy.action
+                if same_action and earlier.behavior_signature != policy.behavior_signature:
+                    continue
+                self.add_issue(self._finding(
+                    parser,
+                    (
+                        "fortinet.fortios.policy.redundant_rule"
+                        if same_action
+                        else "fortinet.fortios.policy.shadowed_rule"
+                    ),
+                    "Firewall policy is redundant" if same_action else "Firewall policy is shadowed",
+                    f"{'IPv6' if policy.family == 'ipv6' else 'IPv4'} policy '{policy.name}' at position {policy.position} in scope '{policy.scope}' is fully covered by earlier policy '{earlier.name}' at position {earlier.position} with {'equivalent behavior' if same_action else 'a different terminal action'}.",
+                    "The later policy cannot alter first-match enforcement for the statically proven traffic scope and obscures policy intent.",
+                    "Remove or reorder the policy after validating VDOM scope, NAT/inspection behavior and operational intent.",
+                    Severity.LOW if same_action else Severity.HIGH,
+                    evidence + tuple(item.text for item in earlier.evidence),
+                    references,
+                ))
+                break
+            prior_by_scope[key].append(policy)
+
+    def check_configuration_backups(self, parser: BaseDeviceParser) -> None:
+        fortios = self._fortios(parser)
+        backups = fortios.get_configuration_backups()
+        complete = [
+            backup
+            for backup in backups
+            if backup.schedule_state == "effective"
+            and backup.destination
+            and backup.transport_security != "unknown"
+        ]
+        incomplete_automatic = [
+            backup
+            for backup in backups
+            if backup.start_mode == "auto" and backup not in complete
+        ]
+
+        for backup in incomplete_automatic:
+            gaps = []
+            if not backup.destination or backup.transport_security == "unknown":
+                gaps.append("no supported destination")
+            if backup.schedule_state != "effective":
+                gaps.append(f"schedule state '{backup.schedule_state}'")
+            self.add_issue(self._finding(
+                parser,
+                "fortinet.fortios.configuration.backup_incomplete",
+                "Automatic configuration backup script is incomplete",
+                f"Auto-script '{backup.name}' in scope '{backup.scope}' has "
+                + " and ".join(gaps)
+                + ".",
+                "The configured automation cannot provide continuing configuration checkpoints as intended.",
+                "Configure an automatic backup script with a positive interval, repeat 0, and a supported destination, or use a documented external backup process.",
+                Severity.MEDIUM,
+                tuple(item.text for item in backup.evidence),
+                (FORTINET_CONFIGURATION_BACKUP_GUIDE, FORTINET_AUTO_SCRIPT_REFERENCE),
+            ))
+
+        if (
+            parser.assessment_context.configuration_backup_scope == "on-device-required"
+            and not complete
+            and not incomplete_automatic
+            and self._supports_default_inference(fortios)
+        ):
+            self.add_issue(self._finding(
+                parser,
+                "fortinet.fortios.configuration.backup_required",
+                "Required recurring on-device configuration backup is absent",
+                "The assessment policy requires an on-device schedule, but no complete recurring FortiOS backup auto-script is configured.",
+                "The device lacks the policy-required configuration checkpoints for recovery.",
+                "Configure a recurring secure backup auto-script or change the assessment scope only when an external managed backup process is evidenced.",
+                Severity.MEDIUM,
+                ("assessment policy: on-device configuration backup required",),
+                (FORTINET_CONFIGURATION_BACKUP_GUIDE, FORTINET_AUTO_SCRIPT_REFERENCE),
+            ))
+
+        for backup in backups:
+            if backup.transport_security != "insecure":
+                continue
+            self.add_issue(self._finding(
+                parser,
+                "fortinet.fortios.configuration.backup_transport",
+                "Configuration backup script uses an insecure transport",
+                f"Backup auto-script '{backup.name}' in scope '{backup.scope}' sends configuration data to '{backup.destination or 'an unresolved destination'}' using {backup.protocol.upper()}.",
+                "Configuration backups can expose credentials, addressing, and security policy in transit.",
+                "Use SFTP or a protected management station and secure the stored backup independently.",
+                Severity.HIGH,
+                tuple(item.text for item in backup.evidence),
+                (FORTINET_CONFIGURATION_BACKUP_GUIDE,),
+            ))
+
     def check_updates_and_unused_services(self, parser: BaseDeviceParser) -> None:
         fortios = self._fortios(parser)
         for scope, settings, path in fortios.iter_scoped_sections("system autoupdate schedule"):
@@ -958,53 +1268,66 @@ class PluginFortiOSBaseline(BasePlugin):
                 wan_by_scope[scope][name.lower()] = self._evidence(fortios, path, f"system interface {name}")
 
         configured: dict[str, set[str]] = defaultdict(set)
-        for section_name in ("firewall DoS-policy", "firewall DoS-policy6"):
-            for scope, section, path in fortios.iter_scoped_sections(section_name):
-                for name, settings in section.items():
-                    if not isinstance(settings, dict) or not self._enabled(settings):
-                        continue
-                    interface = self._text(settings.get("interface")).lower()
-                    if interface:
-                        configured[scope].add(interface)
-                    anomalies = settings.get("anomaly")
-                    blocking_anomalies = []
-                    unlogged = []
-                    if isinstance(anomalies, dict):
-                        for anomaly_name, anomaly in anomalies.items():
-                            if not isinstance(anomaly, dict) or not self._enabled(anomaly):
-                                continue
-                            if self._text(anomaly.get("action"), "pass").lower() == "block":
-                                blocking_anomalies.append(str(anomaly_name))
-                            if self._text(anomaly.get("log"), "disable").lower() != "enable":
-                                unlogged.append(str(anomaly_name))
-                    if not blocking_anomalies:
-                        self.add_issue(
-                            self._finding(
-                                parser,
-                                "fortinet.fortios.dos.no_blocking_anomaly",
-                                "DoS policy has no blocking anomaly",
-                                f"Enabled {section_name} '{name}' in scope '{scope}' has no enabled anomaly with action block.",
-                                "A policy without an active blocking detector does not provide threshold-based flood mitigation.",
-                                "Enable and tune applicable anomaly detectors with action block and tested thresholds.",
-                                Severity.MEDIUM,
-                                self._evidence(fortios, path + (str(name),), f"{section_name} {name}"),
-                                (FORTINET_DOS_GUIDE,),
-                            )
-                        )
-                    elif unlogged:
-                        self.add_issue(
-                            self._finding(
-                                parser,
-                                "fortinet.fortios.dos.logging",
-                                "DoS anomaly logging is disabled",
-                                f"DoS policy '{name}' in scope '{scope}' has unlogged enabled anomalies: {', '.join(unlogged)}.",
-                                "Unlogged flood detections reduce monitoring and tuning visibility.",
-                                "Enable logging for each active anomaly and forward those events centrally.",
-                                Severity.MEDIUM,
-                                self._evidence(fortios, path + (str(name),), f"{section_name} {name}"),
-                                (FORTINET_DOS_GUIDE,),
-                            )
-                        )
+        for policy in fortios.get_dos_policies():
+            if not policy.enabled:
+                continue
+            active = [anomaly for anomaly in policy.anomalies if anomaly.enabled]
+            if active:
+                configured[policy.scope].update(interface.casefold() for interface in policy.interfaces)
+            monitor_only = [anomaly.name for anomaly in active if anomaly.action != "block"]
+            blocking = [anomaly.name for anomaly in active if anomaly.action == "block"]
+            evidence = tuple(item.text for item in policy.evidence) or (
+                f"firewall DoS-policy{('6' if policy.family == 'ipv6' else '')} {policy.name}",
+            )
+            if not blocking or monitor_only:
+                detail = (
+                    f"monitor-only or non-blocking anomalies: {', '.join(monitor_only)}"
+                    if monitor_only
+                    else "no enabled anomalies"
+                )
+                self.add_issue(
+                    self._finding(
+                        parser,
+                        "fortinet.fortios.dos.no_blocking_anomaly",
+                        "DoS policy includes unprotected anomaly coverage",
+                        f"Enabled {policy.family} DoS policy '{policy.name}' in scope '{policy.scope}' has {detail}.",
+                        "A pass-only or disabled detector records threshold events without mitigating that flood class.",
+                        "Set applicable anomalies to block after tuning and validating thresholds for the protected workload.",
+                        Severity.MEDIUM,
+                        evidence,
+                        (FORTINET_DOS_GUIDE,),
+                    )
+                )
+            unlogged = [anomaly.name for anomaly in active if not anomaly.logging]
+            if unlogged:
+                self.add_issue(
+                    self._finding(
+                        parser,
+                        "fortinet.fortios.dos.logging",
+                        "DoS anomaly logging is disabled",
+                        f"DoS policy '{policy.name}' in scope '{policy.scope}' has unlogged enabled anomalies: {', '.join(unlogged)}.",
+                        "Unlogged flood detections reduce monitoring and tuning visibility.",
+                        "Enable logging for each active anomaly and forward those events centrally.",
+                        Severity.MEDIUM,
+                        evidence,
+                        (FORTINET_DOS_GUIDE,),
+                    )
+                )
+            invalid_thresholds = [anomaly.name for anomaly in active if anomaly.threshold_state == "invalid"]
+            if invalid_thresholds:
+                self.add_issue(
+                    self._finding(
+                        parser,
+                        "fortinet.fortios.dos.threshold_invalid",
+                        "DoS anomaly threshold is invalid",
+                        f"DoS policy '{policy.name}' in scope '{policy.scope}' has invalid explicit thresholds for: {', '.join(invalid_thresholds)}.",
+                        "The intended detector cannot be proven to trigger at a valid configured threshold.",
+                        "Configure a valid positive threshold and tune its adequacy against observed workload baselines.",
+                        Severity.HIGH,
+                        evidence,
+                        (FORTINET_DOS_GUIDE,),
+                    )
+                )
 
         if self._supports_default_inference(fortios):
             for scope, interfaces in wan_by_scope.items():
@@ -1218,8 +1541,11 @@ class PluginFortiOSBaseline(BasePlugin):
     def analyze(self, parser: BaseDeviceParser) -> None:
         self.check_administrators(parser)
         self.check_management_crypto(parser)
+        self.check_management_certificates(parser)
         self.check_snmp(parser)
         self.check_logging_and_policy_profiles(parser)
+        self.check_policy_effectiveness(parser)
+        self.check_configuration_backups(parser)
         self.check_updates_and_unused_services(parser)
         self.check_password_and_session_policy(parser)
         self.check_ntp(parser)

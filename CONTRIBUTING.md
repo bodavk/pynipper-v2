@@ -6,7 +6,7 @@ Contributions should preserve the project's central promise: findings must descr
 
 - Read [Architecture](docs/ARCHITECTURE.md).
 - Follow [Extending pynipper-v2](docs/EXTENDING.md) for parser, plugin, registry, and test requirements.
-- Check [Supported devices](docs/SUPPORTED_DEVICES.md) and the [roadmap](docs/ROADMAP.md) before changing maturity claims.
+- Check [Supported devices](docs/SUPPORTED_DEVICES.md) and [Assessment policy](docs/ASSESSMENT_POLICY.md) before changing maturity or applicability claims.
 - Never include real credentials or unsanitized customer configurations.
 
 ## Pull requests

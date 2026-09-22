@@ -3,9 +3,9 @@
 from collections import defaultdict
 
 from src.analyze.common.base_plugin import BasePlugin
+from src.analyze.common.credentials import credential_policy_from_context, evaluate_credential
 from src.analyze.common.issue import Finding, Severity
 from src.devices.common.base_parser import BaseDeviceParser
-from src.devices.common.models import CredentialStorageAssessment
 from src.devices.juniper.junos import JunOSParser, JunosStatement
 
 
@@ -59,7 +59,19 @@ JUNIPER_NTP_GUIDE = (
 )
 JUNIPER_FILTER_GUIDE = (
     "https://www.juniper.net/documentation/us/en/software/junos/"
-    "routing-policy/topics/concept/firewall-filter-stateless-basic-uses-for.html"
+    "routing-policy/topics/concept/firewall-filter-overview.html"
+)
+JUNIPER_POLICER_GUIDE = (
+    "https://www.juniper.net/documentation/us/en/software/junos/"
+    "routing-policy/topics/concept/policer-summary-configuration-two-color.html"
+)
+JUNIPER_CONFIGURATION_ARCHIVE_GUIDE = (
+    "https://www.juniper.net/documentation/us/en/software/junos/cli/topics/task/"
+    "junos-software-system-management-router-configuration-archiving.html"
+)
+JUNIPER_ACCOUNTING_REFERENCE = (
+    "https://www.juniper.net/documentation/us/en/software/junos/cli-reference/"
+    "topics/ref/statement/accounting-edit-system.html"
 )
 JUNIPER_REDIRECT_REFERENCE = (
     "https://www.juniper.net/documentation/us/en/software/junos/cli-reference/"
@@ -76,6 +88,10 @@ JUNIPER_OSPF_AUTH_GUIDE = (
 JUNIPER_LLDP_GUIDE = (
     "https://www.juniper.net/documentation/us/en/software/junos/"
     "multicast-l2/topics/task/layer-2-services-lldp-configuring.html"
+)
+JUNIPER_DEFAULT_POLICY_REFERENCE = (
+    "https://www.juniper.net/documentation/us/en/software/junos/cli-reference/"
+    "topics/ref/statement/security-edit-default-policy.html"
 )
 
 
@@ -150,6 +166,22 @@ class PluginJunOSBaseline(BasePlugin):
         junos = self._junos(parser)
         return not junos.parse_error and junos.get_version() != "?"
 
+    def check_default_security_policy(self, parser: BaseDeviceParser) -> None:
+        state = self._junos(parser).get_default_security_policy()
+        if state.resolution_state not in {"explicit", "inherited"} or state.action != "permit-all":
+            return
+        self.add_issue(self._finding(
+            parser,
+            "juniper.junos.policy.default_permit_all",
+            "Unmatched SRX transit traffic is permitted",
+            "The effective global security default-policy permits traffic that matches no zone or global security policy; it does not govern host-inbound management traffic or stateless firewall filters.",
+            "Inter-zone and intra-zone traffic without an explicit matching security rule can traverse the firewall.",
+            "Set security policies default-policy deny-all and create narrowly scoped explicit permit policies.",
+            Severity.HIGH,
+            tuple(item.text for item in state.evidence),
+            (JUNIPER_DEFAULT_POLICY_REFERENCE,),
+        ))
+
     def check_authentication(self, parser: BaseDeviceParser) -> None:
         authentication_order = self._statements(parser, ("system", "authentication-order"))
         order_tokens = {
@@ -208,18 +240,14 @@ class PluginJunOSBaseline(BasePlugin):
                     (JUNIPER_AUTH_GUIDE,),
                 ))
 
-        unsafe = {
-            CredentialStorageAssessment.EMPTY,
-            CredentialStorageAssessment.PLAINTEXT,
-            CredentialStorageAssessment.WEAK_HASH,
-            CredentialStorageAssessment.WEAK_REVERSIBLE,
-        }
+        credential_policy = credential_policy_from_context(parser.assessment_context)
         for credential in self._junos(parser).get_credential_metadata():
-            if credential.storage_assessment in unsafe:
+            result = evaluate_credential(credential, credential_policy)
+            if result.unsafe_storage:
                 self.add_issue(self._finding(
                     parser, "juniper.junos.authentication.weak_storage",
                     "Administrative credential uses weak storage",
-                    f"The {credential.context} credential for '{credential.account}' uses '{credential.method}' format '{credential.storage_type}', classified as '{credential.storage_assessment.value}'; the separate exact-default comparison is '{credential.default_assessment.value}'. The value is redacted.",
+                    f"The {credential.context} credential for '{credential.account}' uses '{credential.method}' format '{credential.storage_type}', classified as '{result.storage_assessment.value}' under credential policy '{result.policy_version}'; the separate exact-default comparison is '{result.default_assessment.value}' and the blocklist comparison {result.blocklist_summary}. The value is redacted.",
                     "Configuration disclosure can expose or accelerate recovery of the credential.",
                     "Replace the credential with a supported strong hash or SSH public key.",
                     Severity.HIGH, tuple(item.text for item in credential.evidence),
@@ -309,6 +337,7 @@ class PluginJunOSBaseline(BasePlugin):
                     Severity.MEDIUM, evidence or ("system accounting events absent",),
                     (JUNIPER_TACACS_GUIDE, JUNIPER_RADIUS_GUIDE),
                 ))
+
             unresolved = sorted(
                 set(accounting.destination_methods) - set(accounting.resolved_methods)
             )
@@ -356,6 +385,62 @@ class PluginJunOSBaseline(BasePlugin):
                 "Configure a finite J-Web session-limit based on the number of authorized administrators.",
                 Severity.MEDIUM, evidence, (JUNIPER_JWEB_SESSION_REFERENCE,),
             ))
+
+    def check_aaa_transport(self, parser: BaseDeviceParser) -> None:
+        junos = self._junos(parser)
+        inheritance_unknown = junos.has_unexpanded_inheritance()
+        for profile in junos.get_aaa_transport_profiles():
+            evidence = tuple(item.text for item in profile.evidence) or (
+                f"system RADIUS server {profile.address}",
+            )
+            use = " and ".join(profile.roles)
+            if profile.transport == "tls":
+                if not profile.trusted_ca_group and not inheritance_unknown:
+                    self.add_issue(self._finding(
+                        parser,
+                        "juniper.junos.aaa.radsec_trust",
+                        "Administrative RadSec server has no trusted CA group",
+                        f"RADIUS server '{profile.address}' uses TLS for administrative {use} but has no effective trusted-ca-group binding.",
+                        "The exported configuration does not establish certificate validation for the RADIUS server identity.",
+                        "Bind the RadSec server to the approved trusted-ca-group and verify the CA files and server certificate operationally.",
+                        Severity.HIGH,
+                        evidence,
+                        (JUNIPER_RADIUS_GUIDE,),
+                    ))
+                if (
+                    profile.mutual_authentication
+                    and not profile.client_certificate_id
+                    and not inheritance_unknown
+                ):
+                    self.add_issue(self._finding(
+                        parser,
+                        "juniper.junos.aaa.radsec_client_certificate",
+                        "Administrative RadSec mutual authentication is incomplete",
+                        f"RADIUS server '{profile.address}' enables mutual authentication for administrative {use} without an effective certificate-id binding.",
+                        "The Junos client identity required for mutual TLS is not established by the supplied configuration.",
+                        "Bind the intended certificate-id and verify that client.crt and client.key are present and protected on the device.",
+                        Severity.HIGH,
+                        evidence,
+                        (JUNIPER_RADIUS_GUIDE,),
+                    ))
+                continue
+
+            if profile.message_authenticator == "disabled":
+                path = (
+                    "a separately declared protected path"
+                    if profile.protected_path else "a network path whose protection is unknown"
+                )
+                self.add_issue(self._finding(
+                    parser,
+                    "juniper.junos.aaa.radius_message_authenticator",
+                    "Administrative RADIUS Message-Authenticator validation is disabled",
+                    f"RADIUS server '{profile.address}' uses UDP over {path} for administrative {use} and explicitly configures no-message-authenticator.",
+                    "Forged or modified RADIUS replies may be accepted without the additional protocol message-validation control.",
+                    "Configure message-authenticator where the server supports it, or migrate to RadSec with an approved trusted CA group.",
+                    Severity.HIGH,
+                    evidence,
+                    (JUNIPER_RADIUS_GUIDE,),
+                ))
 
     def check_ssh_algorithms(self, parser: BaseDeviceParser) -> None:
         if not self._junos(parser).get_services()["ssh"]:
@@ -487,6 +572,83 @@ class PluginJunOSBaseline(BasePlugin):
                 )
             )
 
+    def check_configuration_management(self, parser: BaseDeviceParser) -> None:
+        junos = self._junos(parser)
+        state = junos.get_configuration_management()
+        evidence = tuple(item.text for item in state.evidence)
+        authentication_order = self._statements(parser, ("system", "authentication-order"))
+        remote_authentication = any(
+            token in {"radius", "tacplus"}
+            for statement in authentication_order
+            for token in statement.path[2:]
+        )
+        # Remote-authentication accounting gaps are already reported by the
+        # administrative-policy check with precise event/destination causes.
+        if state.change_audit_state == "missing" and not remote_authentication:
+            self.add_issue(self._finding(
+                parser,
+                "juniper.junos.configuration.change_audit",
+                "Configuration changes lack an audit destination",
+                "Neither a resolved system-accounting change-log destination nor an active syslog change-log selector is configured.",
+                "Configuration changes can lack an independent attributable audit trail.",
+                "Send change-log events to a protected syslog destination or configure resolved RADIUS/TACACS+ system accounting.",
+                Severity.MEDIUM,
+                evidence or ("configuration change audit destination absent",),
+                (JUNIPER_ACCOUNTING_REFERENCE, JUNIPER_SYSLOG_GUIDE),
+            ))
+
+        archive_configured = bool(state.sites) or state.schedule_state != "missing" or bool(
+            state.routing_instance
+        )
+        archive_complete = bool(state.sites) and state.schedule_state == "effective"
+        if archive_configured and not archive_complete:
+            gaps = []
+            if not state.sites:
+                gaps.append("no archive site")
+            if state.schedule_state != "effective":
+                gaps.append(f"schedule state '{state.schedule_state}'")
+            self.add_issue(self._finding(
+                parser,
+                "juniper.junos.configuration.archive_incomplete",
+                "Configuration archival is incomplete",
+                "The system archival configuration has " + " and ".join(gaps) + ".",
+                "The device cannot automatically transfer complete configuration checkpoints as intended.",
+                "Configure at least one archive site plus transfer-on-commit or a valid transfer-interval.",
+                Severity.MEDIUM,
+                evidence,
+                (JUNIPER_CONFIGURATION_ARCHIVE_GUIDE,),
+            ))
+        elif (
+            parser.assessment_context.configuration_backup_scope == "on-device-required"
+            and not archive_complete
+            and not state.inheritance_unknown
+        ):
+            self.add_issue(self._finding(
+                parser,
+                "juniper.junos.configuration.archive_required",
+                "Required on-device configuration archival is absent",
+                "The assessment policy requires on-device archival, but no complete archive site and schedule are configured.",
+                "The device lacks the policy-required configuration checkpoints for recovery.",
+                "Configure secure archive-sites with transfer-on-commit or a valid transfer-interval.",
+                Severity.MEDIUM,
+                evidence or ("assessment policy: on-device configuration backup required",),
+                (JUNIPER_CONFIGURATION_ARCHIVE_GUIDE,),
+            ))
+        for site in state.sites:
+            if site.transport_security != "insecure":
+                continue
+            self.add_issue(self._finding(
+                parser,
+                "juniper.junos.configuration.archive_transport",
+                "Configuration archive site uses an insecure transport",
+                f"Archive site '{site.destination}' uses '{site.protocol}' transport.",
+                "Configuration backups can expose credentials, addressing, and security policy in transit.",
+                "Use SCP or SFTP and verify the archive host key through a trusted channel.",
+                Severity.HIGH,
+                tuple(item.text for item in site.evidence),
+                (JUNIPER_CONFIGURATION_ARCHIVE_GUIDE,),
+            ))
+
     def check_logging(self, parser: BaseDeviceParser) -> None:
         destinations = self._junos(parser).get_syslog_destinations()
         if not destinations:
@@ -593,17 +755,18 @@ class PluginJunOSBaseline(BasePlugin):
                 )
 
     def check_routing_engine_filter(self, parser: BaseDeviceParser) -> None:
-        attachments = [
-            statement
-            for statement in self._statements(parser, ("interfaces", "lo0"))
-            if "filter" in statement.path
-            and "input" in statement.path
-            and "family" in statement.path
-        ]
-        if attachments:
+        junos = self._junos(parser)
+        protections = junos.get_routing_engine_protections()
+        inheritance_unknown = any(
+            statement.active
+            and statement.path[:2] == ("interfaces", "lo0")
+            and "apply-groups" in statement.path
+            for statement in junos.statements
+        )
+        if not protections and inheritance_unknown:
             return
-        self.add_issue(
-            self._finding(
+        if not protections:
+            self.add_issue(self._finding(
                 parser,
                 "juniper.junos.control_plane.lo0_filter",
                 "Routing Engine input filter is not attached",
@@ -613,8 +776,68 @@ class PluginJunOSBaseline(BasePlugin):
                 Severity.HIGH,
                 ("interfaces lo0 family filter input absent",),
                 (JUNIPER_FILTER_GUIDE,),
-            )
-        )
+            ))
+            return
+
+        for protection in protections:
+            evidence = tuple(item.text for item in protection.evidence)
+            scope = f"{protection.interface}.{protection.unit} family {protection.family}"
+            if not protection.filter_resolved:
+                if protection.protection_state == "unknown-inheritance":
+                    continue
+                self.add_issue(self._finding(
+                    parser,
+                    "juniper.junos.control_plane.filter_reference",
+                    "Routing Engine filter attachment is unresolved",
+                    f"{scope} references undefined filter '{protection.filter_name}' in the same address family.",
+                    "A missing or wrong-family definition cannot filter host-bound traffic as intended.",
+                    "Define the attached filter under the matching family and verify its active terms.",
+                    Severity.HIGH,
+                    evidence,
+                    (JUNIPER_FILTER_GUIDE,),
+                ))
+                continue
+            if protection.protection_state == "empty-filter":
+                self.add_issue(self._finding(
+                    parser,
+                    "juniper.junos.control_plane.filter_empty",
+                    "Attached Routing Engine filter is empty",
+                    f"Filter '{protection.filter_name}' is attached to {scope} but has no active terms.",
+                    "The attachment provides no explicit classification or enforcement policy.",
+                    "Add reviewed, ordered terms that permit required control traffic and discard or police unwanted traffic.",
+                    Severity.HIGH,
+                    evidence,
+                    (JUNIPER_FILTER_GUIDE,),
+                ))
+                continue
+
+            for term in protection.terms:
+                if term.policer_resolution not in {"undefined", "incomplete"}:
+                    continue
+                self.add_issue(self._finding(
+                    parser,
+                    "juniper.junos.control_plane.policer_reference",
+                    "Routing Engine term has an unresolved policer",
+                    f"Term '{term.name}' in filter '{protection.filter_name}' references policer '{term.policer}' with state '{term.policer_resolution}'.",
+                    "A missing rate, burst limit, discard action, or policer definition cannot provide the intended rate enforcement.",
+                    "Define the referenced policer with an operationally approved rate, burst limit, and discard action.",
+                    Severity.HIGH,
+                    tuple(item.text for item in term.evidence) or evidence,
+                    (JUNIPER_POLICER_GUIDE,),
+                ))
+
+            if protection.protection_state == "no-enforcement":
+                self.add_issue(self._finding(
+                    parser,
+                    "juniper.junos.control_plane.filter_no_enforcement",
+                    "Attached Routing Engine filter permits all traffic",
+                    f"Filter '{protection.filter_name}' on {scope} has no discard, reject, complete discard policer, or restrictive implicit-discard term set.",
+                    "An unconditional permit-only filter does not reduce traffic reaching the Routing Engine.",
+                    "Use ordered source/protocol restrictions and explicit discard/reject or a complete discard policer; set rates from platform and traffic evidence.",
+                    Severity.HIGH,
+                    evidence,
+                    (JUNIPER_FILTER_GUIDE, JUNIPER_POLICER_GUIDE),
+                ))
 
     def check_redirects(self, parser: BaseDeviceParser) -> None:
         if self._statements(parser, ("system", "no-redirects")):
@@ -737,11 +960,14 @@ class PluginJunOSBaseline(BasePlugin):
         self.check_ssh_algorithms(parser)
         self.check_additional_services(parser)
         self.check_snmp(parser)
+        self.check_default_security_policy(parser)
         if not self._applicable(parser):
             return
         self.check_authentication(parser)
         self.check_administrative_policy(parser)
+        self.check_aaa_transport(parser)
         self.check_logging(parser)
+        self.check_configuration_management(parser)
         self.check_ntp(parser)
         self.check_routing_engine_filter(parser)
         self.check_redirects(parser)

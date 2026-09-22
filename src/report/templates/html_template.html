@@ -38,12 +38,84 @@
                         {{ assessment_policy['excluded-categories']|join(', ') if assessment_policy['excluded-categories'] else 'none' }}.
                         Excluded categories were not assessed and are not implied secure.
                     </p>
+                    <p>
+                        <strong>Requested configuration inventory:</strong>
+                        {{ assessment_policy['report-inventory']|join(', ') if assessment_policy['report-inventory'] else 'none' }}.
+                        Inventory selection does not change the security checks.
+                    </p>
+                {% endif %}
+            </section>
+
+            <section id="coverage">
+                <hr>
+                <h2>2. Assessment coverage</h2>
+                <p>{{ coverage['scope-note'] }}</p>
+                {% if coverage['fields'] %}
+                    <table class="table">
+                        <thead><tr><th>Field</th><th>Category</th><th>Knowledge state</th><th>Selection</th><th>Items</th><th>Detail</th></tr></thead>
+                        <tbody>
+                        {% for field in coverage['fields'] %}
+                            <tr>
+                                <td>{{ field['name'] }}</td>
+                                <td>{{ field['category'] }}</td>
+                                <td>{{ field['knowledge-state'] }}</td>
+                                <td>{{ field['audit-selection'] }}</td>
+                                <td>{{ field['item-count'] if field['item-count'] is defined and field['item-count'] is not none else 'n/a' }}</td>
+                                <td>{{ field['detail'] if field['detail'] is defined else '' }}</td>
+                            </tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                {% endif %}
+                {% if coverage['diagnostics'] %}
+                    <strong>Parser scope diagnostics:</strong>
+                    <ul>{% for diagnostic in coverage['diagnostics'] %}<li>{{ diagnostic }}</li>{% endfor %}</ul>
+                {% endif %}
+            </section>
+
+            {% if configuration_inventory %}
+            <section id="configuration-inventory">
+                <hr>
+                <h2>3. Configuration inventory</h2>
+                <p>This opt-in inventory is sanitized configuration data, not a list of passed controls. Configuration evidence, credentials, local-user records, certificate material, and raw configuration are not included.</p>
+                {% for category, records in configuration_inventory.items() %}
+                    <h3>{{ category }}</h3>
+                    {% if records %}
+                        {% for record in records %}
+                            <dl>
+                            {% for key, value in record.items() %}
+                                <dt><strong>{{ key }}</strong></dt><dd>{{ value|join(', ') if value is sequence and value is not string else value }}</dd>
+                            {% endfor %}
+                            </dl>
+                        {% endfor %}
+                    {% else %}
+                        <p>No records were present in this known collection.</p>
+                    {% endif %}
+                {% endfor %}
+            </section>
+            {% endif %}
+
+            <section id="remediation-summary">
+                <hr>
+                <h2>{{ '4' if configuration_inventory else '3' }}. Remediation summary</h2>
+                <p>{{ remediation_summary['scope-note'] }}</p>
+                <p><strong>Total findings:</strong> {{ remediation_summary['finding-count'] }}.</p>
+                {% if remediation_summary['severity-counts'] %}
+                    <p><strong>By severity:</strong>
+                    {% for severity, count in remediation_summary['severity-counts'].items() %}{{ severity }}: {{ count }}{% if not loop.last %}; {% endif %}{% endfor %}.</p>
+                {% endif %}
+                {% if remediation_summary['priority-actions'] %}
+                    <ol>
+                    {% for action in remediation_summary['priority-actions'] %}
+                        <li><strong>{{ action['severity'] }} — {{ action['title'] }}</strong> ({{ action['rule-id'] }}): {{ action['recommendation'] }}</li>
+                    {% endfor %}
+                    </ol>
                 {% endif %}
             </section>
 
             <section id="security-issues">
                 <hr>
-                <h2>2. Security audit</h2>
+                <h2>{{ '5' if configuration_inventory else '4' }}. Security audit</h2>
                 {% if issues %}
                     {% for key, value in issues.items() %}
                         <article>
@@ -73,13 +145,13 @@
                         </article>
                     {% endfor %}
                 {% else %}
-                    <p>No security findings were emitted for the supplied configuration.</p>
+                    <p>No security findings were emitted for the supplied configuration. This does not mean every control passed; review the assessment coverage above for unknown, unsupported, parse-error, or excluded scope.</p>
                 {% endif %}
             </section>
 
             <section id="security-vulns">
                 <hr>
-                <h2>3. Software advisories</h2>
+                <h2>{{ '6' if configuration_inventory else '5' }}. Software advisories</h2>
                 {% if vulns %}
                     <table class="table" id="vulnTable">
                         <caption>Advisories returned by the supported external integration</caption>
@@ -96,7 +168,7 @@
                             {% for vuln in vulns %}
                                 <tr>
                                     <td><strong>{{ vuln.title }}</strong></td>
-                                    <td>{{ vuln.summary|safe }}</td>
+                                    <td>{{ vuln.summary }}</td>
                                     <td>{{ vuln.cves|join(', ') }}</td>
                                     <td class="cvssValue">{{ vuln.cvss }}</td>
                                     <td><a href="{{ vuln.url }}">{{ vuln.url }}</a></td>

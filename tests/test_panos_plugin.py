@@ -38,6 +38,13 @@ SECURE_XML = """<config xmlns="urn:panos" version="12.1.2">
 </entry></devices><shared><ssl-tls-service-profile><entry name="MGMT-TLS"><certificate>mgmt-signed-cert</certificate><protocol-settings><min-version>tls1-2</min-version><max-version>max</max-version></protocol-settings></entry></ssl-tls-service-profile><certificate><entry name="mgmt-signed-cert"><certificate></certificate></entry></certificate></shared>
 </config>"""
 
+# The secure example's system-log match must resolve to a real syslog target.
+SECURE_XML = SECURE_XML.replace(
+    "</shared>",
+    "<log-settings><syslog><entry name='CORP-SYSLOG'><server><entry name='collector'>"
+    "<server>192.0.2.10</server></entry></server></entry></syslog></log-settings></shared>",
+)
+
 
 def _parse(tmp_path, content, name="panos.xml"):
     path = tmp_path / name
@@ -75,6 +82,7 @@ def test_plugin_is_attachment_scope_disablement_and_reference_aware(tmp_path):
         "paloalto.panos.policy.log_forwarding",
         "paloalto.panos.policy.session_logging",
         "paloalto.panos.policy.security_profiles",
+        "paloalto.panos.policy.disabled_permissive_rule",
         "paloalto.panos.policy.security_profile_unresolved",
         "paloalto.panos.credentials.password_complexity",
         "paloalto.panos.credentials.password_history_disabled",
@@ -91,7 +99,11 @@ def test_plugin_is_attachment_scope_disablement_and_reference_aware(tmp_path):
     ]
     assert all(issue.references for issue in issues)
     assert all("UNUSED-LEGACY" not in " ".join(issue.evidence) for issue in issues)
-    assert all("DISABLED-BROAD" not in issue.observation for issue in issues)
+    assert all(
+        "DISABLED-BROAD" not in issue.observation
+        for issue in issues
+        if issue.rule_id != "paloalto.panos.policy.disabled_permissive_rule"
+    )
 
 
 def test_secure_namespace_export_has_no_findings(tmp_path):

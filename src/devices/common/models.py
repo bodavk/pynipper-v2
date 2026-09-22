@@ -45,6 +45,20 @@ class DefaultCredentialAssessment(str, Enum):
     NOT_EVALUATED = "not_evaluated"
 
 
+class BlocklistCredentialAssessment(str, Enum):
+    """Optional policy blocklist comparison without retaining the credential."""
+
+    MATCH = "match"
+    NO_MATCH = "no_match"
+    NOT_EVALUATED = "not_evaluated"
+
+    @classmethod
+    def from_optional_match(cls, result: bool | None) -> "BlocklistCredentialAssessment":
+        if result is None:
+            return cls.NOT_EVALUATED
+        return cls.MATCH if result else cls.NO_MATCH
+
+
 @dataclass(frozen=True)
 class ConfigEvidence:
     text: str
@@ -70,7 +84,20 @@ class CredentialMetadata:
     storage_type: str
     storage_assessment: CredentialStorageAssessment
     default_assessment: DefaultCredentialAssessment
+    plaintext_length: Optional[int] = None
+    blocklist_assessment: BlocklistCredentialAssessment = (
+        BlocklistCredentialAssessment.NOT_EVALUATED
+    )
     evidence: Tuple[ConfigEvidence, ...] = field(default_factory=tuple)
+
+    def __post_init__(self) -> None:
+        if self.plaintext_length is not None and self.plaintext_length < 0:
+            raise ValueError("Credential plaintext_length must not be negative")
+        if (
+            self.plaintext_length is not None
+            and self.storage_assessment != CredentialStorageAssessment.PLAINTEXT
+        ):
+            raise ValueError("Credential plaintext_length is valid only for plaintext storage")
 
     @property
     def is_default(self) -> bool:
@@ -253,6 +280,7 @@ class NormalizedConfig:
 
 __all__ = [
     "ConfigEvidence",
+    "BlocklistCredentialAssessment",
     "ConfigurationState",
     "CredentialMetadata",
     "CredentialStorageAssessment",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +14,10 @@ from typing import Iterable, Mapping
 _ROLES = {
     "unknown", "internal", "external", "management", "access-edge",
     "uplink", "voice-fabric",
+}
+_CONFIGURATION_BACKUP_SCOPES = {"unspecified", "external-managed", "on-device-required"}
+_REPORT_INVENTORY_CATEGORIES = {
+    "interfaces", "logging-destinations", "management-services", "policies"
 }
 
 
@@ -27,6 +32,10 @@ class AssessmentContext:
     assessment_time: str | None = None
     management_certificate_identities: tuple[tuple[str, str], ...] = ()
     trusted_certificate_sha256: tuple[str, ...] = ()
+    configuration_backup_scope: str = "unspecified"
+    minimum_plaintext_credential_length: int | None = None
+    credential_blocklist_sha256: tuple[str, ...] = ()
+    report_inventory: tuple[str, ...] = ()
     excluded_categories: frozenset[str] = frozenset()
     provenance: str = "built-in default"
 
@@ -73,6 +82,39 @@ class AssessmentContext:
             self.trusted_certificate_sha256
         ):
             raise ValueError("trusted certificate SHA-256 fingerprints must be unique")
+        if self.configuration_backup_scope not in _CONFIGURATION_BACKUP_SCOPES:
+            raise ValueError(
+                "assessment configuration_backup_scope must be unspecified, "
+                "external-managed, or on-device-required"
+            )
+        if (
+            self.minimum_plaintext_credential_length is not None
+            and (
+                isinstance(self.minimum_plaintext_credential_length, bool)
+                or not 1 <= self.minimum_plaintext_credential_length <= 1024
+            )
+        ):
+            raise ValueError(
+                "assessment minimum_plaintext_credential_length must be an integer from 1 to 1024"
+            )
+        if any(
+            len(fingerprint) != 64
+            or any(character not in "0123456789abcdefABCDEF" for character in fingerprint)
+            for fingerprint in self.credential_blocklist_sha256
+        ):
+            raise ValueError(
+                "credential blocklist SHA-256 fingerprints must be 64 hexadecimal characters"
+            )
+        if len({item.casefold() for item in self.credential_blocklist_sha256}) != len(
+            self.credential_blocklist_sha256
+        ):
+            raise ValueError("credential blocklist SHA-256 fingerprints must be unique")
+        if len(set(self.report_inventory)) != len(self.report_inventory) or any(
+            item not in _REPORT_INVENTORY_CATEGORIES for item in self.report_inventory
+        ):
+            raise ValueError(
+                "assessment report_inventory entries must be unique supported inventory categories"
+            )
         if any(not item or not item.replace("-", "_").isalnum() for item in self.excluded_categories):
             raise ValueError("assessment category names must be non-empty words")
 
@@ -82,7 +124,8 @@ class AssessmentContext:
             "policy_version", "device_role", "interface_roles",
             "protected_aaa_profiles", "assessment_time",
             "management_certificate_identities", "trusted_certificate_sha256",
-            "excluded_categories",
+            "configuration_backup_scope", "minimum_plaintext_credential_length",
+            "credential_blocklist_sha256", "report_inventory", "excluded_categories",
         }
         unknown = set(value) - allowed
         if unknown:
@@ -111,6 +154,24 @@ class AssessmentContext:
         assessment_time = value.get("assessment_time")
         if assessment_time is not None and not isinstance(assessment_time, str):
             raise ValueError("assessment assessment_time must be a string")
+        minimum_credential_length = value.get("minimum_plaintext_credential_length")
+        if minimum_credential_length is not None and (
+            isinstance(minimum_credential_length, bool)
+            or not isinstance(minimum_credential_length, int)
+        ):
+            raise ValueError(
+                "assessment minimum_plaintext_credential_length must be an integer"
+            )
+        credential_blocklist = value.get("credential_blocklist_sha256", [])
+        if not isinstance(credential_blocklist, list) or any(
+            not isinstance(item, str) for item in credential_blocklist
+        ):
+            raise ValueError("assessment credential_blocklist_sha256 must be a string list")
+        report_inventory = value.get("report_inventory", [])
+        if not isinstance(report_inventory, list) or any(
+            not isinstance(item, str) for item in report_inventory
+        ):
+            raise ValueError("assessment report_inventory must be a string list")
         return cls(
             policy_version=str(value.get("policy_version", "pynipper-v2/default-v1")),
             device_role=str(value.get("device_role", "unknown")).casefold(),
@@ -121,6 +182,14 @@ class AssessmentContext:
                 (str(scope), identity) for scope, identity in certificate_identities.items()
             ),
             trusted_certificate_sha256=tuple(item.casefold() for item in trusted_fingerprints),
+            configuration_backup_scope=str(
+                value.get("configuration_backup_scope", "unspecified")
+            ).casefold(),
+            minimum_plaintext_credential_length=minimum_credential_length,
+            credential_blocklist_sha256=tuple(
+                item.casefold() for item in credential_blocklist
+            ),
+            report_inventory=tuple(item.casefold() for item in report_inventory),
             excluded_categories=frozenset(item.casefold() for item in categories),
             provenance=provenance,
         )
@@ -151,6 +220,14 @@ class AssessmentContext:
             return None
         return datetime.fromisoformat(self.assessment_time.replace("Z", "+00:00"))
 
+    def plaintext_credential_blocklisted(self, value: str) -> bool | None:
+        """Compare internally; never serialize either the value or verifier set."""
+
+        if not self.credential_blocklist_sha256:
+            return None
+        fingerprint = hashlib.sha256(value.encode("utf-8")).hexdigest()
+        return fingerprint in self.credential_blocklist_sha256
+
     def management_identity_for_scope(self, scope: str) -> str | None:
         identities = MappingProxyType({
             name.casefold(): identity for name, identity in self.management_certificate_identities
@@ -175,6 +252,10 @@ class AssessmentContext:
             "assessment-time": self.assessment_time,
             "management-certificate-identities": dict(self.management_certificate_identities),
             "trusted-certificate-sha256": list(self.trusted_certificate_sha256),
+            "configuration-backup-scope": self.configuration_backup_scope,
+            "minimum-plaintext-credential-length": self.minimum_plaintext_credential_length,
+            "credential-blocklist-sha256-count": len(self.credential_blocklist_sha256),
+            "report-inventory": list(self.report_inventory),
             "excluded-categories": sorted(self.excluded_categories),
             "provenance": self.provenance,
             "scope-note": "Excluded categories were not assessed and are not implied secure.",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import ipaddress
 import re
 import xml.etree.ElementTree as ET
 from typing import Any, Iterable
@@ -14,7 +15,14 @@ from src.common.certificates import (
     certificate_metadata,
     load_public_certificate,
 )
+from src.devices.common.policy_semantics import (
+    AddressInterval,
+    NetworkSemantics,
+    ServiceInterval,
+    ServiceSemantics,
+)
 from src.devices.common.base_parser import BaseDeviceParser
+from src.devices.common.input_scope import contains_unresolved_template
 from src.devices.common.models import (
     ConfigEvidence,
     ConfigurationState,
@@ -54,7 +62,9 @@ class PanosInterface:
 @dataclass(frozen=True)
 class PanosSecurityRule:
     name: str
+    device_scope: str
     scope: str
+    rulebase: str
     position: int
     enabled: bool
     action: str
@@ -67,12 +77,38 @@ class PanosSecurityRule:
     source_users: tuple[str, ...]
     categories: tuple[str, ...]
     schedule: str
+    source_negated: bool
+    destination_negated: bool
     log_start: bool
     log_end: bool
     log_setting: str
     profile_setting: tuple[str, ...]
     profile_group: str
     individual_profiles: tuple[tuple[str, str], ...]
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class PanosAddressObject:
+    name: str
+    device_scope: str
+    scope: str
+    kind: str
+    value: str
+    members: tuple[str, ...]
+    dynamic: bool
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class PanosServiceObject:
+    name: str
+    device_scope: str
+    scope: str
+    protocol: str
+    destination_port: str
+    source_port: str
+    members: tuple[str, ...]
     evidence: tuple[ConfigEvidence, ...]
 
 
@@ -264,6 +300,11 @@ class PaloAltoPANOSParser(BaseDeviceParser):
         self.root = self.tree.getroot()
         for element in self.root.iter():
             element.tag = element.tag.rsplit("}", 1)[-1]
+        self.template_unresolved = any(
+            contains_unresolved_template(value)
+            for element in self.root.iter()
+            for value in (element.text or "", *element.attrib.values())
+        )
         self.diagnostics: list[str] = []
         self.panorama_inheritance_unknown = bool(
             self.root.findall(".//device-group/entry")
@@ -674,15 +715,242 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                     result[protocol] = result[protocol] or protocol in profile.protocols
         return result
 
+    def get_policy_address_objects(self) -> tuple[PanosAddressObject, ...]:
+        """Return local-vsys and shared address objects without resolving dynamics."""
+        result: list[PanosAddressObject] = []
+
+        def collect(parent: ET.Element, device_scope: str, scope: str) -> None:
+            for entry in parent.findall("./address/entry"):
+                name = entry.get("name") or "<unnamed-address>"
+                kind = value = ""
+                for candidate in ("ip-netmask", "ip-range", "ip-wildcard", "fqdn"):
+                    node = entry.find(candidate)
+                    if node is not None:
+                        kind, value = candidate, self._text(node)
+                        break
+                result.append(PanosAddressObject(
+                    name, device_scope, scope, kind, value, (), False,
+                    (self._evidence(f"{scope}: address object {name}"),),
+                ))
+            for entry in parent.findall("./address-group/entry"):
+                name = entry.get("name") or "<unnamed-address-group>"
+                result.append(PanosAddressObject(
+                    name, device_scope, scope, "address-group", "",
+                    self._members(entry, "static"), entry.find("dynamic") is not None,
+                    (self._evidence(f"{scope}: address group {name}"),),
+                ))
+
+        shared = self.root.find("./shared")
+        if shared is not None:
+            collect(shared, "shared", "shared")
+        for device in self._device_entries():
+            device_scope = self._device_scope(device)
+            for vsys in device.findall("./vsys/entry"):
+                collect(vsys, device_scope, vsys.get("name") or "vsys")
+        return tuple(result)
+
+    def get_policy_service_objects(self) -> tuple[PanosServiceObject, ...]:
+        """Return static TCP/UDP services and service groups by policy scope."""
+        result: list[PanosServiceObject] = []
+
+        def collect(parent: ET.Element, device_scope: str, scope: str) -> None:
+            for entry in parent.findall("./service/entry"):
+                name = entry.get("name") or "<unnamed-service>"
+                protocol = destination_port = source_port = ""
+                protocol_parent = entry.find("protocol")
+                if protocol_parent is not None:
+                    for candidate in ("tcp", "udp"):
+                        node = protocol_parent.find(candidate)
+                        if node is not None:
+                            protocol = candidate
+                            destination_port = self._text(node.find("port"))
+                            source_port = self._text(node.find("source-port"))
+                            break
+                result.append(PanosServiceObject(
+                    name, device_scope, scope, protocol, destination_port,
+                    source_port, (), (self._evidence(f"{scope}: service object {name}"),),
+                ))
+            for entry in parent.findall("./service-group/entry"):
+                name = entry.get("name") or "<unnamed-service-group>"
+                result.append(PanosServiceObject(
+                    name, device_scope, scope, "", "", "",
+                    self._members(entry, "members"),
+                    (self._evidence(f"{scope}: service group {name}"),),
+                ))
+
+        shared = self.root.find("./shared")
+        if shared is not None:
+            collect(shared, "shared", "shared")
+        for device in self._device_entries():
+            device_scope = self._device_scope(device)
+            for vsys in device.findall("./vsys/entry"):
+                collect(vsys, device_scope, vsys.get("name") or "vsys")
+        return tuple(result)
+
+    @staticmethod
+    def _address_interval(value: str) -> AddressInterval | None:
+        value = value.strip()
+        try:
+            if "-" in value:
+                first_text, last_text = (part.strip() for part in value.split("-", 1))
+                first, last = ipaddress.ip_address(first_text), ipaddress.ip_address(last_text)
+                if first.version != last.version or int(first) > int(last):
+                    return None
+                return AddressInterval(first.version, int(first), int(last))
+            network = ipaddress.ip_network(value, strict=False)
+            return AddressInterval(network.version, int(network.network_address), int(network.broadcast_address))
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _policy_port_intervals(value: str) -> tuple[tuple[int, int], ...] | None:
+        intervals: list[tuple[int, int]] = []
+        for part in (item.strip() for item in value.split(",")):
+            if not part:
+                return None
+            bounds = tuple(item.strip() for item in part.split("-", 1))
+            first_text, last_text = (bounds[0], bounds[-1])
+            if not first_text.isdigit() or not last_text.isdigit():
+                return None
+            first, last = int(first_text), int(last_text)
+            if not 0 <= first <= last <= 65535:
+                return None
+            intervals.append((first, last))
+        return tuple(intervals) if intervals else None
+
+    def resolve_network_semantics(
+        self, names: tuple[str, ...], *, device_scope: str, scope: str,
+        expansion_limit: int = 4096,
+    ) -> NetworkSemantics:
+        objects = self.get_policy_address_objects()
+        shared = {item.name: item for item in objects if item.scope == "shared"}
+        local = {item.name: item for item in objects if item.device_scope == device_scope and item.scope == scope}
+        intervals: set[AddressInterval] = set()
+        unresolved: set[str] = set()
+        any_match = False
+        visited = 0
+
+        def visit(name: str, ancestors: frozenset[str]) -> None:
+            nonlocal any_match, visited
+            key = name.strip()
+            if key.casefold() == "any":
+                any_match = True
+                return
+            if not key:
+                unresolved.add("<empty-network-reference>")
+                return
+            visited += 1
+            if visited > expansion_limit:
+                unresolved.add("<network-expansion-limit>")
+                return
+            if key in ancestors:
+                unresolved.add(key)
+                return
+            literal = self._address_interval(key)
+            if literal is not None:
+                intervals.add(literal)
+                return
+            record = local.get(key) or shared.get(key)
+            if record is None or record.dynamic or record.kind in {"fqdn", "ip-wildcard", ""}:
+                unresolved.add(key)
+                return
+            if record.members:
+                for member in record.members:
+                    visit(member, ancestors | {key})
+                return
+            interval = self._address_interval(record.value)
+            if interval is None:
+                unresolved.add(key)
+            else:
+                intervals.add(interval)
+
+        if not names:
+            unresolved.add("<empty-network-dimension>")
+        for name in names:
+            visit(name, frozenset())
+        return NetworkSemantics(any_match, tuple(sorted(intervals)), not unresolved, tuple(sorted(unresolved, key=str.casefold)))
+
+    def resolve_service_semantics(
+        self, names: tuple[str, ...], *, device_scope: str, scope: str,
+        expansion_limit: int = 4096,
+    ) -> ServiceSemantics:
+        objects = self.get_policy_service_objects()
+        shared = {item.name: item for item in objects if item.scope == "shared"}
+        local = {item.name: item for item in objects if item.device_scope == device_scope and item.scope == scope}
+        predefined = {
+            "service-http": ServiceInterval("tcp", 80, 80),
+            "service-https": ServiceInterval("tcp", 443, 443),
+        }
+        intervals: set[ServiceInterval] = set()
+        unresolved: set[str] = set()
+        any_match = False
+        visited = 0
+
+        def visit(name: str, ancestors: frozenset[str]) -> None:
+            nonlocal any_match, visited
+            key, folded = name.strip(), name.strip().casefold()
+            if folded == "any":
+                any_match = True
+                return
+            if not key:
+                unresolved.add("<empty-service-reference>")
+                return
+            if folded == "application-default":
+                unresolved.add(key)
+                return
+            visited += 1
+            if visited > expansion_limit:
+                unresolved.add("<service-expansion-limit>")
+                return
+            if key in ancestors:
+                unresolved.add(key)
+                return
+            if folded in predefined:
+                intervals.add(predefined[folded])
+                return
+            record = local.get(key) or shared.get(key)
+            if record is None:
+                unresolved.add(key)
+                return
+            if record.members:
+                for member in record.members:
+                    visit(member, ancestors | {key})
+                return
+            if record.protocol not in {"tcp", "udp"} or (record.source_port and record.source_port.casefold() != "any"):
+                unresolved.add(key)
+                return
+            ports = self._policy_port_intervals(record.destination_port)
+            if ports is None:
+                unresolved.add(key)
+                return
+            intervals.update(ServiceInterval(record.protocol, first, last) for first, last in ports)
+
+        if not names:
+            unresolved.add("<empty-service-dimension>")
+        for name in names:
+            visit(name, frozenset())
+        return ServiceSemantics(any_match, tuple(sorted(intervals)), not unresolved, tuple(sorted(unresolved, key=str.casefold)))
+
+    def has_nat_policy(self) -> bool:
+        return bool(
+            self.root.findall(".//rulebase/nat/rules/entry")
+            or self.root.findall(".//pre-rulebase/nat/rules/entry")
+            or self.root.findall(".//post-rulebase/nat/rules/entry")
+        )
+
     def get_security_rules(self) -> list[PanosSecurityRule]:
         rules = []
         for device in self._device_entries():
+            device_scope = self._device_scope(device)
             for vsys in device.findall("./vsys/entry"):
                 scope = vsys.get("name") or "vsys"
-                rule_nodes: list[ET.Element] = []
+                rule_nodes: list[tuple[str, ET.Element]] = []
                 for rulebase_name in ("rulebase", "pre-rulebase", "post-rulebase"):
-                    rule_nodes.extend(vsys.findall(f"./{rulebase_name}/security/rules/entry"))
-                for position, entry in enumerate(rule_nodes, start=1):
+                    rule_nodes.extend(
+                        (rulebase_name, entry)
+                        for entry in vsys.findall(f"./{rulebase_name}/security/rules/entry")
+                    )
+                for position, (rulebase_name, entry) in enumerate(rule_nodes, start=1):
                     name = entry.get("name") or f"rule-{position}"
                     profiles = []
                     profile_group = ""
@@ -711,7 +979,9 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                     rules.append(
                         PanosSecurityRule(
                             name=name,
+                            device_scope=device_scope,
                             scope=scope,
+                            rulebase=rulebase_name,
                             position=position,
                             enabled=not self._yes(entry, "disabled"),
                             action=self._text(entry.find("action"), "deny").casefold(),
@@ -724,13 +994,17 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                             source_users=self._members(entry, "source-user"),
                             categories=self._members(entry, "category"),
                             schedule=self._text(entry.find("schedule"), "none"),
+                            source_negated=self._yes(entry, "negate-source"),
+                            destination_negated=self._yes(entry, "negate-destination"),
                             log_start=self._yes(entry, "log-start"),
                             log_end=self._yes(entry, "log-end"),
                             log_setting=self._text(entry.find("log-setting")),
                             profile_setting=tuple(profiles),
                             profile_group=profile_group,
                             individual_profiles=tuple(individual_profiles),
-                            evidence=(self._evidence(f"{scope}: security rule {position} {name}"),),
+                            evidence=(self._evidence(
+                                f"{device_scope}/{scope}/{rulebase_name}: security rule {position} {name}"
+                            ),),
                         )
                     )
         return rules
@@ -953,7 +1227,11 @@ class PaloAltoPANOSParser(BaseDeviceParser):
         return profiles
 
     def get_password_policy(self) -> PanosPasswordPolicy:
-        node = self.root.find(".//deviceconfig/system/password-complexity")
+        # Exported firewall configurations place local administrator policy
+        # below mgt-config; older focused fixtures use deviceconfig/system.
+        node = self.root.find("./mgt-config/password-complexity")
+        if node is None:
+            node = self.root.find(".//deviceconfig/system/password-complexity")
         if node is None:
             return PanosPasswordPolicy(None, None, None, None, None, None, None, None, ())
 
@@ -980,7 +1258,7 @@ class PaloAltoPANOSParser(BaseDeviceParser):
             minimum_special=number("minimum-special-characters"),
             history_count=history_count,
             blocks_username=yes_no("block-username-inclusion"),
-            evidence=(self._evidence("deviceconfig system password-complexity"),),
+            evidence=(self._evidence("mgt-config password-complexity"),),
         )
 
     def get_administrative_settings(self) -> tuple[PanosAdministrativeSettings, ...]:
@@ -1332,13 +1610,46 @@ class PaloAltoPANOSParser(BaseDeviceParser):
 
     def get_system_log_forwarding_destinations(self) -> tuple[str, ...]:
         destinations = []
+        profiles = {}
+        for parent in (
+            self.root.find("./shared/log-settings/syslog"),
+            self.root.find("./shared/server-profile/syslog"),
+        ):
+            if parent is None:
+                continue
+            for entry in parent.findall("./entry"):
+                name = entry.get("name")
+                if not name:
+                    continue
+                servers = tuple(
+                    self._text(server.find("server"))
+                    for server in entry.findall("./server/entry")
+                    if self._text(server.find("server"))
+                )
+                profiles[name] = servers
+        match_lists = [self.root.find("./shared/log-settings/system/match-list")]
         for device in self._device_entries():
-            for member in device.findall(
-                "./deviceconfig/system/log-settings/system/match-list/entry/send-syslog/member"
-            ):
-                value = self._text(member)
-                if value:
-                    destinations.append(value)
+            match_lists.append(device.find("./deviceconfig/system/log-settings/system/match-list"))
+            for entry in device.findall("./deviceconfig/system/server-profile/syslog/entry"):
+                name = entry.get("name")
+                if name:
+                    profiles[name] = tuple(
+                        self._text(server.find("server"))
+                        for server in entry.findall("./server/entry")
+                        if self._text(server.find("server"))
+                    )
+        for match_list in match_lists:
+            if match_list is None:
+                continue
+            for entry in match_list.findall("./entry"):
+                if self._text(entry.find("disabled")).casefold() == "yes":
+                    continue
+                if self._text(entry.find("disable")).casefold() == "yes":
+                    continue
+                if self._text(entry.find("enabled")).casefold() == "no":
+                    continue
+                for member in entry.findall("./send-syslog/member"):
+                    destinations.extend(profiles.get(self._text(member), ()))
         return tuple(dict.fromkeys(destinations))
 
     def get_dedicated_management_services(self) -> list[ManagementService]:
@@ -1591,7 +1902,16 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                     )
                     for profile in self.get_log_forwarding_profiles()
                     for server in profile.syslog_servers
-                )
+                ),
+                *(
+                    LoggingDestination(
+                        destination_type="system-syslog",
+                        state=ConfigurationState.ENABLED,
+                        address=server,
+                        scope="shared",
+                    )
+                    for server in self.get_system_log_forwarding_destinations()
+                ),
             ),
             crypto_settings=NormalizedCollection.known(
                 *(
@@ -1610,11 +1930,13 @@ class PaloAltoPANOSParser(BaseDeviceParser):
 
 __all__ = [
     "PaloAltoPANOSParser",
+    "PanosAddressObject",
     "PanosInterface",
     "PanosLogForwardingProfile",
     "PanosManagementProfile",
     "PanosPasswordPolicy",
     "PanosSecurityRule",
+    "PanosServiceObject",
     "PanosSSLServiceProfile",
     "PanosManagementTLS",
     "PanosCertificateObject",

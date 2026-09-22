@@ -1,9 +1,9 @@
 import re
 
 from src.analyze.common.base_plugin import BasePlugin
+from src.analyze.common.credentials import credential_policy_from_context, evaluate_credential
 from src.analyze.common.issue import Finding, Severity
 from src.devices.common.base_parser import BaseDeviceParser
-from src.devices.common.models import CredentialStorageAssessment
 from src.devices.cisco.asa import CiscoASAParser
 
 
@@ -34,6 +34,10 @@ CISCO_ASA_NTP_REFERENCE = (
 CISCO_ASA_CERTIFICATE_REFERENCE = (
     "https://www.cisco.com/c/en/us/td/docs/security/asa/asa916/configuration/"
     "general/asa-916-general-config/basic-certs.html",
+)
+CISCO_ASA_FIREWALL_REFERENCE = (
+    "https://www.cisco.com/c/en/us/td/docs/security/asa/asa91/configuration/"
+    "firewall/asa_91_firewall_config/conns_connlimits.pdf",
 )
 NIST_CRYPTO_TRANSITIONS = "https://csrc.nist.gov/pubs/sp/800/131/a/r2/final"
 
@@ -192,21 +196,20 @@ class PluginASABaseline(BasePlugin):
             ))
 
     def check_local_users(self, parser: BaseDeviceParser) -> None:
-        unsafe = {
-            CredentialStorageAssessment.EMPTY,
-            CredentialStorageAssessment.PLAINTEXT,
-            CredentialStorageAssessment.WEAK_HASH,
-        }
+        policy = credential_policy_from_context(parser.assessment_context)
         for credential in self._asa(parser).get_local_credentials():
-            if credential.storage_assessment not in unsafe:
+            result = evaluate_credential(credential, policy)
+            if not result.unsafe_storage:
                 continue
             self.add_issue(self._finding(
                 parser, "cisco.asa.credentials.local_user_storage",
                 "Local administrator credential storage is unsafe",
                 (
                     f"Local user '{credential.account}' uses format '{credential.storage_type}', "
-                    f"classified as '{credential.storage_assessment.value}'; the separate exact-default "
-                    f"comparison is '{credential.default_assessment.value}'. The credential is redacted."
+                    f"classified as '{result.storage_assessment.value}' under credential policy "
+                    f"'{result.policy_version}'; the separate exact-default comparison is "
+                    f"'{result.default_assessment.value}' and the blocklist comparison "
+                    f"{result.blocklist_summary}. The credential is redacted."
                 ),
                 "Configuration disclosure can expose or accelerate compromise of a local administrative credential.",
                 "Use supported PBKDF2 storage with unique credentials and prefer centralized AAA.",
@@ -388,6 +391,40 @@ class PluginASABaseline(BasePlugin):
                 Severity.MEDIUM, ("threat-detection basic-threat absent or negated",),
             ))
 
+    def check_connection_limits(self, parser: BaseDeviceParser) -> None:
+        asa = self._asa(parser)
+        release = asa._release_tuple(asa.get_version())
+        if release is None or release < (9, 1):
+            return
+        for policy in asa.get_connection_limit_policies():
+            unlimited = sorted(name for name, value in policy.limits if value == 0)
+            evidence = tuple(item.text for item in policy.evidence)
+            scope = ", ".join(policy.attachment_scopes)
+            if policy.invalid_values:
+                self.add_issue(self._finding(
+                    parser,
+                    "cisco.asa.control_plane.connection_limit_invalid",
+                    "Attached ASA connection limit is invalid",
+                    f"Policy '{policy.policy_name}' class '{policy.class_name}', attached at {scope}, contains invalid connection-limit value(s): {', '.join(policy.invalid_values)}.",
+                    "An invalid or unresolved limit does not establish the intended connection-resource protection.",
+                    "Configure supported integer connection limits from 1 through 2000000 after sizing them for the protected service and platform.",
+                    Severity.HIGH,
+                    evidence,
+                    CISCO_ASA_FIREWALL_REFERENCE,
+                ))
+            if unlimited:
+                self.add_issue(self._finding(
+                    parser,
+                    "cisco.asa.control_plane.connection_limit_unbounded",
+                    "Attached ASA policy explicitly permits unlimited connections",
+                    f"Policy '{policy.policy_name}' class '{policy.class_name}', attached at {scope}, explicitly sets {', '.join(unlimited)} to zero; ASA defines zero as unlimited.",
+                    "An unbounded connection or embryonic-connection population can exhaust firewall or protected-service resources during a denial-of-service event.",
+                    "Set traffic-appropriate nonzero limits based on platform capacity and observed workload; validate availability before deployment.",
+                    Severity.HIGH if any("embryonic" in item for item in unlimited) else Severity.MEDIUM,
+                    evidence,
+                    CISCO_ASA_FIREWALL_REFERENCE,
+                ))
+
     def check_reverse_path(self, parser: BaseDeviceParser) -> None:
         lines = self._lines(parser)
         protected = {
@@ -426,14 +463,23 @@ class PluginASABaseline(BasePlugin):
                     "Use AES-GCM/AES-256, SHA-256 or stronger, and approved modern DH groups.",
                     Severity.HIGH, (block.text.strip(), *weak),
                 ))
-        for transform in native.find_objects(r"^crypto ipsec (?:ikev1 )?transform-set\s+"):
-            if any(token in transform.text.lower().split() for token in ("esp-des", "esp-3des", "esp-md5-hmac", "esp-sha-hmac")):
+        for binding in self._asa(parser).get_active_ipsec_transform_bindings():
+            if binding.declaration is None:
+                self.add_issue(self._finding(
+                    parser, "cisco.asa.crypto.unresolved_transform", "Attached IPsec transform-set is unresolved",
+                    f"Crypto map on interface '{binding.interface}' references transform-set '{binding.transform_name}', but its definition is not present in this input.",
+                    "The effective IPsec algorithms cannot be assessed from this configuration export.",
+                    "Include the referenced transform-set definition in the export and validate the active crypto-map chain.",
+                    Severity.MEDIUM, (binding.map_binding, binding.map_attachment),
+                ))
+                continue
+            if any(token in binding.declaration.lower().split() for token in ("esp-des", "esp-3des", "esp-md5-hmac", "esp-sha-hmac")):
                 self.add_issue(self._finding(
                     parser, "cisco.asa.crypto.legacy_transform", "IPsec transform-set uses legacy cryptography",
-                    "An IPsec transform-set includes a legacy encryption or integrity algorithm.",
+                    f"An IPsec transform-set attached to interface '{binding.interface}' includes a legacy encryption or integrity algorithm.",
                     "Legacy transforms weaken protected VPN traffic.",
                     "Replace legacy transforms with AES and SHA-256 or authenticated encryption.",
-                    Severity.HIGH, (transform.text.strip(),),
+                    Severity.HIGH, (binding.declaration, binding.map_binding, binding.map_attachment),
                 ))
 
     def check_failover(self, parser: BaseDeviceParser) -> None:
@@ -459,6 +505,7 @@ class PluginASABaseline(BasePlugin):
         self.check_http_management(parser)
         self.check_ntp(parser)
         self.check_threat_detection(parser)
+        self.check_connection_limits(parser)
         self.check_reverse_path(parser)
         self.check_vpn_crypto(parser)
         self.check_failover(parser)

@@ -134,11 +134,11 @@ def test_vulnerable_sonicos_has_exact_findings(tmp_path):
     assert all(issue.references for issue in issues)
 
 
-def test_disabled_rules_and_vpn_policies_are_ignored(tmp_path):
+def test_disabled_permissive_rule_is_hygiene_only_and_disabled_vpn_is_ignored(tmp_path):
     parser = _parse(
         tmp_path,
         SECURE
-        + """access-rule ipv4 from any to any action allow source address any service any destination address any
+        + """access-rule ipv4 from any to any action allow source address any service any destination address any schedule always-on
   name "DISABLED"
   no enable
 vpn policy site-to-site "DISABLED-LEGACY"
@@ -146,7 +146,10 @@ vpn policy site-to-site "DISABLED-LEGACY"
   proposal ike encryption triple-des
 """,
     )
-    assert _issues(parser) == []
+    issues = _issues(parser)
+    assert [item.rule_id for item in issues] == [
+        "sonicwall.sonicos.policy.disabled_permissive_rule"
+    ]
 
 
 def test_secure_sonicos_has_no_findings(tmp_path):

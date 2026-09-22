@@ -1,11 +1,20 @@
 """FortiOS configuration parser and normalized model adapter."""
 
 from dataclasses import dataclass
+import ipaddress
 import re
 import shlex
 from typing import Dict, Iterator, List, Tuple, Union
 
+from src.common.certificates import (
+    CertificateAssessment,
+    CertificateMetadata,
+    assess_public_certificate,
+    certificate_metadata,
+    load_public_certificate,
+)
 from src.devices.common.base_parser import BaseDeviceParser
+from src.devices.common.input_scope import contains_unresolved_template
 from src.devices.common.models import (
     ConfigEvidence,
     ConfigurationState,
@@ -18,6 +27,12 @@ from src.devices.common.models import (
     NormalizedConfig,
     NormalizedValue,
     SecurityPolicy,
+)
+from src.devices.common.policy_semantics import (
+    AddressInterval,
+    NetworkSemantics,
+    ServiceInterval,
+    ServiceSemantics,
 )
 
 
@@ -72,6 +87,19 @@ class FortiAAAServerProfile:
 
 
 @dataclass(frozen=True)
+class FortiManagementCertificateBinding:
+    """Resolved FortiOS administrative HTTPS certificate evidence."""
+
+    scope: str
+    certificate: str
+    reference_state: str
+    public_material_state: str
+    metadata: CertificateMetadata | None
+    assessment: CertificateAssessment | None
+    evidence: Tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
 class FortiInspectionProfile:
     profile_type: str
     name: str
@@ -91,6 +119,42 @@ class FortiSecurityInspection:
     resolution_state: str
     profiles: Tuple[FortiInspectionProfile, ...]
     evidence: Tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class FortiFirewallPolicy:
+    """A transit policy adapted to the bounded shared containment model."""
+
+    family: str
+    scope: str
+    name: str
+    position: int
+    enabled: bool
+    action: str
+    source_interfaces: Tuple[str, ...]
+    destination_interfaces: Tuple[str, ...]
+    source_networks: NetworkSemantics
+    destination_networks: NetworkSemantics
+    services: ServiceSemantics
+    schedule: str
+    source_negated: bool
+    destination_negated: bool
+    service_negated: bool
+    unsupported_predicates: Tuple[str, ...]
+    behavior_signature: Tuple[Tuple[str, str], ...]
+    evidence: Tuple[ConfigEvidence, ...]
+
+    @property
+    def proof_eligible(self) -> bool:
+        return (
+            self.enabled
+            and self.action in {"accept", "deny"}
+            and self.schedule.casefold() == "always"
+            and not self.source_negated
+            and not self.destination_negated
+            and not self.service_negated
+            and not self.unsupported_predicates
+        )
 
 
 @dataclass(frozen=True)
@@ -129,6 +193,48 @@ class FortiIPSecTunnel:
     evidence: Tuple[ConfigEvidence, ...]
 
 
+@dataclass(frozen=True)
+class FortiDoSAnomaly:
+    name: str
+    enabled: bool
+    action: str
+    logging: bool
+    threshold: str | None
+    threshold_state: str
+    evidence: Tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class FortiDoSPolicy:
+    family: str
+    scope: str
+    name: str
+    enabled: bool
+    interfaces: Tuple[str, ...]
+    sources: Tuple[str, ...]
+    destinations: Tuple[str, ...]
+    services: Tuple[str, ...]
+    anomalies: Tuple[FortiDoSAnomaly, ...]
+    evidence: Tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class FortiConfigurationBackup:
+    """A sanitized FortiOS auto-script that invokes a configuration backup."""
+
+    scope: str
+    name: str
+    backup_format: str
+    protocol: str
+    transport_security: str
+    destination: str | None
+    start_mode: str
+    interval_seconds: int | None
+    repeat_count: int | None
+    schedule_state: str
+    evidence: Tuple[ConfigEvidence, ...]
+
+
 class FortiOSParser(BaseDeviceParser):
 
     device_type = "FORTIOS"
@@ -145,6 +251,7 @@ class FortiOSParser(BaseDeviceParser):
         "psksecret",
         "secret",
     }
+    _PUBLIC_MATERIAL_FIELDS = {"ca", "certificate"}
     _INSPECTION_PROFILE_SECTIONS = {
         "application-list": "application list",
         "av-profile": "antivirus profile",
@@ -161,16 +268,61 @@ class FortiOSParser(BaseDeviceParser):
         "waf-profile": "waf profile",
         "webfilter-profile": "webfilter profile",
     }
+    _BUILTIN_SERVICES = {
+        "all_tcp": (("tcp", 0, 65535),),
+        "all_udp": (("udp", 0, 65535),),
+        "dns": (("tcp", 53, 53), ("udp", 53, 53)),
+        "ftp": (("tcp", 21, 21),),
+        "http": (("tcp", 80, 80),),
+        "https": (("tcp", 443, 443),),
+        "ping": (("icmp", 0, 65535),),
+        "ssh": (("tcp", 22, 22),),
+        "telnet": (("tcp", 23, 23),),
+    }
+    _POLICY_UNSUPPORTED_PREDICATES = {
+        "devices",
+        "dst-reputation",
+        "fsso-groups",
+        "geoip-match",
+        "groups",
+        "internet-service",
+        "internet-service-custom",
+        "internet-service-group",
+        "internet-service-name",
+        "internet-service-src",
+        "internet-service-src-custom",
+        "internet-service-src-group",
+        "internet-service-src-name",
+        "reputation-direction",
+        "reputation-minimum",
+        "src-device",
+        "src-device-filter",
+        "src-device-type",
+        "src-device-vendor",
+        "src-reputation",
+        "src-vendor-mac",
+        "users",
+        "ztna-ems-tag",
+        "ztna-tags-match-logic",
+    }
 
     def __init__(self, config_filepath: str):
         super().__init__(config_filepath)
         self.evidence: Dict[Tuple[str, ...], ConfigEvidence] = {}
         self.parse_diagnostics: List[str] = []
+        self.template_unresolved = False
         self.metadata: Dict[str, str] = {}
         self.config = self._parse_config(config_filepath)
 
     @staticmethod
     def _tokens(line: str, source: str, line_number: int) -> List[str]:
+        public_material = re.fullmatch(
+            r'\s*set\s+(certificate|ca)\s+"(.*)"\s*', line, re.IGNORECASE
+        )
+        if public_material:
+            # FortiOS exports PEM values on one line with escaped newlines.
+            value = public_material.group(2).replace(r"\n", "\n").replace(r'\"', '"')
+            return ["set", public_material.group(1), value]
         try:
             return shlex.split(line, comments=False, posix=True)
         except ValueError as exc:
@@ -200,6 +352,18 @@ class FortiOSParser(BaseDeviceParser):
             and tokens[1].lower() in self._SECRET_FIELDS
         ):
             text = f"{tokens[0]} {tokens[1]} <redacted>"
+        elif (
+            len(tokens) >= 2
+            and tokens[0].lower() in {"set", "select", "append"}
+            and tokens[1].lower() in self._PUBLIC_MATERIAL_FIELDS
+        ):
+            text = f"{tokens[0]} {tokens[1]} <public certificate material omitted>"
+        elif (
+            path
+            and path[-1].casefold() == "script"
+            and re.search(r"\bexecute\s+backup\b", text, re.IGNORECASE)
+        ):
+            text = f"{tokens[0]} {tokens[1]} <backup command redacted>"
         self.evidence[path] = ConfigEvidence(
             text=text,
             source=self.config_filepath,
@@ -259,6 +423,9 @@ class FortiOSParser(BaseDeviceParser):
                     self._parse_header(line, line_number)
                     continue
 
+                if contains_unresolved_template(line):
+                    self.template_unresolved = True
+
                 tokens = self._tokens(line, filepath, line_number)
                 if not tokens:
                     continue
@@ -293,6 +460,10 @@ class FortiOSParser(BaseDeviceParser):
                     self._require_frame(frames, "edit", line_number, command)
                     frames.pop()
                 elif command == "end":
+                    # FortiOS permits saving an edited entry and its table
+                    # together. Only close this table, retaining outer VDOMs.
+                    if frames and frames[-1].kind == "edit":
+                        frames.pop()
                     self._require_frame(frames, "config", line_number, command)
                     frames.pop()
                 elif command in {"set", "select", "append", "unselect"}:
@@ -392,6 +563,132 @@ class FortiOSParser(BaseDeviceParser):
         """Return already-redacted evidence for a parsed field or object."""
 
         return self._field_evidence(path)
+
+    @staticmethod
+    def _integer(value: object) -> int | None:
+        text = FortiOSParser._as_list(value)
+        if len(text) != 1 or not text[0].isdigit():
+            return None
+        return int(text[0])
+
+    @staticmethod
+    def _sanitize_backup_destination(value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = re.sub(
+            r"^([a-z][a-z0-9+.-]*://)[^/@\s]+@",
+            r"\1<credentials>@",
+            value,
+            flags=re.IGNORECASE,
+        )
+        return re.sub(r"^[^/@\s]+@", "<credentials>@", value)
+
+    @staticmethod
+    def _backup_command(script: str) -> tuple[str, str, str | None] | None:
+        """Return format, protocol and non-credential destination from a script."""
+
+        try:
+            tokens = shlex.split(script.replace("\\n", " "), comments=False, posix=True)
+        except ValueError:
+            tokens = script.replace("\\n", " ").split()
+        lowered = [token.casefold() for token in tokens]
+        formats = {
+            "config",
+            "full-config",
+            "yaml-config",
+            "obfuscated-config",
+            "obfuscated-full-config",
+            "obfuscated-yaml-config",
+        }
+        for index in range(max(0, len(tokens) - 3)):
+            if lowered[index:index + 2] != ["execute", "backup"]:
+                continue
+            backup_format = lowered[index + 2]
+            protocol = lowered[index + 3]
+            if backup_format not in formats:
+                continue
+            if protocol in {"ftp", "sftp", "tftp"}:
+                destination = FortiOSParser._sanitize_backup_destination(
+                    tokens[index + 5] if len(tokens) > index + 5 else None
+                )
+            elif protocol in {"flash", "management-station", "usb", "usb-mode"}:
+                destination = protocol
+            else:
+                destination = None
+            return backup_format, protocol, destination
+        return None
+
+    def get_configuration_backups(self) -> Tuple[FortiConfigurationBackup, ...]:
+        """Resolve exported backup auto-scripts without retaining their credentials."""
+
+        backups: list[FortiConfigurationBackup] = []
+        insecure = {"ftp", "tftp"}
+        secure = {"sftp"}
+        local = {"flash", "usb", "usb-mode"}
+        managed = {"management-station"}
+        for scope, section, path in self._scoped_sections("system auto-script"):
+            for name, settings in section.items():
+                if not isinstance(settings, dict):
+                    continue
+                script = " ".join(self._as_list(settings.get("script")))
+                command = self._backup_command(script)
+                if command is None:
+                    continue
+                backup_format, protocol, destination = command
+                start_mode = " ".join(self._as_list(settings.get("start"))) or "manual"
+                start_mode = start_mode.casefold()
+                interval = self._integer(settings.get("interval", "0"))
+                repeat = self._integer(settings.get("repeat", "1"))
+                if start_mode != "auto":
+                    schedule_state = "manual"
+                elif interval is None or interval <= 0 or repeat is None:
+                    schedule_state = "invalid"
+                elif repeat == 0:
+                    schedule_state = "effective"
+                else:
+                    schedule_state = "finite"
+                transport_security = (
+                    "insecure" if protocol in insecure
+                    else "secure" if protocol in secure
+                    else "local" if protocol in local
+                    else "managed" if protocol in managed
+                    else "unknown"
+                )
+                script_item = self.evidence.get(path + (str(name), "script"))
+                evidence = [
+                    item
+                    for item in (
+                        self.evidence.get(path + (str(name),)),
+                        self.evidence.get(path + (str(name), "start")),
+                        self.evidence.get(path + (str(name), "interval")),
+                        self.evidence.get(path + (str(name), "repeat")),
+                    )
+                    if item is not None
+                ]
+                if script_item is not None:
+                    summary_destination = destination or "<destination unavailable>"
+                    evidence.append(ConfigEvidence(
+                        text=(
+                            f"set script execute backup {backup_format} {protocol} "
+                            f"{summary_destination} <credentials redacted>"
+                        ),
+                        source=script_item.source,
+                        line_number=script_item.line_number,
+                    ))
+                backups.append(FortiConfigurationBackup(
+                    scope=scope,
+                    name=str(name),
+                    backup_format=backup_format,
+                    protocol=protocol,
+                    transport_security=transport_security,
+                    destination=destination,
+                    start_mode=start_mode,
+                    interval_seconds=interval,
+                    repeat_count=repeat,
+                    schedule_state=schedule_state,
+                    evidence=tuple(evidence),
+                ))
+        return tuple(backups)
 
     def iter_administrators(self):
         for scope, section, path in self._scoped_sections("system admin"):
@@ -512,6 +809,100 @@ class FortiOSParser(BaseDeviceParser):
                 )
         return tuple(profiles)
 
+    def get_management_certificate_bindings(
+        self,
+    ) -> Tuple[FortiManagementCertificateBinding, ...]:
+        """Resolve admin-server-cert to supplied public local/CA material."""
+
+        objects: list[dict] = []
+        for section_name, field, kind in (
+            ("vpn certificate local", "certificate", "identity"),
+            ("certificate local", "certificate", "identity"),
+            ("vpn certificate ca", "ca", "ca"),
+            ("certificate ca", "ca", "ca"),
+        ):
+            for scope, section, path in self._scoped_sections(section_name):
+                for name, settings in section.items():
+                    if not isinstance(settings, dict):
+                        continue
+                    raw_material = settings.get(field)
+                    material = " ".join(self._as_list(raw_material)).strip()
+                    parsed = None
+                    state = "missing"
+                    if material:
+                        try:
+                            parsed = load_public_certificate(material)
+                            state = "parsed"
+                        except (TypeError, ValueError):
+                            state = "malformed"
+                    object_evidence = ConfigEvidence(
+                        text=f"{section_name} {name} {field} <public material {state}>",
+                        source=self.config_filepath,
+                        line_number=(
+                            self.evidence.get(path + (str(name), field)).line_number
+                            if self.evidence.get(path + (str(name), field)) else None
+                        ),
+                    )
+                    objects.append({
+                        "scope": scope,
+                        "name": str(name),
+                        "kind": kind,
+                        "state": state,
+                        "certificate": parsed,
+                        "evidence": object_evidence,
+                    })
+
+        bindings = []
+        has_identity_inventory = any(item["kind"] == "identity" for item in objects)
+        factory_names = {"fortinet_factory", "fortinet_gui_server", "self-sign"}
+        for scope, settings, path in self._scoped_sections("system global"):
+            selected = " ".join(self._as_list(settings.get("admin-server-cert"))).strip()
+            if not selected or selected.casefold() in factory_names:
+                continue
+            candidates = [
+                item for item in objects
+                if item["kind"] == "identity"
+                and item["name"].casefold() == selected.casefold()
+                and item["scope"] in {scope, "global", "root"}
+            ]
+            candidates.sort(key=lambda item: (
+                0 if item["scope"] == scope else 1 if item["scope"] == "global" else 2
+            ))
+            resolved = candidates[0] if candidates else None
+            available = tuple(
+                item["certificate"] for item in objects
+                if item["certificate"] is not None
+                and item["scope"] in {scope, "global", "root"}
+            )
+            metadata = None
+            assessment = None
+            if resolved is not None and resolved["certificate"] is not None:
+                metadata = certificate_metadata(resolved["certificate"])
+                assessment = assess_public_certificate(
+                    resolved["certificate"],
+                    available,
+                    self.assessment_context.trusted_certificate_sha256,
+                    self.assessment_context.management_identity_for_scope(scope),
+                    self.assessment_context.assessment_datetime(),
+                )
+            evidence = list(self._field_evidence(path + ("admin-server-cert",)))
+            if resolved is not None:
+                evidence.append(resolved["evidence"])
+            bindings.append(FortiManagementCertificateBinding(
+                scope=scope,
+                certificate=selected,
+                reference_state=(
+                    "resolved" if resolved is not None
+                    else "unresolved" if has_identity_inventory
+                    else "unavailable"
+                ),
+                public_material_state=(resolved["state"] if resolved is not None else "unknown"),
+                metadata=metadata,
+                assessment=assessment,
+                evidence=tuple(evidence),
+            ))
+        return tuple(bindings)
+
     def get_hostname(self) -> str:
         for _, section, _ in self._scoped_sections("system global"):
             hostname = section.get("hostname")
@@ -580,6 +971,335 @@ class FortiOSParser(BaseDeviceParser):
                 if isinstance(settings, dict):
                     yield scope, position, str(name), settings, path + (str(name),)
 
+    @staticmethod
+    def _address_interval(value: object, family: int) -> AddressInterval | None:
+        parts = FortiOSParser._as_list(value)
+        try:
+            if len(parts) == 1:
+                network = ipaddress.ip_network(parts[0], strict=False)
+            elif len(parts) == 2:
+                network = ipaddress.ip_network(f"{parts[0]}/{parts[1]}", strict=False)
+            else:
+                return None
+        except ValueError:
+            return None
+        if network.version != family:
+            return None
+        return AddressInterval(family, int(network.network_address), int(network.broadcast_address))
+
+    @staticmethod
+    def _range_interval(first: object, last: object, family: int) -> AddressInterval | None:
+        first_values = FortiOSParser._as_list(first)
+        last_values = FortiOSParser._as_list(last)
+        if len(first_values) != 1 or len(last_values) != 1:
+            return None
+        try:
+            start = ipaddress.ip_address(first_values[0])
+            end = ipaddress.ip_address(last_values[0])
+        except ValueError:
+            return None
+        if start.version != family or end.version != family or int(start) > int(end):
+            return None
+        return AddressInterval(family, int(start), int(end))
+
+    def _resolve_policy_network_member(
+        self,
+        name: str,
+        scope: str,
+        family: int,
+        stack: frozenset[tuple[str, str, int]],
+        budget: list[int],
+    ) -> NetworkSemantics:
+        normalized = name.strip()
+        lowered = normalized.casefold()
+        if lowered in ({"all", "all_ipv4"} if family == 4 else {"all", "all_ipv6"}):
+            return NetworkSemantics(any=True)
+
+        literal = self._address_interval(normalized, family)
+        if literal is not None:
+            return NetworkSemantics(intervals=(literal,))
+
+        key = (scope.casefold(), lowered, family)
+        if key in stack or budget[0] <= 0:
+            return NetworkSemantics(complete=False, unresolved=(normalized,))
+        budget[0] -= 1
+        next_stack = stack | {key}
+
+        object_section = "firewall address" if family == 4 else "firewall address6"
+        resolved = self._resolve_scoped_object(object_section, normalized, scope)
+        if resolved is not None:
+            _, settings, _ = resolved
+            object_type = str(settings.get("type", "ipmask")).casefold()
+            associated_interfaces = self._as_list(settings.get("associated-interface"))
+            if associated_interfaces and any(
+                value.casefold() != "any" for value in associated_interfaces
+            ):
+                return NetworkSemantics(complete=False, unresolved=(normalized,))
+            if object_type == "ipmask":
+                field = "subnet" if family == 4 else "ip6"
+                interval = self._address_interval(settings.get(field), family)
+            elif object_type == "iprange":
+                interval = self._range_interval(
+                    settings.get("start-ip"), settings.get("end-ip"), family
+                )
+            else:
+                interval = None
+            if interval is None:
+                return NetworkSemantics(complete=False, unresolved=(normalized,))
+            return NetworkSemantics(intervals=(interval,))
+
+        group_section = "firewall addrgrp" if family == 4 else "firewall addrgrp6"
+        resolved = self._resolve_scoped_object(group_section, normalized, scope)
+        if resolved is None:
+            return NetworkSemantics(complete=False, unresolved=(normalized,))
+        definition_scope, settings, _ = resolved
+        if (
+            str(settings.get("exclude", "disable")).casefold() == "enable"
+            or str(settings.get("category", "default")).casefold() != "default"
+        ):
+            return NetworkSemantics(complete=False, unresolved=(normalized,))
+        members = self._as_list(settings.get("member"))
+        if not members:
+            return NetworkSemantics(complete=False, unresolved=(normalized,))
+        return self._combine_network_members(
+            members, definition_scope, family, next_stack, budget
+        )
+
+    def _combine_network_members(
+        self,
+        members: List[str],
+        scope: str,
+        family: int,
+        stack: frozenset[tuple[str, str, int]] = frozenset(),
+        budget: list[int] | None = None,
+    ) -> NetworkSemantics:
+        remaining = budget if budget is not None else [4096]
+        intervals: list[AddressInterval] = []
+        unresolved: list[str] = []
+        for member in members:
+            semantics = self._resolve_policy_network_member(
+                str(member), scope, family, stack, remaining
+            )
+            if semantics.any:
+                return NetworkSemantics(any=True)
+            intervals.extend(semantics.intervals)
+            unresolved.extend(semantics.unresolved)
+            if not semantics.complete and not semantics.unresolved:
+                unresolved.append(str(member))
+        if unresolved or not intervals:
+            return NetworkSemantics(
+                intervals=tuple(sorted(set(intervals))),
+                complete=False,
+                unresolved=tuple(dict.fromkeys(unresolved or tuple(str(item) for item in members))),
+            )
+        return NetworkSemantics(intervals=tuple(sorted(set(intervals))))
+
+    @staticmethod
+    def _service_port_intervals(protocol: str, values: object) -> tuple[ServiceInterval, ...] | None:
+        intervals: list[ServiceInterval] = []
+        for raw_value in FortiOSParser._as_list(values):
+            for raw_range in raw_value.split():
+                if ":" in raw_range:
+                    return None
+                parts = raw_range.split("-", 1)
+                if not all(part.isdigit() for part in parts):
+                    return None
+                first = int(parts[0])
+                last = int(parts[-1])
+                if not 0 <= first <= last <= 65535:
+                    return None
+                intervals.append(ServiceInterval(protocol, first, last))
+        return tuple(intervals) if intervals else None
+
+    def _resolve_policy_service_member(
+        self,
+        name: str,
+        scope: str,
+        stack: frozenset[tuple[str, str]],
+        budget: list[int],
+    ) -> ServiceSemantics:
+        normalized = name.strip()
+        lowered = normalized.casefold()
+        if lowered == "all":
+            return ServiceSemantics(any=True)
+        builtin = self._BUILTIN_SERVICES.get(lowered)
+        if builtin is not None:
+            return ServiceSemantics(
+                intervals=tuple(ServiceInterval(*values) for values in builtin)
+            )
+
+        key = (scope.casefold(), lowered)
+        if key in stack or budget[0] <= 0:
+            return ServiceSemantics(complete=False, unresolved=(normalized,))
+        budget[0] -= 1
+        next_stack = stack | {key}
+
+        resolved = self._resolve_scoped_object("firewall service custom", normalized, scope)
+        if resolved is not None:
+            _, settings, _ = resolved
+            if (
+                str(settings.get("proxy", "disable")).casefold() == "enable"
+                or str(settings.get("app-service-type", "disable")).casefold() != "disable"
+                or settings.get("fqdn")
+                or settings.get("iprange")
+            ):
+                return ServiceSemantics(complete=False, unresolved=(normalized,))
+            protocol = str(settings.get("protocol", "TCP/UDP/SCTP")).casefold()
+            intervals: list[ServiceInterval] = []
+            if protocol == "tcp/udp/udp-lite/sctp" or protocol == "tcp/udp/sctp":
+                for field, member_protocol in (
+                    ("tcp-portrange", "tcp"),
+                    ("udp-portrange", "udp"),
+                ):
+                    if field not in settings:
+                        continue
+                    parsed = self._service_port_intervals(member_protocol, settings[field])
+                    if parsed is None:
+                        return ServiceSemantics(complete=False, unresolved=(normalized,))
+                    intervals.extend(parsed)
+                if settings.get("sctp-portrange") or settings.get("udplite-portrange"):
+                    return ServiceSemantics(complete=False, unresolved=(normalized,))
+            elif protocol in {"icmp", "icmp6"}:
+                if settings.get("icmpcode") not in {None, ""}:
+                    return ServiceSemantics(complete=False, unresolved=(normalized,))
+                raw_type = settings.get("icmptype")
+                if raw_type in {None, ""}:
+                    intervals.append(ServiceInterval(protocol, 0, 65535))
+                else:
+                    values = self._as_list(raw_type)
+                    if len(values) != 1 or not values[0].isdigit():
+                        return ServiceSemantics(complete=False, unresolved=(normalized,))
+                    value = int(values[0])
+                    if not 0 <= value <= 255:
+                        return ServiceSemantics(complete=False, unresolved=(normalized,))
+                    intervals.append(ServiceInterval(protocol, value, value))
+            elif protocol == "ip":
+                values = self._as_list(settings.get("protocol-number"))
+                if len(values) != 1 or not values[0].isdigit():
+                    return ServiceSemantics(complete=False, unresolved=(normalized,))
+                number = int(values[0])
+                if not 0 <= number <= 254:
+                    return ServiceSemantics(complete=False, unresolved=(normalized,))
+                protocol_name = {1: "icmp", 6: "tcp", 17: "udp", 58: "icmp6"}.get(
+                    number, f"ip-{number}"
+                )
+                intervals.append(ServiceInterval(protocol_name, 0, 65535))
+            else:
+                return ServiceSemantics(complete=False, unresolved=(normalized,))
+            if not intervals:
+                return ServiceSemantics(complete=False, unresolved=(normalized,))
+            return ServiceSemantics(intervals=tuple(sorted(set(intervals))))
+
+        resolved = self._resolve_scoped_object("firewall service group", normalized, scope)
+        if resolved is None:
+            return ServiceSemantics(complete=False, unresolved=(normalized,))
+        definition_scope, settings, _ = resolved
+        if str(settings.get("proxy", "disable")).casefold() == "enable":
+            return ServiceSemantics(complete=False, unresolved=(normalized,))
+        members = self._as_list(settings.get("member"))
+        if not members:
+            return ServiceSemantics(complete=False, unresolved=(normalized,))
+        return self._combine_service_members(members, definition_scope, next_stack, budget)
+
+    def _combine_service_members(
+        self,
+        members: List[str],
+        scope: str,
+        stack: frozenset[tuple[str, str]] = frozenset(),
+        budget: list[int] | None = None,
+    ) -> ServiceSemantics:
+        remaining = budget if budget is not None else [4096]
+        intervals: list[ServiceInterval] = []
+        unresolved: list[str] = []
+        for member in members:
+            semantics = self._resolve_policy_service_member(
+                str(member), scope, stack, remaining
+            )
+            if semantics.any:
+                return ServiceSemantics(any=True)
+            intervals.extend(semantics.intervals)
+            unresolved.extend(semantics.unresolved)
+            if not semantics.complete and not semantics.unresolved:
+                unresolved.append(str(member))
+        if unresolved or not intervals:
+            return ServiceSemantics(
+                intervals=tuple(sorted(set(intervals))),
+                complete=False,
+                unresolved=tuple(dict.fromkeys(unresolved or tuple(str(item) for item in members))),
+            )
+        return ServiceSemantics(intervals=tuple(sorted(set(intervals))))
+
+    @staticmethod
+    def _stable_policy_value(value: FortiValue) -> str:
+        if isinstance(value, dict):
+            return "{" + ",".join(
+                f"{key}:{FortiOSParser._stable_policy_value(member)}"
+                for key, member in sorted(value.items())
+            ) + "}"
+        if isinstance(value, list):
+            return "[" + ",".join(str(item) for item in value) + "]"
+        return str(value)
+
+    def get_firewall_policy_semantics(self) -> Tuple[FortiFirewallPolicy, ...]:
+        """Resolve only policy fields whose static semantics are safely comparable."""
+
+        policies: list[FortiFirewallPolicy] = []
+        dimensions = {
+            "srcintf", "dstintf", "srcaddr", "dstaddr", "service", "schedule",
+            "srcaddr-negate", "dstaddr-negate", "service-negate", "status",
+            # Display metadata must not make otherwise equivalent rule behaviour
+            # appear different during same-action redundancy proof.
+            "name", "comments", "uuid",
+        }
+        for section_name, family, version in (
+            ("firewall policy", "ipv4", 4),
+            ("firewall policy6", "ipv6", 6),
+        ):
+            for scope, section, path in self._scoped_sections(section_name):
+                for position, (name, settings) in enumerate(section.items(), start=1):
+                    if not isinstance(settings, dict):
+                        continue
+                    unsupported = []
+                    for field in self._POLICY_UNSUPPORTED_PREDICATES:
+                        value = settings.get(field)
+                        values = self._as_list(value)
+                        if not values or all(item.casefold() == "disable" for item in values):
+                            continue
+                        unsupported.append(field)
+                    behavior = tuple(
+                        (str(field), self._stable_policy_value(value))
+                        for field, value in sorted(settings.items())
+                        if str(field) not in dimensions
+                    )
+                    object_path = path + (str(name),)
+                    policies.append(FortiFirewallPolicy(
+                        family=family,
+                        scope=scope,
+                        name=str(name),
+                        position=position,
+                        enabled=str(settings.get("status", "enable")).casefold() != "disable",
+                        action=str(settings.get("action", "deny")).casefold(),
+                        source_interfaces=tuple(self._as_list(settings.get("srcintf"))),
+                        destination_interfaces=tuple(self._as_list(settings.get("dstintf"))),
+                        source_networks=self._combine_network_members(
+                            self._as_list(settings.get("srcaddr")), scope, version
+                        ),
+                        destination_networks=self._combine_network_members(
+                            self._as_list(settings.get("dstaddr")), scope, version
+                        ),
+                        services=self._combine_service_members(
+                            self._as_list(settings.get("service")), scope
+                        ),
+                        schedule=str(settings.get("schedule", "always")),
+                        source_negated=str(settings.get("srcaddr-negate", "disable")).casefold() == "enable",
+                        destination_negated=str(settings.get("dstaddr-negate", "disable")).casefold() == "enable",
+                        service_negated=str(settings.get("service-negate", "disable")).casefold() == "enable",
+                        unsupported_predicates=tuple(sorted(unsupported)),
+                        behavior_signature=behavior,
+                        evidence=self._field_evidence(object_path),
+                    ))
+        return tuple(policies)
+
     def get_local_in_policies(self) -> Tuple[FortiLocalInPolicy, ...]:
         """Return local-device traffic rules separately from transit policies."""
 
@@ -622,6 +1342,64 @@ class FortiOSParser(BaseDeviceParser):
                             evidence=self._field_evidence(object_path),
                         )
                     )
+        return tuple(policies)
+
+    def get_dos_policies(self) -> Tuple[FortiDoSPolicy, ...]:
+        """Return scoped DoS policies with every anomaly's effective exported state."""
+
+        policies = []
+        for section_name, family in (("firewall DoS-policy", "ipv4"), ("firewall DoS-policy6", "ipv6")):
+            for scope, section, section_path in self._scoped_sections(section_name):
+                for name, settings in section.items():
+                    if not isinstance(settings, dict):
+                        continue
+                    policy_path = section_path + (str(name),)
+                    anomaly_items = []
+                    anomalies = settings.get("anomaly")
+                    if isinstance(anomalies, dict):
+                        for anomaly_name, anomaly in anomalies.items():
+                            if not isinstance(anomaly, dict):
+                                continue
+                            anomaly_path = policy_path + ("anomaly", str(anomaly_name))
+                            raw_threshold = anomaly.get("threshold")
+                            threshold = (
+                                " ".join(self._as_list(raw_threshold))
+                                if raw_threshold is not None
+                                else None
+                            )
+                            if threshold is None:
+                                threshold_state = "platform-default"
+                            elif threshold.isdigit() and 1 <= int(threshold) <= 2147483647:
+                                threshold_state = "explicit"
+                            else:
+                                threshold_state = "invalid"
+                            evidence = list(self._field_evidence(anomaly_path))
+                            for field in ("status", "action", "log", "threshold"):
+                                evidence.extend(self._field_evidence(anomaly_path + (field,)))
+                            anomaly_items.append(FortiDoSAnomaly(
+                                name=str(anomaly_name),
+                                enabled=str(anomaly.get("status", "disable")).casefold() == "enable",
+                                action=str(anomaly.get("action", "pass")).casefold(),
+                                logging=str(anomaly.get("log", "disable")).casefold() == "enable",
+                                threshold=threshold,
+                                threshold_state=threshold_state,
+                                evidence=tuple(dict.fromkeys(evidence)),
+                            ))
+                    evidence = list(self._field_evidence(policy_path))
+                    for field in ("status", "interface", "srcaddr", "dstaddr", "service"):
+                        evidence.extend(self._field_evidence(policy_path + (field,)))
+                    policies.append(FortiDoSPolicy(
+                        family=family,
+                        scope=scope,
+                        name=str(name),
+                        enabled=str(settings.get("status", "enable")).casefold() != "disable",
+                        interfaces=tuple(self._as_list(settings.get("interface"))),
+                        sources=tuple(self._as_list(settings.get("srcaddr"))),
+                        destinations=tuple(self._as_list(settings.get("dstaddr"))),
+                        services=tuple(self._as_list(settings.get("service"))),
+                        anomalies=tuple(anomaly_items),
+                        evidence=tuple(dict.fromkeys(evidence)),
+                    ))
         return tuple(policies)
 
     def get_ipsec_tunnels(self) -> Tuple[FortiIPSecTunnel, ...]:
@@ -976,32 +1754,54 @@ class FortiOSParser(BaseDeviceParser):
                 )
 
         policies = []
-        for scope, section, path in self._scoped_sections("firewall policy"):
-            for position, (name, settings) in enumerate(section.items(), start=1):
-                if not isinstance(settings, dict):
-                    continue
-                state = (
-                    ConfigurationState.DISABLED
-                    if settings.get("status") == "disable"
-                    else ConfigurationState.ENABLED
-                )
-                policies.append(
-                    SecurityPolicy(
-                        name=str(name),
-                        state=state,
-                        action=str(settings.get("action", "deny")),
-                        position=position,
-                        scope=scope,
-                        source_interfaces=tuple(self._as_list(settings.get("srcintf"))),
-                        destination_interfaces=tuple(self._as_list(settings.get("dstintf"))),
-                        sources=tuple(self._as_list(settings.get("srcaddr"))),
-                        destinations=tuple(self._as_list(settings.get("dstaddr"))),
-                        services=tuple(self._as_list(settings.get("service"))),
-                        evidence=self._field_evidence(path + (str(name),)),
+        for section_name in ("firewall policy", "firewall policy6"):
+            for scope, section, path in self._scoped_sections(section_name):
+                for position, (name, settings) in enumerate(section.items(), start=1):
+                    if not isinstance(settings, dict):
+                        continue
+                    state = (
+                        ConfigurationState.DISABLED
+                        if settings.get("status") == "disable"
+                        else ConfigurationState.ENABLED
                     )
-                )
+                    policies.append(
+                        SecurityPolicy(
+                            name=str(name),
+                            state=state,
+                            action=str(settings.get("action", "deny")),
+                            position=position,
+                            scope=scope,
+                            source_interfaces=tuple(self._as_list(settings.get("srcintf"))),
+                            destination_interfaces=tuple(self._as_list(settings.get("dstintf"))),
+                            sources=tuple(self._as_list(settings.get("srcaddr"))),
+                            destinations=tuple(self._as_list(settings.get("dstaddr"))),
+                            services=tuple(self._as_list(settings.get("service"))),
+                            tracking=(
+                                "all"
+                                if str(settings.get("logtraffic", "disable")).casefold()
+                                == "all"
+                                else str(settings.get("logtraffic", "")) or None
+                            ),
+                            evidence=self._field_evidence(path + (str(name),)),
+                        )
+                    )
 
         logging_destinations = []
+        for section_name, destination_type in (
+            ("log disk setting", "local-disk"),
+            ("log memory setting", "local-memory"),
+        ):
+            for scope, section, path in self._scoped_sections(section_name):
+                state = {
+                    "enable": ConfigurationState.ENABLED,
+                    "disable": ConfigurationState.DISABLED,
+                }.get(str(section.get("status", "")).casefold(), ConfigurationState.UNKNOWN)
+                logging_destinations.append(LoggingDestination(
+                    destination_type=destination_type,
+                    state=state,
+                    scope=scope,
+                    evidence=self._field_evidence(path + ("status",)),
+                ))
         for section_name, destination_type in (
             ("log syslogd setting", "syslog"),
             ("log syslogd2 setting", "syslog2"),
@@ -1068,4 +1868,10 @@ class FortiOSParser(BaseDeviceParser):
         )
 
 
-__all__ = ["FortiAAAServerProfile", "FortiOSParseError", "FortiOSParser"]
+__all__ = [
+    "FortiAAAServerProfile",
+    "FortiConfigurationBackup",
+    "FortiFirewallPolicy",
+    "FortiOSParseError",
+    "FortiOSParser",
+]

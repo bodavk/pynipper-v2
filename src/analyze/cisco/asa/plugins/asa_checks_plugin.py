@@ -1,7 +1,8 @@
 from src.analyze.common.base_plugin import BasePlugin
+from src.analyze.common.credentials import credential_policy_from_context, evaluate_credential
 from src.analyze.common.issue import Finding, Severity
 from src.devices.common.base_parser import BaseDeviceParser
-from src.devices.common.models import CredentialStorageAssessment
+from src.devices.common.policy_semantics import ProofState, network_covers, service_covers
 from src.devices.cisco.asa import CiscoASAParser
 
 
@@ -61,11 +62,10 @@ class PluginASAChecks(BasePlugin):
         credential = self._asa(parser).get_enable_credential()
         if credential is None:
             return
-        if credential.storage_assessment not in {
-            CredentialStorageAssessment.EMPTY,
-            CredentialStorageAssessment.PLAINTEXT,
-            CredentialStorageAssessment.WEAK_HASH,
-        }:
+        result = evaluate_credential(
+            credential, credential_policy_from_context(parser.assessment_context)
+        )
+        if not result.unsafe_storage:
             return
         self.add_issue(
             Finding(
@@ -74,8 +74,10 @@ class PluginASAChecks(BasePlugin):
                 title="Unsafe enable credential storage",
                 observation=(
                     f"The enable credential uses format '{credential.storage_type}', classified as "
-                    f"'{credential.storage_assessment.value}'; the separate exact-default comparison "
-                    f"is '{credential.default_assessment.value}'. The secret value has been redacted."
+                    f"'{result.storage_assessment.value}' under credential policy '{result.policy_version}'; "
+                    f"the separate exact-default comparison is '{result.default_assessment.value}' and "
+                    f"the blocklist comparison {result.blocklist_summary}. "
+                    "The secret value has been redacted."
                 ),
                 impact="A recoverable or default credential can enable administrative privilege escalation.",
                 severity=Severity.HIGH,
@@ -286,23 +288,44 @@ class PluginASAChecks(BasePlugin):
             )
 
     def check_ssl_version(self, parser: BaseDeviceParser) -> None:
-        minimum = self._asa(parser).get_ssl_min_version()
-        if minimum.casefold() not in {"sslv3", "tlsv1", "tlsv1.1"}:
+        asa = self._asa(parser)
+        policy = asa.get_ssl_service_policy()
+        if not policy.active_interfaces or asa.get_version() == "?":
             return
-        self.add_issue(
-            Finding(
-                rule_id="cisco.asa.tls.minimum_version",
-                device=parser.device_type,
-                title="Insecure ASA TLS server version configured",
-                observation=f"The ASA server-side minimum protocol is '{minimum}'.",
-                impact="Legacy SSL/TLS protocols contain known cryptographic weaknesses.",
-                severity=Severity.MEDIUM,
-                exploitability="An on-path attacker may target weaknesses in permitted legacy protocol versions.",
-                recommendation="Set 'ssl server-version tlsv1.2' or a newer version supported by the platform.",
-                evidence=(f"ssl server-version {minimum}",),
-                references=(CISCO_ASA_TLS_REFERENCE,),
+        minimum = policy.server_minimum
+        active = ", ".join(policy.active_interfaces)
+        if policy.server_minimum_valid and minimum in {
+            "any", "sslv3", "sslv3-only", "tlsv1", "tlsv1-only", "tlsv1.1",
+        }:
+            self.add_issue(
+                Finding(
+                    rule_id="cisco.asa.tls.minimum_version",
+                    device=parser.device_type,
+                    title="Active ASA WebVPN permits an obsolete TLS version",
+                    observation=f"WebVPN is enabled on {active}; its explicit server-side minimum protocol is '{minimum}'.",
+                    impact="Legacy SSL/TLS protocols contain known cryptographic weaknesses.",
+                    severity=Severity.MEDIUM,
+                    exploitability="An on-path attacker may target weaknesses in a permitted legacy protocol version.",
+                    recommendation="Set 'ssl server-version tlsv1.2' or a newer version supported by the platform.",
+                    evidence=tuple(item.text for item in policy.evidence if item.text.startswith(("ssl server-version", "enable "))),
+                    references=(CISCO_ASA_TLS_REFERENCE,),
+                )
             )
-        )
+        if policy.weak_cipher_commands:
+            self.add_issue(Finding(
+                rule_id="cisco.asa.tls.weak_cipher",
+                device=parser.device_type,
+                title="Active ASA WebVPN offers weak TLS cipher suites",
+                observation=f"WebVPN is enabled on {active} and its explicit inbound cipher policy includes DES, 3DES, RC4, NULL, MD5, or a cipher level that includes such suites.",
+                impact="A client can negotiate cryptography that does not meet current confidentiality or integrity expectations.",
+                severity=Severity.HIGH,
+                exploitability="An attacker able to influence or intercept negotiation may target an offered legacy suite.",
+                recommendation="Remove weak suites and use a supported FIPS/high level or an explicitly modern custom per-protocol cipher policy after compatibility testing.",
+                evidence=policy.weak_cipher_commands + tuple(
+                    f"webvpn enable {interface}" for interface in policy.active_interfaces
+                ),
+                references=(CISCO_ASA_TLS_REFERENCE,),
+            ))
 
     def check_wide_open_acls(self, parser: BaseDeviceParser) -> None:
         asa = self._asa(parser)
@@ -328,6 +351,102 @@ class PluginASAChecks(BasePlugin):
                     )
                 )
 
+    def check_acl_hygiene_and_effectiveness(self, parser: BaseDeviceParser) -> None:
+        asa = self._asa(parser)
+        for binding in asa.get_acl_bindings():
+            entries = asa.get_acl_entries(binding["acl_name"])
+            previous = []
+            for position, entry in enumerate(entries, start=1):
+                evidence = (
+                    entry.raw_line,
+                    f"access-group {entry.acl_name} {binding['direction']} interface {binding['interface']}",
+                )
+                if entry.inactive:
+                    if (
+                        entry.action == "permit"
+                        and entry.source in {"any", "any4", "any6"}
+                        and entry.destination in {"any", "any4", "any6"}
+                    ):
+                        self.add_issue(Finding(
+                            rule_id="cisco.asa.acl.inactive_permissive_rule",
+                            device=parser.device_type,
+                            title="Inactive permissive ACL entry remains configured",
+                            observation=f"Inactive entry {position} in ACL '{entry.acl_name}' retains a broad permit on '{binding['interface']}'.",
+                            impact="Stale permissive entries obscure policy intent and can create exposure if reactivated.",
+                            exploitability="The entry is inactive in the supplied configuration; exploitation requires reactivation.",
+                            recommendation="Remove the obsolete entry or narrow and document it before reactivation.",
+                            severity=Severity.LOW,
+                            evidence=evidence,
+                            references=(CISCO_ASA_ACCESS_RULES_GUIDE,),
+                        ))
+                    continue
+                if entry.action == "permit" and entry.protocol.casefold() in {"ip", "any"} and not entry.is_broad_permit:
+                    self.add_issue(Finding(
+                        rule_id="cisco.asa.acl.broad_service",
+                        device=parser.device_type,
+                        title="ACL permit is unrestricted by IP protocol",
+                        observation=f"Entry {position} in ACL '{entry.acl_name}' permits every IP protocol within its address scope on '{binding['interface']}'.",
+                        impact="Unnecessary protocols can cross the firewall within the matched network scope.",
+                        exploitability="A reachable source can use any IP protocol supported by the destination and surrounding path.",
+                        recommendation="Constrain the ACE to the required protocol and destination service.",
+                        severity=Severity.MEDIUM,
+                        evidence=evidence,
+                        references=(CISCO_ASA_ACCESS_RULES_GUIDE,),
+                    ))
+                if entry.action == "permit" and entry.is_broad_permit and not entry.logging:
+                    self.add_issue(Finding(
+                        rule_id="cisco.asa.acl.broad_permit_unlogged",
+                        device=parser.device_type,
+                        title="Broad ACL permit lacks explicit logging",
+                        observation=f"Broad permit entry {position} in ACL '{entry.acl_name}' has no explicit log option.",
+                        impact="Traffic crossing a highly permissive boundary may lack rule-level audit records.",
+                        exploitability="Malicious traffic can blend into an unrestricted flow with reduced policy-hit visibility.",
+                        recommendation="Narrow the rule and enable an appropriate reviewed logging level and interval.",
+                        severity=Severity.MEDIUM,
+                        evidence=evidence,
+                        references=(CISCO_ASA_ACCESS_RULES_GUIDE,),
+                    ))
+
+                if entry.time_range or entry.unsupported_predicates:
+                    previous.append((position, entry))
+                    continue
+                current_source = asa.resolve_acl_network(entry.source)
+                current_destination = asa.resolve_acl_network(entry.destination)
+                current_service = asa.resolve_acl_service(entry)
+                for earlier_position, earlier in previous:
+                    if earlier.time_range or earlier.unsupported_predicates:
+                        continue
+                    if not all(
+                        state == ProofState.PROVEN
+                        for state in (
+                            network_covers(asa.resolve_acl_network(earlier.source), current_source),
+                            network_covers(asa.resolve_acl_network(earlier.destination), current_destination),
+                            service_covers(asa.resolve_acl_service(earlier), current_service),
+                        )
+                    ):
+                        continue
+                    same_action = (
+                        earlier.action == entry.action
+                        and earlier.behavior_signature == entry.behavior_signature
+                    )
+                    self.add_issue(Finding(
+                        rule_id=(
+                            "cisco.asa.acl.redundant_rule"
+                            if same_action else "cisco.asa.acl.shadowed_rule"
+                        ),
+                        device=parser.device_type,
+                        title="ACL entry is redundant" if same_action else "ACL entry is shadowed",
+                        observation=f"Entry {position} in ACL '{entry.acl_name}' is fully covered by earlier entry {earlier_position} with {'the same' if same_action else 'a different'} action on '{binding['interface']}'.",
+                        impact="The later entry cannot alter first-match enforcement for the statically proven traffic scope and obscures policy intent.",
+                        exploitability="A conflicting shadowed entry can give reviewers a false impression of enforced access control.",
+                        recommendation="Remove or reorder the entry after validating the applied ACL and operational intent.",
+                        severity=Severity.LOW if same_action else Severity.HIGH,
+                        evidence=evidence + (earlier.raw_line,),
+                        references=(CISCO_ASA_ACCESS_RULES_GUIDE,),
+                    ))
+                    break
+                previous.append((position, entry))
+
     def analyze(self, parser: BaseDeviceParser) -> None:
         self.check_telnet(parser)
         self.check_enable_credential(parser)
@@ -336,3 +455,4 @@ class PluginASAChecks(BasePlugin):
         self.check_logging(parser)
         self.check_ssl_version(parser)
         self.check_wide_open_acls(parser)
+        self.check_acl_hygiene_and_effectiveness(parser)

@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import ipaddress
 import re
 import shlex
 from typing import Any
 
 from src.devices.common.base_parser import BaseDeviceParser
+from src.devices.common.policy_semantics import (
+    AddressInterval,
+    NetworkSemantics,
+    ServiceInterval,
+    ServiceSemantics,
+)
 from src.devices.common.models import (
     ConfigEvidence,
     ConfigurationState,
@@ -58,6 +65,24 @@ class SonicAccessRule:
     schedule: str
     logging: bool
     evidence: tuple[ConfigEvidence, ...]
+    family: str = "ipv4"
+    source_networks: NetworkSemantics = NetworkSemantics(complete=False)
+    destination_networks: NetworkSemantics = NetworkSemantics(complete=False)
+    services: ServiceSemantics = ServiceSemantics(complete=False)
+    unsupported_predicates: tuple[str, ...] = ()
+    behavior_signature: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def proof_eligible(self) -> bool:
+        return (
+            self.enabled
+            and self.action in {"allow", "deny", "discard"}
+            and self.schedule.casefold() in {"", "any", "always-on"}
+            and not self.unsupported_predicates
+            and self.source_networks.complete
+            and self.destination_networks.complete
+            and self.services.complete
+        )
 
 
 @dataclass(frozen=True)
@@ -174,6 +199,7 @@ class SonicOSParser(BaseDeviceParser):
                 and line.strip() not in {"configure", "commit", "exit"}
             )
         self.config = [command.text for command in self.commands]
+        self._policy_object_cache: dict[str, dict] | None = None
         version = self._version_from_commands()
         if not re.search(r"\bSonicOS(?:X)?\b.*\b7(?:\.|\b)", version, re.IGNORECASE):
             if any(re.match(r"set\s+(?:service|admin|vpn)\b", command.text, re.IGNORECASE) for command in self.commands):
@@ -332,16 +358,312 @@ class SonicOSParser(BaseDeviceParser):
             )
         return interfaces
 
+    def _policy_objects(self) -> dict[str, dict]:
+        if self._policy_object_cache is not None:
+            return self._policy_object_cache
+        state: dict[str, dict] = {
+            "addresses": {}, "address_groups": {},
+            "services": {}, "service_groups": {},
+        }
+        for index, command in enumerate(self.commands):
+            if command.indent:
+                continue
+            tokens = self._tokens(command.text)
+            folded = [token.casefold() for token in tokens]
+            if not tokens:
+                continue
+            if folded[:2] == ["no", "address-object"] and len(tokens) >= 4:
+                family = folded[2]
+                name_index = 4 if len(tokens) > 3 and folded[3] == "uuid" else 3
+                if family in {"ipv4", "ipv6"} and name_index < len(tokens):
+                    state["addresses"].pop((family, tokens[name_index].casefold()), None)
+                continue
+            if folded[0] == "address-object" and len(tokens) >= 3:
+                family = folded[1]
+                name_index = 3 if len(tokens) > 2 and folded[2] == "uuid" else 2
+                if family not in {"ipv4", "ipv6"} or name_index >= len(tokens):
+                    continue
+                definition = tokens[name_index + 1 :]
+                if not definition:
+                    for child in self._record_commands(index)[1:]:
+                        child_tokens = self._tokens(child.text)
+                        if child_tokens and child_tokens[0].casefold() in {
+                            "host", "network", "range", "fqdn"
+                        }:
+                            definition = child_tokens
+                state["addresses"][(family, tokens[name_index].casefold())] = tuple(definition)
+                continue
+            if folded[:2] == ["no", "address-group"] and len(tokens) >= 4:
+                family = folded[2]
+                name_index = 4 if len(tokens) > 3 and folded[3] == "uuid" else 3
+                if family in {"ipv4", "ipv6"} and name_index < len(tokens):
+                    state["address_groups"].pop((family, tokens[name_index].casefold()), None)
+                continue
+            if folded[0] == "address-group" and len(tokens) >= 3:
+                family = folded[1]
+                name_index = 3 if len(tokens) > 2 and folded[2] == "uuid" else 2
+                if family not in {"ipv4", "ipv6"} or name_index >= len(tokens):
+                    continue
+                key = (family, tokens[name_index].casefold())
+                members = list(state["address_groups"].get(key, ()))
+                for child in self._record_commands(index)[1:]:
+                    child_tokens = self._tokens(child.text)
+                    child_folded = [token.casefold() for token in child_tokens]
+                    removal = bool(child_folded[:1] == ["no"])
+                    if removal:
+                        child_tokens, child_folded = child_tokens[1:], child_folded[1:]
+                    if len(child_tokens) < 3 or child_folded[0] not in {
+                        "address-object", "address-group"
+                    } or child_folded[1] not in {"ipv4", "ipv6", "fqdn", "mac"}:
+                        continue
+                    member = (
+                        "group" if child_folded[0] == "address-group" else "object",
+                        child_folded[1], child_tokens[2],
+                    )
+                    if removal:
+                        members = [item for item in members if item != member]
+                    elif member not in members:
+                        members.append(member)
+                state["address_groups"][key] = tuple(members)
+                continue
+            if folded[:2] == ["no", "service-object"] and len(tokens) >= 3:
+                name_index = 3 if folded[2] == "uuid" else 2
+                if name_index < len(tokens):
+                    state["services"].pop(tokens[name_index].casefold(), None)
+                continue
+            if folded[0] == "service-object" and len(tokens) >= 2:
+                name_index = 2 if folded[1] == "uuid" else 1
+                if name_index >= len(tokens):
+                    continue
+                definition = tokens[name_index + 1 :]
+                state["services"][tokens[name_index].casefold()] = tuple(definition)
+                continue
+            if folded[:2] == ["no", "service-group"] and len(tokens) >= 3:
+                name_index = 3 if folded[2] == "uuid" else 2
+                if name_index < len(tokens):
+                    state["service_groups"].pop(tokens[name_index].casefold(), None)
+                continue
+            if folded[0] == "service-group" and len(tokens) >= 2:
+                name_index = 2 if folded[1] == "uuid" else 1
+                if name_index >= len(tokens):
+                    continue
+                key = tokens[name_index].casefold()
+                members = list(state["service_groups"].get(key, ()))
+                for child in self._record_commands(index)[1:]:
+                    child_tokens = self._tokens(child.text)
+                    child_folded = [token.casefold() for token in child_tokens]
+                    removal = bool(child_folded[:1] == ["no"])
+                    if removal:
+                        child_tokens, child_folded = child_tokens[1:], child_folded[1:]
+                    if len(child_tokens) < 2 or child_folded[0] not in {
+                        "service-object", "service-group"
+                    }:
+                        continue
+                    member = (
+                        "group" if child_folded[0] == "service-group" else "object",
+                        child_tokens[1],
+                    )
+                    if removal:
+                        members = [item for item in members if item != member]
+                    elif member not in members:
+                        members.append(member)
+                state["service_groups"][key] = tuple(members)
+        self._policy_object_cache = state
+        return state
+
+    @staticmethod
+    def _combine_networks(items: list[NetworkSemantics], name: str) -> NetworkSemantics:
+        intervals = [interval for item in items for interval in item.intervals]
+        unresolved = [value for item in items for value in item.unresolved]
+        if any(not item.complete for item in items) or not intervals:
+            return NetworkSemantics(
+                intervals=tuple(sorted(set(intervals))), complete=False,
+                unresolved=tuple(dict.fromkeys(unresolved or (name,))),
+            )
+        return NetworkSemantics(intervals=tuple(sorted(set(intervals))))
+
+    def _resolve_rule_address(
+        self, selector: str, family: str,
+        stack: frozenset[tuple[str, str, str]] = frozenset(),
+        budget: list[int] | None = None,
+    ) -> NetworkSemantics:
+        tokens = self._tokens(selector)
+        folded = [token.casefold() for token in tokens]
+        version = 4 if family == "ipv4" else 6
+        if folded in (["any"], ["all"]):
+            return NetworkSemantics(any=True)
+        try:
+            if len(tokens) == 2 and folded[0] == "host":
+                address = ipaddress.ip_address(tokens[1])
+                if address.version != version:
+                    raise ValueError
+                return NetworkSemantics(intervals=(AddressInterval(version, int(address), int(address)),))
+            if len(tokens) == 3 and folded[0] == "network":
+                suffix = tokens[2] if tokens[2].startswith("/") else f"/{tokens[2]}"
+                network = ipaddress.ip_network(tokens[1] + suffix, strict=False)
+                if network.version != version:
+                    raise ValueError
+                return NetworkSemantics(intervals=(AddressInterval(
+                    version, int(network.network_address), int(network.broadcast_address)
+                ),))
+            if len(tokens) == 3 and folded[0] == "range":
+                first, last = ipaddress.ip_address(tokens[1]), ipaddress.ip_address(tokens[2])
+                if first.version != version or last.version != version or int(first) > int(last):
+                    raise ValueError
+                return NetworkSemantics(intervals=(AddressInterval(version, int(first), int(last)),))
+        except ValueError:
+            return NetworkSemantics(complete=False, unresolved=(selector,))
+        if len(tokens) != 2 or folded[0] not in {"name", "group"}:
+            return NetworkSemantics(complete=False, unresolved=(selector or "<empty-address>",))
+        remaining = budget if budget is not None else [4096]
+        kind, name = folded[0], tokens[1]
+        key = (kind, family, name.casefold())
+        if key in stack or remaining[0] <= 0:
+            return NetworkSemantics(complete=False, unresolved=(name,))
+        remaining[0] -= 1
+        objects = self._policy_objects()
+        if kind == "name":
+            definition = objects["addresses"].get((family, name.casefold()))
+            if not definition or definition[0].casefold() == "fqdn":
+                return NetworkSemantics(complete=False, unresolved=(name,))
+            return self._resolve_rule_address(
+                " ".join(definition), family, stack | {key}, remaining
+            )
+        members = objects["address_groups"].get((family, name.casefold()))
+        if not members:
+            return NetworkSemantics(complete=False, unresolved=(name,))
+        resolved = []
+        for member_kind, member_family, member_name in members:
+            if member_family != family:
+                resolved.append(NetworkSemantics(complete=False, unresolved=(member_name,)))
+            else:
+                resolved.append(self._resolve_rule_address(
+                    f"{'group' if member_kind == 'group' else 'name'} {member_name}",
+                    family, stack | {key}, remaining,
+                ))
+        return self._combine_networks(resolved, name)
+
+    @staticmethod
+    def _combine_services(items: list[ServiceSemantics], name: str) -> ServiceSemantics:
+        if any(item.any for item in items):
+            return ServiceSemantics(any=True)
+        intervals = [interval for item in items for interval in item.intervals]
+        unresolved = [value for item in items for value in item.unresolved]
+        if any(not item.complete for item in items) or not intervals:
+            return ServiceSemantics(
+                intervals=tuple(sorted(set(intervals))), complete=False,
+                unresolved=tuple(dict.fromkeys(unresolved or (name,))),
+            )
+        return ServiceSemantics(intervals=tuple(sorted(set(intervals))))
+
+    def _resolve_rule_service(
+        self, selector: str,
+        stack: frozenset[tuple[str, str]] = frozenset(),
+        budget: list[int] | None = None,
+    ) -> ServiceSemantics:
+        tokens = self._tokens(selector)
+        folded = [token.casefold() for token in tokens]
+        if folded in (["any"], ["all"]):
+            return ServiceSemantics(any=True)
+        builtin = {
+            "http": ("tcp", 80), "https": ("tcp", 443), "ssh": ("tcp", 22),
+            "telnet": ("tcp", 23), "dns": ("udp", 53), "ftp": ("tcp", 21),
+        }
+        if len(tokens) == 2 and folded[0] == "name" and folded[1] in builtin:
+            protocol, port = builtin[folded[1]]
+            return ServiceSemantics(intervals=(ServiceInterval(protocol, port, port),))
+        if folded and folded[0] in {"tcp", "udp"} and len(tokens) == 3:
+            if all(value.isdigit() for value in tokens[1:]):
+                first, last = int(tokens[1]), int(tokens[2])
+                if 0 <= first <= last <= 65535:
+                    return ServiceSemantics(intervals=(ServiceInterval(folded[0], first, last),))
+        if folded and folded[0] in {
+            "ah", "eigrp", "esp", "gre", "icmp", "icmpv6", "igmp", "ipcomp",
+            "l2tp", "ospf", "pim",
+        } and len(tokens) == 1:
+            return ServiceSemantics(intervals=(ServiceInterval(folded[0], 0, 65535),))
+        if len(tokens) != 2 or folded[0] not in {"name", "group"}:
+            return ServiceSemantics(complete=False, unresolved=(selector or "<empty-service>",))
+        remaining = budget if budget is not None else [4096]
+        kind, name = folded[0], tokens[1]
+        key = (kind, name.casefold())
+        if key in stack or remaining[0] <= 0:
+            return ServiceSemantics(complete=False, unresolved=(name,))
+        remaining[0] -= 1
+        objects = self._policy_objects()
+        if kind == "name":
+            definition = objects["services"].get(name.casefold())
+            if not definition:
+                return ServiceSemantics(complete=False, unresolved=(name,))
+            return self._resolve_rule_service(
+                " ".join(definition), stack | {key}, remaining
+            )
+        members = objects["service_groups"].get(name.casefold())
+        if not members:
+            return ServiceSemantics(complete=False, unresolved=(name,))
+        return self._combine_services([
+            self._resolve_rule_service(
+                f"{'group' if member_kind == 'group' else 'name'} {member_name}",
+                stack | {key}, remaining,
+            )
+            for member_kind, member_name in members
+        ], name)
+
+    @staticmethod
+    def _rule_value(tokens: list[str], start: tuple[str, ...], stop: tuple[str, ...]) -> str:
+        folded = [token.casefold() for token in tokens]
+        expected = [token.casefold() for token in start]
+        for index in range(len(tokens) - len(expected) + 1):
+            if folded[index:index + len(expected)] == expected:
+                begin = index + len(expected)
+                if not stop:
+                    return " ".join(tokens[begin:])
+                end = len(tokens)
+                for cursor in range(begin, len(tokens) - len(stop) + 1):
+                    if folded[cursor:cursor + len(stop)] == list(stop):
+                        end = cursor
+                        break
+                return " ".join(tokens[begin:end])
+        return ""
+
     def get_access_rules(self) -> list[SonicAccessRule]:
         rules = []
         for index, command in enumerate(self.commands):
             if not re.match(r"access-rule\s+(?:ipv[46]\s+)?(?:from|uuid)\b", command.text, re.IGNORECASE):
                 continue
             records = self._record_commands(index)
+            header_tokens = self._tokens(command.text)
             tokens = self._tokens(" ".join(item.text for item in records))
             lowered = [token.casefold() for token in tokens]
+            header_folded = [token.casefold() for token in header_tokens]
             enabled = "no enable" not in " ".join(lowered)
-            name = self._after(tokens, "name") or self._after(tokens, "uuid") or f"rule-{len(rules) + 1}"
+            name = next(
+                (
+                    " ".join(self._tokens(item.text)[1:])
+                    for item in records[1:]
+                    if self._tokens(item.text)
+                    and self._tokens(item.text)[0].casefold() == "name"
+                ),
+                "",
+            )
+            name = name or self._after(header_tokens, "uuid") or f"rule-{len(rules) + 1}"
+            family = "ipv6" if "ipv6" in header_folded[:3] else "ipv4"
+            source = self._rule_value(header_tokens, ("source", "address"), ("service",))
+            service = self._rule_value(header_tokens, ("service",), ("destination", "address"))
+            destination = self._rule_value(header_tokens, ("destination", "address"), ("schedule",))
+            schedule = self._rule_value(header_tokens, ("schedule",), ())
+            schedule = schedule.split()[0] if schedule else ""
+            allowed_children = {"enable", "no enable", "logging", "no logging"}
+            unsupported = [
+                item.text for item in records[1:]
+                if not item.text.casefold().startswith(("name ", "uuid "))
+                and item.text.casefold() not in allowed_children
+            ]
+            mandatory = ("from", "to", "action", "source", "address", "service", "destination", "schedule")
+            if command.text.casefold().startswith("access-rule") and not all(
+                value in header_folded for value in mandatory
+            ):
+                unsupported.append("incomplete access-rule selector grammar")
             rules.append(
                 SonicAccessRule(
                     name=name,
@@ -350,12 +672,18 @@ class SonicOSParser(BaseDeviceParser):
                     action=self._after(tokens, "action").casefold(),
                     from_zone=self._after(tokens, "from"),
                     to_zone=self._after(tokens, "to"),
-                    source=self._after(tokens, "source", "address"),
-                    destination=self._after(tokens, "destination", "address"),
-                    service=self._after(tokens, "service"),
-                    schedule=self._after(tokens, "schedule"),
+                    source=source,
+                    destination=destination,
+                    service=service,
+                    schedule=schedule,
                     logging="logging" in lowered and "no logging" not in " ".join(lowered),
                     evidence=tuple(self._evidence(item) for item in records),
+                    family=family,
+                    source_networks=self._resolve_rule_address(source, family),
+                    destination_networks=self._resolve_rule_address(destination, family),
+                    services=self._resolve_rule_service(service),
+                    unsupported_predicates=tuple(unsupported),
+                    behavior_signature=(("logging", str("logging" in lowered and "no logging" not in " ".join(lowered))),),
                 )
             )
         return rules

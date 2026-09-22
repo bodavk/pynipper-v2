@@ -1,3 +1,4 @@
+import ipaddress
 import re
 import shlex
 from dataclasses import dataclass, field
@@ -5,6 +6,7 @@ from typing import Optional
 
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.models import (
+    BlocklistCredentialAssessment,
     ConfigEvidence,
     ConfigurationState,
     CredentialMetadata,
@@ -19,6 +21,12 @@ from src.devices.common.models import (
     NormalizedConfig,
     NormalizedValue,
     SecurityPolicy,
+)
+from src.devices.common.policy_semantics import (
+    AddressInterval,
+    NetworkSemantics,
+    ServiceInterval,
+    ServiceSemantics,
 )
 
 
@@ -47,6 +55,7 @@ class ScreenOSPolicy:
     tracking: str = ""
     auth_server: str = ""
     auth_server_evidence: Optional[ConfigEvidence] = None
+    unsupported_predicates: list[str] = field(default_factory=list)
     evidence: list[ConfigEvidence] = field(default_factory=list)
 
 
@@ -56,6 +65,22 @@ class ScreenOSObject:
     scope: str
     value: str
     evidence: ConfigEvidence
+
+
+@dataclass(frozen=True)
+class ScreenOSPolicySemantics:
+    policy_id: str
+    position: int
+    from_zone: str
+    to_zone: str
+    enabled: bool
+    action: str
+    source_networks: NetworkSemantics
+    destination_networks: NetworkSemantics
+    services: ServiceSemantics
+    unsupported_predicates: tuple[str, ...]
+    behavior_signature: tuple[str, ...]
+    evidence: tuple[ConfigEvidence, ...]
 
 
 @dataclass(frozen=True)
@@ -134,7 +159,9 @@ class JuniperScreenOSParser(BaseDeviceParser):
         self.interfaces: dict[str, ScreenOSInterface] = {}
         self.policies: dict[str, ScreenOSPolicy] = {}
         self.address_objects: dict[tuple[str, str], ScreenOSObject] = {}
+        self.address_groups: dict[tuple[str, str], list[str]] = {}
         self.service_objects: dict[str, ScreenOSObject] = {}
+        self.service_groups: dict[str, list[str]] = {}
         self.users: dict[str, dict] = {}
         self.global_management: set[str] = set()
         self.global_management_evidence: dict[str, ConfigEvidence] = {}
@@ -481,6 +508,29 @@ class JuniperScreenOSParser(BaseDeviceParser):
                 self.service_objects.pop(tokens[2], None)
                 continue
 
+            if len(tokens) >= 5 and lowered[1:3] == ["group", "address"]:
+                key = (tokens[3], tokens[4])
+                if operation == "unset" and len(tokens) == 5:
+                    self.address_groups.pop(key, None)
+                elif len(tokens) >= 7 and lowered[5] in {"add", "remove"}:
+                    members = self.address_groups.setdefault(key, [])
+                    if operation == "set" and lowered[5] == "add":
+                        self._append_unique(members, tokens[6])
+                    else:
+                        members[:] = [item for item in members if item != tokens[6]]
+                continue
+            if len(tokens) >= 4 and lowered[1:3] == ["group", "service"]:
+                name = tokens[3]
+                if operation == "unset" and len(tokens) == 4:
+                    self.service_groups.pop(name, None)
+                elif len(tokens) >= 6 and lowered[4] in {"add", "remove"}:
+                    members = self.service_groups.setdefault(name, [])
+                    if operation == "set" and lowered[4] == "add":
+                        self._append_unique(members, tokens[5])
+                    else:
+                        members[:] = [item for item in members if item != tokens[5]]
+                continue
+
             if len(tokens) >= 4 and lowered[1:3] == ["policy", "id"]:
                 policy_context = self._parse_policy_command(
                     tokens, lowered, stripped, line_number
@@ -593,11 +643,16 @@ class JuniperScreenOSParser(BaseDeviceParser):
         if remainder[:2] == ["auth", "server"]:
             if operation == "set" and len(tokens) >= 7:
                 policy.auth_server = tokens[6]
+                self._append_unique(policy.unsupported_predicates, "authentication")
                 policy.auth_server_evidence = self._evidence(
                     raw_line, line_number, redact=True
                 )
             elif operation == "unset":
                 policy.auth_server = ""
+                policy.unsupported_predicates = [
+                    item for item in policy.unsupported_predicates
+                    if item != "authentication"
+                ]
                 policy.auth_server_evidence = None
             return policy_id
         if operation == "set" and "from" in remainder and "to" in remainder:
@@ -615,13 +670,20 @@ class JuniperScreenOSParser(BaseDeviceParser):
                 policy.action = lowered[to_index + 5]
             if "log" in lowered[to_index + 6:]:
                 policy.tracking = "log"
+            tail = lowered[to_index + 6:]
+            consumed: set[int] = set()
             for index in range(to_index + 6, len(lowered) - 2):
                 if lowered[index : index + 2] == ["auth", "server"]:
                     policy.auth_server = tokens[index + 2]
+                    self._append_unique(policy.unsupported_predicates, "authentication")
+                    consumed.update({index - (to_index + 6), index + 1 - (to_index + 6), index + 2 - (to_index + 6)})
                     policy.auth_server_evidence = self._evidence(
                         raw_line, line_number, redact=True
                     )
                     break
+            for index, token in enumerate(tail):
+                if index not in consumed and token != "log":
+                    self._append_unique(policy.unsupported_predicates, token)
         return policy_id
 
     def _parse_policy_continuation(
@@ -655,11 +717,311 @@ class JuniperScreenOSParser(BaseDeviceParser):
             policy.tracking = " ".join(tokens[1:]) if operation == "set" else ""
         elif command == "auth" and len(tokens) >= 4 and lowered[2] == "server":
             policy.auth_server = tokens[3] if operation == "set" else ""
+            if operation == "set":
+                self._append_unique(policy.unsupported_predicates, "authentication")
+            else:
+                policy.unsupported_predicates = [
+                    item for item in policy.unsupported_predicates
+                    if item != "authentication"
+                ]
             policy.auth_server_evidence = (
                 self._evidence(raw_line, line_number, redact=True)
                 if operation == "set"
                 else None
             )
+        else:
+            if operation == "set":
+                self._append_unique(policy.unsupported_predicates, command)
+            else:
+                policy.unsupported_predicates = [
+                    item for item in policy.unsupported_predicates if item != command
+                ]
+
+    @staticmethod
+    def _screenos_network_interval(value: str) -> AddressInterval | None:
+        parts = value.split()
+        try:
+            if len(parts) == 1:
+                network = ipaddress.ip_network(parts[0], strict=False)
+            elif len(parts) == 2:
+                network = ipaddress.ip_network(f"{parts[0]}/{parts[1]}", strict=False)
+            else:
+                return None
+        except ValueError:
+            return None
+        return AddressInterval(
+            network.version,
+            int(network.network_address),
+            int(network.broadcast_address),
+        )
+
+    @staticmethod
+    def _screenos_port_range(value: str) -> tuple[int, int] | None:
+        parts = value.split("-", 1)
+        if not all(item.isdigit() for item in parts):
+            return None
+        first, last = int(parts[0]), int(parts[-1])
+        if not 0 <= first <= last <= 65535:
+            return None
+        return first, last
+
+    def get_policy_semantics(self) -> tuple[ScreenOSPolicySemantics, ...]:
+        """Adapt ordered ScreenOS policies without inferring unresolved objects."""
+
+        policy_order_unknown = any(
+            command.tokens[:2] in {("policy", "global"), ("policy", "move")}
+            for command in self.effective_commands
+        )
+
+        def matching_key(mapping: dict, requested: tuple[str, str]):
+            if requested in mapping:
+                return requested
+            folded = tuple(item.casefold() for item in requested)
+            return next(
+                (
+                    key for key in mapping
+                    if tuple(str(item).casefold() for item in key) == folded
+                ),
+                None,
+            )
+
+        def address_member(
+            name: str,
+            zone: str,
+            definition_zone: str | None,
+            seen: frozenset[tuple[str, str]],
+            budget: list[int],
+        ) -> NetworkSemantics:
+            if name.casefold() == "any":
+                return NetworkSemantics(any=True)
+            literal = self._screenos_network_interval(name)
+            if literal is not None:
+                return NetworkSemantics(intervals=(literal,))
+            candidates = (
+                (definition_zone, "Global")
+                if definition_zone and definition_zone.casefold() != "global"
+                else (definition_zone,)
+                if definition_zone
+                else (zone, "Global")
+            )
+            for candidate in dict.fromkeys(candidates):
+                if candidate is None:
+                    continue
+                requested = (candidate, name)
+                object_key = matching_key(self.address_objects, requested)
+                group_key = matching_key(self.address_groups, requested)
+                key = object_key or group_key or requested
+                if key in seen or budget[0] <= 0:
+                    return NetworkSemantics(complete=False, unresolved=(name,))
+                if object_key is not None:
+                    interval = self._screenos_network_interval(
+                        self.address_objects[object_key].value
+                    )
+                    if interval is None:
+                        return NetworkSemantics(complete=False, unresolved=(name,))
+                    budget[0] -= 1
+                    return NetworkSemantics(intervals=(interval,))
+                if group_key is not None:
+                    members = self.address_groups[group_key]
+                    if not members:
+                        return NetworkSemantics(complete=False, unresolved=(name,))
+                    budget[0] -= 1
+                    intervals: list[AddressInterval] = []
+                    unresolved: list[str] = []
+                    for member_name in members:
+                        member = address_member(
+                            member_name,
+                            zone,
+                            group_key[0],
+                            seen | {key},
+                            budget,
+                        )
+                        if member.any:
+                            return NetworkSemantics(any=True)
+                        intervals.extend(member.intervals)
+                        unresolved.extend(member.unresolved)
+                    if unresolved or not intervals:
+                        return NetworkSemantics(
+                            intervals=tuple(sorted(set(intervals))),
+                            complete=False,
+                            unresolved=tuple(dict.fromkeys(unresolved or members)),
+                        )
+                    return NetworkSemantics(intervals=tuple(sorted(set(intervals))))
+            return NetworkSemantics(complete=False, unresolved=(name,))
+
+        def networks(values: list[str], zone: str) -> NetworkSemantics:
+            if not values:
+                return NetworkSemantics(complete=False, unresolved=("missing",))
+            intervals: list[AddressInterval] = []
+            unresolved: list[str] = []
+            budget = [4096]
+            for value in values:
+                member = address_member(value, zone, None, frozenset(), budget)
+                if member.any:
+                    return NetworkSemantics(any=True)
+                intervals.extend(member.intervals)
+                unresolved.extend(member.unresolved)
+            if unresolved or not intervals:
+                return NetworkSemantics(
+                    intervals=tuple(sorted(set(intervals))),
+                    complete=False,
+                    unresolved=tuple(dict.fromkeys(unresolved or values)),
+                )
+            return NetworkSemantics(intervals=tuple(sorted(set(intervals))))
+
+        builtins = {
+            "dns": (("tcp", 53, 53), ("udp", 53, 53)),
+            "ftp": (("tcp", 21, 21),),
+            "http": (("tcp", 80, 80),),
+            "https": (("tcp", 443, 443),),
+            "icmp-any": (("icmp", 0, 65535),),
+            "ping": (("icmp", 0, 65535),),
+            "ssh": (("tcp", 22, 22),),
+            "telnet": (("tcp", 23, 23),),
+        }
+
+        def service_member(
+            name: str,
+            seen: frozenset[str],
+            budget: list[int],
+        ) -> ServiceSemantics:
+            lowered = name.casefold()
+            if lowered in {"any", "all"}:
+                return ServiceSemantics(any=True)
+            if lowered in builtins:
+                return ServiceSemantics(intervals=tuple(
+                    ServiceInterval(*item) for item in builtins[lowered]
+                ))
+            if lowered in seen or budget[0] <= 0:
+                return ServiceSemantics(complete=False, unresolved=(name,))
+            object_name = next(
+                (value for value in self.service_objects if value.casefold() == lowered),
+                None,
+            )
+            group_name = next(
+                (value for value in self.service_groups if value.casefold() == lowered),
+                None,
+            )
+            budget[0] -= 1
+            if object_name is not None:
+                try:
+                    tokens = shlex.split(
+                        self.service_objects[object_name].value,
+                        comments=False,
+                        posix=True,
+                    )
+                except ValueError:
+                    return ServiceSemantics(complete=False, unresolved=(name,))
+                lowered_tokens = [value.casefold() for value in tokens]
+                if "protocol" not in lowered_tokens:
+                    return ServiceSemantics(complete=False, unresolved=(name,))
+                protocol_index = lowered_tokens.index("protocol")
+                if protocol_index + 1 >= len(tokens):
+                    return ServiceSemantics(complete=False, unresolved=(name,))
+                protocol = lowered_tokens[protocol_index + 1]
+                protocol = {"6": "tcp", "17": "udp", "1": "icmp"}.get(
+                    protocol, protocol
+                )
+                allowed_indexes = {protocol_index, protocol_index + 1}
+                source_range = None
+                destination_range = None
+                for field in ("src-port", "dst-port"):
+                    if field not in lowered_tokens:
+                        continue
+                    index = lowered_tokens.index(field)
+                    if index + 1 >= len(tokens):
+                        return ServiceSemantics(complete=False, unresolved=(name,))
+                    parsed = self._screenos_port_range(tokens[index + 1])
+                    if parsed is None:
+                        return ServiceSemantics(complete=False, unresolved=(name,))
+                    allowed_indexes.update({index, index + 1})
+                    if field == "src-port":
+                        source_range = parsed
+                    else:
+                        destination_range = parsed
+                if len(allowed_indexes) != len(tokens):
+                    return ServiceSemantics(complete=False, unresolved=(name,))
+                if source_range not in {None, (0, 65535), (1, 65535)}:
+                    return ServiceSemantics(complete=False, unresolved=(name,))
+                if protocol in {"tcp", "udp"}:
+                    if destination_range is None:
+                        return ServiceSemantics(complete=False, unresolved=(name,))
+                    return ServiceSemantics(intervals=(ServiceInterval(
+                        protocol, destination_range[0], destination_range[1]
+                    ),))
+                if destination_range is not None:
+                    return ServiceSemantics(complete=False, unresolved=(name,))
+                return ServiceSemantics(
+                    intervals=(ServiceInterval(protocol, 0, 65535),)
+                )
+            if group_name is not None:
+                members = self.service_groups[group_name]
+                if not members:
+                    return ServiceSemantics(complete=False, unresolved=(name,))
+                intervals: list[ServiceInterval] = []
+                unresolved: list[str] = []
+                for member_name in members:
+                    member = service_member(member_name, seen | {lowered}, budget)
+                    if member.any:
+                        return ServiceSemantics(any=True)
+                    intervals.extend(member.intervals)
+                    unresolved.extend(member.unresolved)
+                if unresolved or not intervals:
+                    return ServiceSemantics(
+                        intervals=tuple(sorted(set(intervals))),
+                        complete=False,
+                        unresolved=tuple(dict.fromkeys(unresolved or members)),
+                    )
+                return ServiceSemantics(intervals=tuple(sorted(set(intervals))))
+            return ServiceSemantics(complete=False, unresolved=(name,))
+
+        def services(values: list[str]) -> ServiceSemantics:
+            if not values:
+                return ServiceSemantics(complete=False, unresolved=("missing",))
+            intervals: list[ServiceInterval] = []
+            unresolved: list[str] = []
+            budget = [4096]
+            for value in values:
+                member = service_member(value, frozenset(), budget)
+                if member.any:
+                    return ServiceSemantics(any=True)
+                intervals.extend(member.intervals)
+                unresolved.extend(member.unresolved)
+            if unresolved or not intervals:
+                return ServiceSemantics(
+                    intervals=tuple(sorted(set(intervals))),
+                    complete=False,
+                    unresolved=tuple(dict.fromkeys(unresolved or values)),
+                )
+            return ServiceSemantics(intervals=tuple(sorted(set(intervals))))
+
+        records = []
+        for policy in self.policies.values():
+            action = policy.action.casefold()
+            if action == "accept":
+                action = "permit"
+            unsupported = list(policy.unsupported_predicates)
+            if policy_order_unknown:
+                self._append_unique(unsupported, "unmodeled-policy-order")
+            records.append(ScreenOSPolicySemantics(
+                policy_id=policy.policy_id,
+                position=policy.position,
+                from_zone=policy.from_zone,
+                to_zone=policy.to_zone,
+                enabled=not policy.disabled,
+                action=action,
+                source_networks=networks(policy.sources, policy.from_zone),
+                destination_networks=networks(policy.destinations, policy.to_zone),
+                services=services(policy.services),
+                unsupported_predicates=tuple(unsupported),
+                behavior_signature=(
+                    action,
+                    policy.tracking.casefold(),
+                    policy.auth_server.casefold(),
+                ),
+                evidence=tuple(policy.evidence),
+            ))
+        return tuple(records)
 
     def _effective_native_lines(self) -> list[str]:
         lines = []
@@ -738,6 +1100,16 @@ class JuniperScreenOSParser(BaseDeviceParser):
                 storage_type=storage_type,
                 storage_assessment=storage,
                 default_assessment=default,
+                plaintext_length=(
+                    len(value)
+                    if storage == CredentialStorageAssessment.PLAINTEXT
+                    else None
+                ),
+                blocklist_assessment=BlocklistCredentialAssessment.from_optional_match(
+                    self.assessment_context.plaintext_credential_blocklisted(value)
+                    if storage == CredentialStorageAssessment.PLAINTEXT
+                    else None
+                ),
                 evidence=(command.evidence,),
             )
         return list(credentials.values())

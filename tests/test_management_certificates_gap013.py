@@ -8,11 +8,14 @@ from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 from src.analyze.cisco.asa.plugins.baseline_plugin import PluginASABaseline
 from src.analyze.cisco.asa.core.process_asa_conf import process_asa_conf
+from src.analyze.fortinet.plugins.fortios_baseline_plugin import PluginFortiOSBaseline
+from src.analyze.fortinet.core.process_fortios_conf import process_fortios_conf
 from src.analyze.paloalto.core.process_panos_conf import process_panos_conf
 from src.analyze.paloalto.plugins.panos_checks_plugin import PluginPANOSChecks
 from src.common.assessment import AssessmentContext
 from src.common.certificates import assess_public_certificate, load_public_certificate
 from src.devices.cisco.asa import CiscoASAParser
+from src.devices.fortinet.fortios import FortiOSParser
 from src.devices.paloalto.panos import PaloAltoPANOSParser
 
 
@@ -31,6 +34,23 @@ def _panos(tmp_path, certificate_object, context=None):
 </entry></devices>
 <shared><ssl-tls-service-profile><entry name="MGMT-TLS"><certificate>MGMT-CERT</certificate><protocol-settings><min-version>tls1-2</min-version></protocol-settings></entry></ssl-tls-service-profile>{certificate_object}</shared>
 </config>'''))
+    if context is not None:
+        parser.set_assessment_context(context)
+    return parser
+
+
+def _fortios(tmp_path, certificate_sections, context=None, selected="CORP-MGMT"):
+    parser = FortiOSParser(_write(tmp_path, "fortios-cert.conf", f'''#config-version=FGT100F-7.4.6-FW-build0001-240101:opmode=0:vdom=0:user=admin
+config system global
+set admin-server-cert "{selected}"
+end
+config system interface
+edit "mgmt"
+set allowaccess https
+next
+end
+{certificate_sections}
+'''))
     if context is not None:
         parser.set_assessment_context(context)
     return parser
@@ -270,4 +290,132 @@ crypto ca certificate chain MGMT-CERT
   00''')
     assert "cisco.asa.management.certificate_material_malformed" in {
         item.rule_id for item in process_asa_conf(asa).values()
+    }
+
+
+def test_fortios_resolves_selected_public_certificate_and_approved_chain(tmp_path):
+    leaf, ca, fingerprint = _certificate_chain(dns_name="fortigate.example.test")
+    context = AssessmentContext.from_mapping({
+        "assessment_time": "2026-01-01T00:00:00+00:00",
+        "management_certificate_identities": {"root": "fortigate.example.test"},
+        "trusted_certificate_sha256": [fingerprint],
+    })
+    parser = _fortios(tmp_path, f'''config vpn certificate local
+edit "CORP-MGMT"
+set certificate "{leaf}"
+set private-key "NEVER-SERIALIZE-THIS"
+next
+end
+config vpn certificate ca
+edit "CORP-CA"
+set ca "{ca}"
+next
+end''', context)
+    binding = parser.get_management_certificate_bindings()[0]
+    assert binding.reference_state == "resolved"
+    assert binding.public_material_state == "parsed"
+    assert binding.assessment.validity_state == "valid-at-assessment-time"
+    assert binding.assessment.identity_state == "match"
+    assert binding.assessment.algorithm_state == "acceptable"
+    assert binding.assessment.trust_state == "trusted"
+    assert leaf not in repr(binding)
+    assert "NEVER-SERIALIZE-THIS" not in repr(binding)
+    plugin = PluginFortiOSBaseline()
+    plugin.check_management_certificates(parser)
+    assert plugin.get_issues() == []
+
+
+def test_fortios_reports_malformed_and_unresolved_selected_certificates(tmp_path):
+    malformed = _fortios(tmp_path, '''config certificate local
+edit CORP-MGMT
+set certificate "not-base64"
+next
+end''')
+    plugin = PluginFortiOSBaseline()
+    plugin.check_management_certificates(malformed)
+    assert [item.rule_id for item in plugin.get_issues()] == [
+        "fortinet.fortios.https.certificate_material_malformed"
+    ]
+    assert "not-base64" not in " ".join(plugin.get_issues()[0].evidence)
+
+    unresolved = _fortios(tmp_path, '''config certificate local
+edit OTHER-CERTIFICATE
+set certificate "not-base64"
+next
+end''', selected="MISSING-MGMT")
+    plugin = PluginFortiOSBaseline()
+    plugin.check_management_certificates(unresolved)
+    assert [item.rule_id for item in plugin.get_issues()] == [
+        "fortinet.fortios.https.certificate_unresolved"
+    ]
+
+
+def test_fortios_certificate_assessment_keeps_time_identity_and_algorithm_independent(tmp_path):
+    leaf, ca, fingerprint = _certificate_chain(
+        dns_name="actual.example.test", key_size=1024, prefix="FortiWeak"
+    )
+    context = AssessmentContext.from_mapping({
+        "assessment_time": "2026-01-01T00:00:00+00:00",
+        "management_certificate_identities": {"root": "expected.example.test"},
+        "trusted_certificate_sha256": [fingerprint],
+    })
+    parser = _fortios(tmp_path, f'''config vpn certificate local
+edit CORP-MGMT
+set certificate "{leaf}"
+next
+end
+config vpn certificate ca
+edit CORP-CA
+set ca "{ca}"
+next
+end''', context)
+    plugin = PluginFortiOSBaseline()
+    plugin.check_management_certificates(parser)
+    assert {item.rule_id for item in plugin.get_issues()} == {
+        "fortinet.fortios.https.certificate_identity",
+        "fortinet.fortios.https.certificate_algorithm",
+        "fortinet.fortios.https.certificate_trust",
+    }
+
+
+def test_fortios_escaped_pem_and_inactive_https_certificate_boundary(tmp_path):
+    leaf, _, _ = _certificate_chain(dns_name="fortigate.example.test")
+    pem = load_public_certificate(leaf).public_bytes(serialization.Encoding.PEM).decode()
+    escaped_pem = pem.replace("\n", r"\n")
+    parser = _fortios(tmp_path, f'''config certificate local
+edit CORP-MGMT
+set certificate "{escaped_pem}"
+next
+end''')
+    assert parser.get_management_certificate_bindings()[0].public_material_state == "parsed"
+    assert "BEGIN CERTIFICATE" not in repr(parser.get_management_certificate_bindings())
+
+    inactive = FortiOSParser(_write(tmp_path, "fortios-inactive-https.conf", '''#config-version=FGT100F-7.4.6-FW-build0001-240101:opmode=0:vdom=0:user=admin
+config system global
+set admin-server-cert MISSING
+end
+config system interface
+edit mgmt
+set allowaccess ssh
+next
+end
+config certificate local
+edit OTHER
+set certificate not-base64
+next
+end
+'''))
+    plugin = PluginFortiOSBaseline()
+    plugin.check_management_certificates(inactive)
+    assert plugin.get_issues() == []
+
+
+def test_fortios_certificate_failure_reaches_public_processor(tmp_path):
+    parser = _fortios(tmp_path, '''config certificate local
+edit CORP-MGMT
+set certificate "not-base64"
+next
+end''')
+    assert "fortinet.fortios.https.certificate_material_malformed" in {
+        item.rule_id for item in process_fortios_conf(parser).values()
     }

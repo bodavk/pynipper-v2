@@ -22,9 +22,11 @@ PAN-OS, HP ProCurve/ArubaOS-Switch, SonicWall SonicOS 7 E-CLI, and Arista EOS ha
 
 ## What the analyzer can and cannot prove
 
-The target pipelines inspect management exposure, authentication and credentials, logging, SNMP, NTP, cryptography/VPN, interfaces/control-plane protections, policy breadth, and bounded BGP/OSPF routing trust where those concepts exist in the supplied export. FortiOS 7.4+ additionally resolves administrative RADIUS bindings and checks concrete RadSec identity/TLS failures without treating every legacy RADIUS path as insecure. Junos resolves named-user login classes and effective CLI timeouts, pre-login notices, remote accounting coverage/destinations, and explicit J-Web session bounds while retaining unexpanded group inheritance as unknown. PAN-OS resolves local administrator roles/authentication profiles, explicit management banner/session/lockout settings, and applied PAN-OS 10+ SSH profiles while preserving Panorama and upstream MFA uncertainty. ArubaOS-S 16.10/16.11 resolves manager/operator credential state, channel-specific login/enable methods, remote CLI/serial/WebAgent idle timeouts, MOTD state, and independent WebAgent plaintext/TLS enablement; credentials omitted without `include-credentials` and unsupported releases remain unknown. FortiOS and PAN-OS active allow policies resolve attached inspection groups and profiles so an empty, explicitly non-blocking or invalid object cannot pass on its name alone. FortiOS IPv4/IPv6 local-in policy is assessed separately from transit policy, while FortiOS and Junos follow only active policy/interface VPN attachments to explicit IKE/IPsec proposal chains. Junos SRX zone-pair analysis is likewise separate from stateless firewall filters.
+The target pipelines inspect management exposure, authentication and credentials, logging, SNMP, NTP, cryptography/VPN, interfaces/control-plane protections, policy breadth, and bounded BGP/OSPF routing trust where those concepts exist in the supplied export. IOS/IOS-XE, Junos and EOS control-plane analysis resolves active attachments into matching policy, class, ACL/filter and policer/rate-action content; omitted system-owned policies remain unknown/platform-managed, and configured rates are not declared adequate without workload context. FortiOS evaluates enabled IPv4/IPv6 DoS anomalies independently for pass/block behavior, logging and threshold state. FortiOS 7.4+ additionally resolves administrative RADIUS bindings and checks concrete RadSec identity/TLS failures without treating every legacy RADIUS path as insecure. Junos resolves named-user login classes and effective CLI timeouts, pre-login notices, remote accounting coverage/destinations, and explicit J-Web session bounds while retaining unexpanded group inheritance as unknown. PAN-OS resolves local administrator roles/authentication profiles, explicit management banner/session/lockout settings, and applied PAN-OS 10+ SSH profiles while preserving Panorama and upstream MFA uncertainty. ArubaOS-S 16.10/16.11 resolves manager/operator credential state, channel-specific login/enable methods, remote CLI/serial/WebAgent idle timeouts, MOTD state, and independent WebAgent plaintext/TLS enablement; credentials omitted without `include-credentials` and unsupported releases remain unknown. FortiOS and PAN-OS active allow policies resolve attached inspection groups and profiles so an empty, explicitly non-blocking or invalid object cannot pass on its name alone. Check Point FW1, PAN-OS, Cisco ASA, IOS/IOS-XE interface ACLs, FortiOS, Junos SRX, ScreenOS and SonicOS share conservative IPv4/IPv6 and protocol/port containment primitives for proven redundancy and shadowing while retaining platform-native scope and ordering. Proof remains limited to fully resolved static predicates: dynamic or inherited objects, schedules, negation, unsupported applications and other unmodeled match state block effectiveness conclusions. FortiOS IPv4/IPv6 local-in policy is assessed separately from transit policy, while FortiOS and Junos follow only active policy/interface VPN attachments to explicit IKE/IPsec proposal chains. Junos SRX zone-pair analysis is likewise separate from stateless firewall filters, and runtime-unused claims always require operational counters and an observation window.
 
-This is static analysis. It cannot prove runtime reachability, policy installation, negotiated VPN transforms or peer identity, the certificate actually served or its live revocation status, external authentication health, dynamic object membership, or controls that are not present in the configuration files. PAN-OS and ASA can evaluate exported public certificate material reproducibly when the assessment policy supplies a timestamp, intended identity and approved exported trust-anchor fingerprints. Check Point analysis has additional offline-export limits documented in the supported-device guide.
+This is static analysis. It cannot prove runtime reachability, policy installation, negotiated VPN transforms or peer identity, the certificate actually served or its live revocation status, external authentication health, dynamic object membership, runtime-unused rules, or controls that are not present in the configuration files. PAN-OS, ASA and active-HTTPS FortiOS can evaluate exported public certificate material reproducibly when the assessment policy supplies a timestamp, intended identity and approved exported trust-anchor fingerprints. Junos administrative RADIUS/RadSec and attached ASA connection-limit analysis are also bounded to explicit configuration evidence; neither proves live transport or rate adequacy. Check Point analysis has additional offline-export limits documented in the supported-device guide.
+
+Reports include an explicit normalized coverage ledger. Optional configuration inventory is off by default and limited to sanitized management services, interfaces, effectively attached policies and logging destinations; it never serializes evidence, credentials, certificate material or raw configuration. IOS/IOS-XE inventory excludes unattached ACL definitions and preserves absent model/default information as unknown.
 
 ## Requirements and installation
 
@@ -77,9 +79,13 @@ Useful options:
 | `-f`, `--output-filename` | Report path | `report.html` |
 | `-x`, `--offline` | Disable external Cisco advisory lookup | Online lookup is allowed when credentials exist |
 | `-c`, `--configuration` | Tool configuration containing optional API credentials | Bundled `default.conf` |
-| `--assessment-policy` | Optional JSON policy containing explicit roles, protected AAA paths, certificate time/identity/trust inputs, and category exclusions | Built-in policy; all contextual facts unknown and no exclusions |
+| `--assessment-policy` | Optional JSON policy containing explicit roles, protected AAA paths, configuration-backup scope, credential length/blocklist policy, certificate time/identity/trust inputs, opt-in sanitized report inventory, and category exclusions | Built-in policy; all contextual facts unknown, no inventory, and no exclusions |
 
 Accepted device IDs and aliases are generated from `src/devices/registry.py`; run `pynipper-ng --help` for the current list.
+
+If a FortiOS input fails structural parsing, the command writes a report with `parse_error` coverage and exits with status 2. No security checks run on that failed input; the report's empty finding list does not indicate a successful audit.
+
+PAN-OS and FortiOS inputs containing unresolved deployment-template markers are marked `unrendered-template` in report coverage. Findings that require a complete configuration are suppressed; explicit configured risks may still be reported. Audit a rendered, full device export before treating absent findings as assurance.
 
 See [Assessment policy](docs/ASSESSMENT_POLICY.md) for the validated JSON schema and its conservative scope rules. Excluded categories are recorded in the report and are never represented as compliant.
 
@@ -112,17 +118,18 @@ src/report/                  HTML/JSON report generation
 tests/                       parser, plugin, architecture, and report tests
 tests/test_data/regression/  permanent target-platform corpus and snapshots
 scripts/                     repository validation utilities
-docs/                        architecture, extension, support, and quality documents
+docs/                        architecture, extension, support, and assessment-policy guides
 ```
 
-The end-to-end design is documented in [Architecture](docs/ARCHITECTURE.md). To add a check or device family, follow [Extending pynipper-v2](docs/EXTENDING.md); it includes required contracts, test cases, corpus updates, and documentation steps.
+The end-to-end design and normalized parser contract are documented in [Architecture](docs/ARCHITECTURE.md). To add a check or device family, follow [Extending pynipper-v2](docs/EXTENDING.md); it includes required contracts, test cases, corpus updates, and documentation steps. The [parser](src/devices/README.md) and [analyzer](src/analyze/README.md) guides describe the current implementation boundaries.
 
 ## Security and contributions
 
 - [Contributing guide](CONTRIBUTING.md)
 - [Security policy](SECURITY.md)
-- [Project status](docs/STATUS.md)
-- [Roadmap](docs/ROADMAP.md)
+- [Supported devices and input boundaries](docs/SUPPORTED_DEVICES.md)
+- [Assessment policy](docs/ASSESSMENT_POLICY.md)
+- [Open improvement work](docs/TODO.md)
 - [Change history](CHANGELOG.md)
 
 Do not include real credentials, private keys, community strings, or unsanitized customer configurations in issues, tests, or reports.

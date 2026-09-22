@@ -1,6 +1,7 @@
 from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.issue import Finding, Severity
 from src.devices.common.base_parser import BaseDeviceParser
+from src.devices.common.policy_semantics import ProofState, network_covers, service_covers
 from src.devices.juniper.screenos import JuniperScreenOSParser
 
 
@@ -106,6 +107,97 @@ class PluginScreenOSChecks(BasePlugin):
                 )
             )
 
+    def check_policy_effectiveness(self, parser: BaseDeviceParser) -> None:
+        screenos = self._screenos(parser)
+        prior_by_zone_pair = {}
+        for policy in screenos.get_policy_semantics():
+            evidence = tuple(item.text for item in policy.evidence) or (
+                f"policy id {policy.policy_id}",
+            )
+            if not policy.enabled:
+                if (
+                    policy.action in {"permit", "accept"}
+                    and policy.source_networks.any
+                    and policy.destination_networks.any
+                    and policy.services.any
+                    and not policy.unsupported_predicates
+                ):
+                    self.add_issue(Finding(
+                        rule_id="juniper.screenos.policy.disabled_permissive_rule",
+                        device=parser.device_type,
+                        title="Disabled permissive ScreenOS policy remains configured",
+                        observation=f"Disabled policy ID {policy.policy_id} at position {policy.position} retains an Any-source, Any-destination, Any-service permit from zone '{policy.from_zone}' to '{policy.to_zone}'.",
+                        impact="Stale permissive policy obscures intent and can create broad exposure if re-enabled.",
+                        severity=Severity.LOW,
+                        exploitability="The policy is disabled in the supplied configuration; exploitation requires reactivation.",
+                        recommendation="Remove the obsolete policy or narrow and document it before reactivation.",
+                        evidence=evidence,
+                        references=(JUNIPER_SCREENOS_DOCUMENTATION,),
+                    ))
+                continue
+
+            if (
+                policy.action in {"permit", "accept"}
+                and policy.services.any
+                and not (policy.source_networks.any and policy.destination_networks.any)
+            ):
+                self.add_issue(Finding(
+                    rule_id="juniper.screenos.policy.broad_service",
+                    device=parser.device_type,
+                    title="ScreenOS policy is unrestricted by service",
+                    observation=f"Enabled policy ID {policy.policy_id} at position {policy.position} permits Any service within its address scope from zone '{policy.from_zone}' to '{policy.to_zone}'.",
+                    impact="Unnecessary protocols and destination ports can cross the zone boundary.",
+                    severity=Severity.MEDIUM,
+                    exploitability="A matching source can attempt any service reachable in the destination zone.",
+                    recommendation="Replace Any with the smallest required services or reviewed service group.",
+                    evidence=evidence,
+                    references=(JUNIPER_SCREENOS_DOCUMENTATION,),
+                ))
+
+            if (
+                policy.action not in {"permit", "accept", "deny", "reject"}
+                or policy.unsupported_predicates
+            ):
+                continue
+            key = (policy.from_zone.casefold(), policy.to_zone.casefold())
+            earlier_policies = prior_by_zone_pair.setdefault(key, [])
+            for earlier in earlier_policies:
+                if not all(
+                    state == ProofState.PROVEN
+                    for state in (
+                        network_covers(
+                            earlier.source_networks, policy.source_networks
+                        ),
+                        network_covers(
+                            earlier.destination_networks, policy.destination_networks
+                        ),
+                        service_covers(earlier.services, policy.services),
+                    )
+                ):
+                    continue
+                same_action = earlier.action == policy.action
+                if same_action and earlier.behavior_signature != policy.behavior_signature:
+                    continue
+                self.add_issue(Finding(
+                    rule_id=(
+                        "juniper.screenos.policy.redundant_rule"
+                        if same_action
+                        else "juniper.screenos.policy.shadowed_rule"
+                    ),
+                    device=parser.device_type,
+                    title="ScreenOS policy is redundant" if same_action else "ScreenOS policy is shadowed",
+                    observation=f"Policy ID {policy.policy_id} at position {policy.position} in zone pair '{policy.from_zone}' to '{policy.to_zone}' is fully covered by earlier policy ID {earlier.policy_id} at position {earlier.position} with {'equivalent behavior' if same_action else 'a different terminal action'}.",
+                    impact="The later policy cannot alter first-match enforcement for the statically proven traffic scope and obscures policy intent.",
+                    severity=Severity.LOW if same_action else Severity.HIGH,
+                    exploitability="A conflicting shadowed policy can give reviewers a false impression of enforced access control.",
+                    recommendation="Remove or reorder the policy after validating address/service objects, logging and operational intent.",
+                    evidence=evidence + tuple(item.text for item in earlier.evidence),
+                    references=(JUNIPER_SCREENOS_DOCUMENTATION,),
+                ))
+                break
+            earlier_policies.append(policy)
+
     def analyze(self, parser: BaseDeviceParser) -> None:
         self.check_insecure_services(parser)
         self.check_broad_policy_rules(parser)
+        self.check_policy_effectiveness(parser)

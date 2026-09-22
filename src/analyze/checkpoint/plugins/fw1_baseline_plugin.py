@@ -5,6 +5,11 @@ import re
 
 from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.issue import Finding, Severity
+from src.devices.common.policy_semantics import (
+    ProofState,
+    network_covers,
+    service_covers,
+)
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.checkpoint.fw1 import (
     CheckPointNetworkSemantics,
@@ -453,76 +458,17 @@ class PluginCheckPointBaseline(BasePlugin):
             return True
         return "any" in prior_set
 
-    @staticmethod
-    def _ranges_cover(
-        prior: tuple[tuple[int, int], ...], current: tuple[tuple[int, int], ...]
-    ) -> bool:
-        if not prior or not current:
-            return False
-        merged: list[tuple[int, int]] = []
-        for first, last in sorted(prior):
-            if not merged or first > merged[-1][1] + 1:
-                merged.append((first, last))
-            else:
-                merged[-1] = (merged[-1][0], max(merged[-1][1], last))
-        return all(
-            any(prior_first <= first and prior_last >= last for prior_first, prior_last in merged)
-            for first, last in current
-        )
-
     @classmethod
     def _network_semantics_cover(
         cls, prior: CheckPointNetworkSemantics, current: CheckPointNetworkSemantics
     ) -> bool:
-        if not prior.complete or not current.complete:
-            return False
-        if prior.any:
-            return True
-        if current.any:
-            return False
-        families = {interval.family for interval in current.intervals}
-        return bool(families) and all(
-            cls._ranges_cover(
-                tuple(
-                    (interval.first, interval.last)
-                    for interval in prior.intervals
-                    if interval.family == family
-                ),
-                tuple(
-                    (interval.first, interval.last)
-                    for interval in current.intervals
-                    if interval.family == family
-                ),
-            )
-            for family in families
-        )
+        return network_covers(prior, current) == ProofState.PROVEN
 
     @classmethod
     def _service_semantics_cover(
         cls, prior: CheckPointServiceSemantics, current: CheckPointServiceSemantics
     ) -> bool:
-        if not prior.complete or not current.complete:
-            return False
-        if prior.any:
-            return True
-        if current.any:
-            return False
-        protocols = {interval.protocol for interval in current.intervals}
-        return bool(protocols) and all(
-            cls._ranges_cover(
-                tuple(
-                    (interval.first_port, interval.last_port)
-                    for interval in prior.intervals
-                    if interval.protocol == protocol
-                ),
-                tuple(
-                    (interval.first_port, interval.last_port)
-                    for interval in current.intervals
-                    if interval.protocol == protocol
-                ),
-            )
-            for protocol in protocols
-        )
+        return service_covers(prior, current) == ProofState.PROVEN
 
     def check_shadowing(self, parser: BaseDeviceParser) -> None:
         checkpoint = self._checkpoint(parser)

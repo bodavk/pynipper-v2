@@ -1,3 +1,4 @@
+import ipaddress
 import re
 import shlex
 from dataclasses import dataclass
@@ -6,10 +7,27 @@ from typing import Optional
 from ciscoconfparse import CiscoConfParse
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.models import (
+    BlocklistCredentialAssessment,
     ConfigEvidence,
+    ConfigurationState as NormalizedConfigurationState,
     CredentialMetadata,
     CredentialStorageAssessment,
+    CryptoSetting,
     DefaultCredentialAssessment,
+    LocalUser,
+    LoggingDestination,
+    ManagementService,
+    NetworkInterface,
+    NormalizedCollection,
+    NormalizedConfig,
+    NormalizedValue,
+    SecurityPolicy,
+)
+from src.devices.common.policy_semantics import (
+    AddressInterval,
+    NetworkSemantics,
+    ServiceInterval,
+    ServiceSemantics,
 )
 
 
@@ -84,6 +102,20 @@ class IOSManagementLine:
         if self.transports is None:
             return None
         return bool(set(self.transports) - {"none"})
+
+
+@dataclass(frozen=True)
+class IOSLineTimeoutPolicy:
+    line: str
+    line_type: str
+    start: int
+    end: int
+    active: Optional[bool]
+    timeout_minutes: Optional[int]
+    timeout_seconds: Optional[int]
+    timeout_configured: bool
+    timeout_parse_error: str
+    evidence: tuple[ConfigEvidence, ...]
 
 
 @dataclass(frozen=True)
@@ -168,6 +200,48 @@ class IOSSwitchEdgeInterface:
 
 
 @dataclass(frozen=True)
+class IOSControlPlaneClass:
+    name: str
+    selectors: tuple[str, ...]
+    selector_references: tuple[str, ...]
+    selector_resolution: str
+    actions: tuple[str, ...]
+    policing: bool
+    discarding: bool
+    logging: bool
+    enforcement_state: str
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class IOSControlPlanePolicy:
+    name: str
+    scope: str
+    direction: str
+    policy_resolved: bool
+    protection_state: str
+    classes: tuple[IOSControlPlaneClass, ...]
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class IOSConfigurationManagement:
+    archive_configured: bool
+    destination: str
+    protocol: str
+    transport_security: str
+    write_memory: bool
+    time_period_minutes: int | None
+    schedule_state: str
+    maximum_versions: int | None
+    change_logging: bool
+    hide_keys: bool
+    notify_syslog: bool
+    persistent_logging: bool
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
 class IOSSNMPView:
     name: str
     included_subtrees: tuple[str, ...]
@@ -202,12 +276,37 @@ class IOSSNMPUser:
     evidence: tuple[ConfigEvidence, ...]
 
 
+@dataclass(frozen=True)
+class IOSACLRule:
+    name: str
+    family: str
+    scope: str
+    position: int
+    action: str
+    source_networks: NetworkSemantics
+    destination_networks: NetworkSemantics
+    services: ServiceSemantics
+    behavior_signature: tuple[tuple[str, str], ...]
+    evidence: tuple[ConfigEvidence, ...]
+
+    @property
+    def proof_eligible(self) -> bool:
+        return (
+            self.action in {"permit", "deny"}
+            and self.source_networks.complete
+            and self.destination_networks.complete
+            and self.services.complete
+        )
+
+
 class CiscoIOSParser(BaseDeviceParser):
 
     device_type = "IOS_ROUTER"
 
     def __init__(self, config_filepath: str):
         super().__init__(config_filepath)
+        with open(config_filepath, "r", encoding="utf-8", errors="replace") as source:
+            self._source_lines = source.read().splitlines()
         self.parser = CiscoConfParse(config_filepath, syntax='ios')
 
     def get_hostname(self) -> str:
@@ -342,7 +441,7 @@ class CiscoIOSParser(BaseDeviceParser):
 
         users: dict[str, CredentialMetadata] = {}
         enable: Optional[CredentialMetadata] = None
-        for line_number, raw_line in enumerate(self.parser.ioscfg, start=1):
+        for line_number, raw_line in enumerate(self._source_lines, start=1):
             if raw_line[:1].isspace():
                 continue
             line = raw_line.strip()
@@ -372,6 +471,16 @@ class CiscoIOSParser(BaseDeviceParser):
                     storage_type=storage_type,
                     storage_assessment=storage,
                     default_assessment=self._default_assessment(storage, value),
+                    plaintext_length=(
+                        len(value)
+                        if storage == CredentialStorageAssessment.PLAINTEXT
+                        else None
+                    ),
+                    blocklist_assessment=BlocklistCredentialAssessment.from_optional_match(
+                        self.assessment_context.plaintext_credential_blocklisted(value)
+                        if storage == CredentialStorageAssessment.PLAINTEXT
+                        else None
+                    ),
                     evidence=(ConfigEvidence(
                         f"username {account} {method} {storage_type} <credential redacted>",
                         self.config_filepath,
@@ -395,6 +504,16 @@ class CiscoIOSParser(BaseDeviceParser):
                     storage_type=storage_type,
                     storage_assessment=storage,
                     default_assessment=self._default_assessment(storage, value),
+                    plaintext_length=(
+                        len(value)
+                        if storage == CredentialStorageAssessment.PLAINTEXT
+                        else None
+                    ),
+                    blocklist_assessment=BlocklistCredentialAssessment.from_optional_match(
+                        self.assessment_context.plaintext_credential_blocklisted(value)
+                        if storage == CredentialStorageAssessment.PLAINTEXT
+                        else None
+                    ),
                     evidence=(ConfigEvidence(
                         f"enable {method} {storage_type} <credential redacted>",
                         self.config_filepath,
@@ -402,6 +521,121 @@ class CiscoIOSParser(BaseDeviceParser):
                     ),),
                 )
         return [*users.values(), *([enable] if enable else [])]
+
+    def get_additional_credential_metadata(self) -> list[CredentialMetadata]:
+        """Return effective RADIUS and line secrets as value-free metadata."""
+
+        credentials: dict[str, CredentialMetadata] = {}
+
+        def record(key: str, context: str, account: str, method: str,
+                   storage_type: str, value: str, line_number: int) -> None:
+            storage = (
+                CredentialStorageAssessment.UNKNOWN
+                if not value or value.casefold() in {"<redacted>", "redacted", "<hidden>", "***"}
+                else self._credential_storage(storage_type, value)
+            )
+            credentials[key] = CredentialMetadata(
+                account=account,
+                context=context,
+                method=method,
+                storage_type=storage_type,
+                storage_assessment=storage,
+                default_assessment=(
+                    self._default_assessment(storage, value)
+                    if context == "line_password"
+                    else DefaultCredentialAssessment.NOT_EVALUATED
+                ),
+                plaintext_length=len(value) if storage == CredentialStorageAssessment.PLAINTEXT else None,
+                evidence=(ConfigEvidence(
+                    f"{account} {method} {storage_type} <credential redacted>",
+                    self.config_filepath, line_number,
+                ),),
+            )
+
+        parent = ""
+        parent_indent = 0
+        for line_number, raw in enumerate(self._source_lines, start=1):
+            line = raw.strip()
+            if not line or line == "!":
+                continue
+            indent = len(raw) - len(raw.lstrip())
+            if indent <= parent_indent:
+                parent = ""
+            try:
+                tokens = shlex.split(line)
+            except ValueError:
+                continue
+            if not tokens:
+                continue
+            lowered = [token.casefold() for token in tokens]
+            if indent == 0 and (lowered[:2] == ["radius", "server"] or lowered[0] == "line"):
+                parent = line
+                parent_indent = indent
+                continue
+            if parent and indent > parent_indent:
+                if lowered[:2] in (["no", "key"], ["default", "key"],
+                                   ["no", "password"], ["default", "password"]):
+                    credentials.pop(parent.casefold(), None)
+                    continue
+                if lowered[0] in {"key", "password"} and len(tokens) >= 2:
+                    marker = tokens[1] if tokens[1].isdigit() else "0"
+                    value_index = 2 if tokens[1].isdigit() else 1
+                    if lowered[0] == "password" and not parent.startswith("line "):
+                        continue
+                    if lowered[0] == "key" and not parent.startswith("radius server "):
+                        continue
+                    record(parent.casefold(), "line_password" if lowered[0] == "password" else "radius_key",
+                           parent, lowered[0], marker, tokens[value_index] if len(tokens) > value_index else "", line_number)
+                continue
+            if lowered[:2] in (["no", "radius-server"], ["default", "radius-server"]):
+                if lowered[2:3] == ["key"]:
+                    credentials.pop("radius-server key", None)
+                elif lowered[2:3] == ["host"] and len(tokens) > 3:
+                    credentials.pop(f"radius-server host {tokens[3].casefold()}", None)
+                continue
+            if lowered[:2] == ["radius-server", "key"]:
+                marker = tokens[2] if len(tokens) > 2 and tokens[2].isdigit() else "0"
+                value_index = 3 if len(tokens) > 2 and tokens[2].isdigit() else 2
+                record("radius-server key", "radius_key", "radius-server", "key", marker,
+                       tokens[value_index] if len(tokens) > value_index else "", line_number)
+            elif lowered[:2] == ["radius-server", "host"] and len(tokens) > 3:
+                key_index = lowered.index("key", 3) if "key" in lowered[3:] else -1
+                if key_index < 0:
+                    continue
+                marker = tokens[key_index + 1] if len(tokens) > key_index + 1 and tokens[key_index + 1].isdigit() else "0"
+                value_index = key_index + (2 if len(tokens) > key_index + 1 and tokens[key_index + 1].isdigit() else 1)
+                account = f"radius-server host {tokens[2]}"
+                record(account.casefold(), "radius_key", account, "key", marker,
+                       tokens[value_index] if len(tokens) > value_index else "", line_number)
+        return list(credentials.values())
+
+    def get_snmp_community_metadata(self) -> list[tuple[str, str, ConfigEvidence]]:
+        """Effective v1/v2c communities; names stay inside this parser boundary."""
+
+        communities: dict[str, tuple[str, str, ConfigEvidence]] = {}
+        for line_number, raw in enumerate(self._source_lines, start=1):
+            if raw[:1].isspace():
+                continue
+            try:
+                tokens = shlex.split(raw.strip())
+            except ValueError:
+                continue
+            lowered = [token.casefold() for token in tokens]
+            if lowered[:3] in (["no", "snmp-server", "community"],
+                               ["default", "snmp-server", "community"]):
+                if len(tokens) > 3:
+                    communities.pop(tokens[3].casefold(), None)
+                else:
+                    communities.clear()
+            elif lowered[:2] == ["snmp-server", "community"] and len(tokens) > 2:
+                name = tokens[2]
+                access = "rw" if "rw" in lowered[3:] else "ro"
+                communities[name.casefold()] = (
+                    name, access,
+                    ConfigEvidence(f"snmp-server community <redacted> {access}",
+                                   self.config_filepath, line_number),
+                )
+        return list(communities.values())
 
     def get_http_server_state(self) -> ConfigurationState:
         match = self._last_global_match(r"(?P<disabled>no )?ip http server")
@@ -766,6 +1000,109 @@ class CiscoIOSParser(BaseDeviceParser):
                 evidence=tuple(evidence),
             ))
         return profiles
+
+    def get_effective_line_timeouts(self) -> tuple[IOSLineTimeoutPolicy, ...]:
+        """Overlay line-range timeout and activation mutations in source order."""
+        states: dict[tuple[str, int], dict] = {}
+        for profile in self.get_management_lines():
+            match = re.fullmatch(
+                r"line\s+(con(?:sole)?|aux|tty|vty)\s+(\d+)(?:\s+(\d+))?",
+                profile.line,
+                re.IGNORECASE,
+            )
+            if not match:
+                continue
+            kind = match.group(1).casefold()
+            if kind.startswith("con"):
+                kind = "console"
+            start = int(match.group(2))
+            end = int(match.group(3) or start)
+            if end < start or end - start > 4096:
+                continue
+            commands = tuple(item.text for item in profile.evidence[1:])
+            timeout_reset = any(re.fullmatch(r"(?:no|default) exec-timeout(?:\s+.*)?", item) for item in commands)
+            exec_reset = "default exec" in commands
+            transport_reset = any(re.fullmatch(r"(?:no|default) transport input(?:\s+.*)?", item) for item in commands)
+            mutation_evidence = tuple(
+                item for item in profile.evidence[1:]
+                if re.fullmatch(
+                    r"(?:exec-timeout|(?:no|default) exec-timeout|exec|no exec|default exec|"
+                    r"transport input|(?:no|default) transport input)(?:\s+.*)?",
+                    item.text,
+                )
+            )
+            for number in range(start, end + 1):
+                state = states.setdefault((kind, number), {
+                    "exec": None,
+                    "transports": None,
+                    "minutes": None,
+                    "seconds": None,
+                    "configured": False,
+                    "error": "",
+                    "evidence": [],
+                })
+                if profile.timeout_configured or profile.timeout_parse_error:
+                    state.update(
+                        minutes=profile.timeout_minutes,
+                        seconds=profile.timeout_seconds,
+                        configured=profile.timeout_configured,
+                        error=profile.timeout_parse_error,
+                    )
+                elif timeout_reset:
+                    state.update(minutes=None, seconds=None, configured=False, error="")
+                if profile.exec_enabled is not None:
+                    state["exec"] = profile.exec_enabled
+                elif exec_reset:
+                    state["exec"] = None
+                if profile.transports is not None:
+                    state["transports"] = profile.transports
+                elif transport_reset:
+                    state["transports"] = None
+                state["evidence"].extend(mutation_evidence)
+
+        rows = []
+        for (kind, number), state in sorted(states.items()):
+            active = False if (
+                state["exec"] is False or state["transports"] == ("none",)
+            ) else None if kind in {"vty", "tty"} and state["transports"] is None else True
+            rows.append((kind, number, active, state))
+
+        results: list[IOSLineTimeoutPolicy] = []
+        index = 0
+        while index < len(rows):
+            kind, start, active, state = rows[index]
+            end = start
+            signature = (
+                active, state["minutes"], state["seconds"], state["configured"],
+                state["error"], tuple(state["evidence"]),
+            )
+            index += 1
+            while index < len(rows):
+                next_kind, number, next_active, next_state = rows[index]
+                next_signature = (
+                    next_active, next_state["minutes"], next_state["seconds"],
+                    next_state["configured"], next_state["error"], tuple(next_state["evidence"]),
+                )
+                if next_kind != kind or number != end + 1 or next_signature != signature:
+                    break
+                end = number
+                index += 1
+            label = f"line {'con' if kind == 'console' else kind} {start}"
+            if end != start:
+                label += f" {end}"
+            results.append(IOSLineTimeoutPolicy(
+                line=label,
+                line_type=kind,
+                start=start,
+                end=end,
+                active=active,
+                timeout_minutes=state["minutes"],
+                timeout_seconds=state["seconds"],
+                timeout_configured=state["configured"],
+                timeout_parse_error=state["error"],
+                evidence=(ConfigEvidence(label, self.config_filepath), *tuple(state["evidence"])),
+            ))
+        return tuple(results)
 
     def get_ssh_server_algorithms(self) -> list[IOSSSHAlgorithmPolicy]:
         categories = ("encryption", "mac", "kex", "hostkey")
@@ -1557,6 +1894,403 @@ class CiscoIOSParser(BaseDeviceParser):
             ))
         return records
 
+    def get_control_plane_policies(self) -> list[IOSControlPlanePolicy]:
+        """Resolve input control-plane attachments through MQC definitions."""
+
+        def evidence(text: str, line_number: int) -> ConfigEvidence:
+            return ConfigEvidence(text, self.config_filepath, line_number)
+
+        acl_events: list[tuple[int, str, bool, bool, bool]] = []
+        for header, header_line, children in self._indented_blocks("ip access-list "):
+            match = re.fullmatch(r"ip access-list\s+(?:standard|extended)\s+(\S+)", header)
+            if match:
+                has_entries = any(
+                    re.match(r"(?:\d+\s+)?(?:permit|deny)\s+", command)
+                    for _, _, command in children
+                )
+                has_logging = any(
+                    re.search(r"(?:^|\s)(?:log|log-input)(?:\s|$)", command)
+                    for _, _, command in children
+                )
+                acl_events.append((
+                    header_line, match.group(1).casefold(), True, has_entries, has_logging
+                ))
+        for header, header_line, children in self._indented_blocks("ipv6 access-list "):
+            match = re.fullmatch(r"ipv6 access-list\s+(\S+)", header)
+            if match:
+                has_entries = any(
+                    re.match(r"(?:sequence\s+\d+\s+)?(?:permit|deny)\s+", command)
+                    for _, _, command in children
+                )
+                has_logging = any(
+                    re.search(r"(?:^|\s)(?:log|log-input)(?:\s|$)", command)
+                    for _, _, command in children
+                )
+                acl_events.append((
+                    header_line, match.group(1).casefold(), True, has_entries, has_logging
+                ))
+        for line_number, raw_line in enumerate(self.parser.ioscfg, 1):
+            if raw_line[:1].isspace():
+                continue
+            line = raw_line.strip()
+            match = re.fullmatch(r"access-list\s+(\S+)\s+.+", line)
+            if match:
+                acl_events.append((
+                    line_number,
+                    match.group(1).casefold(),
+                    True,
+                    True,
+                    bool(re.search(r"(?:^|\s)(?:log|log-input)(?:\s|$)", line)),
+                ))
+                continue
+            removed = re.fullmatch(
+                r"no\s+(?:ip\s+access-list\s+(?:standard|extended)\s+|"
+                r"ipv6\s+access-list\s+|access-list\s+)(\S+)",
+                line,
+            )
+            if removed:
+                acl_events.append((
+                    line_number, removed.group(1).casefold(), False, False, False
+                ))
+        acl_state: dict[str, tuple[bool, bool, bool]] = {}
+        for _, name, present, has_entries, has_logging in sorted(acl_events):
+            acl_state[name] = (present, has_entries, has_logging)
+
+        class_maps: dict[str, dict] = {}
+        for header, header_line, children in self._indented_blocks("class-map "):
+            match = re.fullmatch(r"class-map(?:\s+match-(?:all|any))?\s+(\S+)", header)
+            if not match:
+                continue
+            name = match.group(1)
+            data = class_maps.setdefault(
+                name.casefold(),
+                {"name": name, "selectors": [], "evidence": [], "last_line": 0},
+            )
+            data["last_line"] = header_line
+            data["evidence"].append(evidence(header, header_line))
+            for line_number, _, command in children:
+                if command.startswith("match "):
+                    if command not in data["selectors"]:
+                        data["selectors"].append(command)
+                    data["evidence"].append(evidence(command, line_number))
+                elif command.startswith("no match "):
+                    positive = command[3:]
+                    data["selectors"] = [
+                        item for item in data["selectors"] if item != positive
+                    ]
+                    data["evidence"].append(evidence(command, line_number))
+
+        policy_maps: dict[str, dict] = {}
+        for header, header_line, children in self._indented_blocks("policy-map "):
+            match = re.fullmatch(r"policy-map\s+(\S+)", header)
+            if not match:
+                continue
+            name = match.group(1)
+            policy = policy_maps.setdefault(
+                name.casefold(),
+                {"name": name, "classes": {}, "evidence": [], "last_line": 0},
+            )
+            policy["last_line"] = header_line
+            policy["evidence"].append(evidence(header, header_line))
+            if not children:
+                continue
+            direct_indent = min(item[1] for item in children)
+            current_class: str | None = None
+            for line_number, indent, command in children:
+                class_match = re.fullmatch(r"class\s+(\S+)", command)
+                removed_class = re.fullmatch(r"no\s+class\s+(\S+)", command)
+                if indent == direct_indent and removed_class:
+                    policy["classes"].pop(removed_class.group(1).casefold(), None)
+                    current_class = None
+                    policy["evidence"].append(evidence(command, line_number))
+                    continue
+                if indent == direct_indent and class_match:
+                    class_name = class_match.group(1)
+                    current_class = class_name.casefold()
+                    item = policy["classes"].setdefault(
+                        current_class,
+                        {"name": class_name, "actions": [], "evidence": []},
+                    )
+                    item["evidence"].append(evidence(command, line_number))
+                    continue
+                if current_class is None or indent <= direct_indent:
+                    continue
+                item = policy["classes"][current_class]
+                item["evidence"].append(evidence(command, line_number))
+                if command.startswith("no police"):
+                    item["actions"] = [
+                        action for action in item["actions"]
+                        if not action.startswith("police")
+                    ]
+                elif command == "no drop":
+                    item["actions"] = [action for action in item["actions"] if action != "drop"]
+                elif command.startswith("police") or command == "drop":
+                    item["actions"].append(command)
+                elif command.startswith(("shape", "bandwidth", "priority", "set ")):
+                    item["actions"].append(command)
+
+        for line_number, raw_line in enumerate(self.parser.ioscfg, 1):
+            if raw_line[:1].isspace():
+                continue
+            line = raw_line.strip()
+            removed_class = re.fullmatch(
+                r"no\s+class-map(?:\s+match-(?:all|any))?\s+(\S+)", line
+            )
+            if removed_class:
+                key = removed_class.group(1).casefold()
+                if key in class_maps and line_number > class_maps[key]["last_line"]:
+                    class_maps.pop(key)
+            removed_policy = re.fullmatch(r"no\s+policy-map\s+(\S+)", line)
+            if removed_policy:
+                key = removed_policy.group(1).casefold()
+                if key in policy_maps and line_number > policy_maps[key]["last_line"]:
+                    policy_maps.pop(key)
+
+        def resolved_class(data: dict) -> IOSControlPlaneClass:
+            name = data["name"]
+            actions = tuple(data["actions"])
+            if name.casefold() == "class-default":
+                selectors = ("class-default",)
+                references: tuple[str, ...] = ()
+                selector_resolution = "implicit-all"
+                class_evidence: tuple[ConfigEvidence, ...] = ()
+            else:
+                class_map = class_maps.get(name.casefold())
+                if class_map is None:
+                    selectors = ()
+                    references = ()
+                    selector_resolution = "undefined-class"
+                    class_evidence = ()
+                else:
+                    selectors = tuple(class_map["selectors"])
+                    references = tuple(
+                        match.group(1)
+                        for selector in selectors
+                        if (match := re.fullmatch(
+                            r"match\s+(?:ip\s+|ipv6\s+)?access-group(?:\s+name)?\s+(\S+)",
+                            selector,
+                        ))
+                    )
+                    if not selectors:
+                        selector_resolution = "empty-class"
+                    elif any(
+                        not acl_state.get(reference.casefold(), (False, False, False))[0]
+                        or not acl_state.get(reference.casefold(), (False, False, False))[1]
+                        for reference in references
+                    ):
+                        selector_resolution = "unresolved-selector"
+                    else:
+                        selector_resolution = "resolved"
+                    class_evidence = tuple(class_map["evidence"])
+
+            police_commands = [action for action in actions if action.startswith("police")]
+            policing = any(re.search(r"(?:^|\s)\d+(?:\s|$)", action) for action in police_commands)
+            discarding = "drop" in actions or any(
+                re.search(r"(?:conform|exceed|violate)-action\s+drop", action)
+                for action in police_commands
+            )
+            logging = any(
+                acl_state.get(reference.casefold(), (False, False, False))[2]
+                for reference in references
+            )
+            enforcement_state = (
+                "enforcing"
+                if policing or discarding
+                else "invalid-policer"
+                if police_commands
+                else "no-enforcement"
+            )
+            return IOSControlPlaneClass(
+                name=name,
+                selectors=selectors,
+                selector_references=references,
+                selector_resolution=selector_resolution,
+                actions=actions,
+                policing=policing,
+                discarding=discarding,
+                logging=logging,
+                enforcement_state=enforcement_state,
+                evidence=tuple(data["evidence"]) + class_evidence,
+            )
+
+        attachments: dict[tuple[str, str], tuple[str, list[ConfigEvidence]]] = {}
+        for header, header_line, children in self._indented_blocks("control-plane"):
+            match = re.fullmatch(r"control-plane(?:\s+(host|transit|cef-exception))?", header)
+            if not match:
+                continue
+            scope = match.group(1) or "aggregate"
+            for line_number, indent, command in children:
+                if indent != min((item[1] for item in children), default=indent):
+                    continue
+                attached = re.fullmatch(r"service-policy\s+(input|output)\s+(\S+)", command)
+                removed = re.fullmatch(r"no\s+service-policy\s+(input|output)(?:\s+\S+)?", command)
+                key = (scope, (attached or removed).group(1) if attached or removed else "")
+                if attached:
+                    attachments[key] = (
+                        attached.group(2),
+                        [evidence(header, header_line), evidence(command, line_number)],
+                    )
+                elif removed:
+                    attachments.pop(key, None)
+
+        records = []
+        for (scope, direction), (name, attachment_evidence) in attachments.items():
+            policy = policy_maps.get(name.casefold())
+            if policy is None:
+                platform_managed = (
+                    self.device_type == "IOS_XE"
+                    and name.casefold() == "system-cpp-policy"
+                )
+                records.append(IOSControlPlanePolicy(
+                    name,
+                    scope,
+                    direction,
+                    platform_managed,
+                    "platform-managed" if platform_managed else "undefined-policy",
+                    (),
+                    tuple(attachment_evidence),
+                ))
+                continue
+            classes = tuple(resolved_class(item) for item in policy["classes"].values())
+            if not classes:
+                state = "empty-policy"
+            elif any(
+                item.enforcement_state == "enforcing"
+                and item.selector_resolution in {"resolved", "implicit-all"}
+                for item in classes
+            ):
+                state = "effective"
+            else:
+                state = "no-enforcement"
+            records.append(IOSControlPlanePolicy(
+                name=name,
+                scope=scope,
+                direction=direction,
+                policy_resolved=True,
+                protection_state=state,
+                classes=classes,
+                evidence=tuple(attachment_evidence)
+                + tuple(policy["evidence"])
+                + tuple(item for policy_class in classes for item in policy_class.evidence),
+            ))
+        return records
+
+    @staticmethod
+    def _sanitize_archive_destination(destination: str) -> str:
+        return re.sub(
+            r"(?i)([a-z][a-z0-9+.-]*://)[^/@\s]+@",
+            r"\1<credentials>@",
+            destination,
+        )
+
+    def get_configuration_management(self) -> IOSConfigurationManagement:
+        """Resolve archive scheduling and configuration-change logging without secrets."""
+
+        destination = ""
+        protocol = ""
+        write_memory = False
+        time_period: int | None = None
+        invalid_time_period = False
+        maximum: int | None = None
+        change_logging = False
+        hide_keys = False
+        notify_syslog = False
+        persistent_logging = False
+        evidence: list[ConfigEvidence] = []
+        archive_configured = False
+
+        for header, header_line, children in self._indented_blocks("archive"):
+            if header.casefold() != "archive":
+                continue
+            evidence.append(ConfigEvidence(header, self.config_filepath, header_line))
+            for line_number, _, text in children:
+                folded = text.casefold()
+                sanitized = text
+                if folded.startswith("path "):
+                    archive_configured = True
+                    raw_destination = text.split(maxsplit=1)[1]
+                    destination = self._sanitize_archive_destination(raw_destination)
+                    protocol = (
+                        raw_destination.split(":", 1)[0].casefold()
+                        if ":" in raw_destination
+                        else "file"
+                    )
+                    sanitized = f"path {destination}"
+                elif re.fullmatch(r"(?:no|default)\s+path(?:\s+.*)?", text, re.IGNORECASE):
+                    archive_configured = True
+                    destination = ""
+                    protocol = ""
+                elif re.fullmatch(r"write-memory", text, re.IGNORECASE):
+                    archive_configured = True
+                    write_memory = True
+                elif re.fullmatch(r"(?:no|default)\s+write-memory", text, re.IGNORECASE):
+                    archive_configured = True
+                    write_memory = False
+                elif match := re.fullmatch(r"time-period\s+(\S+)", text, re.IGNORECASE):
+                    archive_configured = True
+                    invalid_time_period = not match.group(1).isdigit() or int(match.group(1)) <= 0
+                    time_period = int(match.group(1)) if not invalid_time_period else None
+                elif re.fullmatch(r"(?:no|default)\s+time-period(?:\s+.*)?", text, re.IGNORECASE):
+                    archive_configured = True
+                    time_period = None
+                    invalid_time_period = False
+                elif match := re.fullmatch(r"maximum\s+(\d+)", text, re.IGNORECASE):
+                    archive_configured = True
+                    maximum = int(match.group(1))
+                elif re.fullmatch(r"(?:no|default)\s+maximum(?:\s+.*)?", text, re.IGNORECASE):
+                    archive_configured = True
+                    maximum = None
+                elif re.fullmatch(r"logging\s+enable", text, re.IGNORECASE):
+                    change_logging = True
+                elif re.fullmatch(r"(?:no|default)\s+logging\s+enable", text, re.IGNORECASE):
+                    change_logging = False
+                elif re.fullmatch(r"hidekeys", text, re.IGNORECASE):
+                    hide_keys = True
+                elif re.fullmatch(r"(?:no|default)\s+hidekeys", text, re.IGNORECASE):
+                    hide_keys = False
+                elif re.fullmatch(r"notify\s+syslog(?:\s+.*)?", text, re.IGNORECASE):
+                    notify_syslog = True
+                elif re.fullmatch(r"(?:no|default)\s+notify\s+syslog(?:\s+.*)?", text, re.IGNORECASE):
+                    notify_syslog = False
+                elif re.fullmatch(r"logging\s+persistent(?:\s+.*)?", text, re.IGNORECASE):
+                    persistent_logging = True
+                elif re.fullmatch(r"(?:no|default)\s+logging\s+persistent(?:\s+.*)?", text, re.IGNORECASE):
+                    persistent_logging = False
+                evidence.append(ConfigEvidence(sanitized, self.config_filepath, line_number))
+
+        insecure = {"ftp", "tftp", "rcp", "http"}
+        secure = {"scp", "sftp", "https"}
+        local = {
+            "file", "flash", "bootflash", "disk0", "disk1", "harddisk",
+            "nvram", "pram", "usb0", "usb1", "slavedisk0", "slavedisk1",
+        }
+        transport_security = (
+            "insecure" if protocol in insecure
+            else "secure" if protocol in secure
+            else "local" if protocol in local
+            else "unknown"
+        )
+        schedule_state = (
+            "effective" if write_memory or time_period is not None
+            else "invalid" if invalid_time_period
+            else "missing"
+        )
+        return IOSConfigurationManagement(
+            archive_configured=archive_configured,
+            destination=destination,
+            protocol=protocol,
+            transport_security=transport_security,
+            write_memory=write_memory,
+            time_period_minutes=time_period,
+            schedule_state=schedule_state,
+            maximum_versions=maximum,
+            change_logging=change_logging,
+            hide_keys=hide_keys,
+            notify_syslog=notify_syslog,
+            persistent_logging=persistent_logging,
+            evidence=tuple(evidence),
+        )
+
     def get_users(self) -> list[dict]:
         users = []
         user_lines = self.parser.find_objects("^username")
@@ -1583,6 +2317,637 @@ class CiscoIOSParser(BaseDeviceParser):
             "http": self.get_http_server_state() == ConfigurationState.ENABLED,
             "https": self.get_https_server_state() == ConfigurationState.ENABLED,
         }
+
+    def _normalized_interfaces(self) -> list[NetworkInterface]:
+        """Return explicitly exported IOS interface state without assuming defaults."""
+
+        records: dict[str, dict] = {}
+        events: list[tuple[int, str, object]] = []
+        for header, header_line, children in self._indented_blocks("interface "):
+            name = header.split(maxsplit=1)[1] if " " in header else ""
+            if name:
+                events.append((header_line, "block", (name, header, children)))
+        for line_number, raw_line in enumerate(self._source_lines, start=1):
+            if raw_line[:1].isspace():
+                continue
+            reset = re.fullmatch(r"(?:no|default) interface\s+(\S+)", raw_line.strip())
+            if reset:
+                events.append((line_number, "reset", reset.group(1)))
+
+        for _, operation, payload in sorted(events, key=lambda item: item[0]):
+            if operation == "reset":
+                records.pop(str(payload).casefold(), None)
+                continue
+            name, header, children = payload
+            key = name.casefold()
+            data = records.setdefault(key, {
+                "name": name,
+                "state": NormalizedConfigurationState.UNKNOWN,
+                "addresses": [],
+                "scope": None,
+                "evidence": [],
+            })
+            data["name"] = name
+            data["evidence"].append(ConfigEvidence(header, self.config_filepath, _))
+            for line_number, _indent, command in children:
+                evidence = ConfigEvidence(command, self.config_filepath, line_number)
+                if command == "shutdown":
+                    data["state"] = NormalizedConfigurationState.DISABLED
+                elif command == "no shutdown":
+                    data["state"] = NormalizedConfigurationState.ENABLED
+                else:
+                    vrf = re.fullmatch(r"(?:ip )?vrf forwarding\s+(\S+)", command)
+                    if vrf:
+                        data["scope"] = vrf.group(1)
+                    elif re.fullmatch(r"no (?:ip )?vrf forwarding(?:\s+\S+)?", command):
+                        data["scope"] = None
+                    ipv4 = re.fullmatch(
+                        r"ip address\s+(\S+)(?:\s+(\S+))?(?:\s+(?:secondary|route-tag\s+\S+))*",
+                        command,
+                    )
+                    if ipv4:
+                        value = " ".join(item for item in ipv4.groups() if item)
+                        if value not in data["addresses"]:
+                            data["addresses"].append(value)
+                    elif command == "no ip address":
+                        data["addresses"] = [
+                            value for value in data["addresses"] if ":" in value
+                        ]
+                    else:
+                        remove_ipv4 = re.fullmatch(r"no ip address\s+(\S+)(?:\s+(\S+))?.*", command)
+                        if remove_ipv4:
+                            prefix = " ".join(
+                                item for item in remove_ipv4.groups() if item
+                            )
+                            data["addresses"] = [
+                                value for value in data["addresses"]
+                                if not value.startswith(prefix)
+                            ]
+                        ipv6 = re.fullmatch(
+                            r"ipv6 address\s+(\S+)(?:\s+(?:eui-64|link-local|anycast))?",
+                            command,
+                        )
+                        if ipv6 and ipv6.group(1) not in data["addresses"]:
+                            data["addresses"].append(ipv6.group(1))
+                        elif command == "no ipv6 address":
+                            data["addresses"] = [
+                                value for value in data["addresses"] if ":" not in value
+                            ]
+                        else:
+                            remove_ipv6 = re.fullmatch(r"no ipv6 address\s+(\S+).*", command)
+                            if remove_ipv6:
+                                data["addresses"] = [
+                                    value for value in data["addresses"]
+                                    if value != remove_ipv6.group(1)
+                                ]
+                data["evidence"].append(evidence)
+
+        return [
+            NetworkInterface(
+                name=data["name"],
+                state=data["state"],
+                scope=data["scope"] or "global",
+                addresses=tuple(data["addresses"]),
+                evidence=tuple(data["evidence"]),
+            )
+            for data in records.values()
+        ]
+
+    @staticmethod
+    def _acl_address(tokens: list[str], index: int) -> tuple[str, int]:
+        if index >= len(tokens):
+            return "", index
+        token = tokens[index]
+        folded = token.casefold()
+        if folded in {"any", "any4", "any6"}:
+            return token, index + 1
+        if folded in {"host", "object", "object-group", "interface"} and index + 1 < len(tokens):
+            return f"{token} {tokens[index + 1]}", index + 2
+        if index + 1 < len(tokens):
+            try:
+                if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", token) and re.fullmatch(
+                    r"\d+\.\d+\.\d+\.\d+", tokens[index + 1]
+                ):
+                    return f"{token} {tokens[index + 1]}", index + 2
+            except TypeError:
+                pass
+        return token, index + 1
+
+    def _normalized_acl_policies(self) -> list[SecurityPolicy]:
+        """Inventory only ACL rules with an exported effective attachment."""
+
+        definitions: dict[str, dict] = {}
+
+        def parse_entry(command: str, kind: str, evidence: ConfigEvidence) -> dict | None:
+            tokens = command.split()
+            sequence = ""
+            if tokens and tokens[0].isdigit():
+                sequence, tokens = tokens[0], tokens[1:]
+            elif len(tokens) > 1 and tokens[0].casefold() == "sequence" and tokens[1].isdigit():
+                sequence, tokens = tokens[1], tokens[2:]
+            if not tokens or tokens[0].casefold() not in {"permit", "deny"}:
+                return None
+            action = tokens.pop(0).casefold()
+            tracking = None
+            if tokens and tokens[-1].casefold() in {"log", "log-input"}:
+                tracking = tokens.pop().casefold()
+            sources: tuple[str, ...] = ()
+            destinations: tuple[str, ...] = ()
+            services: tuple[str, ...] = ()
+            if kind == "standard":
+                sources = (" ".join(tokens) or "unknown",)
+            elif tokens:
+                protocol = tokens[0]
+                source, cursor = self._acl_address(tokens, 1)
+                destination, cursor = self._acl_address(tokens, cursor)
+                sources = (source,) if source else ()
+                destinations = (destination,) if destination else ()
+                service = " ".join([protocol, *tokens[cursor:]])
+                services = (service,)
+            return {
+                "sequence": sequence,
+                "action": action,
+                "sources": sources,
+                "destinations": destinations,
+                "services": services,
+                "tracking": tracking,
+                "evidence": evidence,
+                "canonical": " ".join(command.split()).casefold(),
+            }
+
+        named_events: list[tuple[int, str, str, list[tuple[int, int, str]]]] = []
+        for prefix, family in (("ip access-list ", "ipv4"), ("ipv6 access-list ", "ipv6")):
+            for header, line_number, children in self._indented_blocks(prefix):
+                if family == "ipv4":
+                    match = re.fullmatch(r"ip access-list\s+(standard|extended)\s+(\S+)", header)
+                    if not match:
+                        continue
+                    kind, name = match.groups()
+                else:
+                    match = re.fullmatch(r"ipv6 access-list\s+(\S+)", header)
+                    if not match:
+                        continue
+                    name, kind = match.group(1), "extended"
+                named_events.append((line_number, name, f"{family}:{kind}", children))
+
+        for line_number, name, flavor, children in sorted(named_events):
+            family, kind = flavor.split(":", 1)
+            data = definitions.setdefault(name.casefold(), {
+                "name": name, "family": family, "kind": kind, "entries": []
+            })
+            for child_line, _indent, command in children:
+                removed_sequence = re.fullmatch(r"no (?:sequence\s+)?(\d+)", command)
+                if removed_sequence:
+                    data["entries"] = [
+                        item for item in data["entries"]
+                        if item["sequence"] != removed_sequence.group(1)
+                    ]
+                    continue
+                if command.startswith(("no ", "default ")):
+                    target = " ".join(command.split()[1:]).casefold()
+                    data["entries"] = [
+                        item for item in data["entries"]
+                        if item["canonical"] != target
+                    ]
+                    continue
+                entry = parse_entry(
+                    command, kind,
+                    ConfigEvidence(command, self.config_filepath, child_line),
+                )
+                if entry:
+                    if entry["sequence"]:
+                        data["entries"] = [
+                            item for item in data["entries"]
+                            if item["sequence"] != entry["sequence"]
+                        ]
+                    data["entries"].append(entry)
+
+        for line_number, raw_line in enumerate(self._source_lines, start=1):
+            if raw_line[:1].isspace():
+                continue
+            line = raw_line.strip()
+            removed = re.fullmatch(
+                r"(?:no|default) (?:ip access-list (?:standard|extended) |ipv6 access-list |access-list )(\S+)",
+                line,
+            )
+            if removed:
+                definitions.pop(removed.group(1).casefold(), None)
+                continue
+            match = re.fullmatch(r"access-list\s+(\S+)\s+(.+)", line)
+            if not match:
+                continue
+            name, command = match.groups()
+            numeric = int(name) if name.isdigit() else None
+            kind = (
+                "standard"
+                if numeric is not None and (1 <= numeric <= 99 or 1300 <= numeric <= 1999)
+                else "extended"
+            )
+            data = definitions.setdefault(name.casefold(), {
+                "name": name, "family": "ipv4", "kind": kind, "entries": []
+            })
+            entry = parse_entry(
+                command, kind, ConfigEvidence(line, self.config_filepath, line_number)
+            )
+            if entry:
+                data["entries"].append(entry)
+
+        attachments: dict[tuple[str, str, str], tuple[str, ConfigEvidence]] = {}
+        for header, header_line, children in self._indented_blocks("interface "):
+            interface = header.split(maxsplit=1)[1] if " " in header else ""
+            for line_number, _indent, command in children:
+                attached = re.fullmatch(r"ip access-group\s+(\S+)\s+(in|out)", command)
+                attached_v6 = re.fullmatch(r"ipv6 traffic-filter\s+(\S+)\s+(in|out)", command)
+                removed = re.fullmatch(r"(?:no|default) ip access-group(?:\s+\S+)?(?:\s+(in|out))?", command)
+                removed_v6 = re.fullmatch(r"(?:no|default) ipv6 traffic-filter(?:\s+\S+)?(?:\s+(in|out))?", command)
+                if attached or attached_v6:
+                    match = attached or attached_v6
+                    family = "ipv4" if attached else "ipv6"
+                    attachments[(interface, family, match.group(2))] = (
+                        match.group(1),
+                        ConfigEvidence(command, self.config_filepath, line_number),
+                    )
+                elif removed or removed_v6:
+                    family = "ipv4" if removed else "ipv6"
+                    direction = (removed or removed_v6).group(1)
+                    keys = [
+                        key for key in attachments
+                        if key[0] == interface and key[1] == family
+                        and (direction is None or key[2] == direction)
+                    ]
+                    for key in keys:
+                        attachments.pop(key, None)
+
+        policies: list[SecurityPolicy] = []
+        for (interface, family, direction), (name, attachment_evidence) in attachments.items():
+            definition = definitions.get(name.casefold())
+            scope = f"{interface}:{direction}:{family}"
+            if definition is None or definition["family"] != family:
+                policies.append(SecurityPolicy(
+                    name=f"{name}@{scope}",
+                    state=NormalizedConfigurationState.UNKNOWN,
+                    action="unknown",
+                    scope=scope,
+                    source_interfaces=(interface,) if direction == "in" else (),
+                    destination_interfaces=(interface,) if direction == "out" else (),
+                    evidence=(attachment_evidence,),
+                ))
+                continue
+            entries = definition["entries"]
+            if entries and all(entry["sequence"] for entry in entries):
+                entries = sorted(entries, key=lambda entry: int(entry["sequence"]))
+            for position, entry in enumerate(entries, start=1):
+                policies.append(SecurityPolicy(
+                    name=f"{name}:{entry['sequence'] or position}@{scope}",
+                    state=NormalizedConfigurationState.ENABLED,
+                    action=entry["action"],
+                    position=position,
+                    scope=scope,
+                    source_interfaces=(interface,) if direction == "in" else (),
+                    destination_interfaces=(interface,) if direction == "out" else (),
+                    sources=entry["sources"],
+                    destinations=entry["destinations"],
+                    services=entry["services"],
+                    tracking=entry["tracking"],
+                    evidence=(attachment_evidence, entry["evidence"]),
+                ))
+
+        for policy in self.get_control_plane_policies():
+            for position, policy_class in enumerate(policy.classes, start=1):
+                policies.append(SecurityPolicy(
+                    name=f"{policy.name}/{policy_class.name}",
+                    state=(
+                        NormalizedConfigurationState.ENABLED
+                        if policy.policy_resolved
+                        else NormalizedConfigurationState.UNKNOWN
+                    ),
+                    action=policy_class.enforcement_state,
+                    position=position,
+                    scope=f"control-plane:{policy.scope}:{policy.direction}",
+                    services=policy_class.selectors,
+                    tracking="log" if policy_class.logging else None,
+                    evidence=policy.evidence + policy_class.evidence,
+                ))
+        return policies
+
+    @staticmethod
+    def _acl_network_semantics(selector: str, family: str) -> NetworkSemantics:
+        tokens = selector.split()
+        folded = [token.casefold() for token in tokens]
+        version = 6 if family == "ipv6" else 4
+        if folded in (["any"], ["any4"], ["any6"]):
+            return NetworkSemantics(any=True)
+        if len(tokens) == 2 and folded[0] == "host":
+            try:
+                address = ipaddress.ip_address(tokens[1])
+            except ValueError:
+                return NetworkSemantics(complete=False, unresolved=(selector,))
+            if address.version != version:
+                return NetworkSemantics(complete=False, unresolved=(selector,))
+            return NetworkSemantics(intervals=(
+                AddressInterval(version, int(address), int(address)),
+            ))
+        if folded[:1] in (["object"], ["object-group"], ["interface"]):
+            return NetworkSemantics(complete=False, unresolved=(selector,))
+        try:
+            if version == 6 and len(tokens) == 1:
+                network = ipaddress.ip_network(tokens[0], strict=False)
+                if network.version != 6:
+                    raise ValueError
+                return NetworkSemantics(intervals=(AddressInterval(
+                    6, int(network.network_address), int(network.broadcast_address)
+                ),))
+            if version == 4 and len(tokens) == 1:
+                address = ipaddress.IPv4Address(tokens[0])
+                return NetworkSemantics(intervals=(AddressInterval(
+                    4, int(address), int(address)
+                ),))
+            if version == 4 and len(tokens) == 2:
+                address = ipaddress.IPv4Address(tokens[0])
+                wildcard = int(ipaddress.IPv4Address(tokens[1]))
+                netmask = (~wildcard) & 0xFFFFFFFF
+                network = ipaddress.IPv4Network(
+                    (int(address) & netmask, str(ipaddress.IPv4Address(netmask))),
+                    strict=False,
+                )
+                return NetworkSemantics(intervals=(AddressInterval(
+                    4, int(network.network_address), int(network.broadcast_address)
+                ),))
+        except (ValueError, ipaddress.NetmaskValueError):
+            pass
+        return NetworkSemantics(complete=False, unresolved=(selector or "<empty-address>",))
+
+    @staticmethod
+    def _acl_service_semantics(selector: str) -> ServiceSemantics:
+        tokens = selector.split()
+        if not tokens:
+            return ServiceSemantics(any=True)
+        protocol = tokens.pop(0).casefold()
+        if protocol in {"ip", "ipv6"} and not tokens:
+            return ServiceSemantics(any=True)
+        aliases = {
+            "ftp": 21, "ssh": 22, "telnet": 23, "smtp": 25,
+            "domain": 53, "dns": 53, "www": 80, "http": 80,
+            "pop3": 110, "imap": 143, "https": 443, "snmp": 161,
+            "snmptrap": 162, "bgp": 179, "ntp": 123,
+        }
+
+        def port(value: str) -> int | None:
+            if value.isdigit() and 0 <= int(value) <= 65535:
+                return int(value)
+            return aliases.get(value.casefold())
+
+        if protocol in {"tcp", "udp"}:
+            if not tokens:
+                return ServiceSemantics(intervals=(ServiceInterval(protocol, 0, 65535),))
+            operator = tokens.pop(0).casefold()
+            if operator == "eq" and tokens:
+                ports = [port(value) for value in tokens]
+                if all(value is not None for value in ports):
+                    return ServiceSemantics(intervals=tuple(
+                        ServiceInterval(protocol, value, value)
+                        for value in ports if value is not None
+                    ))
+            if operator == "range" and len(tokens) == 2:
+                first, last = port(tokens[0]), port(tokens[1])
+                if first is not None and last is not None and first <= last:
+                    return ServiceSemantics(intervals=(ServiceInterval(protocol, first, last),))
+            if operator in {"lt", "gt"} and len(tokens) == 1:
+                value = port(tokens[0])
+                if value is not None:
+                    first, last = (0, value - 1) if operator == "lt" else (value + 1, 65535)
+                    if first <= last:
+                        return ServiceSemantics(intervals=(ServiceInterval(protocol, first, last),))
+            if operator == "neq" and len(tokens) == 1:
+                value = port(tokens[0])
+                if value is not None:
+                    intervals = []
+                    if value > 0:
+                        intervals.append(ServiceInterval(protocol, 0, value - 1))
+                    if value < 65535:
+                        intervals.append(ServiceInterval(protocol, value + 1, 65535))
+                    return ServiceSemantics(intervals=tuple(intervals))
+            return ServiceSemantics(complete=False, unresolved=(selector,))
+        if not tokens and protocol in {"icmp", "icmpv6", "gre", "esp", "ah", "ospf", "eigrp"}:
+            return ServiceSemantics(intervals=(ServiceInterval(protocol, 0, 65535),))
+        if not tokens and protocol.isdigit() and 0 <= int(protocol) <= 255:
+            return ServiceSemantics(intervals=(ServiceInterval(f"ip-{protocol}", 0, 65535),))
+        return ServiceSemantics(complete=False, unresolved=(selector,))
+
+    def get_attached_acl_semantics(self) -> tuple[IOSACLRule, ...]:
+        """Adapt only effective interface ACL entries with fully static selectors."""
+        rules = []
+        for policy in self._normalized_acl_policies():
+            if policy.scope is None or policy.scope.startswith("control-plane:"):
+                continue
+            family = policy.scope.rsplit(":", 1)[-1]
+            standard = not policy.destinations and not policy.services
+            source = policy.sources[0] if policy.sources else ""
+            destination = "any" if standard else (
+                policy.destinations[0] if policy.destinations else ""
+            )
+            service = "" if standard else (
+                policy.services[0] if policy.services else "<unknown-service>"
+            )
+            rules.append(IOSACLRule(
+                name=policy.name,
+                family=family,
+                scope=policy.scope,
+                position=policy.position or len(rules) + 1,
+                action=policy.action,
+                source_networks=self._acl_network_semantics(source, family),
+                destination_networks=self._acl_network_semantics(destination, family),
+                services=(
+                    ServiceSemantics(any=True)
+                    if standard
+                    else self._acl_service_semantics(service)
+                ),
+                behavior_signature=(("tracking", policy.tracking or "none"),),
+                evidence=policy.evidence,
+            ))
+        return tuple(rules)
+
+    def _normalized_logging_destinations(self) -> list[LoggingDestination]:
+        destinations: dict[tuple[str, str], LoggingDestination] = {}
+        severity: str | None = None
+        for line_number, raw_line in enumerate(self._source_lines, start=1):
+            if raw_line[:1].isspace():
+                continue
+            line = raw_line.strip()
+            trap = re.fullmatch(r"logging trap\s+(\S+)", line)
+            if trap:
+                severity = trap.group(1)
+                continue
+            if re.fullmatch(r"(?:no|default) logging trap(?:\s+\S+)?", line):
+                severity = None
+                continue
+            match = re.fullmatch(r"(?:(no|default) )?logging (?:host|server)\s*(.*)", line)
+            if not match:
+                continue
+            operation, remainder = match.groups()
+            try:
+                tokens = shlex.split(remainder)
+            except ValueError:
+                continue
+            scope = "global"
+            if tokens[:1] == ["vrf"] and len(tokens) >= 3:
+                scope, tokens = tokens[1], tokens[2:]
+            if tokens[:1] == ["ipv6"]:
+                tokens = tokens[1:]
+            if not tokens:
+                if operation:
+                    destinations.clear()
+                continue
+            address = tokens[0]
+            key = (scope.casefold(), address.casefold())
+            if operation:
+                destinations.pop(key, None)
+            else:
+                destinations[key] = LoggingDestination(
+                    destination_type="syslog",
+                    state=NormalizedConfigurationState.ENABLED,
+                    address=address,
+                    severity=severity,
+                    scope=scope,
+                    evidence=(ConfigEvidence(line, self.config_filepath, line_number),),
+                )
+        if severity is not None:
+            destinations = {
+                key: LoggingDestination(
+                    destination_type=item.destination_type,
+                    state=item.state,
+                    address=item.address,
+                    severity=severity,
+                    scope=item.scope,
+                    evidence=item.evidence,
+                )
+                for key, item in destinations.items()
+            }
+        return list(destinations.values())
+
+    def get_normalized_config(self) -> NormalizedConfig:
+        """Expose bounded IOS/IOS-XE state already reconstructed by native methods."""
+
+        hostname = self.get_hostname()
+        version = self.get_version()
+
+        management_services: list[ManagementService] = []
+        for line in self.get_management_lines("vty"):
+            if line.exec_enabled is False or line.transports is None:
+                continue
+            permitted = tuple(
+                value for value in (
+                    f"ipv4-acl:{line.ipv4_access_class}" if line.ipv4_access_class else "",
+                    f"ipv6-acl:{line.ipv6_access_class}" if line.ipv6_access_class else "",
+                ) if value
+            )
+            for protocol in ("ssh", "telnet"):
+                if protocol in line.transports or "all" in line.transports:
+                    management_services.append(ManagementService(
+                        protocol=protocol,
+                        state=NormalizedConfigurationState.ENABLED,
+                        interface=line.line,
+                        scope="management-lines",
+                        permitted_sources=permitted,
+                        evidence=line.evidence,
+                    ))
+        if (
+            self.get_ssh_state() == ConfigurationState.ENABLED
+            and not any(item.protocol == "ssh" for item in management_services)
+        ):
+            management_services.append(ManagementService(
+                protocol="ssh",
+                state=NormalizedConfigurationState.ENABLED,
+                scope="global-explicit",
+                evidence=(ConfigEvidence("explicit SSH configuration", self.config_filepath),),
+            ))
+        http_acl = self.get_http_access_class()
+        for protocol, state in (
+            ("http", self.get_http_server_state()),
+            ("https", self.get_https_server_state()),
+        ):
+            if state == ConfigurationState.ENABLED:
+                management_services.append(ManagementService(
+                    protocol=protocol,
+                    state=NormalizedConfigurationState.ENABLED,
+                    scope="global",
+                    permitted_sources=(f"ipv4-acl:{http_acl}",) if http_acl else (),
+                    evidence=(ConfigEvidence(f"ip http {'secure-' if protocol == 'https' else ''}server", self.config_filepath),),
+                ))
+
+        credential_by_user = {
+            item.account.casefold(): item
+            for item in self.get_credential_metadata()
+            if item.context == "local_user"
+        }
+        normalized_users = []
+        for user in self.get_users():
+            metadata = credential_by_user.get(user["username"].casefold())
+            normalized_users.append(LocalUser(
+                username=user["username"],
+                state=NormalizedConfigurationState.CONFIGURED,
+                privilege=user["privilege"],
+                authentication=metadata.method if metadata else None,
+                evidence=(
+                    metadata.evidence
+                    if metadata
+                    else (ConfigEvidence(user["raw_line"], self.config_filepath),)
+                ),
+            ))
+
+        crypto_settings: list[CryptoSetting] = []
+        ssh_version = self.get_ssh_version()
+        if ssh_version:
+            crypto_settings.append(CryptoSetting(
+                name="ssh-version",
+                value=ssh_version,
+                state=NormalizedConfigurationState.CONFIGURED,
+                scope="management-ssh",
+                evidence=(ConfigEvidence(f"ip ssh version {ssh_version}", self.config_filepath),),
+            ))
+        for policy in self.get_ssh_server_algorithms():
+            if policy.algorithms is not None:
+                crypto_settings.append(CryptoSetting(
+                    name=f"ssh-{policy.category}",
+                    value=" ".join(policy.algorithms),
+                    state=NormalizedConfigurationState.CONFIGURED,
+                    scope="management-ssh",
+                    evidence=policy.evidence,
+                ))
+        modulus = self.get_ssh_rsa_key_modulus()
+        if modulus.configured and modulus.value is not None:
+            crypto_settings.append(CryptoSetting(
+                name="ssh-rsa-key-modulus",
+                value=str(modulus.value),
+                state=NormalizedConfigurationState.CONFIGURED,
+                scope="management-ssh",
+                evidence=(ConfigEvidence(modulus.raw_line, self.config_filepath),),
+            ))
+
+        return NormalizedConfig(
+            device_type=self.device_type,
+            hostname=(
+                NormalizedValue.known(hostname)
+                if hostname != "?"
+                else NormalizedValue.unknown("Hostname is absent")
+            ),
+            device_model=NormalizedValue.unknown(
+                "IOS running configuration does not provide reliable model metadata"
+            ),
+            software_version=(
+                NormalizedValue.known(version)
+                if version != "?"
+                else NormalizedValue.unknown("IOS version is absent")
+            ),
+            management_services=NormalizedCollection.known(*management_services),
+            users=NormalizedCollection.known(*normalized_users),
+            interfaces=NormalizedCollection.known(*self._normalized_interfaces()),
+            policies=NormalizedCollection.known(*self._normalized_acl_policies()),
+            logging_destinations=NormalizedCollection.known(
+                *self._normalized_logging_destinations()
+            ),
+            crypto_settings=NormalizedCollection.known(*crypto_settings),
+        )
 
     def get_native_config(self) -> CiscoConfParse:
         return self.parser

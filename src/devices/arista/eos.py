@@ -9,6 +9,7 @@ from typing import Any
 
 from src.devices.cisco.ios import CiscoIOSParser
 from src.devices.common.models import (
+    BlocklistCredentialAssessment,
     ConfigEvidence,
     ConfigurationState,
     CredentialMetadata,
@@ -180,6 +181,34 @@ class AristaSNMPUser:
     evidence: tuple[ConfigEvidence, ...]
 
 
+@dataclass(frozen=True)
+class AristaControlPlaneACL:
+    family: str
+    name: str
+    resolution_state: str
+    protection_state: str
+    entries: tuple[str, ...]
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class AristaCoPPClass:
+    name: str
+    selector_reference: str
+    selector_state: str
+    actions: tuple[str, ...]
+    enforcement_state: str
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class AristaCoPPPolicy:
+    name: str
+    resolution_state: str
+    classes: tuple[AristaCoPPClass, ...]
+    evidence: tuple[ConfigEvidence, ...]
+
+
 class AristaEOSParser(CiscoIOSParser):
     device_type = "ARISTA_EOS"
 
@@ -250,6 +279,298 @@ class AristaEOSParser(CiscoIOSParser):
             if match:
                 state = not bool(match.group("no"))
         return state
+
+    @staticmethod
+    def _active_acl_entries(
+        children: list[AristaCommand], previous: tuple[str, ...] = ()
+    ) -> tuple[str, ...]:
+        """Apply common EOS ACL entry and sequence removals in source order."""
+
+        entries = list(previous)
+        for child in children:
+            text = child.text.strip()
+            if re.match(r"^(?:\d+\s+)?(?:permit|deny)\b", text, re.IGNORECASE):
+                sequence = re.match(r"^(\d+)\s+", text)
+                if sequence:
+                    entries = [
+                        item for item in entries
+                        if not re.match(rf"^{re.escape(sequence.group(1))}\s+", item)
+                    ]
+                if text not in entries:
+                    entries.append(text)
+                continue
+            removed = re.fullmatch(r"(?:no|default)\s+(.*)", text, re.IGNORECASE)
+            if not removed:
+                continue
+            target = removed.group(1)
+            if target.isdigit():
+                entries = [item for item in entries if not re.match(rf"^{target}\s+", item)]
+            elif re.match(r"^(?:permit|deny)\b", target, re.IGNORECASE):
+                entries = [
+                    item for item in entries
+                    if re.sub(r"^\d+\s+", "", item, flags=re.IGNORECASE).casefold()
+                    != target.casefold()
+                ]
+        return tuple(entries)
+
+    @staticmethod
+    def _is_unconditional_acl_permit(tokens: list[str]) -> bool:
+        if tokens and tokens[0].isdigit():
+            tokens = tokens[1:]
+        if not tokens or tokens[0] != "permit":
+            return False
+        body = tokens[1:]
+        while body and body[-1] in {"log", "tracked"}:
+            body = body[:-1]
+        return body in (["any"], ["ip", "any", "any"], ["ipv6", "any", "any"])
+
+    def get_control_plane_acls(self) -> tuple[AristaControlPlaneACL, ...]:
+        """Resolve only ACLs that are actively attached to the EOS control plane."""
+
+        definitions: dict[tuple[str, str], tuple[str, tuple[str, ...], tuple[ConfigEvidence, ...]]] = {}
+        for index, command in enumerate(self.commands):
+            removed = re.fullmatch(
+                r"(?:no|default)\s+(ip|ipv6)\s+access-list\s+(?:standard\s+|extended\s+)?(\S+)",
+                command.text,
+                re.IGNORECASE,
+            )
+            if command.indent == 0 and removed:
+                definitions.pop((removed.group(1).casefold(), removed.group(2).casefold()), None)
+                continue
+            match = re.fullmatch(
+                r"(ip|ipv6)\s+access-list\s+(?:standard\s+|extended\s+)?(\S+)",
+                command.text,
+                re.IGNORECASE,
+            )
+            if command.indent != 0 or not match:
+                continue
+            children = []
+            for child in self.commands[index + 1 :]:
+                if child.indent <= command.indent:
+                    break
+                children.append(child)
+            previous = definitions.get((match.group(1).casefold(), match.group(2).casefold()))
+            entries = self._active_acl_entries(children, previous[1] if previous else ())
+            definitions[(match.group(1).casefold(), match.group(2).casefold())] = (
+                match.group(2),
+                entries,
+                (self._evidence(command),) + tuple(self._evidence(item) for item in children),
+            )
+
+        attachments: dict[str, tuple[str, ConfigEvidence]] = {}
+        for parent, children in self._blocks("system control-plane"):
+            for command in children:
+                match = re.fullmatch(r"(ip|ipv6)\s+access-group\s+(\S+)(?:\s+in)?", command.text, re.IGNORECASE)
+                if match:
+                    attachments[match.group(1).casefold()] = (match.group(2), self._evidence(command))
+                    continue
+                removed = re.fullmatch(
+                    r"(?:no|default)\s+(ip|ipv6)\s+access-group(?:\s+\S+)?(?:\s+in)?",
+                    command.text,
+                    re.IGNORECASE,
+                )
+                if removed:
+                    attachments.pop(removed.group(1).casefold(), None)
+
+        resolved = []
+        for family, (name, attachment_evidence) in attachments.items():
+            definition = definitions.get((family, name.casefold()))
+            if definition is None:
+                resolved.append(AristaControlPlaneACL(
+                    family=family,
+                    name=name,
+                    resolution_state="undefined",
+                    protection_state="unknown",
+                    entries=(),
+                    evidence=(attachment_evidence,),
+                ))
+                continue
+            original_name, entries, definition_evidence = definition
+            if not entries:
+                protection_state = "empty"
+            else:
+                restrictive = False
+                unconditional_permit = False
+                for entry in entries:
+                    tokens = [token.casefold() for token in self._tokens(entry)]
+                    if tokens and tokens[0].isdigit():
+                        tokens = tokens[1:]
+                    if not tokens:
+                        continue
+                    action = tokens[0]
+                    unconditional = self._is_unconditional_acl_permit(tokens)
+                    if action == "deny":
+                        restrictive = True
+                    if unconditional:
+                        unconditional_permit = True
+                        break
+                # A non-empty list with no reachable catch-all permit ends in implicit deny.
+                if not restrictive:
+                    restrictive = not unconditional_permit
+                protection_state = "effective" if restrictive else "no-enforcement"
+            resolved.append(AristaControlPlaneACL(
+                family=family,
+                name=original_name,
+                resolution_state="resolved",
+                protection_state=protection_state,
+                entries=entries,
+                evidence=(attachment_evidence,) + definition_evidence,
+            ))
+        return tuple(resolved)
+
+    def get_copp_policy(self) -> AristaCoPPPolicy:
+        """Resolve exported EOS CoPP overrides while preserving omitted defaults as managed state."""
+
+        acl_entries: dict[tuple[str, str], tuple[str, ...]] = {}
+        for index, command in enumerate(self.commands):
+            removed = re.fullmatch(
+                r"(?:no|default)\s+(ip|ipv6)\s+access-list\s+(?:standard\s+|extended\s+)?(\S+)",
+                command.text,
+                re.IGNORECASE,
+            )
+            if command.indent == 0 and removed:
+                acl_entries.pop((removed.group(1).casefold(), removed.group(2).casefold()), None)
+                continue
+            match = re.fullmatch(
+                r"(ip|ipv6)\s+access-list\s+(?:standard\s+|extended\s+)?(\S+)",
+                command.text,
+                re.IGNORECASE,
+            )
+            if command.indent != 0 or not match:
+                continue
+            children = []
+            for child in self.commands[index + 1 :]:
+                if child.indent <= command.indent:
+                    break
+                children.append(child)
+            key = (match.group(1).casefold(), match.group(2).casefold())
+            acl_entries[key] = self._active_acl_entries(children, acl_entries.get(key, ()))
+
+        acl_states = {}
+        for key, entries in acl_entries.items():
+            permitted = False
+            for entry in entries:
+                tokens = [token.casefold() for token in self._tokens(entry)]
+                if tokens and tokens[0].isdigit():
+                    tokens = tokens[1:]
+                if tokens and tokens[0] == "permit":
+                    permitted = True
+                    break
+            acl_states[key] = "resolved" if permitted else "empty-selector"
+
+        class_maps: dict[str, tuple[str, str, str, tuple[ConfigEvidence, ...]]] = {}
+        for index, command in enumerate(self.commands):
+            removed = re.fullmatch(
+                r"(?:no|default)\s+class-map\s+type\s+(?:control-plane|copp)\s+(?:match-(?:any|all)\s+)?(\S+)",
+                command.text,
+                re.IGNORECASE,
+            )
+            if command.indent == 0 and removed:
+                class_maps.pop(removed.group(1).casefold(), None)
+                continue
+            match = re.fullmatch(
+                r"class-map\s+type\s+(?:control-plane|copp)\s+(?:match-(?:any|all)\s+)?(\S+)",
+                command.text,
+                re.IGNORECASE,
+            )
+            if command.indent != 0 or not match:
+                continue
+            children = []
+            for child in self.commands[index + 1 :]:
+                if child.indent <= command.indent:
+                    break
+                children.append(child)
+            selector = ""
+            selector_family = ""
+            for child in children:
+                selector_match = re.fullmatch(
+                    r"match\s+(ip|ipv6)\s+access-group(?:\s+name)?\s+(\S+)",
+                    child.text,
+                    re.IGNORECASE,
+                )
+                if selector_match:
+                    selector_family = selector_match.group(1).casefold()
+                    selector = selector_match.group(2)
+                elif re.fullmatch(r"(?:no|default)\s+match(?:\s+.*)?", child.text, re.IGNORECASE):
+                    selector = ""
+                    selector_family = ""
+            class_maps[match.group(1).casefold()] = (
+                match.group(1),
+                selector,
+                selector_family,
+                (self._evidence(command),) + tuple(self._evidence(item) for item in children),
+            )
+
+        blocks = self._blocks("policy-map type copp copp-system-policy")
+        if not blocks:
+            return AristaCoPPPolicy("copp-system-policy", "platform-managed", (), ())
+
+        parent, children = blocks[-1]
+        direct_indent = min((item.indent for item in children), default=parent.indent + 1)
+        class_indexes = [
+            index for index, item in enumerate(children)
+            if item.indent == direct_indent and re.fullmatch(r"class\s+\S+", item.text, re.IGNORECASE)
+        ]
+        classes = []
+        for position, index in enumerate(class_indexes):
+            class_command = children[index]
+            name = class_command.text.split(maxsplit=1)[1]
+            boundary = class_indexes[position + 1] if position + 1 < len(class_indexes) else len(children)
+            scoped = children[index + 1 : boundary]
+            active_actions: dict[str, str] = {}
+            for item in scoped:
+                action = re.match(r"^(shape|bandwidth)\b", item.text, re.IGNORECASE)
+                if action:
+                    active_actions[action.group(1).casefold()] = item.text
+                    continue
+                removed_action = re.match(
+                    r"^(?:no|default)\s+(shape|bandwidth)(?:\s+.*)?$",
+                    item.text,
+                    re.IGNORECASE,
+                )
+                if removed_action:
+                    active_actions.pop(removed_action.group(1).casefold(), None)
+            actions = tuple(active_actions.values())
+            valid_action = any(
+                any(token.isdigit() and int(token) > 0 for token in self._tokens(action))
+                for action in actions
+            )
+            mapped = class_maps.get(name.casefold())
+            if mapped:
+                selector_reference = mapped[1]
+                selector_state = (
+                    acl_states.get((mapped[2], selector_reference.casefold()), "undefined-selector")
+                    if selector_reference
+                    else "empty-class"
+                )
+                class_evidence = mapped[3]
+                enforcement = "effective" if selector_state == "resolved" and valid_action else "no-enforcement"
+            elif name.casefold() == "class-default" or name.casefold().startswith("copp-system-"):
+                selector_reference = ""
+                selector_state = "platform-managed"
+                class_evidence = ()
+                enforcement = "effective" if valid_action else "platform-managed"
+            else:
+                selector_reference = ""
+                selector_state = "undefined-class"
+                class_evidence = ()
+                enforcement = "unknown"
+            classes.append(AristaCoPPClass(
+                name=name,
+                selector_reference=selector_reference,
+                selector_state=selector_state,
+                actions=actions,
+                enforcement_state=enforcement,
+                evidence=(self._evidence(class_command),)
+                + tuple(self._evidence(item) for item in scoped)
+                + class_evidence,
+            ))
+        return AristaCoPPPolicy(
+            name="copp-system-policy",
+            resolution_state="explicit" if classes else "platform-managed",
+            classes=tuple(classes),
+            evidence=(self._evidence(parent),) + tuple(self._evidence(item) for item in children),
+        )
 
     def get_eapi_endpoints(self) -> list[AristaEAPIEndpoint]:
         endpoints = []
@@ -868,12 +1189,99 @@ class AristaEOSParser(CiscoIOSParser):
                 storage_type=storage_type,
                 storage_assessment=storage,
                 default_assessment=self._eos_default(storage, value),
+                plaintext_length=(
+                    len(value)
+                    if storage == CredentialStorageAssessment.PLAINTEXT
+                    else None
+                ),
+                blocklist_assessment=BlocklistCredentialAssessment.from_optional_match(
+                    self.assessment_context.plaintext_credential_blocklisted(value)
+                    if storage == CredentialStorageAssessment.PLAINTEXT
+                    else None
+                ),
                 evidence=(ConfigEvidence(
                     f"username {account} {method} {storage_type} <credential redacted>",
                     self.config_filepath,
                     command.line_number,
                 ),),
             )
+        return list(credentials.values())
+
+    def get_additional_credential_metadata(self) -> list[CredentialMetadata]:
+        """Classify configured RADIUS keys and literal TerminAttr ingestion auth."""
+
+        credentials: dict[str, CredentialMetadata] = {}
+
+        def record(account: str, context: str, marker: str, value: str,
+                   command: AristaCommand) -> None:
+            if not value or value.casefold() in {"<redacted>", "redacted", "<hidden>", "***"}:
+                storage = CredentialStorageAssessment.UNKNOWN
+            elif marker == "7":
+                storage = (CredentialStorageAssessment.WEAK_REVERSIBLE
+                           if re.fullmatch(r"(?:0[0-9]|1[0-5])[0-9A-Fa-f]+", value)
+                           else CredentialStorageAssessment.MALFORMED)
+            elif marker == "0":
+                storage = CredentialStorageAssessment.PLAINTEXT
+            else:
+                storage = CredentialStorageAssessment.UNKNOWN
+            credentials[account.casefold()] = CredentialMetadata(
+                account=account,
+                context=context,
+                method="ingestauth" if context == "terminattr_ingestauth" else "key",
+                storage_type=marker,
+                storage_assessment=storage,
+                default_assessment=DefaultCredentialAssessment.NOT_EVALUATED,
+                plaintext_length=len(value) if storage == CredentialStorageAssessment.PLAINTEXT else None,
+                evidence=(ConfigEvidence(
+                    f"{account} {'-ingestauth=key' if context == 'terminattr_ingestauth' else 'key'} {marker} <credential redacted>",
+                    self.config_filepath, command.line_number,
+                ),),
+            )
+
+        daemon = False
+        daemon_active = True
+        daemon_exec: AristaCommand | None = None
+        for command in self.commands:
+            tokens = self._tokens(command.text)
+            lowered = [token.casefold() for token in tokens]
+            if command.indent == 0:
+                daemon = lowered[:2] == ["daemon", "terminattr"]
+                if daemon:
+                    daemon_active = True
+                    daemon_exec = None
+                elif lowered[:3] == ["no", "daemon", "terminattr"]:
+                    credentials.pop("daemon terminattr", None)
+                if lowered[:2] == ["radius-server", "key"]:
+                    marker = tokens[2] if len(tokens) > 2 and tokens[2].isdigit() else "0"
+                    index = 3 if len(tokens) > 2 and tokens[2].isdigit() else 2
+                    record("radius-server", "radius_key", marker, tokens[index] if len(tokens) > index else "", command)
+                elif lowered[:3] in (["no", "radius-server", "key"], ["default", "radius-server", "key"]):
+                    credentials.pop("radius-server", None)
+                elif lowered[:2] == ["radius-server", "host"] and len(tokens) > 3:
+                    account = f"radius-server host {tokens[2]}"
+                    if "key" in lowered[3:]:
+                        index = lowered.index("key", 3) + 1
+                        marker = tokens[index] if index < len(tokens) and tokens[index].isdigit() else "0"
+                        if index < len(tokens) and tokens[index].isdigit():
+                            index += 1
+                        record(account, "radius_key", marker, tokens[index] if index < len(tokens) else "", command)
+                elif lowered[:3] in (["no", "radius-server", "host"], ["default", "radius-server", "host"]) and len(tokens) > 3:
+                    credentials.pop(f"radius-server host {tokens[3].casefold()}", None)
+                continue
+            if daemon:
+                if lowered[:1] == ["exec"]:
+                    daemon_exec = command
+                    credentials.pop("daemon terminattr", None)
+                elif lowered[:2] == ["no", "shutdown"]:
+                    daemon_active = True
+                elif lowered[:1] == ["shutdown"]:
+                    daemon_active = False
+                if daemon_exec and daemon_active:
+                    match = re.search(r"(?:^|\s)-ingestauth=key,([^\s]+)", daemon_exec.text)
+                    if match:
+                        record("daemon TerminAttr", "terminattr_ingestauth", "0", match.group(1), daemon_exec)
+                if not daemon_active:
+                    credentials.pop("daemon terminattr", None)
         return list(credentials.values())
 
     def get_users(self) -> list[dict]:
@@ -1158,7 +1566,7 @@ class AristaEOSParser(CiscoIOSParser):
         return profiles
 
     @staticmethod
-    def _ntp_server_parts(text: str) -> tuple[bool, str, str, str, str] | None:
+    def _ntp_server_parts(text: str) -> tuple[bool, str, str, str, str, bool] | None:
         tokens = text.split()
         if tokens[:2] == ["ntp", "server"]:
             removed = False
@@ -1180,32 +1588,44 @@ class AristaEOSParser(CiscoIOSParser):
         tail = tokens[index + 1 :]
         key_id = ""
         nts_profile = ""
-        if "key" in tail and tail.index("key") + 1 < len(tail):
-            key_id = tail[tail.index("key") + 1]
-        if "ssl" in tail and tail.index("ssl") + 2 < len(tail) and tail[tail.index("ssl") + 1] == "profile":
-            nts_profile = tail[tail.index("ssl") + 2]
-        return removed, vrf, address, key_id, nts_profile
+        malformed = False
+        if "key" in tail:
+            key_index = tail.index("key")
+            if key_index + 1 < len(tail) and tail[key_index + 1].isdigit():
+                key_id = tail[key_index + 1]
+            else:
+                malformed = True
+        if "ssl" in tail:
+            ssl_index = tail.index("ssl")
+            if ssl_index + 2 < len(tail) and tail[ssl_index + 1] == "profile":
+                nts_profile = tail[ssl_index + 2]
+            else:
+                malformed = True
+        return removed, vrf, address, key_id, nts_profile, malformed
 
     def get_ntp_associations(self) -> list[AristaNTPAssociation]:
-        active: dict[tuple[str, str], tuple[str, str, ConfigEvidence]] = {}
+        active: dict[tuple[str, str], tuple[str, str, bool, ConfigEvidence]] = {}
         for command in self.commands:
             parsed = self._ntp_server_parts(command.text.casefold())
             if parsed is None:
                 continue
-            removed, vrf, address, key_id, nts_profile = parsed
+            removed, vrf, address, key_id, nts_profile, malformed = parsed
             identity = (vrf, address)
             if removed:
                 active.pop(identity, None)
             else:
-                active[identity] = (key_id, nts_profile, self._evidence(command))
+                active[identity] = (key_id, nts_profile, malformed, self._evidence(command))
         keys = self.get_ntp_keys()
         profiles = self.get_nts_profiles()
         global_auth = self.get_ntp_authentication_enabled()
         associations = []
-        for (vrf, address), (key_id, nts_profile, server_evidence) in active.items():
+        for (vrf, address), (key_id, nts_profile, malformed, server_evidence) in active.items():
             key = keys.get(key_id)
             profile = profiles.get(nts_profile)
-            if nts_profile:
+            if malformed or (key_id and nts_profile):
+                state = "unknown"
+                algorithm = ""
+            elif nts_profile:
                 if not profile or not profile[0] or self.supports_nts() is False:
                     state = "unresolved"
                 elif self.supports_nts() is None:
@@ -1213,10 +1633,13 @@ class AristaEOSParser(CiscoIOSParser):
                 else:
                     state = "authenticated"
                 algorithm = "nts"
+            elif not key_id:
+                state = "unresolved" if global_auth is True else "unauthenticated"
+                algorithm = ""
             elif global_auth is None:
                 state = "unknown"
                 algorithm = key.algorithm if key else ""
-            elif not global_auth or not key_id:
+            elif not global_auth:
                 state = "unauthenticated"
                 algorithm = key.algorithm if key else ""
             elif key is None or not key.trusted or not key.material_present:

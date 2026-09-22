@@ -121,7 +121,7 @@ def test_logging_requires_active_host_and_suitable_severity(tmp_path):
 def test_real_asa_ssl_server_version_syntax(tmp_path):
     parser, issues = _analyze_config(tmp_path, "ssl server-version tlsv1 dtlsv1\n")
     assert parser.get_ssl_min_version() == "tlsv1"
-    assert "cisco.asa.tls.minimum_version" in {issue.rule_id for issue in issues}
+    assert "cisco.asa.tls.minimum_version" not in {issue.rule_id for issue in issues}
 
 
 @pytest.mark.parametrize("protocol", ["ip", "tcp", "udp", "icmp", "object-group WEB-PROTOCOLS"])

@@ -1,3 +1,4 @@
+import ipaddress
 import re
 import shlex
 from dataclasses import dataclass
@@ -5,6 +6,7 @@ from typing import Optional
 
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.models import (
+    BlocklistCredentialAssessment,
     ConfigEvidence,
     ConfigurationState,
     CredentialMetadata,
@@ -20,6 +22,12 @@ from src.devices.common.models import (
     NormalizedValue,
     SecurityPolicy,
 )
+from src.devices.common.policy_semantics import (
+    AddressInterval,
+    NetworkSemantics,
+    ServiceInterval,
+    ServiceSemantics,
+)
 
 
 @dataclass(frozen=True)
@@ -34,6 +42,13 @@ class JunosStatement:
 
 
 @dataclass(frozen=True)
+class JunosDefaultSecurityPolicy:
+    action: str | None
+    resolution_state: str
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
 class JunosFirewallTerm:
     family: str
     filter_name: str
@@ -45,6 +60,42 @@ class JunosFirewallTerm:
     protocols: tuple[str, ...]
     actions: tuple[str, ...]
     attachments: tuple[str, ...]
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class JunosPolicer:
+    name: str
+    family: str
+    bandwidth_limit: str
+    burst_size_limit: str
+    discard: bool
+    resolution_state: str
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class JunosRoutingEngineTerm:
+    name: str
+    position: int
+    match_conditions: tuple[str, ...]
+    actions: tuple[str, ...]
+    policer: str
+    policer_resolution: str
+    enforcement_state: str
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class JunosRoutingEngineProtection:
+    interface: str
+    unit: str
+    family: str
+    filter_name: str
+    filter_resolved: bool
+    protection_state: str
+    inheritance_unknown: bool
+    terms: tuple[JunosRoutingEngineTerm, ...]
     evidence: tuple[ConfigEvidence, ...]
 
 
@@ -74,6 +125,22 @@ class JunosNTPAssociation:
     key_id: str
     authentication_state: str
     algorithm: str
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class JunosAAATransportProfile:
+    """Secret-free administrative RADIUS transport evidence."""
+
+    address: str
+    roles: tuple[str, ...]
+    transport: str
+    port: str | None
+    trusted_ca_group: str | None
+    mutual_authentication: bool
+    client_certificate_id: str | None
+    message_authenticator: str
+    protected_path: bool
     evidence: tuple[ConfigEvidence, ...]
 
 
@@ -138,6 +205,11 @@ class JunosSecurityPolicy:
     destination_resolution: str
     application_resolution: str
     inheritance_unknown: bool
+    source_networks: NetworkSemantics
+    destination_networks: NetworkSemantics
+    services: ServiceSemantics
+    unsupported_predicates: tuple[str, ...]
+    behavior_signature: tuple[str, ...]
     evidence: tuple[ConfigEvidence, ...]
 
 
@@ -204,6 +276,27 @@ class JunosLoginNoticePolicy:
     evidence: tuple[ConfigEvidence, ...]
 
 
+@dataclass(frozen=True)
+class JunosArchiveSite:
+    destination: str
+    protocol: str
+    transport_security: str
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class JunosConfigurationManagement:
+    sites: tuple[JunosArchiveSite, ...]
+    transfer_on_commit: bool
+    transfer_interval_minutes: int | None
+    schedule_state: str
+    routing_instance: str
+    change_audit_state: str
+    change_audit_destinations: tuple[str, ...]
+    inheritance_unknown: bool
+    evidence: tuple[ConfigEvidence, ...]
+
+
 class JunosParseError(ValueError):
     pass
 
@@ -262,6 +355,11 @@ class JunOSParser(BaseDeviceParser):
         redacted = re.sub(
             r'''(?i)((?:authentication-key|simple-password|\bkey)\s+)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\S+)''',
             r"\1<redacted>",
+            redacted,
+        )
+        redacted = re.sub(
+            r"(?i)([a-z][a-z0-9+.-]*://)[^/@\s]+@",
+            r"\1<credentials>@",
             redacted,
         )
         return ConfigEvidence(
@@ -490,6 +588,58 @@ class JunOSParser(BaseDeviceParser):
             if statement.active and self._is_prefix(prefix, statement.path)
         ]
 
+    def get_default_security_policy(self) -> JunosDefaultSecurityPolicy:
+        """Resolve the fallback for traffic unmatched by SRX security policies."""
+        if self.parse_error:
+            return JunosDefaultSecurityPolicy(None, "parse-error", ())
+        prefix = ("security", "policies", "default-policy")
+        direct = [item for item in self.statements if item.path[:3] == prefix]
+        active_direct = [item for item in direct if item.active]
+        if active_direct:
+            last = active_direct[-1]
+            action = last.path[3] if len(last.path) == 4 else None
+            if action in {"permit-all", "deny-all"}:
+                return JunosDefaultSecurityPolicy(action, "explicit", (last.evidence,))
+            return JunosDefaultSecurityPolicy(None, "unknown", (last.evidence,))
+        if direct:
+            return JunosDefaultSecurityPolicy(None, "unknown", tuple(item.evidence for item in direct))
+
+        applications = [
+            item for item in self.statements
+            if item.active and len(item.path) >= 2 and item.path[:-1] in {
+                ("apply-groups",),
+                ("security", "apply-groups"),
+                ("security", "policies", "apply-groups"),
+            }
+        ]
+        if applications:
+            candidates: list[JunosStatement] = []
+            for application in applications:
+                group = application.path[-1]
+                inherited = [
+                    item for item in self.statements
+                    if item.active and item.path[:4] == ("groups", group, "security", "policies")
+                    and len(item.path) >= 5 and item.path[4] == "default-policy"
+                ]
+                if not inherited:
+                    return JunosDefaultSecurityPolicy(None, "unknown", (application.evidence,))
+                candidates.extend(inherited)
+            actions = {
+                item.path[5] for item in candidates
+                if len(item.path) == 6 and item.path[5] in {"permit-all", "deny-all"}
+            }
+            if len(actions) == 1 and all(
+                len(item.path) == 6 and item.path[5] in actions for item in candidates
+            ):
+                return JunosDefaultSecurityPolicy(
+                    next(iter(actions)), "inherited",
+                    tuple(item.evidence for item in applications + candidates),
+                )
+            return JunosDefaultSecurityPolicy(
+                None, "unknown", tuple(item.evidence for item in applications + candidates),
+            )
+        return JunosDefaultSecurityPolicy(None, "not-configured", ())
+
     def _first_value(self, prefix: tuple[str, ...]) -> Optional[JunosStatement]:
         for statement in reversed(self.statements):
             if statement.active and self._is_prefix(prefix, statement.path):
@@ -706,6 +856,224 @@ class JunOSParser(BaseDeviceParser):
             evidence=tuple(evidence),
         )
 
+    def get_aaa_transport_profiles(self) -> tuple[JunosAAATransportProfile, ...]:
+        """Resolve RADIUS transport used for system login and accounting.
+
+        Plain RADIUS is not automatically graded as unsafe because its routed
+        path is not established by a configuration export.  Explicit RadSec
+        certificate bindings and explicit Message-Authenticator disablement
+        remain locally provable.
+        """
+
+        active = self._active_paths()
+        order = self.get_active_statements(("system", "authentication-order"))
+        radius_authentication = any("radius" in item.path[2:] for item in order)
+        accounting_paths = [
+            path for path in active
+            if self._is_prefix(("system", "accounting", "destination", "radius"), path)
+        ]
+        radius_accounting = bool(accounting_paths)
+        explicit_accounting = any(
+            len(path) > 5 and path[4] == "server" for path in accounting_paths
+        )
+
+        definitions: list[tuple[str, str, list[tuple[str, ...]], tuple[str, ...]]] = []
+        system_addresses = sorted({
+            path[2]
+            for path in active
+            if len(path) >= 3 and path[:2] == ("system", "radius-server")
+        })
+        for address in system_addresses:
+            roles = []
+            if radius_authentication:
+                roles.append("authentication")
+            if radius_accounting and not explicit_accounting:
+                roles.append("accounting")
+            if roles:
+                definitions.append((
+                    address,
+                    "system",
+                    [
+                        path[3:] for path in active
+                        if len(path) >= 3
+                        and path[:3] == ("system", "radius-server", address)
+                    ],
+                    tuple(roles),
+                ))
+
+        accounting_addresses = sorted({
+            path[5]
+            for path in accounting_paths
+            if len(path) >= 6 and path[4] == "server"
+        })
+        for address in accounting_addresses:
+            definitions.append((
+                address,
+                "accounting",
+                [path[6:] for path in accounting_paths if path[:6] == (
+                    "system", "accounting", "destination", "radius", "server", address
+                )],
+                ("accounting",),
+            ))
+
+        profiles = []
+        for address, source, tails, roles in definitions:
+            tls = any(tail[:1] == ("tls",) for tail in tails)
+            port_field = "accounting-port" if source == "accounting" else "port"
+            port = next(
+                (tail[1] for tail in reversed(tails) if tail[:1] == (port_field,) and len(tail) > 1),
+                None,
+            )
+            trusted_ca = next(
+                (tail[2] for tail in reversed(tails)
+                 if tail[:2] == ("tls", "trusted-ca-group") and len(tail) > 2),
+                None,
+            )
+            mutual = any(tail[:2] == ("tls", "mutual-authentication") for tail in tails)
+            certificate_id = next(
+                (tail[3] for tail in reversed(tails)
+                 if tail[:3] == ("tls", "mutual-authentication", "certificate-id")
+                 and len(tail) > 3),
+                None,
+            )
+            if tls:
+                message_authenticator = "not-applicable"
+            elif any(tail[:1] == ("no-message-authenticator",) for tail in tails):
+                message_authenticator = "disabled"
+            elif any(tail[:1] == ("message-authenticator",) for tail in tails):
+                message_authenticator = "enabled"
+            else:
+                message_authenticator = "unknown"
+
+            prefix = (
+                ("system", "radius-server", address)
+                if source == "system"
+                else ("system", "accounting", "destination", "radius", "server", address)
+            )
+            evidence = tuple(
+                statement.evidence
+                for statement in self.get_active_statements(prefix)
+                if "secret" not in statement.path
+            )
+            profiles.append(JunosAAATransportProfile(
+                address=address,
+                roles=roles,
+                transport="tls" if tls else "udp",
+                port=port,
+                trusted_ca_group=trusted_ca,
+                mutual_authentication=mutual,
+                client_certificate_id=certificate_id,
+                message_authenticator=message_authenticator,
+                protected_path=self.assessment_context.aaa_profile_has_protected_path(
+                    "system", address
+                ),
+                evidence=evidence,
+            ))
+        return tuple(profiles)
+
+    @staticmethod
+    def _archive_site_details(destination: str) -> tuple[str, str, str]:
+        sanitized = re.sub(
+            r"(?i)([a-z][a-z0-9+.-]*://)[^/@\s]+@",
+            r"\1<credentials>@",
+            destination,
+        )
+        if "://" in destination:
+            protocol = destination.split(":", 1)[0].casefold()
+        elif re.match(r"^[^/@:]+@[^:]+:", destination):
+            protocol = "scp"
+        else:
+            protocol = "file"
+        security = (
+            "secure" if protocol in {"scp", "sftp", "https"}
+            else "insecure" if protocol in {"ftp", "pasvftp", "http"}
+            else "local" if protocol == "file"
+            else "unknown"
+        )
+        return sanitized, protocol, security
+
+    def get_configuration_management(self) -> JunosConfigurationManagement:
+        """Resolve automatic configuration archival and static change-audit selectors."""
+
+        archival = self.get_active_statements(("system", "archival", "configuration"))
+        sites: dict[str, JunosArchiveSite] = {}
+        transfer_on_commit = False
+        interval: int | None = None
+        invalid_interval = False
+        routing_instance = ""
+        for statement in archival:
+            path = statement.path
+            tail = path[3:]
+            if tail[:1] == ("archive-sites",) and len(tail) > 1:
+                raw_destination = tail[1]
+                sanitized, protocol, security = self._archive_site_details(raw_destination)
+                sites[sanitized.casefold()] = JunosArchiveSite(
+                    destination=sanitized,
+                    protocol=protocol,
+                    transport_security=security,
+                    evidence=(statement.evidence,),
+                )
+            elif tail == ("transfer-on-commit",):
+                transfer_on_commit = True
+            elif tail[:1] in (("transfer-interval",), ("transfer",)):
+                value = tail[1] if tail[:1] == ("transfer-interval",) and len(tail) > 1 else (
+                    tail[2] if tail[:2] == ("transfer", "interval") and len(tail) > 2 else ""
+                )
+                invalid_interval = not value.isdigit() or not 15 <= int(value) <= 2880
+                interval = int(value) if not invalid_interval else None
+            elif tail[:1] == ("routing-instance",) and len(tail) > 1:
+                routing_instance = tail[1]
+
+        if transfer_on_commit and interval is not None:
+            schedule_state = "conflict"
+        elif transfer_on_commit or interval is not None:
+            schedule_state = "effective"
+        elif invalid_interval:
+            schedule_state = "invalid"
+        else:
+            schedule_state = "missing"
+
+        accounting = self.get_accounting_policy()
+        accounting_audit = (
+            "change-log" in accounting.events
+            and bool(set(accounting.destination_methods) & set(accounting.resolved_methods))
+        )
+        audit_destinations: list[str] = []
+        audit_evidence: list[ConfigEvidence] = []
+        for statement in self.get_active_statements(("system", "syslog")):
+            path = statement.path
+            if len(path) < 6 or path[2] not in {"host", "file"}:
+                continue
+            facility, severity = path[4].casefold(), path[5].casefold()
+            if facility != "change-log" or severity == "none":
+                continue
+            destination = f"{path[2]}:{path[3]}"
+            if destination not in audit_destinations:
+                audit_destinations.append(destination)
+            audit_evidence.append(statement.evidence)
+        if accounting_audit:
+            audit_destinations.extend(
+                f"accounting:{method}" for method in accounting.resolved_methods
+                if f"accounting:{method}" not in audit_destinations
+            )
+            audit_evidence.extend(accounting.evidence)
+        change_audit_state = (
+            "effective" if audit_destinations
+            else "unknown-inheritance" if self.has_unexpanded_inheritance()
+            else "missing"
+        )
+        return JunosConfigurationManagement(
+            sites=tuple(sites.values()),
+            transfer_on_commit=transfer_on_commit,
+            transfer_interval_minutes=interval,
+            schedule_state=schedule_state,
+            routing_instance=routing_instance,
+            change_audit_state=change_audit_state,
+            change_audit_destinations=tuple(audit_destinations),
+            inheritance_unknown=self.has_unexpanded_inheritance(),
+            evidence=tuple(item.evidence for item in archival) + tuple(audit_evidence),
+        )
+
     def get_web_management_policy(self) -> JunosWebManagementPolicy:
         statements = self.get_active_statements(
             ("system", "services", "web-management")
@@ -857,6 +1225,16 @@ class JunOSParser(BaseDeviceParser):
                 ),
                 storage_assessment=storage,
                 default_assessment=self._credential_default(storage, value),
+                plaintext_length=(
+                    len(value)
+                    if storage == CredentialStorageAssessment.PLAINTEXT
+                    else None
+                ),
+                blocklist_assessment=BlocklistCredentialAssessment.from_optional_match(
+                    self.assessment_context.plaintext_credential_blocklisted(value)
+                    if storage == CredentialStorageAssessment.PLAINTEXT
+                    else None
+                ),
                 evidence=(statement.evidence,),
             )
         return list(credentials.values())
@@ -946,6 +1324,242 @@ class JunOSParser(BaseDeviceParser):
             for (family, filter_name, term_name), data in term_data.items()
         ]
 
+    def get_routing_engine_protections(self) -> list[JunosRoutingEngineProtection]:
+        """Resolve effective lo0 input filters, terms, and policer references."""
+
+        policer_data: dict[tuple[str, str], dict] = {}
+        for statement in self.statements:
+            if not statement.active:
+                continue
+            path = statement.path
+            if not path or path[0] != "firewall" or "policer" not in path:
+                continue
+            policer_index = path.index("policer")
+            if "filter" in path[:policer_index] or policer_index + 1 >= len(path):
+                continue
+            family = (
+                path[path.index("family") + 1]
+                if "family" in path[:policer_index]
+                and path.index("family") + 1 < policer_index
+                else ""
+            )
+            name = path[policer_index + 1]
+            data = policer_data.setdefault(
+                (family, name),
+                {
+                    "bandwidth": "",
+                    "burst": "",
+                    "discard": False,
+                    "evidence": [],
+                },
+            )
+            data["evidence"].append(statement.evidence)
+            suffix = path[policer_index + 2 :]
+            for field in ("bandwidth-limit", "bandwidth-percent"):
+                if field in suffix and suffix.index(field) + 1 < len(suffix):
+                    data["bandwidth"] = suffix[suffix.index(field) + 1]
+            if "burst-size-limit" in suffix and suffix.index("burst-size-limit") + 1 < len(suffix):
+                data["burst"] = suffix[suffix.index("burst-size-limit") + 1]
+            if "then" in suffix and "discard" in suffix[suffix.index("then") + 1 :]:
+                data["discard"] = True
+
+        policers = {
+            key: JunosPolicer(
+                name=key[1],
+                family=key[0],
+                bandwidth_limit=data["bandwidth"],
+                burst_size_limit=data["burst"],
+                discard=data["discard"],
+                resolution_state=(
+                    "complete"
+                    if data["bandwidth"] and data["burst"] and data["discard"]
+                    else "incomplete"
+                ),
+                evidence=tuple(data["evidence"]),
+            )
+            for key, data in policer_data.items()
+        }
+
+        filter_data: dict[tuple[str, str], dict] = {}
+        for statement in self.statements:
+            if not statement.active:
+                continue
+            path = statement.path
+            if not path or path[0] != "firewall" or "filter" not in path:
+                continue
+            filter_index = path.index("filter")
+            if filter_index + 1 >= len(path):
+                continue
+            family = (
+                path[path.index("family") + 1]
+                if "family" in path[:filter_index]
+                and path.index("family") + 1 < filter_index
+                else "inet"
+            )
+            filter_name = path[filter_index + 1]
+            data = filter_data.setdefault(
+                (family, filter_name),
+                {"present": True, "terms": {}, "evidence": []},
+            )
+            data["evidence"].append(statement.evidence)
+            if "term" not in path[filter_index + 2 :]:
+                continue
+            term_index = path.index("term", filter_index + 2)
+            if term_index + 1 >= len(path):
+                continue
+            term_name = path[term_index + 1]
+            term = data["terms"].setdefault(
+                term_name,
+                {
+                    "position": len(data["terms"]),
+                    "matches": [],
+                    "actions": [],
+                    "policer": "",
+                    "evidence": [],
+                },
+            )
+            term["evidence"].append(statement.evidence)
+            suffix = path[term_index + 2 :]
+            if "from" in suffix:
+                condition = " ".join(suffix[suffix.index("from") + 1 :])
+                if condition and condition not in term["matches"]:
+                    term["matches"].append(condition)
+            if "then" in suffix:
+                action_values = suffix[suffix.index("then") + 1 :]
+                action = " ".join(action_values)
+                if action and action not in term["actions"]:
+                    term["actions"].append(action)
+                if action_values[:1] == ("policer",) and len(action_values) > 1:
+                    term["policer"] = action_values[1]
+
+        attachments: list[tuple[str, str, str, str, ConfigEvidence]] = []
+        for statement in self.statements:
+            if not statement.active:
+                continue
+            path = statement.path
+            if len(path) < 8 or path[:2] != ("interfaces", "lo0"):
+                continue
+            if "unit" not in path or "family" not in path or "filter" not in path:
+                continue
+            unit_index = path.index("unit")
+            family_index = path.index("family")
+            filter_index = path.index("filter")
+            if (
+                unit_index + 1 >= len(path)
+                or family_index + 1 >= len(path)
+                or filter_index + 2 >= len(path)
+            ):
+                continue
+            direction = path[filter_index + 1]
+            if direction not in {"input", "input-list"}:
+                continue
+            for filter_name in path[filter_index + 2 :]:
+                attachments.append((
+                    "lo0",
+                    path[unit_index + 1],
+                    path[family_index + 1],
+                    filter_name,
+                    statement.evidence,
+                ))
+
+        inheritance_unknown = any(
+            statement.active
+            and "apply-groups" in statement.path
+            and statement.path[:1] in {("interfaces",), ("firewall",)}
+            for statement in self.statements
+        )
+        records = []
+        for interface, unit, family, filter_name, attachment_evidence in attachments:
+            definition = filter_data.get((family, filter_name))
+            if definition is None:
+                records.append(JunosRoutingEngineProtection(
+                    interface, unit, family, filter_name, False,
+                    "unknown-inheritance" if inheritance_unknown else "undefined-filter",
+                    inheritance_unknown, (), (attachment_evidence,),
+                ))
+                continue
+
+            terms = []
+            for name, data in definition["terms"].items():
+                policer_name = data["policer"]
+                policer = (
+                    policers.get((family, policer_name))
+                    or policers.get(("", policer_name))
+                    if policer_name
+                    else None
+                )
+                if not policer_name:
+                    policer_resolution = "not-referenced"
+                elif policer is None:
+                    policer_resolution = "undefined"
+                else:
+                    policer_resolution = policer.resolution_state
+                actions = tuple(data["actions"])
+                explicit_discard = any(
+                    action.split()[:1] in (["discard"], ["reject"])
+                    for action in actions
+                )
+                enforcement_state = (
+                    "discard"
+                    if explicit_discard
+                    else "policed-discard"
+                    if policer and policer.resolution_state == "complete"
+                    else "unresolved-policer"
+                    if policer_name and policer_resolution != "complete"
+                    else "conditional-permit"
+                    if data["matches"]
+                    else "unconditional-permit"
+                )
+                term_evidence = tuple(data["evidence"]) + (
+                    policer.evidence if policer else ()
+                )
+                terms.append(JunosRoutingEngineTerm(
+                    name=name,
+                    position=data["position"],
+                    match_conditions=tuple(data["matches"]),
+                    actions=actions,
+                    policer=policer_name,
+                    policer_resolution=policer_resolution,
+                    enforcement_state=enforcement_state,
+                    evidence=term_evidence,
+                ))
+
+            ordered_terms = tuple(sorted(terms, key=lambda item: item.position))
+            has_enforcement = any(
+                term.enforcement_state in {"discard", "policed-discard"}
+                for term in ordered_terms
+            )
+            has_unconditional_permit = any(
+                term.enforcement_state == "unconditional-permit"
+                for term in ordered_terms
+            )
+            has_conditional_permit = any(
+                term.enforcement_state == "conditional-permit"
+                for term in ordered_terms
+            )
+            if not ordered_terms:
+                protection_state = "empty-filter"
+            elif has_enforcement or (has_conditional_permit and not has_unconditional_permit):
+                protection_state = "effective"
+            elif any(term.enforcement_state == "unresolved-policer" for term in ordered_terms):
+                protection_state = "unresolved-policer"
+            else:
+                protection_state = "no-enforcement"
+            records.append(JunosRoutingEngineProtection(
+                interface=interface,
+                unit=unit,
+                family=family,
+                filter_name=filter_name,
+                filter_resolved=True,
+                protection_state=protection_state,
+                inheritance_unknown=inheritance_unknown,
+                terms=ordered_terms,
+                evidence=(attachment_evidence,)
+                + tuple(definition["evidence"])
+                + tuple(item for term in ordered_terms for item in term.evidence),
+            ))
+        return records
+
     @staticmethod
     def _unique(values: list[str]) -> tuple[str, ...]:
         return tuple(dict.fromkeys(values))
@@ -1012,9 +1626,12 @@ class JunOSParser(BaseDeviceParser):
 
         address_objects: dict[tuple[str, str], list[str]] = {}
         address_sets: dict[tuple[str, str], list[str]] = {}
+        address_definitions: dict[tuple[str, str], list[tuple[str, ...]]] = {}
+        address_set_members: dict[tuple[str, str], list[str]] = {}
         zone_books: dict[str, str] = {}
         applications: set[str] = set()
         application_sets: dict[str, list[str]] = {}
+        application_definitions: dict[str, list[tuple[str, ...]]] = {}
         for statement in self.statements:
             if not statement.active:
                 continue
@@ -1025,8 +1642,14 @@ class JunOSParser(BaseDeviceParser):
                     zone_books[path[5]] = book
                 elif path[3] == "address":
                     address_objects.setdefault((book, path[4]), []).extend(path[5:6])
-                elif path[3] == "address-set" and len(path) > 6 and path[5] == "address":
-                    address_sets.setdefault((book, path[4]), []).append(path[6])
+                    address_definitions.setdefault((book, path[4]), []).append(path[5:])
+                elif (
+                    path[3] == "address-set"
+                    and len(path) > 6
+                    and path[5] in {"address", "address-set"}
+                ):
+                    address_sets.setdefault((book, path[4]), []).extend(path[6:])
+                    address_set_members.setdefault((book, path[4]), []).extend(path[6:])
             elif (
                 path[:3] == ("security", "zones", "security-zone")
                 and len(path) >= 7
@@ -1035,22 +1658,33 @@ class JunOSParser(BaseDeviceParser):
                 zone = path[3]
                 if path[5] == "address":
                     address_objects.setdefault((zone, path[6]), []).extend(path[7:8])
-                elif path[5] == "address-set" and len(path) > 8 and path[7] == "address":
-                    address_sets.setdefault((zone, path[6]), []).append(path[8])
+                    address_definitions.setdefault((zone, path[6]), []).append(path[7:])
+                elif (
+                    path[5] == "address-set"
+                    and len(path) > 8
+                    and path[7] in {"address", "address-set"}
+                ):
+                    address_sets.setdefault((zone, path[6]), []).extend(path[8:])
+                    address_set_members.setdefault((zone, path[6]), []).extend(path[8:])
             elif path[:2] == ("applications", "application") and len(path) > 2:
                 applications.add(path[2])
+                application_definitions.setdefault(path[2], []).append(path[3:])
             elif (
                 path[:2] == ("applications", "application-set")
                 and len(path) > 4
                 and path[3] in {"application", "application-set"}
             ):
-                application_sets.setdefault(path[2], []).append(path[4])
+                application_sets.setdefault(path[2], []).extend(path[4:])
 
         policies: dict[tuple[str, str, str], dict] = {}
         positions: dict[tuple[str, str], int] = {}
         policy_prefix = ("security", "policies", "from-zone")
         inheritance_unknown = any(
-            statement.active and "apply-groups" in statement.path
+            statement.active
+            and (
+                "apply-groups" in statement.path
+                or statement.path[:3] == ("security", "policies", "global")
+            )
             for statement in self.statements
         )
         for statement in self.statements:
@@ -1074,6 +1708,8 @@ class JunOSParser(BaseDeviceParser):
                     "action": "",
                     "tunnel": "",
                     "logs": [],
+                    "unsupported": [],
+                    "behavior": [],
                     "evidence": [],
                 }
             data = policies[key]
@@ -1083,12 +1719,15 @@ class JunOSParser(BaseDeviceParser):
             data["active"] = True
             suffix = path[8:]
             if len(suffix) >= 3 and suffix[:2] == ("match", "source-address"):
-                data["sources"].append(suffix[2])
+                data["sources"].extend(suffix[2:])
             elif len(suffix) >= 3 and suffix[:2] == ("match", "destination-address"):
-                data["destinations"].append(suffix[2])
+                data["destinations"].extend(suffix[2:])
             elif len(suffix) >= 3 and suffix[:2] == ("match", "application"):
-                data["applications"].append(suffix[2])
+                data["applications"].extend(suffix[2:])
+            elif suffix[:1] == ("match",):
+                data["unsupported"].append(" ".join(suffix[1:]))
             elif len(suffix) >= 2 and suffix[0] == "then":
+                data["behavior"].append(" ".join(suffix))
                 if suffix[1] in {"permit", "deny", "reject"}:
                     data["action"] = suffix[1]
                 if "ipsec-vpn" in suffix:
@@ -1099,6 +1738,8 @@ class JunOSParser(BaseDeviceParser):
                     index = suffix.index("log")
                     if index + 1 < len(suffix):
                         data["logs"].append(suffix[index + 1])
+            elif suffix and suffix[0] != "description":
+                data["unsupported"].append(" ".join(suffix))
 
         address_object_values = {
             key: tuple(values) for key, values in address_objects.items()
@@ -1120,6 +1761,238 @@ class JunOSParser(BaseDeviceParser):
                 )
 
             return "resolved" if all(resolved(value, set()) for value in values) else "unresolved"
+
+        def address_member(
+            name: str,
+            zone: str,
+            definition_book: str | None,
+            seen: frozenset[tuple[str, str]],
+            budget: list[int],
+        ) -> NetworkSemantics:
+            lowered = name.casefold()
+            if lowered == "any":
+                return NetworkSemantics(any=True)
+            if lowered in {"any-ipv4", "0.0.0.0/0"}:
+                return NetworkSemantics(
+                    intervals=(AddressInterval(4, 0, (1 << 32) - 1),)
+                )
+            if lowered in {"any-ipv6", "::/0", "0::/0"}:
+                return NetworkSemantics(
+                    intervals=(AddressInterval(6, 0, (1 << 128) - 1),)
+                )
+            try:
+                literal = ipaddress.ip_network(name, strict=False)
+            except ValueError:
+                literal = None
+            if literal is not None:
+                return NetworkSemantics(intervals=(AddressInterval(
+                    literal.version,
+                    int(literal.network_address),
+                    int(literal.broadcast_address),
+                ),))
+
+            book = zone_books.get(zone, zone)
+            candidate_books = (
+                (definition_book, "global")
+                if definition_book and definition_book != "global"
+                else (definition_book,)
+                if definition_book
+                else (book, "global")
+            )
+            for candidate in dict.fromkeys(candidate_books):
+                if candidate is None:
+                    continue
+                key = (candidate, name)
+                if key in seen or budget[0] <= 0:
+                    return NetworkSemantics(complete=False, unresolved=(name,))
+                definitions = [
+                    value
+                    for value in address_definitions.get(key, [])
+                    if value and value[0] != "description"
+                ]
+                if definitions:
+                    if len(definitions) != 1:
+                        return NetworkSemantics(complete=False, unresolved=(name,))
+                    definition = definitions[0]
+                    interval = None
+                    if len(definition) == 1:
+                        try:
+                            network = ipaddress.ip_network(definition[0], strict=False)
+                        except ValueError:
+                            network = None
+                        if network is not None:
+                            interval = AddressInterval(
+                                network.version,
+                                int(network.network_address),
+                                int(network.broadcast_address),
+                            )
+                    elif (
+                        len(definition) == 4
+                        and definition[0] == "range-address"
+                        and definition[2] == "to"
+                    ):
+                        try:
+                            first = ipaddress.ip_address(definition[1])
+                            last = ipaddress.ip_address(definition[3])
+                        except ValueError:
+                            first = last = None
+                        if (
+                            first is not None
+                            and last is not None
+                            and first.version == last.version
+                            and int(first) <= int(last)
+                        ):
+                            interval = AddressInterval(
+                                first.version, int(first), int(last)
+                            )
+                    if interval is None:
+                        return NetworkSemantics(complete=False, unresolved=(name,))
+                    budget[0] -= 1
+                    return NetworkSemantics(intervals=(interval,))
+                members = address_set_members.get(key)
+                if members is not None:
+                    if not members:
+                        return NetworkSemantics(complete=False, unresolved=(name,))
+                    budget[0] -= 1
+                    intervals: list[AddressInterval] = []
+                    unresolved: list[str] = []
+                    for member in members:
+                        child = address_member(
+                            member,
+                            zone,
+                            candidate,
+                            seen | {key},
+                            budget,
+                        )
+                        if child.any:
+                            return NetworkSemantics(any=True)
+                        intervals.extend(child.intervals)
+                        unresolved.extend(child.unresolved)
+                    if unresolved or not intervals:
+                        return NetworkSemantics(
+                            intervals=tuple(sorted(set(intervals))),
+                            complete=False,
+                            unresolved=tuple(dict.fromkeys(unresolved or members)),
+                        )
+                    return NetworkSemantics(intervals=tuple(sorted(set(intervals))))
+            return NetworkSemantics(complete=False, unresolved=(name,))
+
+        def network_semantics(values: tuple[str, ...], zone: str) -> NetworkSemantics:
+            if not values:
+                return NetworkSemantics(complete=False, unresolved=("missing",))
+            intervals: list[AddressInterval] = []
+            unresolved: list[str] = []
+            budget = [4096]
+            for value in values:
+                member = address_member(value, zone, None, frozenset(), budget)
+                if member.any:
+                    return NetworkSemantics(any=True)
+                intervals.extend(member.intervals)
+                unresolved.extend(member.unresolved)
+            if unresolved or not intervals:
+                return NetworkSemantics(
+                    intervals=tuple(sorted(set(intervals))),
+                    complete=False,
+                    unresolved=tuple(dict.fromkeys(unresolved or values)),
+                )
+            return NetworkSemantics(intervals=tuple(sorted(set(intervals))))
+
+        def application_member(
+            name: str,
+            seen: frozenset[str],
+            budget: list[int],
+        ) -> ServiceSemantics:
+            lowered = name.casefold()
+            if lowered == "any":
+                return ServiceSemantics(any=True)
+            if lowered in {"junos-tcp-any", "junos-udp-any"}:
+                return ServiceSemantics(intervals=(ServiceInterval(
+                    "tcp" if lowered == "junos-tcp-any" else "udp", 0, 65535
+                ),))
+            if name in seen or budget[0] <= 0:
+                return ServiceSemantics(complete=False, unresolved=(name,))
+            budget[0] -= 1
+            next_seen = seen | {name}
+            definitions = application_definitions.get(name)
+            if definitions is not None:
+                semantic = [value for value in definitions if value and value[0] != "description"]
+                if any(
+                    value[0] not in {"protocol", "destination-port"}
+                    for value in semantic
+                ):
+                    return ServiceSemantics(complete=False, unresolved=(name,))
+                protocols = tuple(
+                    value[1].casefold()
+                    for value in semantic
+                    if value[0] == "protocol" and len(value) == 2
+                )
+                if len(protocols) != 1:
+                    return ServiceSemantics(complete=False, unresolved=(name,))
+                protocol = protocols[0]
+                ports: list[tuple[int, int]] = []
+                for value in semantic:
+                    if value[0] != "destination-port":
+                        continue
+                    if len(value) < 2:
+                        return ServiceSemantics(complete=False, unresolved=(name,))
+                    for token in value[1:]:
+                        parts = token.split("-", 1)
+                        if not all(part.isdigit() for part in parts):
+                            return ServiceSemantics(complete=False, unresolved=(name,))
+                        first, last = int(parts[0]), int(parts[-1])
+                        if not 1 <= first <= last <= 65535:
+                            return ServiceSemantics(complete=False, unresolved=(name,))
+                        ports.append((first, last))
+                if protocol in {"tcp", "udp", "sctp"} and not ports:
+                    return ServiceSemantics(complete=False, unresolved=(name,))
+                if ports and protocol not in {"tcp", "udp", "sctp"}:
+                    return ServiceSemantics(complete=False, unresolved=(name,))
+                if not ports:
+                    ports.append((0, 65535))
+                return ServiceSemantics(intervals=tuple(
+                    ServiceInterval(protocol, first, last)
+                    for first, last in ports
+                ))
+            members = application_sets.get(name)
+            if members is not None:
+                if not members:
+                    return ServiceSemantics(complete=False, unresolved=(name,))
+                intervals: list[ServiceInterval] = []
+                unresolved: list[str] = []
+                for member_name in members:
+                    member = application_member(member_name, next_seen, budget)
+                    if member.any:
+                        return ServiceSemantics(any=True)
+                    intervals.extend(member.intervals)
+                    unresolved.extend(member.unresolved)
+                if unresolved or not intervals:
+                    return ServiceSemantics(
+                        intervals=tuple(sorted(set(intervals))),
+                        complete=False,
+                        unresolved=tuple(dict.fromkeys(unresolved or members)),
+                    )
+                return ServiceSemantics(intervals=tuple(sorted(set(intervals))))
+            return ServiceSemantics(complete=False, unresolved=(name,))
+
+        def application_semantics(values: tuple[str, ...]) -> ServiceSemantics:
+            if not values:
+                return ServiceSemantics(any=True)
+            intervals: list[ServiceInterval] = []
+            unresolved: list[str] = []
+            budget = [4096]
+            for value in values:
+                member = application_member(value, frozenset(), budget)
+                if member.any:
+                    return ServiceSemantics(any=True)
+                intervals.extend(member.intervals)
+                unresolved.extend(member.unresolved)
+            if unresolved or not intervals:
+                return ServiceSemantics(
+                    intervals=tuple(sorted(set(intervals))),
+                    complete=False,
+                    unresolved=tuple(dict.fromkeys(unresolved or values)),
+                )
+            return ServiceSemantics(intervals=tuple(sorted(set(intervals))))
 
         return [
             JunosSecurityPolicy(
@@ -1152,6 +2025,17 @@ class JunOSParser(BaseDeviceParser):
                     self._unique(data["applications"])
                 ),
                 inheritance_unknown=inheritance_unknown,
+                source_networks=network_semantics(
+                    self._unique(data["sources"]), from_zone
+                ),
+                destination_networks=network_semantics(
+                    self._unique(data["destinations"]), to_zone
+                ),
+                services=application_semantics(
+                    self._unique(data["applications"])
+                ),
+                unsupported_predicates=self._unique(data["unsupported"]),
+                behavior_signature=tuple(sorted(set(data["behavior"]))),
                 evidence=tuple(data["evidence"]),
             )
             for (from_zone, to_zone, name), data in policies.items()
@@ -1840,6 +2724,38 @@ class JunOSParser(BaseDeviceParser):
                     evidence=term.evidence,
                 )
             )
+        for policy in self.get_security_policies():
+            policies.append(
+                SecurityPolicy(
+                    name=f"{policy.from_zone}->{policy.to_zone}/{policy.name}",
+                    state=(
+                        ConfigurationState.ENABLED
+                        if policy.active
+                        else ConfigurationState.DISABLED
+                    ),
+                    action=policy.action or "unknown",
+                    position=policy.position,
+                    scope=f"security:{policy.from_zone}->{policy.to_zone}",
+                    source_interfaces=(policy.from_zone,),
+                    destination_interfaces=(policy.to_zone,),
+                    sources=policy.sources,
+                    destinations=policy.destinations,
+                    services=policy.applications,
+                    tracking=",".join(policy.log_events) or None,
+                    evidence=policy.evidence,
+                )
+            )
+
+        default_policy = self.get_default_security_policy()
+        if default_policy.resolution_state in {"explicit", "inherited"}:
+            policies.append(SecurityPolicy(
+                name="security/default-policy",
+                state=ConfigurationState.ENABLED,
+                action=default_policy.action or "unknown",
+                position=len(policies) + 1,
+                scope="security:unmatched-transit",
+                evidence=default_policy.evidence,
+            ))
 
         return NormalizedConfig(
             device_type=self.device_type,
@@ -1857,7 +2773,11 @@ class JunOSParser(BaseDeviceParser):
             management_services=NormalizedCollection.known(*services),
             users=NormalizedCollection.known(*normalized_users),
             interfaces=NormalizedCollection.known(*normalized_interfaces),
-            policies=NormalizedCollection.known(*policies),
+            policies=(
+                NormalizedCollection.unknown("Security default-policy depends on unresolved group or malformed state")
+                if default_policy.resolution_state == "unknown"
+                else NormalizedCollection.known(*policies)
+            ),
             logging_destinations=NormalizedCollection.known(
                 *self.get_logging_destinations()
             ),

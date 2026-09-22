@@ -2,6 +2,7 @@ import os
 from src.devices import get_parser
 from .core.process_sonicos_conf import process_sonicos_conf
 from src.report.report import generate_report
+from src.report.coverage import build_report_context
 from src.error.files_errors import PynipperConfigurationFileNotFound
 
 
@@ -32,6 +33,7 @@ def analyze_sonicwall_device(device, input_filename, output_filename, output_typ
     data['hostname'] = parser.get_hostname()
     data['device-type'] = str(device)
     data['assessment-policy'] = parser.assessment_context.to_dict()
+    data.update(build_report_context(parser))
 
     # Generate report
     print("[4/4] Generating report")

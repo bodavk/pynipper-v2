@@ -3,6 +3,7 @@ from collections import defaultdict
 from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.issue import Finding, Severity
 from src.devices.common.base_parser import BaseDeviceParser
+from src.devices.common.policy_semantics import ProofState, network_covers, service_covers
 from src.devices.juniper.junos import JunOSParser, JunosFirewallTerm
 
 
@@ -21,6 +22,18 @@ JUNIPER_SSH_REFERENCE = (
 JUNIPER_SECURITY_POLICY_GUIDE = (
     "https://www.juniper.net/documentation/us/en/software/junos/"
     "security-policies/topics/topic-map/security-policy-configuration.html"
+)
+JUNIPER_POLICY_ORDER_GUIDE = (
+    "https://www.juniper.net/documentation/us/en/software/junos/security-policies/"
+    "topics/topic-map/security-reordering-policies.html"
+)
+JUNIPER_ADDRESS_BOOK_GUIDE = (
+    "https://www.juniper.net/documentation/us/en/software/junos/security-policies/"
+    "topics/topic-map/security-address-books-sets.html"
+)
+JUNIPER_APPLICATION_GUIDE = (
+    "https://www.juniper.net/documentation/us/en/software/junos/security-policies/"
+    "topics/topic-map/policy-application-sets-configuration.html"
 )
 JUNIPER_IPSEC_GUIDE = (
     "https://www.juniper.net/documentation/us/en/software/junos/vpn-ipsec/"
@@ -167,6 +180,86 @@ class PluginJunOSChecks(BasePlugin):
                 )
             )
 
+    def check_stateful_policy_effectiveness(self, parser: BaseDeviceParser) -> None:
+        """Prove SRX shadowing only inside one fully resolved zone pair."""
+
+        prior_by_zone_pair = defaultdict(list)
+        references = (
+            JUNIPER_SECURITY_POLICY_GUIDE,
+            JUNIPER_POLICY_ORDER_GUIDE,
+            JUNIPER_ADDRESS_BOOK_GUIDE,
+            JUNIPER_APPLICATION_GUIDE,
+        )
+        for policy in self._junos(parser).get_security_policies():
+            evidence = tuple(item.text for item in policy.evidence) or (
+                f"security policy {policy.name}",
+            )
+            if (
+                policy.active
+                and policy.action == "permit"
+                and policy.services.any
+                and not (
+                    policy.source_resolution == "wildcard"
+                    and policy.destination_resolution == "wildcard"
+                )
+            ):
+                self.add_issue(Finding(
+                    rule_id="juniper.junos.policy.broad_application",
+                    device=parser.device_type,
+                    title="SRX security policy is unrestricted by application",
+                    observation=f"Active policy '{policy.name}' at position {policy.position} from zone '{policy.from_zone}' to '{policy.to_zone}' permits any application within its address scope.",
+                    impact="Unnecessary protocols and destination ports can cross the zone boundary.",
+                    severity=Severity.MEDIUM,
+                    exploitability="A source matching the address scope can attempt any application reachable in the destination zone.",
+                    recommendation="Replace application any with the smallest required custom or predefined applications.",
+                    evidence=evidence,
+                    references=references,
+                ))
+
+            if (
+                not policy.active
+                or policy.action not in {"permit", "deny", "reject"}
+                or policy.inheritance_unknown
+                or policy.unsupported_predicates
+            ):
+                continue
+            key = (policy.from_zone.casefold(), policy.to_zone.casefold())
+            for earlier in prior_by_zone_pair[key]:
+                if not all(
+                    result == ProofState.PROVEN
+                    for result in (
+                        network_covers(
+                            earlier.source_networks, policy.source_networks
+                        ),
+                        network_covers(
+                            earlier.destination_networks, policy.destination_networks
+                        ),
+                        service_covers(earlier.services, policy.services),
+                    )
+                ):
+                    continue
+                same_action = earlier.action == policy.action
+                if same_action and earlier.behavior_signature != policy.behavior_signature:
+                    continue
+                self.add_issue(Finding(
+                    rule_id=(
+                        "juniper.junos.policy.redundant_rule"
+                        if same_action
+                        else "juniper.junos.policy.shadowed_rule"
+                    ),
+                    device=parser.device_type,
+                    title="SRX security policy is redundant" if same_action else "SRX security policy is shadowed",
+                    observation=f"Policy '{policy.name}' at position {policy.position} in zone pair '{policy.from_zone}' to '{policy.to_zone}' is fully covered by earlier policy '{earlier.name}' at position {earlier.position} with {'equivalent behavior' if same_action else 'a different terminal action'}.",
+                    impact="The later policy cannot alter first-match enforcement for the statically proven traffic scope and obscures policy intent.",
+                    severity=Severity.LOW if same_action else Severity.HIGH,
+                    exploitability="A conflicting shadowed policy can give reviewers a false impression of enforced zone access control.",
+                    recommendation="Remove or reorder the policy after validating address-book, application, logging, tunnel and operational intent.",
+                    evidence=evidence + tuple(item.text for item in earlier.evidence),
+                    references=references,
+                ))
+                break
+            prior_by_zone_pair[key].append(policy)
+
     def check_ipsec_vpns(self, parser: BaseDeviceParser) -> None:
         junos = self._junos(parser)
         inheritance_unknown = any("apply-groups" in item for item in junos.diagnostics)
@@ -238,4 +331,5 @@ class PluginJunOSChecks(BasePlugin):
         self.check_broad_filters(parser)
         self.check_ssh_root(parser)
         self.check_stateful_policies(parser)
+        self.check_stateful_policy_effectiveness(parser)
         self.check_ipsec_vpns(parser)

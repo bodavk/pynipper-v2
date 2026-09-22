@@ -43,7 +43,7 @@ def test_plugin_fortios_checks_full():
     assert any("Weak Administrative Access" in issue.title for issue in issues)
     assert any("Broad Firewall Policy" in issue.title for issue in issues)
     assert any("Insecure TLS Version" in issue.title for issue in issues)
-    assert any("Lack of System Logging" in issue.title for issue in issues)
+    assert any("Remote security logging is not configured" == issue.title for issue in issues)
     
     # Cleanup
     os.remove(config_path)

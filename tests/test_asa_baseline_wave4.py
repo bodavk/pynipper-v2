@@ -28,6 +28,8 @@ crypto ikev1 policy 10
  hash md5
  group 2
 crypto ipsec ikev1 transform-set WEAK esp-3des esp-md5-hmac
+crypto map VPN 10 set ikev1 transform-set WEAK
+crypto map VPN interface outside
 failover
 """
 
@@ -90,6 +92,77 @@ def test_asa_baseline_vulnerable_rule_snapshot_and_redaction(tmp_path):
 def test_asa_baseline_secure_configuration_has_no_findings(tmp_path):
     _, issues = _analyze(tmp_path, SECURE)
     assert issues == []
+
+
+def test_asa_legacy_transform_requires_effective_map_binding(tmp_path):
+    config = """ASA Version 9.18(4)
+crypto ipsec ikev1 transform-set UNUSED esp-3des esp-md5-hmac
+crypto ipsec ikev1 transform-set ACTIVE esp-3des esp-md5-hmac
+crypto map VPN 10 set ikev1 transform-set ACTIVE
+crypto map VPN interface outside
+"""
+    parser, issues = _analyze(tmp_path, config)
+    bindings = parser.get_active_ipsec_transform_bindings()
+    assert [binding.transform_name for binding in bindings] == ["ACTIVE"]
+    legacy = [issue for issue in issues if issue.rule_id == "cisco.asa.crypto.legacy_transform"]
+    assert len(legacy) == 1
+    assert "UNUSED" not in " ".join(legacy[0].evidence)
+    assert "crypto map VPN interface outside" in legacy[0].evidence
+
+
+def test_asa_transform_bindings_honor_removal_and_replacement(tmp_path):
+    config = """ASA Version 9.18(4)
+crypto ipsec ikev1 transform-set WEAK esp-3des esp-md5-hmac
+crypto ipsec ikev1 transform-set STRONG esp-aes-256 esp-sha-256-hmac
+crypto map VPN 10 set ikev1 transform-set WEAK
+crypto map VPN 10 set ikev1 transform-set STRONG
+crypto map VPN interface outside
+no crypto map VPN interface outside
+crypto map VPN interface inside
+"""
+    parser, issues = _analyze(tmp_path, config)
+    assert [(item.transform_name, item.interface) for item in parser.get_active_ipsec_transform_bindings()] == [("STRONG", "inside")]
+    assert "cisco.asa.crypto.legacy_transform" not in {issue.rule_id for issue in issues}
+
+
+def test_asa_dynamic_map_transform_binding(tmp_path):
+    config = """ASA Version 9.18(4)
+crypto ipsec ikev1 transform-set WEAK esp-3des esp-md5-hmac
+crypto dynamic-map DYN 10 set ikev1 transform-set WEAK
+crypto map VPN 65000 ipsec-isakmp dynamic DYN
+crypto map VPN interface outside
+"""
+    parser, issues = _analyze(tmp_path, config)
+    assert [item.transform_name for item in parser.get_active_ipsec_transform_bindings()] == ["WEAK"]
+    assert "cisco.asa.crypto.legacy_transform" in {issue.rule_id for issue in issues}
+
+
+def test_asa_multiple_bound_transforms_and_unresolved_reference(tmp_path):
+    config = """ASA Version 9.18(4)
+crypto ipsec ikev1 transform-set DES esp-des esp-md5-hmac
+crypto ipsec ikev1 transform-set THREE_DES esp-3des esp-sha-hmac
+crypto map VPN 10 set ikev1 transform-set DES THREE_DES MISSING
+crypto map VPN interface outside
+"""
+    parser, issues = _analyze(tmp_path, config)
+    assert {item.transform_name for item in parser.get_active_ipsec_transform_bindings()} == {"DES", "THREE_DES", "MISSING"}
+    assert sum(issue.rule_id == "cisco.asa.crypto.legacy_transform" for issue in issues) == 2
+    assert sum(issue.rule_id == "cisco.asa.crypto.unresolved_transform" for issue in issues) == 1
+
+
+def test_asa_removed_map_sequence_and_transform_declaration_are_not_active(tmp_path):
+    config = """ASA Version 9.18(4)
+crypto ipsec ikev1 transform-set WEAK esp-3des esp-md5-hmac
+crypto map VPN 10 set ikev1 transform-set WEAK
+no crypto map VPN 10
+crypto map VPN 20 set ikev1 transform-set WEAK
+crypto map VPN interface outside
+no crypto ipsec ikev1 transform-set WEAK
+"""
+    parser, issues = _analyze(tmp_path, config)
+    assert [(item.transform_name, item.declaration) for item in parser.get_active_ipsec_transform_bindings()] == [("WEAK", None)]
+    assert "cisco.asa.crypto.legacy_transform" not in {issue.rule_id for issue in issues}
+    assert "cisco.asa.crypto.unresolved_transform" in {issue.rule_id for issue in issues}
 
 
 def test_asa_baseline_not_applicable_states(tmp_path):

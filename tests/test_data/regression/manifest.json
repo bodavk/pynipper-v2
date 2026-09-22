@@ -12,11 +12,15 @@
         "cisco.ios.aaa.new_model",
         "cisco.ios.auxiliary.authentication",
         "cisco.ios.auxiliary.enabled",
+        "cisco.ios.auxiliary.session_timeout",
         "cisco.ios.banner.login",
         "cisco.ios.console.authentication",
         "cisco.ios.console.session_timeout",
+        "cisco.ios.configuration.change_logging",
         "cisco.ios.control_plane.copp",
         "cisco.ios.credentials.enable_storage",
+        "cisco.ios.credentials.known_default_value",
+        "cisco.ios.credentials.line_password_storage",
         "cisco.ios.credentials.local_storage",
         "cisco.ios.crypto.legacy_ike",
         "cisco.ios.crypto.legacy_ipsec",
@@ -33,6 +37,7 @@
         "cisco.ios.routing.bgp.prefix_limit",
         "cisco.ios.routing.ospf.authentication",
         "cisco.ios.services.unnecessary",
+        "cisco.ios.snmp.default_community",
         "cisco.ios.snmp.legacy_community",
         "cisco.ios.ssh.authentication_retries",
         "cisco.ios.ssh.negotiation_timeout",
@@ -42,7 +47,7 @@
         "cisco.ios.vty.session_timeout",
         "cisco.ios.vty.telnet"
       ],
-      "expected_finding_count": 32
+      "expected_finding_count": 37
     },
     {
       "name": "cisco-ios-secure",
@@ -66,6 +71,7 @@
       "expected_rule_ids": [
         "cisco.ios.aaa.new_model",
         "cisco.ios.banner.login",
+        "cisco.ios.configuration.change_logging",
         "cisco.ios.control_plane.copp",
         "cisco.ios.http.access_restriction",
         "cisco.ios.http.cleartext_service",
@@ -83,7 +89,7 @@
         "cisco.ios.vty.authentication",
         "cisco.iosxe.crypto.legacy_ikev2"
       ],
-      "expected_finding_count": 18
+      "expected_finding_count": 19
     },
     {
       "name": "cisco-iosxe-secure",
@@ -312,9 +318,10 @@
       "expected_rule_ids": [
         "fortinet.fortios.admin.centralized_authentication",
         "fortinet.fortios.dos.wan_policy_missing",
-        "fortinet.fortios.https.management_certificate"
+        "fortinet.fortios.https.management_certificate",
+        "fortinet.fortios.policy.disabled_permissive_rule"
       ],
-      "expected_finding_count": 3
+      "expected_finding_count": 4
     },
     {
       "name": "junos-hierarchical-variant",
@@ -330,9 +337,10 @@
       "device": "SCREENOS",
       "input": "screenos/syntax_variants.conf",
       "expected_rule_ids": [
-        "juniper.screenos.lifecycle.end_of_life"
+        "juniper.screenos.lifecycle.end_of_life",
+        "juniper.screenos.policy.broad_service"
       ],
-      "expected_finding_count": 1
+      "expected_finding_count": 2
     },
     {
       "name": "panos-vulnerable",
@@ -354,6 +362,7 @@
         "paloalto.panos.management.unrestricted_secure_service",
         "paloalto.panos.ntp.servers",
         "paloalto.panos.policy.broad_allow",
+        "paloalto.panos.policy.disabled_permissive_rule",
         "paloalto.panos.policy.log_forwarding",
         "paloalto.panos.policy.security_profiles",
         "paloalto.panos.policy.session_logging",
@@ -362,7 +371,7 @@
         "paloalto.panos.updates.threat_content",
         "paloalto.panos.logging.system_forwarding"
       ],
-      "expected_finding_count": 22
+      "expected_finding_count": 23
     },
     {
       "name": "panos-secure",

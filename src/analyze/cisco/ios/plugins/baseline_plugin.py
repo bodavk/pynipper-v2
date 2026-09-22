@@ -1,10 +1,12 @@
 import re
 
 from src.analyze.common.base_plugin import BasePlugin
+from src.analyze.common.credentials import credential_policy_from_context, evaluate_credential
 from src.analyze.common.issue import Finding, Severity
 from src.devices.common.base_parser import BaseDeviceParser
-from src.devices.common.models import CredentialStorageAssessment
+from src.devices.common.policy_semantics import ProofState, network_covers, service_covers
 from src.devices.cisco.ios import CiscoIOSParser
+from src.devices.common.models import DefaultCredentialAssessment
 
 
 CISCO_IOS_HARDENING_GUIDE = (
@@ -26,6 +28,18 @@ CISCO_IOS_OSPF_AUTH_GUIDE = (
     "open-shortest-path-first-ospf/13697-25.html"
 )
 CISCO_IOS_DISCOVERY_GUIDE = CISCO_IOS_HARDENING_GUIDE
+CISCO_IOS_COPP_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/routers/ios-xe/quality-of-service/"
+    "quality-of-service/m_qos-plcshp-ctrl-pln-plc-0.html"
+)
+CISCO_IOS_CHANGE_LOG_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/routers/ios-xe/system-management/"
+    "system-management/m_cm-config-logger-0.html"
+)
+CISCO_IOS_ARCHIVE_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/routers/ios-xe/system-management/"
+    "system-management/m_cm-config-versioning.html"
+)
 
 
 class PluginIOSBaseline(BasePlugin):
@@ -182,6 +196,41 @@ class PluginIOSBaseline(BasePlugin):
                 return line.login_list in login_lists
             return False
 
+        for timeout in ios.get_effective_line_timeouts():
+            if (
+                timeout.active is not True
+                or not timeout.timeout_configured
+                or timeout.timeout_parse_error
+                or timeout.timeout_minutes is None
+                or timeout.timeout_seconds is None
+            ):
+                continue
+            evidence = tuple(item.text for item in timeout.evidence)
+            total_seconds = timeout.timeout_minutes * 60 + timeout.timeout_seconds
+            if total_seconds == 0:
+                rule_scope = "auxiliary" if timeout.line_type == "aux" else timeout.line_type
+                self.add_issue(self._finding(
+                    parser,
+                    f"cisco.ios.{rule_scope}.session_timeout",
+                    f"{timeout.line_type.upper()} session timeout is disabled",
+                    f"{timeout.line} uses an unlimited exec-timeout.",
+                    "Abandoned authenticated sessions can remain usable indefinitely.",
+                    "Configure a finite 'exec-timeout' of ten minutes or less.",
+                    Severity.MEDIUM,
+                    evidence,
+                ))
+            elif total_seconds > 600:
+                self.add_issue(self._finding(
+                    parser,
+                    "cisco.ios.line.session_timeout_excessive",
+                    "Interactive line idle timeout is excessive",
+                    f"{timeout.line} permits {timeout.timeout_minutes} minutes and {timeout.timeout_seconds} seconds of inactivity before logout.",
+                    "An unattended authenticated session remains available longer than the documented ten-minute baseline.",
+                    "Set 'exec-timeout' to ten minutes or less after validating the operational requirement.",
+                    Severity.MEDIUM,
+                    evidence,
+                ))
+
         for line in ios.get_management_lines("vty"):
             evidence = tuple(item.text for item in line.evidence)
             if line.transports is None or any(
@@ -200,24 +249,6 @@ class PluginIOSBaseline(BasePlugin):
                     )
                 )
             active = line.accepts_inbound_connections is not False
-            if active and (
-                line.timeout_configured
-                and not line.timeout_parse_error
-                and line.timeout_minutes == 0
-                and line.timeout_seconds == 0
-            ):
-                self.add_issue(
-                    self._finding(
-                        parser,
-                        "cisco.ios.vty.session_timeout",
-                        "VTY session timeout is disabled",
-                        f"{line.line} uses an unlimited exec-timeout.",
-                        "Abandoned authenticated sessions can remain usable indefinitely.",
-                        "Configure a finite 'exec-timeout', normally ten minutes or less.",
-                        Severity.MEDIUM,
-                        evidence or (line.line,),
-                    )
-                )
             if active and not authentication_resolves(line):
                 reason = (
                     f"references undefined AAA login list '{line.login_list}'"
@@ -280,19 +311,6 @@ class PluginIOSBaseline(BasePlugin):
 
         for console in ios.get_management_lines("console"):
             evidence = tuple(item.text for item in console.evidence)
-            if console.timeout_minutes == 0 and console.timeout_seconds == 0:
-                self.add_issue(
-                    self._finding(
-                        parser,
-                        "cisco.ios.console.session_timeout",
-                        "Console session timeout is disabled",
-                        "The console line has an unlimited EXEC session timeout.",
-                        "Unattended console sessions can remain authenticated indefinitely.",
-                        "Configure a finite console exec-timeout.",
-                        Severity.MEDIUM,
-                        evidence or (console.line,),
-                    )
-                )
             if not authentication_resolves(console):
                 self.add_issue(
                     self._finding(
@@ -391,15 +409,62 @@ class PluginIOSBaseline(BasePlugin):
                 )
             )
 
+    def check_acl_effectiveness(self, parser: BaseDeviceParser) -> None:
+        """Report only same-attachment first-match relationships proven statically."""
+        earlier_by_scope = {}
+        for rule in self._ios(parser).get_attached_acl_semantics():
+            if not rule.proof_eligible:
+                continue
+            earlier_rules = earlier_by_scope.setdefault(rule.scope.casefold(), [])
+            for earlier in earlier_rules:
+                if earlier.family != rule.family or not all(
+                    state == ProofState.PROVEN
+                    for state in (
+                        network_covers(earlier.source_networks, rule.source_networks),
+                        network_covers(
+                            earlier.destination_networks, rule.destination_networks
+                        ),
+                        service_covers(earlier.services, rule.services),
+                    )
+                ):
+                    continue
+                same_action = earlier.action == rule.action
+                if same_action and earlier.behavior_signature != rule.behavior_signature:
+                    continue
+                self.add_issue(self._finding(
+                    parser,
+                    (
+                        "cisco.ios.acl.redundant_rule"
+                        if same_action
+                        else "cisco.ios.acl.shadowed_rule"
+                    ),
+                    "Attached IOS ACL rule is redundant" if same_action else "Attached IOS ACL rule is shadowed",
+                    f"ACL entry '{rule.name}' at position {rule.position} in attachment '{rule.scope}' is fully covered by earlier entry '{earlier.name}' at position {earlier.position} with {'equivalent behavior' if same_action else 'a different terminal action'}.",
+                    "The later entry cannot alter first-match filtering for the statically proven traffic scope; a conflicting shadowed entry can give reviewers a false impression of enforced access control.",
+                    "Remove or reorder the entry after validating interface direction, address/service scope, logging and operational intent.",
+                    Severity.LOW if same_action else Severity.HIGH,
+                    tuple(item.text for item in rule.evidence + earlier.evidence),
+                    (CISCO_IOS_HARDENING_GUIDE,),
+                ))
+                break
+            earlier_rules.append(rule)
+
     def check_credentials(self, parser: BaseDeviceParser) -> None:
-        unsafe = {
-            CredentialStorageAssessment.EMPTY,
-            CredentialStorageAssessment.PLAINTEXT,
-            CredentialStorageAssessment.WEAK_HASH,
-            CredentialStorageAssessment.WEAK_REVERSIBLE,
-        }
-        for credential in parser.get_credential_metadata():
-            if credential.storage_assessment not in unsafe:
+        policy = credential_policy_from_context(parser.assessment_context)
+        for credential in (*parser.get_credential_metadata(), *self._ios(parser).get_additional_credential_metadata()):
+            result = evaluate_credential(credential, policy)
+            if credential.default_assessment == DefaultCredentialAssessment.MATCH and credential.storage_type == "0":
+                self.add_issue(self._finding(
+                    parser,
+                    "cisco.ios.credentials.known_default_value",
+                    "Known weak plaintext credential value",
+                    f"The {credential.context.replace('_', ' ')} credential at '{credential.account}' matches the exact known-default list under policy '{result.policy_version}'. The value is redacted.",
+                    "A widely known credential can permit direct administrative access.",
+                    "Replace it with a unique strong value and prefer centralized AAA.",
+                    Severity.HIGH,
+                    tuple(item.text for item in credential.evidence),
+                ))
+            if not result.unsafe_storage:
                 continue
             if credential.context == "local_user":
                 self.add_issue(
@@ -410,7 +475,9 @@ class PluginIOSBaseline(BasePlugin):
                         (
                             f"User '{credential.account}' uses '{credential.method}' storage type "
                             f"'{credential.storage_type}', classified as "
-                            f"'{credential.storage_assessment.value}'. The credential is redacted."
+                            f"'{result.storage_assessment.value}' under credential policy "
+                            f"'{result.policy_version}'; the separate blocklist comparison "
+                            f"{result.blocklist_summary}. The credential is redacted."
                         ),
                         "Plaintext, reversible, or legacy hashes are more readily recovered from a configuration disclosure.",
                         "Use a supported strong secret algorithm and migrate administrative authentication to AAA.",
@@ -426,7 +493,9 @@ class PluginIOSBaseline(BasePlugin):
                         "Enable credential uses weak storage",
                         (
                             f"The enable credential uses storage type '{credential.storage_type}', "
-                            f"classified as '{credential.storage_assessment.value}'; its value is redacted."
+                            f"classified as '{result.storage_assessment.value}' under credential policy "
+                            f"'{result.policy_version}'; the separate blocklist comparison "
+                            f"{result.blocklist_summary}. Its value is redacted."
                         ),
                         "Configuration disclosure can expose or accelerate recovery of the privileged credential.",
                         "Replace it with a strong 'enable secret' algorithm and remove the enable password.",
@@ -434,16 +503,33 @@ class PluginIOSBaseline(BasePlugin):
                         tuple(item.text for item in credential.evidence),
                     )
                 )
+            elif credential.context in {"radius_key", "line_password"}:
+                self.add_issue(self._finding(
+                    parser,
+                    f"cisco.ios.credentials.{credential.context}_storage",
+                    "Shared or line credential uses unsafe storage",
+                    f"The {credential.context.replace('_', ' ')} at '{credential.account}' uses storage type '{credential.storage_type}', classified as '{result.storage_assessment.value}' under policy '{result.policy_version}'. The value is redacted.",
+                    "Configuration disclosure can expose or permit recovery of the credential.",
+                    "Use supported protected storage and rotate the exposed value.",
+                    Severity.HIGH,
+                    tuple(item.text for item in credential.evidence),
+                ))
 
     def check_snmp(self, parser: BaseDeviceParser) -> None:
-        for line in self._global_lines(parser):
-            match = re.fullmatch(r"snmp-server community\s+(\S+)(?:\s+view\s+\S+)?(?:\s+(ro|rw))?(?:\s+\S+)?", line, re.IGNORECASE)
-            if not match:
-                continue
-            community, access = match.group(1), (match.group(2) or "ro").lower()
+        for community, access, evidence in self._ios(parser).get_snmp_community_metadata():
             problems = ["community-based SNMP"]
             if community.casefold() in {"public", "private"}:
                 problems.append("an exact default community")
+                self.add_issue(self._finding(
+                    parser,
+                    "cisco.ios.snmp.default_community",
+                    "Known default SNMP community is configured",
+                    "An active SNMPv1/v2c community matches the exact default-community list; its value is redacted.",
+                    "Widely known community strings can allow unauthorized SNMP access.",
+                    "Replace the community with a unique value, restrict managers, and migrate to SNMPv3 authPriv.",
+                    Severity.HIGH,
+                    (evidence.text,),
+                ))
             if access == "rw":
                 problems.append("read-write access")
             self.add_issue(
@@ -455,7 +541,7 @@ class PluginIOSBaseline(BasePlugin):
                     "Community-based SNMP lacks modern per-user authentication and privacy protections.",
                     "Migrate to SNMPv3 authPriv, restrict managers, and remove v1/v2c communities.",
                     Severity.HIGH if access == "rw" else Severity.MEDIUM,
-                    (f"snmp-server community <redacted> {access}",),
+                    (evidence.text,),
                 )
             )
 
@@ -602,6 +688,93 @@ class PluginIOSBaseline(BasePlugin):
                 )
             )
 
+    def check_configuration_management(self, parser: BaseDeviceParser) -> None:
+        state = self._ios(parser).get_configuration_management()
+        evidence = tuple(item.text for item in state.evidence)
+        if not state.change_logging:
+            self.add_issue(self._finding(
+                parser,
+                "cisco.ios.configuration.change_logging",
+                "Configuration-change logging is disabled",
+                "The effective archive log-config state does not enable configuration-change logging.",
+                "Administrative changes can lack a local per-user, per-session command history.",
+                "Enable 'archive / log config / logging enable', suppress keys, and notify syslog.",
+                Severity.MEDIUM,
+                evidence or ("archive log config logging enable absent",),
+                (CISCO_IOS_CHANGE_LOG_GUIDE,),
+            ))
+        else:
+            if not state.hide_keys:
+                self.add_issue(self._finding(
+                    parser,
+                    "cisco.ios.configuration.change_logging_secrets",
+                    "Configuration log does not suppress secret values",
+                    "Configuration-change logging is enabled without effective 'hidekeys'.",
+                    "Credentials entered in configuration commands can be retained in the local change log.",
+                    "Enable 'hidekeys' under archive log config and protect any existing log records.",
+                    Severity.HIGH,
+                    evidence,
+                    (CISCO_IOS_CHANGE_LOG_GUIDE,),
+                ))
+            if not state.notify_syslog:
+                self.add_issue(self._finding(
+                    parser,
+                    "cisco.ios.configuration.change_notification",
+                    "Configuration changes are not sent to syslog",
+                    "Configuration-change logging is enabled without effective 'notify syslog'.",
+                    "The change history remains only on the device and can be lost or altered during compromise.",
+                    "Enable 'notify syslog' and verify delivery through the separately configured remote logging path.",
+                    Severity.MEDIUM,
+                    evidence,
+                    (CISCO_IOS_CHANGE_LOG_GUIDE,),
+                ))
+
+        archive_complete = bool(state.destination) and state.schedule_state == "effective"
+        if state.archive_configured and not archive_complete:
+            gaps = []
+            if not state.destination:
+                gaps.append("no effective archive destination")
+            if state.schedule_state != "effective":
+                gaps.append(f"schedule state '{state.schedule_state}'")
+            self.add_issue(self._finding(
+                parser,
+                "cisco.ios.configuration.archive_incomplete",
+                "Configuration archive is incomplete",
+                "The configured archive has " + " and ".join(gaps) + ".",
+                "The on-box archive cannot automatically produce usable configuration checkpoints as intended.",
+                "Configure a valid path and at least one effective trigger: time-period or write-memory.",
+                Severity.MEDIUM,
+                evidence,
+                (CISCO_IOS_ARCHIVE_GUIDE,),
+            ))
+        elif (
+            parser.assessment_context.configuration_backup_scope == "on-device-required"
+            and not archive_complete
+        ):
+            self.add_issue(self._finding(
+                parser,
+                "cisco.ios.configuration.archive_required",
+                "Required on-device configuration archive is absent",
+                "The assessment policy requires on-device configuration archiving, but no complete scheduled archive is configured.",
+                "The device lacks the policy-required local or remote configuration checkpoints for rollback.",
+                "Configure an archive destination and an effective time-period or write-memory trigger.",
+                Severity.MEDIUM,
+                evidence or ("assessment policy: on-device configuration backup required",),
+                (CISCO_IOS_ARCHIVE_GUIDE,),
+            ))
+        if state.destination and state.transport_security == "insecure":
+            self.add_issue(self._finding(
+                parser,
+                "cisco.ios.configuration.archive_transport",
+                "Configuration archive uses an insecure transport",
+                f"The archive destination uses '{state.protocol}' transport: {state.destination}.",
+                "Configuration backups can expose credentials, addressing, and security policy in transit.",
+                "Use an approved encrypted transfer mechanism or protected local storage supported by the exact platform.",
+                Severity.HIGH,
+                evidence,
+                (CISCO_IOS_ARCHIVE_GUIDE,),
+            ))
+
     def check_ntp(self, parser: BaseDeviceParser) -> None:
         associations = self._ios(parser).get_ntp_associations()
         if not associations:
@@ -720,12 +893,11 @@ class PluginIOSBaseline(BasePlugin):
                 )
 
     def check_control_plane(self, parser: BaseDeviceParser) -> None:
-        policies = parser.get_native_config().find_objects(r"^control-plane(?:\s|$)")
-        protected = any(
-            any(re.fullmatch(r"service-policy input\s+\S+", line) for line in self._children(block))
-            for block in policies
-        )
-        if not protected:
+        policies = [
+            policy for policy in self._ios(parser).get_control_plane_policies()
+            if policy.direction == "input"
+        ]
+        if not policies:
             self.add_issue(
                 self._finding(
                     parser,
@@ -736,8 +908,77 @@ class PluginIOSBaseline(BasePlugin):
                     "Deploy a validated Control Plane Policing policy appropriate for the platform role.",
                     Severity.MEDIUM,
                     ("No control-plane service-policy input",),
+                    (CISCO_IOS_COPP_GUIDE,),
                 )
             )
+            return
+
+        for policy in policies:
+            evidence = tuple(item.text for item in policy.evidence)
+            scope = policy.scope.replace("-", " ")
+            if policy.protection_state == "platform-managed":
+                # Several Catalyst IOS-XE families expose the system-generated
+                # classes operationally even when the static export contains
+                # only this well-known attachment. Rate adequacy remains unknown.
+                continue
+            if not policy.policy_resolved:
+                self.add_issue(self._finding(
+                    parser,
+                    "cisco.ios.control_plane.policy_reference",
+                    "Control-plane policy attachment is unresolved",
+                    f"The {scope} control plane references undefined policy map '{policy.name}'.",
+                    "An unresolved attachment cannot classify or police host-bound traffic as intended.",
+                    "Define the attached policy map and verify its classes and actions before deployment.",
+                    Severity.HIGH,
+                    evidence,
+                    (CISCO_IOS_COPP_GUIDE,),
+                ))
+                continue
+            if policy.protection_state == "empty-policy":
+                self.add_issue(self._finding(
+                    parser,
+                    "cisco.ios.control_plane.policy_empty",
+                    "Attached control-plane policy is empty",
+                    f"Policy map '{policy.name}' is attached to the {scope} input control plane but contains no classes.",
+                    "The attachment does not classify or constrain any control-plane traffic.",
+                    "Add validated control-plane classes and explicit policing or drop behavior.",
+                    Severity.HIGH,
+                    evidence,
+                    (CISCO_IOS_COPP_GUIDE,),
+                ))
+                continue
+
+            for policy_class in policy.classes:
+                if policy_class.selector_resolution in {"resolved", "implicit-all"}:
+                    continue
+                self.add_issue(self._finding(
+                    parser,
+                    "cisco.ios.control_plane.class_reference",
+                    "Control-plane class selector is unresolved",
+                    f"Class '{policy_class.name}' in attached policy '{policy.name}' has selector state '{policy_class.selector_resolution}'.",
+                    "An undefined class map, empty class map, or missing ACL can prevent the intended traffic classification.",
+                    "Define the class map and every referenced ACL with the intended control-plane traffic selectors.",
+                    Severity.HIGH,
+                    tuple(item.text for item in policy_class.evidence) or evidence,
+                    (CISCO_IOS_COPP_GUIDE,),
+                ))
+
+            resolved_classes = [
+                item for item in policy.classes
+                if item.selector_resolution in {"resolved", "implicit-all"}
+            ]
+            if policy.protection_state == "no-enforcement" and resolved_classes:
+                self.add_issue(self._finding(
+                    parser,
+                    "cisco.ios.control_plane.policy_no_enforcement",
+                    "Attached control-plane policy has no effective policing or drop action",
+                    f"Policy map '{policy.name}' has resolved classes but no valid police rate or explicit drop action.",
+                    "Classification without an enforcing action does not constrain traffic sent to the route processor.",
+                    "Add platform-tested police or drop actions; choose rates from device capacity and operational traffic evidence.",
+                    Severity.HIGH,
+                    evidence,
+                    (CISCO_IOS_COPP_GUIDE,),
+                ))
 
     def check_crypto(self, parser: BaseDeviceParser) -> None:
         native = parser.get_native_config()
@@ -938,9 +1179,11 @@ class PluginIOSBaseline(BasePlugin):
         self.check_aaa(parser)
         self.check_management_lines(parser)
         self.check_ssh_policy(parser)
+        self.check_acl_effectiveness(parser)
         self.check_credentials(parser)
         self.check_snmp(parser)
         self.check_logging(parser)
+        self.check_configuration_management(parser)
         self.check_ntp(parser)
         self.check_banner(parser)
         self.check_unnecessary_services(parser)

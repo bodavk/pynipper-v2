@@ -3,12 +3,14 @@
 from collections import defaultdict
 
 from src.analyze.common.base_plugin import BasePlugin
+from src.analyze.common.credentials import (
+    CredentialPropertyState,
+    credential_policy_from_context,
+    evaluate_credential,
+)
 from src.analyze.common.issue import Finding, Severity
 from src.devices.common.base_parser import BaseDeviceParser
-from src.devices.common.models import (
-    CredentialStorageAssessment,
-    DefaultCredentialAssessment,
-)
+from src.devices.common.models import CredentialStorageAssessment
 from src.devices.juniper.screenos import JuniperScreenOSParser, ScreenOSCommand
 
 
@@ -293,10 +295,13 @@ class PluginScreenOSBaseline(BasePlugin):
                 )
 
     def check_credentials_and_banner(self, parser: BaseDeviceParser) -> None:
+        policy = credential_policy_from_context(parser.assessment_context)
         for credential in self._screenos(parser).get_credential_metadata():
+            result = evaluate_credential(credential, policy)
             if (
-                credential.storage_assessment == CredentialStorageAssessment.EMPTY
-                or credential.default_assessment == DefaultCredentialAssessment.MATCH
+                result.storage_assessment == CredentialStorageAssessment.EMPTY
+                or result.default_state == CredentialPropertyState.FAIL
+                or result.blocklist_state == CredentialPropertyState.FAIL
             ):
                 self.add_issue(
                     self._finding(
@@ -305,8 +310,10 @@ class PluginScreenOSBaseline(BasePlugin):
                         "Administrator credential is empty or a known default",
                         (
                             f"The {credential.context} credential for '{credential.account}' has storage "
-                            f"classification '{credential.storage_assessment.value}' and exact-default "
-                            f"comparison '{credential.default_assessment.value}'; the value is redacted."
+                            f"classification '{result.storage_assessment.value}' under credential policy "
+                            f"'{result.policy_version}' and exact-default comparison "
+                            f"'{result.default_assessment.value}'; the blocklist comparison "
+                            f"{result.blocklist_summary}. The value is redacted."
                         ),
                         "Default administrative credentials can provide immediate privileged access.",
                         "Set a unique high-entropy credential, restrict manager sources, and plan platform migration.",

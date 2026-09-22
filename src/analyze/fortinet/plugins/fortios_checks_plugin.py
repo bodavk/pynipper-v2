@@ -177,12 +177,22 @@ class PluginFortiOSChecks(BasePlugin):
             f"{destination.scope}:{destination.destination_type}:{destination.state.value}"
             for destination in destinations
         ]
+        local = [
+            destination.destination_type
+            for destination in destinations
+            if destination.destination_type in {"local-disk", "local-memory"}
+            and destination.state == ConfigurationState.ENABLED
+        ]
         self.add_issue(
             Finding(
                 rule_id="fortinet.fortios.logging.missing",
                 device=parser.device_type,
-                title="Lack of System Logging",
-                observation="No enabled and usable syslog, FortiAnalyzer, FortiManager, or FortiCloud destination was found.",
+                title="Remote security logging is not configured",
+                observation=(
+                    "No enabled and usable syslog, FortiAnalyzer, FortiManager, or FortiCloud destination was found. "
+                    + ("Local logging is explicitly enabled: " + ", ".join(sorted(set(local))) + "." if local
+                       else "This finding assesses remote forwarding, not the availability of local logs.")
+                ),
                 impact="Security events may not reach a centralized audit and monitoring system.",
                 severity=Severity.MEDIUM,
                 exploitability="Reduced centralized visibility makes malicious activity harder to detect and investigate.",

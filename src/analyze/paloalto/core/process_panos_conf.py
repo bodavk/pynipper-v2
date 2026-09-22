@@ -1,4 +1,5 @@
 from src.devices.common.base_parser import BaseDeviceParser
+from src.analyze.common.input_scope import select_template_findings
 from ..plugins.panos_checks_plugin import PluginPANOSChecks
 
 
@@ -10,7 +11,7 @@ def process_panos_conf(parser: BaseDeviceParser) -> dict:
     plugin.analyze(parser)
     
     i = plugin.get_issues()
-    issues = _generate_section(parser.assessment_context.filter_findings(i), issues, idx)
+    issues = _generate_section(parser.assessment_context.filter_findings(select_template_findings(parser, i)), issues, idx)
     
     return issues
 

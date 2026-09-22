@@ -39,6 +39,7 @@ from src.analyze.sonicwall.core.process_sonicos_conf import process_sonicos_conf
 from src.devices import get_parser  # noqa: E402
 from src.devices.registry import validate_device_registry  # noqa: E402
 from src.common.assessment import AssessmentContext  # noqa: E402
+from src.report.coverage import build_report_context  # noqa: E402
 
 
 CORPUS_ROOT = REPOSITORY_ROOT / "tests" / "test_data" / "regression"
@@ -95,6 +96,14 @@ def _analyze_case(case: dict) -> tuple[list[str], int]:
             )
         )
     parser.get_normalized_config()
+    report_context = build_report_context(parser)
+    coverage = report_context.get("coverage", {})
+    if coverage.get("schema-version") != 1 or len(coverage.get("fields", ())) != 9:
+        raise AssertionError(f"{case['name']}: invalid normalized coverage ledger")
+    if report_context.get("configuration-inventory"):
+        raise AssertionError(
+            f"{case['name']}: configuration inventory must remain opt-in"
+        )
     with redirect_stdout(StringIO()):
         findings = list(processor(parser).values())
 

@@ -52,6 +52,11 @@ enable algorithm-type scrypt secret REDACTED
 no ip source-route
 logging host 192.0.2.50
 logging trap informational
+archive
+ log config
+  logging enable
+  hidekeys
+  notify syslog
 ntp authenticate
 ntp authentication-key 1 md5 REDACTED
 ntp trusted-key 1
@@ -63,6 +68,15 @@ interface GigabitEthernet0/0
  no ip redirects
  no ip proxy-arp
  no shutdown
+ip access-list extended COPP-MGMT
+ permit tcp 192.0.2.0 0.0.0.255 any eq 22
+class-map match-any COPP-MGMT
+ match access-group name COPP-MGMT
+policy-map COPP
+ class COPP-MGMT
+  police 128000 conform-action transmit exceed-action drop
+ class class-default
+  police 64000 conform-action transmit exceed-action drop
 control-plane
  service-policy input COPP
 line con 0
@@ -99,9 +113,13 @@ def test_ios_baseline_vulnerable_rule_snapshot(tmp_path):
         "cisco.ios.console.authentication",
         "cisco.ios.auxiliary.enabled",
         "cisco.ios.auxiliary.authentication",
+        "cisco.ios.auxiliary.session_timeout",
         "cisco.ios.credentials.local_storage",
         "cisco.ios.credentials.enable_storage",
+        "cisco.ios.credentials.line_password_storage",
+        "cisco.ios.credentials.known_default_value",
         "cisco.ios.snmp.legacy_community",
+        "cisco.ios.snmp.default_community",
         "cisco.ios.logging.remote_destination",
         "cisco.ios.ntp.authentication",
         "cisco.ios.banner.login",
@@ -109,6 +127,7 @@ def test_ios_baseline_vulnerable_rule_snapshot(tmp_path):
         "cisco.ios.ip.source_route",
         "cisco.ios.interface.ip_hardening",
         "cisco.ios.control_plane.copp",
+        "cisco.ios.configuration.change_logging",
         "cisco.ios.crypto.legacy_ike",
         "cisco.ios.crypto.legacy_ipsec",
     }
