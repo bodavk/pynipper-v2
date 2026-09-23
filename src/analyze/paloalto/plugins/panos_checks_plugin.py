@@ -73,6 +73,10 @@ PANOS_NTP_GUIDE = (
     "https://docs.paloaltonetworks.com/ngfw/getting-started/"
     "initial-setup-configuration-ngfws"
 )
+PANOS_ZONE_PROTECTION_GUIDE = (
+    "https://docs.paloaltonetworks.com/ngfw/administration/"
+    "zone-protection-and-dos-protection/zone-defense/zone-protection-profiles"
+)
 
 
 class PluginPANOSChecks(BasePlugin):
@@ -1244,8 +1248,44 @@ class PluginPANOSChecks(BasePlugin):
             )
         )
 
+    def check_zone_protection(self, parser: BaseDeviceParser) -> None:
+        """Only explicit external-interface SYN flood disablement is graded."""
+        panos = self._panos(parser)
+        if panos.panorama_inheritance_unknown or panos.template_unresolved:
+            return
+        for zone in panos.get_zone_protections():
+            external = tuple(
+                interface for interface in zone.interfaces
+                if panos.assessment_context.role_for_interface(interface) == "external"
+            )
+            if (not external or zone.resolution_state != "resolved"
+                    or zone.syn_flood_state != "disabled"
+                    or zone.dos_alternative_possible):
+                continue
+            self.add_issue(Finding(
+                rule_id="paloalto.panos.zone.syn_flood_disabled",
+                device=parser.device_type,
+                title="Attached PAN-OS zone profile explicitly disables SYN flood protection",
+                observation=(
+                    f"Zone '{zone.zone}' in '{zone.device_scope}/{zone.vsys}' contains assessed "
+                    f"external interface(s) {', '.join(external)} and uses profile '{zone.profile}' "
+                    "with flood tcp-syn enable no. No configured DoS protect rule was found in "
+                    "this local vsys export."
+                ),
+                impact="SYN floods entering this zone are not mitigated by the attached zone profile.",
+                exploitability="An attacker reaching the assessed ingress zone may send a SYN flood.",
+                recommendation=(
+                    "Enable a reviewed SYN flood action and thresholds on the attached zone "
+                    "profile, or verify an applicable DoS or upstream protection path."
+                ),
+                severity=Severity.MEDIUM,
+                evidence=self._evidence(zone.evidence),
+                references=(PANOS_ZONE_PROTECTION_GUIDE,),
+            ))
+
     def analyze(self, parser: BaseDeviceParser) -> None:
         self.check_management(parser)
+        self.check_zone_protection(parser)
         self.check_default_security_rules(parser)
         self.check_security_rules(parser)
         self.check_rule_effectiveness(parser)

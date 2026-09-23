@@ -10,7 +10,8 @@ SSHD = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules/sys/sys_sshd.
 HTTPD = "https://clouddocs.f5.com/cli/tmsh-reference/v16/modules/sys/sys_httpd.html"
 CONSOLE = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules/sys/sys_global-settings.html"
 CLI = "https://clouddocs.f5.com/cli/tmsh-reference/v15/modules/cli/cli_global-settings.html"
-PASSWORD = "https://clouddocs.f5.com/cli/tmsh-reference/v15/modules/auth/auth_password-policy.html"
+PASSWORD = "https://clouddocs.f5.com/cli/tmsh-reference/v16/modules/auth/auth_password-policy.html"
+USER = "https://clouddocs.f5.com/cli/tmsh-reference/v16/modules/auth/auth_user.html"
 SYSLOG = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules/sys/sys_syslog.html"
 CLIENT_SSL = "https://clouddocs.f5.com/cli/tmsh-reference/v16/modules/ltm/ltm_profile_client-ssl.html"
 VIRTUAL = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules/ltm/ltm_virtual.html"
@@ -98,6 +99,37 @@ class PluginF5BIGIPChecks(BasePlugin):
                        impact="Locally managed passwords need not satisfy the configured policy constraints.",
                        recommendation="Enable password policy enforcement and set organization-approved constraints.",
                        severity=Severity.HIGH, reference=PASSWORD)
+        failures = setting("auth password-policy", "max-login-failures")
+        if failures and failures.value == 0:
+            self._emit(parser, failures, rule_id="f5.bigip.password_policy.login_lockout_disabled",
+                       title="Local login lockout is disabled",
+                       observation="The explicit maximum-login-failures value is zero, disabling local user lockout.",
+                       impact="Repeated local password guesses are not stopped by this account-lockout setting.",
+                       recommendation="Set a finite maximum-login-failures value under the approved administrative policy.",
+                       severity=Severity.MEDIUM, reference=PASSWORD)
+        minimum = setting("auth password-policy", "minimum-length")
+        if password and password.value == "enabled" and minimum and minimum.value == 0:
+            self._emit(parser, minimum, rule_id="f5.bigip.password_policy.minimum_length_disabled",
+                       title="Enforced local password policy has no minimum length",
+                       observation="Password-policy enforcement is enabled but its explicit minimum-length value is zero.",
+                       impact="The configured local password policy does not require any minimum password length.",
+                       recommendation="Set a positive minimum length appropriate to the approved password policy.",
+                       severity=Severity.MEDIUM, reference=PASSWORD)
+        for credential in parser.get_local_user_credentials():
+            if credential.storage != "plaintext":
+                continue
+            self.add_issue(Finding(
+                rule_id="f5.bigip.credentials.local_plaintext",
+                device=parser.device_type,
+                title="Local user password is present in plaintext",
+                observation=f"Saved auth user object '{credential.name}' uses an explicit plaintext password field.",
+                impact="Anyone who obtains the exported configuration may recover that local user's password.",
+                exploitability="An attacker needs access to the saved configuration or report source.",
+                recommendation="Replace the exposed password and use an export that stores only protected credential material.",
+                severity=Severity.HIGH,
+                evidence=(credential.evidence.text,),
+                references=(USER,),
+            ))
         remote = setting("sys syslog", "remote-servers")
         if remote and remote.value == "none":
             self._emit(parser, remote, rule_id="f5.bigip.logging.syslog_remote_none",

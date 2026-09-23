@@ -130,7 +130,7 @@ def test_cli_accepts_every_registered_device_choice(monkeypatch, device_choice):
     monkeypatch.setattr(main_module, "analyze_device", lambda *args: calls.append(args))
 
     assert main_module.main(["--device", device_choice, "--input", "unused.conf"]) == 0
-    assert calls[0][0] == device_choice
+    assert calls[0][0] == get_device_definition(device_choice).canonical_id
 
 
 def test_cli_offline_flag_disables_online_lookup(monkeypatch):

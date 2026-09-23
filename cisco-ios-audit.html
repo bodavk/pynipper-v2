@@ -1,0 +1,1235 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>IOS_ROUTER vulnerable Security Report</title>
+        <style type="text/css">
+            body {
+    font-size: 80%;
+    margin: 0px;
+    padding: 0px;
+    font-family: arial, sans-serif;
+}
+.mainbody {
+    background-color: #EFEFEF;
+}
+.pagebody {
+    width: 90%;
+    margin: 0px auto;
+    padding: 12px;
+    background-color: #FFFFFF;
+    border: solid 1px rgb(100,100,100);
+}
+.table {
+    clear: left;
+    border: solid 1px rgb(150,150,150);
+    empty-cells: show;
+    border-collapse: collapse;
+    background-color: rgb(233,232,244);
+    width: 100%
+}
+.table tr {
+    margin: 0px;
+    padding: 0px;
+}
+.table td {
+    padding: 2px 7px 2px 7px;
+    border: solid 1px rgb(150,150,150);
+    text-align: left;
+    font-size: small;
+}
+.table th {
+    margin: 0px;
+    padding: 2px 7px 2px 7px;
+    border: solid 1px rgb(150,150,150);
+    empty-cells: show;
+    text-align: left;
+    font-size: 100%;
+    background-color: #BEB8FB;
+}
+        </style>
+    </head>
+    <body class="mainbody">
+        <main class="pagebody">
+            <header id="title_header" style="text-align:center">
+                <h1>pynipper-v2</h1>
+                <h2>IOS_ROUTER security report</h2>
+                <p>vulnerable &mdash; 2026-09-23</p>
+            </header>
+
+            <section id="about">
+                <hr>
+                <h2>1. About this report</h2>
+                <p>
+                    This static configuration security report was produced from the supplied
+                    IOS_ROUTER export. Findings describe configuration state visible to
+                    the parser; they do not prove runtime reachability or external controls.
+                </p>
+                <p>
+                    Each issue includes a stable rule ID, severity, observation, impact,
+                    exploitability, remediation guidance, and available evidence and references.
+                </p>
+                
+                    <p>
+                        <strong>Assessment policy:</strong>
+                        pynipper-v2/default-v1
+                        (built-in default).
+                        Device role: unknown.
+                        Excluded categories:
+                        none.
+                        Excluded categories were not assessed and are not implied secure.
+                    </p>
+                    <p>
+                        <strong>Requested configuration inventory:</strong>
+                        none.
+                        Inventory selection does not change the security checks.
+                    </p>
+                
+            </section>
+
+            <section id="coverage">
+                <hr>
+                <h2>2. Assessment coverage</h2>
+                <p>Known means the supplied export was parsed for this normalized field; it is not a passed security check. Unknown, unsupported, parse-error, and excluded scope is not implied secure.</p>
+                
+                    <table class="table">
+                        <thead><tr><th>Field</th><th>Category</th><th>Knowledge state</th><th>Selection</th><th>Items</th><th>Detail</th></tr></thead>
+                        <tbody>
+                        
+                            <tr>
+                                <td>hostname</td>
+                                <td>inventory</td>
+                                <td>known</td>
+                                <td>included</td>
+                                <td>n/a</td>
+                                <td></td>
+                            </tr>
+                        
+                            <tr>
+                                <td>device-model</td>
+                                <td>inventory</td>
+                                <td>unknown</td>
+                                <td>included</td>
+                                <td>n/a</td>
+                                <td>IOS running configuration does not provide reliable model metadata</td>
+                            </tr>
+                        
+                            <tr>
+                                <td>software-version</td>
+                                <td>inventory</td>
+                                <td>known</td>
+                                <td>included</td>
+                                <td>n/a</td>
+                                <td></td>
+                            </tr>
+                        
+                            <tr>
+                                <td>management-services</td>
+                                <td>services</td>
+                                <td>known</td>
+                                <td>included</td>
+                                <td>3</td>
+                                <td></td>
+                            </tr>
+                        
+                            <tr>
+                                <td>local-users</td>
+                                <td>credentials</td>
+                                <td>known</td>
+                                <td>included</td>
+                                <td>1</td>
+                                <td></td>
+                            </tr>
+                        
+                            <tr>
+                                <td>interfaces</td>
+                                <td>interfaces</td>
+                                <td>known</td>
+                                <td>included</td>
+                                <td>2</td>
+                                <td></td>
+                            </tr>
+                        
+                            <tr>
+                                <td>security-policies</td>
+                                <td>filtering</td>
+                                <td>known</td>
+                                <td>included</td>
+                                <td>0</td>
+                                <td></td>
+                            </tr>
+                        
+                            <tr>
+                                <td>logging-destinations</td>
+                                <td>logging</td>
+                                <td>known</td>
+                                <td>included</td>
+                                <td>0</td>
+                                <td></td>
+                            </tr>
+                        
+                            <tr>
+                                <td>crypto-settings</td>
+                                <td>crypto</td>
+                                <td>known</td>
+                                <td>included</td>
+                                <td>1</td>
+                                <td></td>
+                            </tr>
+                        
+                        </tbody>
+                    </table>
+                
+                
+            </section>
+
+            
+
+            <section id="remediation-summary">
+                <hr>
+                <h2>3. Remediation summary</h2>
+                <p>This is a concise prioritization of emitted findings, not a compliance score. Review the coverage ledger for unknown, unsupported, parse-error, or excluded scope.</p>
+                <p><strong>Total findings:</strong> 36.</p>
+                
+                    <p><strong>By severity:</strong>
+                    High: 21; Medium: 13; Low: 2.</p>
+                
+                
+                    <ol>
+                    
+                        <li><strong>High — Clear-text HTTP management service enabled</strong> (cisco.ios.http.cleartext_service): Disable it with &#39;no ip http server&#39; and use HTTPS or SSH for remote administration.</li>
+                    
+                        <li><strong>High — HTTP management access is unrestricted</strong> (cisco.ios.http.access_restriction): Restrict management sources with &#39;ip http access-class &lt;ACL&gt;&#39; or disable HTTP.</li>
+                    
+                        <li><strong>High — SSH protocol version 2 is not enforced</strong> (cisco.ios.ssh.protocol_version): Enforce SSHv2 with &#39;ip ssh version 2&#39;.</li>
+                    
+                        <li><strong>High — Centralized AAA is not enabled</strong> (cisco.ios.aaa.new_model): Enable AAA new-model and define a tested local fallback before applying it to management lines.</li>
+                    
+                        <li><strong>High — VTY permits clear-text Telnet</strong> (cisco.ios.vty.telnet): Configure &#39;transport input ssh&#39; on every VTY range.</li>
+                    
+                    </ol>
+                
+            </section>
+
+            <section id="security-issues">
+                <hr>
+                <h2>4. Security audit</h2>
+                
+                    
+                        <article>
+                            <h3>2.0.0. Clear-text HTTP management service enabled</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.http.cleartext_service</p>
+                            <p><strong>Severity:</strong> High</p>
+                            <p><strong>Observation:</strong> The IOS HTTP management server is explicitly enabled.</p>
+                            <p><strong>Impact:</strong> Administrative credentials and sessions can be exposed to interception or modification.</p>
+                            <p><strong>Exploitability:</strong> An attacker with access to the management traffic path can observe or alter clear-text HTTP traffic.</p>
+                            <p><strong>Recommendation:</strong> Disable it with &#39;no ip http server&#39; and use HTTPS or SSH for remote administration.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>ip http server</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/https/configuration/xe-17/https-xe-17-book/HTTP_1-1_Web_Server_and_Client.html">https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/https/configuration/xe-17/https-xe-17-book/HTTP_1-1_Web_Server_and_Client.html</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                        <article>
+                            <h3>2.0.1. HTTP management access is unrestricted</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.http.access_restriction</p>
+                            <p><strong>Severity:</strong> High</p>
+                            <p><strong>Observation:</strong> The enabled HTTP server has no effective &#39;ip http access-class&#39; restriction.</p>
+                            <p><strong>Impact:</strong> Untrusted networks may be able to reach the device management service.</p>
+                            <p><strong>Exploitability:</strong> An attacker only needs network reachability to attempt authentication or exploit the HTTP service.</p>
+                            <p><strong>Recommendation:</strong> Restrict management sources with &#39;ip http access-class &lt;ACL&gt;&#39; or disable HTTP.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>ip http server</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/https/configuration/xe-17/https-xe-17-book/HTTP_1-1_Web_Server_and_Client.html">https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/https/configuration/xe-17/https-xe-17-book/HTTP_1-1_Web_Server_and_Client.html</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                        <article>
+                            <h3>2.0.2. SSH protocol version 2 is not enforced</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.ssh.protocol_version</p>
+                            <p><strong>Severity:</strong> High</p>
+                            <p><strong>Observation:</strong> The reachable SSH service uses version &#39;1&#39;.</p>
+                            <p><strong>Impact:</strong> SSHv1 has fundamental protocol weaknesses and permits downgrade exposure where compatibility mode is allowed.</p>
+                            <p><strong>Exploitability:</strong> An on-path attacker may be able to exploit SSHv1 weaknesses or force use of the legacy protocol.</p>
+                            <p><strong>Recommendation:</strong> Enforce SSHv2 with &#39;ip ssh version 2&#39;.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>ip ssh version 1</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/sec_usr_ssh/configuration/xe-2/sec-usr-ssh-xe-2-book/sec-usr-ssh-sec-shell.html">https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/sec_usr_ssh/configuration/xe-2/sec-usr-ssh-xe-2-book/sec-usr-ssh-sec-shell.html</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                        <article>
+                            <h3>2.0.3. SSH authentication retry limit is unsafe</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.ssh.authentication_retries</p>
+                            <p><strong>Severity:</strong> Medium</p>
+                            <p><strong>Observation:</strong> The effective SSH authentication retry limit is 7; it must be between 1 and 5.</p>
+                            <p><strong>Impact:</strong> A high or invalid retry limit increases the opportunity for password guessing attacks.</p>
+                            <p><strong>Exploitability:</strong> An attacker with SSH reachability can repeatedly attempt authentication.</p>
+                            <p><strong>Recommendation:</strong> Configure &#39;ip ssh authentication-retries &lt;1-5&gt;&#39;.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>ip ssh authentication-retries 7</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/sec_usr_ssh/configuration/xe-2/sec-usr-ssh-xe-2-book/sec-usr-ssh-sec-shell.html">https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/sec_usr_ssh/configuration/xe-2/sec-usr-ssh-xe-2-book/sec-usr-ssh-sec-shell.html</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                        <article>
+                            <h3>2.0.4. SSH negotiation timeout is unsafe</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.ssh.negotiation_timeout</p>
+                            <p><strong>Severity:</strong> Low</p>
+                            <p><strong>Observation:</strong> The effective SSH negotiation timeout is 90 seconds; the policy maximum is 60 seconds.</p>
+                            <p><strong>Impact:</strong> Long unauthenticated negotiations consume management-plane resources and leave sessions open unnecessarily.</p>
+                            <p><strong>Exploitability:</strong> A reachable attacker can hold multiple unauthenticated SSH negotiations open.</p>
+                            <p><strong>Recommendation:</strong> Configure &#39;ip ssh time-out &lt;1-60&gt;&#39;.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>ip ssh time-out 90</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/sec_usr_ssh/configuration/xe-2/sec-usr-ssh-xe-2-book/sec-usr-ssh-sec-shell.html">https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/sec_usr_ssh/configuration/xe-2/sec-usr-ssh-xe-2-book/sec-usr-ssh-sec-shell.html</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                        <article>
+                            <h3>2.0.5. SSH VTY access is not source-restricted</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.ssh.vty_access_restriction</p>
+                            <p><strong>Severity:</strong> Medium</p>
+                            <p><strong>Observation:</strong> At least one SSH-enabled VTY range lacks an inbound IPv4 or IPv6 access-class.</p>
+                            <p><strong>Impact:</strong> Any source with network reachability can attempt to access the SSH management service.</p>
+                            <p><strong>Exploitability:</strong> An attacker can probe and brute-force SSH from any network permitted by upstream controls.</p>
+                            <p><strong>Recommendation:</strong> Apply &#39;access-class &lt;ACL&gt; in&#39; or &#39;ipv6 access-class &lt;ACL&gt; in&#39; to every SSH-enabled VTY range.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>line vty 0 4</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/sec_usr_ssh/configuration/xe-2/sec-usr-ssh-xe-2-book/sec-usr-ssh-sec-shell.html">https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/sec_usr_ssh/configuration/xe-2/sec-usr-ssh-xe-2-book/sec-usr-ssh-sec-shell.html</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                        <article>
+                            <h3>2.0.6. Centralized AAA is not enabled</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.aaa.new_model</p>
+                            <p><strong>Severity:</strong> High</p>
+                            <p><strong>Observation:</strong> The effective configuration does not enable &#39;aaa new-model&#39;.</p>
+                            <p><strong>Impact:</strong> Authentication, authorization, and accounting policy may be inconsistent and locally controlled.</p>
+                            <p><strong>Exploitability:</strong> An attacker with management-plane or configuration access may exploit this weakness.</p>
+                            <p><strong>Recommendation:</strong> Enable AAA new-model and define a tested local fallback before applying it to management lines.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>aaa new-model not present or negated</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html">https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                        <article>
+                            <h3>2.0.7. AUX session timeout is disabled</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.auxiliary.session_timeout</p>
+                            <p><strong>Severity:</strong> Medium</p>
+                            <p><strong>Observation:</strong> line aux 0 uses an unlimited exec-timeout.</p>
+                            <p><strong>Impact:</strong> Abandoned authenticated sessions can remain usable indefinitely.</p>
+                            <p><strong>Exploitability:</strong> An attacker with management-plane or configuration access may exploit this weakness.</p>
+                            <p><strong>Recommendation:</strong> Configure a finite &#39;exec-timeout&#39; of ten minutes or less.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>line aux 0</li>
+                                
+                                    <li>exec</li>
+                                
+                                    <li>exec-timeout 0 0</li>
+                                
+                                    <li>transport input all</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html">https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                        <article>
+                            <h3>2.0.8. CONSOLE session timeout is disabled</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.console.session_timeout</p>
+                            <p><strong>Severity:</strong> Medium</p>
+                            <p><strong>Observation:</strong> line con 0 uses an unlimited exec-timeout.</p>
+                            <p><strong>Impact:</strong> Abandoned authenticated sessions can remain usable indefinitely.</p>
+                            <p><strong>Exploitability:</strong> An attacker with management-plane or configuration access may exploit this weakness.</p>
+                            <p><strong>Recommendation:</strong> Configure a finite &#39;exec-timeout&#39; of ten minutes or less.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>line con 0</li>
+                                
+                                    <li>exec-timeout 0 0</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html">https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                        <article>
+                            <h3>2.0.9. VTY session timeout is disabled</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.vty.session_timeout</p>
+                            <p><strong>Severity:</strong> Medium</p>
+                            <p><strong>Observation:</strong> line vty 0 4 uses an unlimited exec-timeout.</p>
+                            <p><strong>Impact:</strong> Abandoned authenticated sessions can remain usable indefinitely.</p>
+                            <p><strong>Exploitability:</strong> An attacker with management-plane or configuration access may exploit this weakness.</p>
+                            <p><strong>Recommendation:</strong> Configure a finite &#39;exec-timeout&#39; of ten minutes or less.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>line vty 0 4</li>
+                                
+                                    <li>exec-timeout 0 0</li>
+                                
+                                    <li>transport input all</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html">https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                        <article>
+                            <h3>2.0.10. VTY permits clear-text Telnet</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.vty.telnet</p>
+                            <p><strong>Severity:</strong> High</p>
+                            <p><strong>Observation:</strong> line vty 0 4 does not explicitly restrict inbound transport to SSH.</p>
+                            <p><strong>Impact:</strong> Remote administrative credentials and commands may traverse the network without encryption.</p>
+                            <p><strong>Exploitability:</strong> An attacker with management-plane or configuration access may exploit this weakness.</p>
+                            <p><strong>Recommendation:</strong> Configure &#39;transport input ssh&#39; on every VTY range.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>line vty 0 4</li>
+                                
+                                    <li>exec-timeout 0 0</li>
+                                
+                                    <li>transport input all</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html">https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                        <article>
+                            <h3>2.0.11. VTY authentication is not explicitly bound</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.vty.authentication</p>
+                            <p><strong>Severity:</strong> High</p>
+                            <p><strong>Observation:</strong> line vty 0 4 lacks a resolvable local or AAA login binding.</p>
+                            <p><strong>Impact:</strong> The line may use an unintended password-only or default authentication path.</p>
+                            <p><strong>Exploitability:</strong> An attacker with management-plane or configuration access may exploit this weakness.</p>
+                            <p><strong>Recommendation:</strong> Bind each VTY range to a named AAA login method or explicit local authentication.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>line vty 0 4</li>
+                                
+                                    <li>transport input all</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html">https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                        <article>
+                            <h3>2.0.12. Console authentication is not explicitly secured</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.console.authentication</p>
+                            <p><strong>Severity:</strong> High</p>
+                            <p><strong>Observation:</strong> line con 0 lacks a resolvable local or AAA login binding.</p>
+                            <p><strong>Impact:</strong> Physical or terminal-server access may reach an unintended authentication path.</p>
+                            <p><strong>Exploitability:</strong> An attacker with management-plane or configuration access may exploit this weakness.</p>
+                            <p><strong>Recommendation:</strong> Bind the console to a tested AAA login method with an appropriate local recovery path.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>line con 0</li>
+                                
+                                    <li>exec-timeout 0 0</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html">https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                        <article>
+                            <h3>2.0.13. Auxiliary management line is not fully disabled</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.auxiliary.enabled</p>
+                            <p><strong>Severity:</strong> High</p>
+                            <p><strong>Observation:</strong> line aux 0 does not combine &#39;no exec&#39;, &#39;transport input none&#39;, and &#39;transport output none&#39;.</p>
+                            <p><strong>Impact:</strong> An unused AUX port can provide an additional local, modem, or reverse-terminal management path.</p>
+                            <p><strong>Exploitability:</strong> An attacker with management-plane or configuration access may exploit this weakness.</p>
+                            <p><strong>Recommendation:</strong> Disable the AUX line using the complete Cisco hardening sequence unless it has an approved operational use.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>line aux 0</li>
+                                
+                                    <li>exec</li>
+                                
+                                    <li>exec-timeout 0 0</li>
+                                
+                                    <li>transport input all</li>
+                                
+                                    <li>transport output telnet</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html">https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                        <article>
+                            <h3>2.0.14. Active auxiliary line lacks resolved authentication</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.auxiliary.authentication</p>
+                            <p><strong>Severity:</strong> High</p>
+                            <p><strong>Observation:</strong> line aux 0 is not disabled and lacks a resolvable local or AAA login binding.</p>
+                            <p><strong>Impact:</strong> A reachable AUX session may use an unintended or line-password authentication path.</p>
+                            <p><strong>Exploitability:</strong> An attacker with management-plane or configuration access may exploit this weakness.</p>
+                            <p><strong>Recommendation:</strong> Disable the line or bind it to a tested AAA login method.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>line aux 0</li>
+                                
+                                    <li>exec</li>
+                                
+                                    <li>exec-timeout 0 0</li>
+                                
+                                    <li>transport input all</li>
+                                
+                                    <li>transport output telnet</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html">https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                        <article>
+                            <h3>2.0.15. Local credential uses weak storage</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.credentials.local_storage</p>
+                            <p><strong>Severity:</strong> High</p>
+                            <p><strong>Observation:</strong> User &#39;admin&#39; uses &#39;password&#39; storage type &#39;0&#39;, classified as &#39;plaintext&#39; under credential policy &#39;pynipper-v2/default-v1&#39;; the separate blocklist comparison was not evaluated against a supplied credential blocklist. The credential is redacted.</p>
+                            <p><strong>Impact:</strong> Plaintext, reversible, or legacy hashes are more readily recovered from a configuration disclosure.</p>
+                            <p><strong>Exploitability:</strong> An attacker with management-plane or configuration access may exploit this weakness.</p>
+                            <p><strong>Recommendation:</strong> Use a supported strong secret algorithm and migrate administrative authentication to AAA.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>username admin password 0 &lt;credential redacted&gt;</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html">https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                        <article>
+                            <h3>2.0.16. Enable credential uses weak storage</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.credentials.enable_storage</p>
+                            <p><strong>Severity:</strong> High</p>
+                            <p><strong>Observation:</strong> The enable credential uses storage type &#39;0&#39;, classified as &#39;plaintext&#39; under credential policy &#39;pynipper-v2/default-v1&#39;; the separate blocklist comparison was not evaluated against a supplied credential blocklist. Its value is redacted.</p>
+                            <p><strong>Impact:</strong> Configuration disclosure can expose or accelerate recovery of the privileged credential.</p>
+                            <p><strong>Exploitability:</strong> An attacker with management-plane or configuration access may exploit this weakness.</p>
+                            <p><strong>Recommendation:</strong> Replace it with a strong &#39;enable secret&#39; algorithm and remove the enable password.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>enable password 0 &lt;credential redacted&gt;</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html">https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                        <article>
+                            <h3>2.0.17. Known weak plaintext credential value</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.credentials.known_default_value</p>
+                            <p><strong>Severity:</strong> High</p>
+                            <p><strong>Observation:</strong> The line password credential at &#39;line vty 0 4&#39; matches the exact known-default list under policy &#39;pynipper-v2/default-v1&#39;. The value is redacted.</p>
+                            <p><strong>Impact:</strong> A widely known credential can permit direct administrative access.</p>
+                            <p><strong>Exploitability:</strong> An attacker with management-plane or configuration access may exploit this weakness.</p>
+                            <p><strong>Recommendation:</strong> Replace it with a unique strong value and prefer centralized AAA.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>line vty 0 4 password 0 &lt;credential redacted&gt;</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html">https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                        <article>
+                            <h3>2.0.18. Shared or line credential uses unsafe storage</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.credentials.line_password_storage</p>
+                            <p><strong>Severity:</strong> High</p>
+                            <p><strong>Observation:</strong> The line password at &#39;line vty 0 4&#39; uses storage type &#39;0&#39;, classified as &#39;plaintext&#39; under policy &#39;pynipper-v2/default-v1&#39;. The value is redacted.</p>
+                            <p><strong>Impact:</strong> Configuration disclosure can expose or permit recovery of the credential.</p>
+                            <p><strong>Exploitability:</strong> An attacker with management-plane or configuration access may exploit this weakness.</p>
+                            <p><strong>Recommendation:</strong> Use supported protected storage and rotate the exposed value.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>line vty 0 4 password 0 &lt;credential redacted&gt;</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html">https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                        <article>
+                            <h3>2.0.19. Known default SNMP community is configured</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.snmp.default_community</p>
+                            <p><strong>Severity:</strong> High</p>
+                            <p><strong>Observation:</strong> An active SNMPv1/v2c community matches the exact default-community list; its value is redacted.</p>
+                            <p><strong>Impact:</strong> Widely known community strings can allow unauthorized SNMP access.</p>
+                            <p><strong>Exploitability:</strong> An attacker with management-plane or configuration access may exploit this weakness.</p>
+                            <p><strong>Recommendation:</strong> Replace the community with a unique value, restrict managers, and migrate to SNMPv3 authPriv.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>snmp-server community &lt;redacted&gt; rw</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html">https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                        <article>
+                            <h3>2.0.20. Legacy SNMP community configured</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.snmp.legacy_community</p>
+                            <p><strong>Severity:</strong> High</p>
+                            <p><strong>Observation:</strong> An SNMPv1/v2c community uses community-based SNMP, an exact default community, read-write access. The value is redacted.</p>
+                            <p><strong>Impact:</strong> Community-based SNMP lacks modern per-user authentication and privacy protections.</p>
+                            <p><strong>Exploitability:</strong> An attacker with management-plane or configuration access may exploit this weakness.</p>
+                            <p><strong>Recommendation:</strong> Migrate to SNMPv3 authPriv, restrict managers, and remove v1/v2c communities.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>snmp-server community &lt;redacted&gt; rw</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html">https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                        <article>
+                            <h3>2.0.21. Remote logging destination is missing</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.logging.remote_destination</p>
+                            <p><strong>Severity:</strong> Medium</p>
+                            <p><strong>Observation:</strong> No active remote syslog destination is configured.</p>
+                            <p><strong>Impact:</strong> Events may be lost during compromise or device failure and unavailable to central monitoring.</p>
+                            <p><strong>Exploitability:</strong> An attacker with management-plane or configuration access may exploit this weakness.</p>
+                            <p><strong>Recommendation:</strong> Configure one or more protected remote logging hosts.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>No logging host command</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html">https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                        <article>
+                            <h3>2.0.22. Configuration-change logging is disabled</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.configuration.change_logging</p>
+                            <p><strong>Severity:</strong> Medium</p>
+                            <p><strong>Observation:</strong> The effective archive log-config state does not enable configuration-change logging.</p>
+                            <p><strong>Impact:</strong> Administrative changes can lack a local per-user, per-session command history.</p>
+                            <p><strong>Exploitability:</strong> An attacker with management-plane or configuration access may exploit this weakness.</p>
+                            <p><strong>Recommendation:</strong> Enable &#39;archive / log config / logging enable&#39;, suppress keys, and notify syslog.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>archive log config logging enable absent</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://www.cisco.com/c/en/us/td/docs/routers/ios-xe/system-management/system-management/m_cm-config-logger-0.html">https://www.cisco.com/c/en/us/td/docs/routers/ios-xe/system-management/system-management/m_cm-config-logger-0.html</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                        <article>
+                            <h3>2.0.23. NTP authentication is incomplete</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.ntp.authentication</p>
+                            <p><strong>Severity:</strong> Medium</p>
+                            <p><strong>Observation:</strong> NTP server &#39;192.0.2.123&#39; in VRF &#39;default&#39; has no effective authenticated key binding.</p>
+                            <p><strong>Impact:</strong> A spoofed time source can disrupt logs and time-dependent security controls.</p>
+                            <p><strong>Exploitability:</strong> An attacker with management-plane or configuration access may exploit this weakness.</p>
+                            <p><strong>Recommendation:</strong> Enable NTP authentication and configure, trust, and bind a key for this association.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>ntp server 192.0.2.123</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html">https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                        <article>
+                            <h3>2.0.24. Login warning banner is missing</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.banner.login</p>
+                            <p><strong>Severity:</strong> Low</p>
+                            <p><strong>Observation:</strong> No login or message-of-the-day warning banner is configured.</p>
+                            <p><strong>Impact:</strong> Users may not receive the organization&#39;s required authorized-use and monitoring notice.</p>
+                            <p><strong>Exploitability:</strong> An attacker with management-plane or configuration access may exploit this weakness.</p>
+                            <p><strong>Recommendation:</strong> Configure an approved legal warning with &#39;banner login&#39;.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>No banner login or banner motd command</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html">https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                        <article>
+                            <h3>2.0.25. Unnecessary legacy services are enabled</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.services.unnecessary</p>
+                            <p><strong>Severity:</strong> Medium</p>
+                            <p><strong>Observation:</strong> Explicit legacy service commands are active: service tcp-small-servers.</p>
+                            <p><strong>Impact:</strong> Unneeded listeners increase management-plane attack surface.</p>
+                            <p><strong>Exploitability:</strong> An attacker with management-plane or configuration access may exploit this weakness.</p>
+                            <p><strong>Recommendation:</strong> Disable every service that is not operationally required using its &#39;no&#39; form.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>service tcp-small-servers</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html">https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                        <article>
+                            <h3>2.0.26. IP source routing is not explicitly disabled</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.ip.source_route</p>
+                            <p><strong>Severity:</strong> Medium</p>
+                            <p><strong>Observation:</strong> The configuration does not contain the IOS &#39;no ip source-route&#39; hardening command.</p>
+                            <p><strong>Impact:</strong> Source-routed packets can bypass expected routing paths and trust boundaries on applicable releases.</p>
+                            <p><strong>Exploitability:</strong> An attacker with management-plane or configuration access may exploit this weakness.</p>
+                            <p><strong>Recommendation:</strong> Configure &#39;no ip source-route&#39;.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>no ip source-route absent</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html">https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                        <article>
+                            <h3>2.0.27. Layer-3 interface hardening is incomplete</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.interface.ip_hardening</p>
+                            <p><strong>Severity:</strong> Medium</p>
+                            <p><strong>Observation:</strong> interface GigabitEthernet0/0 lacks no ip redirects, no ip proxy-arp.</p>
+                            <p><strong>Impact:</strong> Redirects or proxy ARP can enable traffic redirection and weaken local network trust assumptions.</p>
+                            <p><strong>Exploitability:</strong> An attacker with management-plane or configuration access may exploit this weakness.</p>
+                            <p><strong>Recommendation:</strong> Disable redirects and proxy ARP on routed interfaces unless explicitly required.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>interface GigabitEthernet0/0</li>
+                                
+                                    <li>no ip redirects</li>
+                                
+                                    <li>no ip proxy-arp</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html">https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                        <article>
+                            <h3>2.0.28. Control-plane policing is not attached</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.control_plane.copp</p>
+                            <p><strong>Severity:</strong> Medium</p>
+                            <p><strong>Observation:</strong> No input service policy is attached under control-plane configuration.</p>
+                            <p><strong>Impact:</strong> Unrestricted control-plane traffic can contribute to CPU exhaustion and management outages.</p>
+                            <p><strong>Exploitability:</strong> An attacker with management-plane or configuration access may exploit this weakness.</p>
+                            <p><strong>Recommendation:</strong> Deploy a validated Control Plane Policing policy appropriate for the platform role.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>No control-plane service-policy input</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://www.cisco.com/c/en/us/td/docs/routers/ios-xe/quality-of-service/quality-of-service/m_qos-plcshp-ctrl-pln-plc-0.html">https://www.cisco.com/c/en/us/td/docs/routers/ios-xe/quality-of-service/quality-of-service/m_qos-plcshp-ctrl-pln-plc-0.html</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                        <article>
+                            <h3>2.0.29. IKE policy uses legacy algorithms</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.crypto.legacy_ike</p>
+                            <p><strong>Severity:</strong> High</p>
+                            <p><strong>Observation:</strong> crypto isakmp policy 10 contains legacy cryptographic selections.</p>
+                            <p><strong>Impact:</strong> Weak encryption, hashing, or Diffie-Hellman groups reduce VPN security.</p>
+                            <p><strong>Exploitability:</strong> An attacker with management-plane or configuration access may exploit this weakness.</p>
+                            <p><strong>Recommendation:</strong> Use AES-256 or AES-GCM, SHA-256 or stronger, and an approved modern DH group.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>crypto isakmp policy 10</li>
+                                
+                                    <li>encryption 3des</li>
+                                
+                                    <li>hash md5</li>
+                                
+                                    <li>group 2</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html">https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                        <article>
+                            <h3>2.0.30. IPsec transform-set uses legacy algorithms</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.crypto.legacy_ipsec</p>
+                            <p><strong>Severity:</strong> High</p>
+                            <p><strong>Observation:</strong> Transform-set &#39;WEAK&#39; contains legacy algorithms.</p>
+                            <p><strong>Impact:</strong> Legacy transforms weaken VPN confidentiality or integrity.</p>
+                            <p><strong>Exploitability:</strong> An attacker with management-plane or configuration access may exploit this weakness.</p>
+                            <p><strong>Recommendation:</strong> Replace the transform-set with AES and SHA-256 or an authenticated-encryption suite.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>crypto ipsec transform-set WEAK esp-3des esp-md5-hmac</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html">https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                        <article>
+                            <h3>2.0.31. BGP neighbor authentication is incomplete</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.routing.bgp.authentication</p>
+                            <p><strong>Severity:</strong> High</p>
+                            <p><strong>Observation:</strong> BGP neighbor 192.0.2.10 in ipv4 unicast, VRF default has no authentication.</p>
+                            <p><strong>Impact:</strong> An unauthenticated routing adjacency can permit spoofed session establishment or route injection from a reachable attacker.</p>
+                            <p><strong>Exploitability:</strong> An attacker with management-plane or configuration access may exploit this weakness.</p>
+                            <p><strong>Recommendation:</strong> Configure peer authentication using a mechanism supported by the exact IOS/IOS XE release and the remote peer.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>router bgp 65000</li>
+                                
+                                    <li>neighbor 192.0.2.10 remote-as 65100</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://sec.cloudapps.cisco.com/security/center/resources/IOS_XE_hardening">https://sec.cloudapps.cisco.com/security/center/resources/IOS_XE_hardening</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                        <article>
+                            <h3>2.0.32. External BGP neighbor lacks an inbound route policy</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.routing.bgp.inbound_policy</p>
+                            <p><strong>Severity:</strong> High</p>
+                            <p><strong>Observation:</strong> External BGP neighbor 192.0.2.10 in ipv4 unicast, VRF default has no explicit inbound route-map, prefix-list, filter-list, or distribute-list.</p>
+                            <p><strong>Impact:</strong> Unrestricted route exchange can admit or advertise unintended prefixes across a routing trust boundary.</p>
+                            <p><strong>Exploitability:</strong> An attacker with management-plane or configuration access may exploit this weakness.</p>
+                            <p><strong>Recommendation:</strong> Apply an explicit least-privilege inbound route policy appropriate to this peer.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>router bgp 65000</li>
+                                
+                                    <li>neighbor 192.0.2.10 remote-as 65100</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://sec.cloudapps.cisco.com/security/center/resources/IOS_XE_hardening">https://sec.cloudapps.cisco.com/security/center/resources/IOS_XE_hardening</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                        <article>
+                            <h3>2.0.33. External BGP neighbor lacks an outbound route policy</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.routing.bgp.outbound_policy</p>
+                            <p><strong>Severity:</strong> High</p>
+                            <p><strong>Observation:</strong> External BGP neighbor 192.0.2.10 in ipv4 unicast, VRF default has no explicit outbound route-map, prefix-list, filter-list, or distribute-list.</p>
+                            <p><strong>Impact:</strong> Unrestricted route exchange can admit or advertise unintended prefixes across a routing trust boundary.</p>
+                            <p><strong>Exploitability:</strong> An attacker with management-plane or configuration access may exploit this weakness.</p>
+                            <p><strong>Recommendation:</strong> Apply an explicit least-privilege outbound route policy appropriate to this peer.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>router bgp 65000</li>
+                                
+                                    <li>neighbor 192.0.2.10 remote-as 65100</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://sec.cloudapps.cisco.com/security/center/resources/IOS_XE_hardening">https://sec.cloudapps.cisco.com/security/center/resources/IOS_XE_hardening</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                        <article>
+                            <h3>2.0.34. External BGP neighbor has no maximum-prefix safeguard</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.routing.bgp.prefix_limit</p>
+                            <p><strong>Severity:</strong> Medium</p>
+                            <p><strong>Observation:</strong> External BGP neighbor 192.0.2.10 in ipv4 unicast, VRF default has no explicit maximum-prefix control; no numeric threshold is inferred.</p>
+                            <p><strong>Impact:</strong> An unexpectedly large route advertisement can consume routing resources or disrupt forwarding.</p>
+                            <p><strong>Exploitability:</strong> An attacker with management-plane or configuration access may exploit this weakness.</p>
+                            <p><strong>Recommendation:</strong> Configure a peer-specific maximum-prefix value based on the documented expected route volume.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>router bgp 65000</li>
+                                
+                                    <li>neighbor 192.0.2.10 remote-as 65100</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://sec.cloudapps.cisco.com/security/center/resources/IOS_XE_hardening">https://sec.cloudapps.cisco.com/security/center/resources/IOS_XE_hardening</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                        <article>
+                            <h3>2.0.35. OSPF interface authentication is incomplete</h3>
+                            <p><strong>Rule ID:</strong> cisco.ios.routing.ospf.authentication</p>
+                            <p><strong>Severity:</strong> High</p>
+                            <p><strong>Observation:</strong> OSPF process 1, interface GigabitEthernet0/1, area 0 is unauthenticated.</p>
+                            <p><strong>Impact:</strong> An unprotected routing adjacency can accept forged protocol packets from a reachable attacker.</p>
+                            <p><strong>Exploitability:</strong> An attacker with management-plane or configuration access may exploit this weakness.</p>
+                            <p><strong>Recommendation:</strong> Configure and validate OSPF authentication consistently across the adjacency.</p>
+                            
+                                <strong>Evidence:</strong>
+                                <ul>
+                                
+                                    <li>interface GigabitEthernet0/1</li>
+                                
+                                    <li>ip ospf 1 area 0</li>
+                                
+                                    <li>router ospf 1</li>
+                                
+                                </ul>
+                            
+                            
+                                <strong>References:</strong>
+                                <ul>
+                                
+                                    <li><a href="https://www.cisco.com/c/en/us/support/docs/ip/open-shortest-path-first-ospf/13697-25.html">https://www.cisco.com/c/en/us/support/docs/ip/open-shortest-path-first-ospf/13697-25.html</a></li>
+                                
+                                </ul>
+                            
+                        </article>
+                    
+                
+            </section>
+
+            <section id="security-vulns">
+                <hr>
+                <h2>5. Software advisories</h2>
+                
+                    <p>No software advisories were included in this report.</p>
+                
+            </section>
+        </main>
+        <script type="text/javascript">
+            document.querySelectorAll('#vulnTable td.cvssValue').forEach(function(cell) {
+    const value = Number.parseFloat(cell.textContent);
+    if (Number.isNaN(value)) {
+        return;
+    }
+    cell.style.backgroundColor = value >= 7 ? 'red' : value < 4 ? 'green' : 'yellow';
+});
+        </script>
+    </body>
+</html>

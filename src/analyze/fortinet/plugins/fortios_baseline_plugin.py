@@ -1056,6 +1056,8 @@ class PluginFortiOSBaseline(BasePlugin):
                     continue
                 weak: list[str] = []
                 evidence: list[str] = []
+                exempted: list[str] = []
+                exemption_evidence: list[str] = []
                 for target in ("critical", "high"):
                     first = next((
                         selector for selector in profile.ips_selectors
@@ -1069,22 +1071,41 @@ class PluginFortiOSBaseline(BasePlugin):
                             and first.action in {"pass", "monitor", "allow"}):
                         weak.append(target)
                         evidence.extend(item.text for item in first.evidence)
-                if not weak:
-                    continue
-                self.add_issue(self._finding(
-                    parser,
-                    "fortinet.fortios.policy.ips_selector_nonblocking",
-                    "Attached FortiOS IPS sensor passes selected high-severity signatures",
-                    f"Active accept policy '{inspection.policy_name}' in scope '{inspection.scope}' "
-                    f"uses IPS sensor '{profile.name}' whose first broad, explicitly enabled "
-                    f"selector for {', '.join(weak)} severity is set to pass/monitor.",
-                    "Matching critical or high-severity signatures may be logged or allowed instead of blocked.",
-                    "Review the IPS entry order and set an approved blocking action for these severities.",
-                    Severity.HIGH,
-                    tuple(item.text for item in inspection.evidence + profile.evidence)
-                    + tuple(dict.fromkeys(evidence)),
-                    (FORTINET_IPS_REFERENCE, FORTINET_IPS_ORDER_REFERENCE),
-                ))
+                    if (first is not None and first.severities
+                            and first.active_state == "enable"
+                            and first.action == "block" and first.exemptions):
+                        exempted.append(target)
+                        exemption_evidence.extend(item.text for item in first.evidence + first.exemptions)
+                if weak:
+                    self.add_issue(self._finding(
+                        parser,
+                        "fortinet.fortios.policy.ips_selector_nonblocking",
+                        "Attached FortiOS IPS sensor passes selected high-severity signatures",
+                        f"Active accept policy '{inspection.policy_name}' in scope '{inspection.scope}' "
+                        f"uses IPS sensor '{profile.name}' whose first broad, explicitly enabled "
+                        f"selector for {', '.join(weak)} severity is set to pass/monitor.",
+                        "Matching critical or high-severity signatures may be logged or allowed instead of blocked.",
+                        "Review the IPS entry order and set an approved blocking action for these severities.",
+                        Severity.HIGH,
+                        tuple(item.text for item in inspection.evidence + profile.evidence)
+                        + tuple(dict.fromkeys(evidence)),
+                        (FORTINET_IPS_REFERENCE, FORTINET_IPS_ORDER_REFERENCE),
+                    ))
+                if exempted:
+                    self.add_issue(self._finding(
+                        parser,
+                        "fortinet.fortios.policy.ips_selector_exempt_ip",
+                        "Attached FortiOS IPS sensor exempts traffic from high-severity signatures",
+                        f"Active accept policy '{inspection.policy_name}' in scope '{inspection.scope}' "
+                        f"uses IPS sensor '{profile.name}' whose first broad blocking selector "
+                        f"for {', '.join(exempted)} severity has an explicit IP exemption.",
+                        "Traffic matching the exemption is not inspected by the affected signatures.",
+                        "Remove the exemption or narrowly justify and review its source/destination scope.",
+                        Severity.HIGH,
+                        tuple(item.text for item in inspection.evidence + profile.evidence)
+                        + tuple(dict.fromkeys(exemption_evidence)),
+                        (FORTINET_IPS_REFERENCE, FORTINET_IPS_ORDER_REFERENCE),
+                    ))
 
     def check_policy_effectiveness(self, parser: BaseDeviceParser) -> None:
         """Report independent hygiene and only statically proven first-match effects."""

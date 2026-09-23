@@ -11,6 +11,7 @@ from src.devices.fortinet.fortios import FortiOSParser
 
 
 RULE_ID = "fortinet.fortios.policy.ips_selector_nonblocking"
+EXEMPT_RULE_ID = "fortinet.fortios.policy.ips_selector_exempt_ip"
 
 
 def _entry(number, severity, action, status="enable", extra=""):
@@ -84,6 +85,41 @@ def test_wholly_nonblocking_sensor_avoids_duplicate_selector_finding(tmp_path):
     parser, findings = _scan(tmp_path, _config(_entry(1, "high", "pass")))
     assert parser.get_security_inspection()[0].profiles[0].content_state == "nonblocking"
     assert not findings
+
+
+@pytest.mark.parametrize("entries,expected", [
+    (_entry(1, "critical high", "block", extra=(
+        "config exempt-ip\nedit 1\nset src-ip 192.0.2.0 255.255.255.0\nnext\nend\n"
+    )), True),
+    (_entry(1, "low", "block", extra=(
+        "config exempt-ip\nedit 1\nset dst-ip 198.51.100.10 255.255.255.255\nnext\nend\n"
+    )), False),
+    (_entry(1, "high", "block", status="disable", extra=(
+        "config exempt-ip\nedit 1\nset src-ip 192.0.2.1 255.255.255.255\nnext\nend\n"
+    )), False),
+    (_entry(1, "high", "block") + _entry(2, "high", "block", extra=(
+        "config exempt-ip\nedit 1\nset src-ip 192.0.2.1 255.255.255.255\nnext\nend\n"
+    )), False),
+    (_entry(1, "high", "block", extra="config exempt-ip\nedit 1\nnext\nend\n"), False),
+])
+def test_first_broad_high_severity_ips_exemptions(tmp_path, entries, expected):
+    parser, _ = _scan(tmp_path, _config(entries))
+    findings = [item for item in process_fortios_conf(parser).values()
+                if item.rule_id == EXEMPT_RULE_ID]
+    assert bool(findings) is expected
+    if expected:
+        assert len(findings) == 1
+        assert "set src-ip 192.0.2.0 255.255.255.0" in findings[0].evidence
+
+
+def test_ips_exemption_requires_active_accept_policy(tmp_path):
+    entry = _entry(1, "high", "block", extra=(
+        "config exempt-ip\nedit 1\nset src-ip 192.0.2.1 255.255.255.255\nnext\nend\n"
+    ))
+    for config in (_config(entry, attached=False), _config(entry, enabled=False)):
+        parser, _ = _scan(tmp_path, config)
+        assert not [item for item in process_fortios_conf(parser).values()
+                    if item.rule_id == EXEMPT_RULE_ID]
 
 
 @pytest.mark.parametrize("output_type", ["JSON", "HTML"])

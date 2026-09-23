@@ -1,6 +1,7 @@
 """FortiOS configuration parser and normalized model adapter."""
 
 from dataclasses import dataclass
+import hashlib
 import ipaddress
 import re
 import shlex
@@ -119,6 +120,7 @@ class FortiIPSSelector:
     active_state: str
     broad_match: bool
     evidence: Tuple[ConfigEvidence, ...]
+    exemptions: Tuple[ConfigEvidence, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -448,9 +450,11 @@ class FortiOSParser(BaseDeviceParser):
     def _parse_config(self, filepath: str) -> FortiDict:
         config: FortiDict = {}
         frames: List[_Frame] = []
+        source_digest = hashlib.sha256()
 
         with open(filepath, "r", encoding="utf-8", errors="replace") as config_file:
             for line_number, raw_line in enumerate(config_file, start=1):
+                source_digest.update(raw_line.encode("utf-8"))
                 line = raw_line.strip()
                 if not line:
                     continue
@@ -561,7 +565,45 @@ class FortiOSParser(BaseDeviceParser):
                 line_number if "line_number" in locals() else 1,
                 f"Unexpected end of file; unclosed block: {open_path}",
             )
+        self._source_digest = source_digest.hexdigest()
         return config
+
+    def get_report_secret_lines(self) -> list[dict]:
+        """Return current secret-field source lines only for explicit report opt-in."""
+        with open(self.config_filepath, "r", encoding="utf-8", errors="replace") as source:
+            original_lines = source.readlines()
+        current_digest = hashlib.sha256(
+            "".join(original_lines).encode("utf-8")
+        ).hexdigest()
+        if current_digest != self._source_digest:
+            raise ValueError("configuration changed after FortiOS parsing; refusing secret report")
+
+        entries: dict[int, dict] = {}
+
+        def walk(node: FortiDict, path: Tuple[str, ...]) -> None:
+            for name, value in node.items():
+                field_path = path + (str(name),)
+                if isinstance(value, dict):
+                    walk(value, field_path)
+                    continue
+                if str(name).casefold() not in self._SECRET_FIELDS:
+                    continue
+                evidence = self.evidence.get(field_path)
+                if evidence is None or evidence.line_number is None:
+                    continue
+                number = evidence.line_number
+                if not 1 <= number <= len(original_lines) or "<redacted>" not in evidence.text:
+                    continue
+                raw_line = original_lines[number - 1].strip()
+                if re.match(r"(?i)^(?:set|append|select)\s+" + re.escape(str(name)) + r"\s+", raw_line):
+                    entries[number] = {
+                        "line-number": number,
+                        "context": "configured_secret_field",
+                        "source-line": raw_line,
+                    }
+
+        walk(self.config, ())
+        return [entries[number] for number in sorted(entries)]
 
     def _scoped_sections(self, section_name: str) -> Iterator[Tuple[str, FortiDict, Tuple[str, ...]]]:
         direct = self.config.get(section_name)
@@ -1660,11 +1702,12 @@ class FortiOSParser(BaseDeviceParser):
             status = str(entry.get("status", "default")).casefold()
             filter_fields = {
                 "rule", "location", "protocol", "os", "application", "cve",
-                "vuln-type", "last-modified", "exempt-ip",
+                "vuln-type", "last-modified",
             }
             non_filter_fields = {
                 "severity", "action", "status", "log", "log-packet",
                 "log-attack-context", "default-action", "default-status",
+                "exempt-ip",
             }
             broad_match = all(
                 field in filter_fields | non_filter_fields for field in entry
@@ -1680,9 +1723,21 @@ class FortiOSParser(BaseDeviceParser):
                 + self._field_evidence(path + ("entries", str(name), "action"))
                 + self._field_evidence(path + ("entries", str(name), "status"))
             )
+            exemptions: List[ConfigEvidence] = []
+            exempt_entries = entry.get("exempt-ip")
+            if isinstance(exempt_entries, dict):
+                for exempt_name, exempt_entry in exempt_entries.items():
+                    if not isinstance(exempt_entry, dict):
+                        continue
+                    for field in ("src-ip", "dst-ip"):
+                        if field in exempt_entry:
+                            exemptions.extend(self._field_evidence(
+                                path + ("entries", str(name), "exempt-ip", str(exempt_name), field)
+                            ))
             result.append(FortiIPSSelector(
                 name=str(name), severities=severities, action=action,
                 active_state=status, broad_match=broad_match, evidence=evidence,
+                exemptions=tuple(exemptions),
             ))
         return tuple(result)
 

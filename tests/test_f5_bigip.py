@@ -54,10 +54,74 @@ def test_source_values_are_discarded_and_unknown_stays_ungraded(tmp_path):
 auth user /Common/admin {{ password {secret} }}
 sys httpd {{ ssl-certkeyfile {secret} redirect-http-to-https enabled }}
 """)
-    assert _ids(parser) == []
+    assert _ids(parser) == ["f5.bigip.credentials.local_plaintext"]
     assert parser.get_setting("sys sshd", "inactivity-timeout").resolution_state == "unknown"
     assert secret not in str(parser.get_native_config())
     assert secret not in str(parser.get_normalized_config())
+    assert secret not in str(process_bigip_conf(parser))
+
+
+def test_local_user_credential_storage_is_last_explicit_and_secret_free(tmp_path):
+    parser = _parse(tmp_path, """#TMSH-VERSION: 16.1.5
+auth user /Common/first { password FirstSecret }
+auth user /Common/first { encrypted-password $6$protected }
+auth user /Common/second { password ******* }
+auth user /Common/third { password ThirdSecret }
+""")
+    assert _ids(parser) == ["f5.bigip.credentials.local_plaintext"]
+    finding = next(iter(process_bigip_conf(parser).values()))
+    assert "/Common/third" in finding.observation
+    assert "ThirdSecret" not in str(finding)
+    assert {item.name: item.storage for item in parser.get_local_user_credentials()} == {
+        "/Common/first": "encrypted",
+        "/Common/second": "unknown",
+        "/Common/third": "plaintext",
+    }
+
+
+def test_explicit_local_lockout_and_minimum_length_settings(tmp_path):
+    parser = _parse(tmp_path, """#TMSH-VERSION: 16.1.5
+auth password-policy { policy-enforcement enabled max-login-failures 0 minimum-length 0 }
+""")
+    assert set(_ids(parser)) == {
+        "f5.bigip.password_policy.login_lockout_disabled",
+        "f5.bigip.password_policy.minimum_length_disabled",
+    }
+    assert parser.get_setting("auth password-policy", "max-login-failures").value == 0
+    assert parser.get_setting("auth password-policy", "minimum-length").value == 0
+
+    safe = _parse(tmp_path, """#TMSH-VERSION: 16.1.5
+auth password-policy { policy-enforcement enabled max-login-failures 5 minimum-length 14 }
+""")
+    assert _ids(safe) == []
+
+
+def test_password_policy_overrides_and_unknown_values_are_conservative(tmp_path):
+    parser = _parse(tmp_path, """auth password-policy { policy-enforcement enabled max-login-failures 0 minimum-length 0 }
+auth password-policy { max-login-failures 6 minimum-length bogus }
+""")
+    assert "f5.bigip.password_policy.login_lockout_disabled" not in _ids(parser)
+    assert "f5.bigip.password_policy.minimum_length_disabled" not in _ids(parser)
+    assert parser.get_setting("auth password-policy", "minimum-length").resolution_state == "unknown"
+
+
+@pytest.mark.parametrize("output_type", ["JSON", "HTML"])
+def test_public_password_policy_report_is_secret_free(tmp_path, output_type):
+    source = tmp_path / "device.scf"
+    source.write_text("""#TMSH-VERSION: 16.1.5
+auth password-policy { policy-enforcement enabled max-login-failures 0 minimum-length 0 }
+auth user /Common/admin { password SensitiveF5Secret }
+""", encoding="utf-8")
+    output = tmp_path / f"report.{output_type.lower()}"
+    completed = subprocess.run(
+        [sys.executable, "-m", "src.main", "-d", "f5-bigip", "-i", str(source),
+         "-o", output_type, "-f", str(output), "-x"],
+        capture_output=True, text=True, check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    report = output.read_text(encoding="utf-8")
+    assert "Local login lockout is disabled" in report
+    assert "SensitiveF5Secret" not in report + completed.stdout + completed.stderr
 
 
 def test_client_ssl_cleartext_requires_active_attachment_and_profile(tmp_path):
@@ -126,6 +190,7 @@ auth user /Common/admin { password SensitiveF5Secret }
         data = json.loads(report)
         assert {item["rule_id"] for item in data["security-audit"].values()} == {
             "f5.bigip.ssh.unrestricted_sources", "f5.bigip.ssh.idle_timeout_disabled",
+            "f5.bigip.credentials.local_plaintext",
         }
 
 

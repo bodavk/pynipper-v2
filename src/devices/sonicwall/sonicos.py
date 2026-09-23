@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import ipaddress
+from pathlib import Path
 import re
 import shlex
 from typing import Any
@@ -186,18 +188,19 @@ class SonicOSParser(BaseDeviceParser):
 
     def __init__(self, config_filepath: str):
         super().__init__(config_filepath)
-        with open(config_filepath, encoding="utf-8-sig") as config_file:
-            self.commands = tuple(
-                SonicCommand(
-                    text=line.strip(),
-                    line_number=number,
-                    indent=len(line) - len(line.lstrip()),
-                )
-                for number, line in enumerate(config_file, start=1)
-                if line.strip()
-                and not line.strip().startswith(("#", "//"))
-                and line.strip() not in {"configure", "commit", "exit"}
+        source_bytes = Path(config_filepath).read_bytes()
+        self._source_digest = hashlib.sha256(source_bytes).digest()
+        self.commands = tuple(
+            SonicCommand(
+                text=line.strip(),
+                line_number=number,
+                indent=len(line) - len(line.lstrip()),
             )
+            for number, line in enumerate(source_bytes.decode("utf-8-sig").splitlines(), start=1)
+            if line.strip()
+            and not line.strip().startswith(("#", "//"))
+            and line.strip() not in {"configure", "commit", "exit"}
+        )
         self.config = [command.text for command in self.commands]
         self._policy_object_cache: dict[str, dict] | None = None
         version = self._version_from_commands()
@@ -1243,6 +1246,78 @@ class SonicOSParser(BaseDeviceParser):
     def get_users(self) -> list[SonicAdministrator]:
         # Secret values are deliberately discarded; only presence metadata is retained.
         return self.get_administrators()
+
+    def get_report_secret_lines(self) -> list[dict]:
+        """Return only current administrator password commands for explicit opt-in."""
+        source_bytes = Path(self.config_filepath).read_bytes()
+        if hashlib.sha256(source_bytes).digest() != self._source_digest:
+            raise ValueError("configuration changed after SonicOS parsing; refusing secret report")
+        source_lines = source_bytes.decode("utf-8-sig").splitlines()
+        candidates: list[tuple[SonicCommand, str]] = []
+
+        builtin: SonicCommand | None = None
+        administration_roots = [
+            index for index, command in enumerate(self.commands)
+            if command.text.casefold() == "administration"
+        ]
+        if len(administration_roots) == 1:
+            for command in self._record_commands(administration_roots[0])[1:]:
+                words = [word.casefold() for word in self._tokens(command.text)]
+                if words[:2] == ["admin", "password"] and len(words) > 2:
+                    builtin = command
+                elif words[:3] == ["no", "admin", "password"]:
+                    builtin = None
+        if builtin is not None:
+            candidates.append((builtin, "built_in_administrator"))
+
+        local_users: dict[str, SonicCommand | None] = {}
+        command_indices = {id(command): index for index, command in enumerate(self.commands)}
+        for root_index, root in enumerate(self.commands):
+            if root.text.casefold() != "user local-users":
+                continue
+            for command in self._record_commands(root_index)[1:]:
+                if command.indent <= root.indent:
+                    continue
+                tokens = self._tokens(command.text)
+                words = [word.casefold() for word in tokens]
+                if words[:2] == ["no", "user"] and len(words) > 2:
+                    local_users.pop(tokens[2].casefold(), None)
+                    continue
+                if not words or words[0] != "user" or len(words) < 2:
+                    continue
+                name = tokens[1].casefold()
+                password: SonicCommand | None = None
+                if "password" in words[2:]:
+                    password_index = words.index("password", 2)
+                    if password_index + 1 < len(words):
+                        password = command
+                for child in self._record_commands(command_indices[id(command)])[1:]:
+                    child_words = [word.casefold() for word in self._tokens(child.text)]
+                    if child_words[:1] == ["password"] and len(child_words) > 1:
+                        password = child
+                    elif child_words[:2] == ["no", "password"]:
+                        password = None
+                local_users[name] = password
+
+        administrator_names = {
+            item.name.casefold() for item in self.get_administrators()[1:]
+            if item.resolution_state == "explicit" and item.authentication == "local"
+        }
+        candidates.extend(
+            (command, "local_administrator")
+            for name, command in local_users.items()
+            if name in administrator_names and command is not None
+        )
+        entries = []
+        for command, context in sorted(candidates, key=lambda item: item[0].line_number):
+            number = command.line_number
+            if 1 <= number <= len(source_lines):
+                entries.append({
+                    "line-number": number,
+                    "context": context,
+                    "source-line": source_lines[number - 1].strip(),
+                })
+        return entries
 
     def get_services(self) -> dict[str, bool]:
         interfaces = self.get_interfaces()

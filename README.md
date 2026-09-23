@@ -37,10 +37,14 @@ python3 -m venv .venv
 ## Run an audit
 
 ```powershell
-pynipper-ng -d IOS_ROUTER -i tests\test_data\cisco_ios_example.conf -o HTML -f report.html -x
+pynipper-ng -d cisco-ios -i tests\test_data\cisco_ios_example.conf -o HTML -f report.html -x
 ```
 
-`-d` selects the device family, `-i` supplies its export, `-o` selects `HTML` or `JSON`, and `-f` names the report. `-x` keeps the run offline by disabling optional Cisco advisory lookup. Run `pynipper-ng --help` for device IDs, aliases, and all options.
+`-d` selects the configuration family; it defaults to `auto` when omitted. Auto-detection works only for distinctive exports and stops with guidance when, for example, IOS and IOS-XE cannot be distinguished. Use `-d cisco-ios` or `-d cisco-ios-xe` explicitly in that case. Older device IDs still work, but the short names shown by `pynipper-ng --help` are recommended. Device role (such as switch or access edge) is separate from the configuration family.
+
+`-i` supplies the export, `-o` selects `HTML` or `JSON`, and `-f` names the report. `-x` keeps the run offline by disabling optional Cisco advisory lookup.
+
+Reports mask credential values by default. `--show-secrets` adds a separate, unmasked source-line appendix for parser-qualified credentials on Cisco IOS/IOS-XE/ASA, FortiOS, Junos, ScreenOS, SonicOS 7, HP ProCurve/ArubaOS-Switch, Arista EOS, and F5 BIG-IP TMOS; it does **not** unmask normal finding evidence or guarantee that every secret in an export was found. The option requires an explicit `-f` pointing to a new file and is rejected for other families. Treat the resulting HTML/JSON file as sensitive, especially on shared systems; see [Security](SECURITY.md).
 
 Check Point Firewall-1 expects a directory with matching export files, such as `rules.C` and `objects.C`. F5 BIG-IP expects a saved tmsh/SCF text file. The [supported-device guide](docs/SUPPORTED_DEVICES.md) describes other input formats.
 

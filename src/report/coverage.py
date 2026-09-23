@@ -103,7 +103,7 @@ def _inventory(normalized, requested: tuple[str, ...]) -> dict[str, list[dict]]:
 
 
 def build_report_context(parser: BaseDeviceParser) -> dict:
-    """Build additive report metadata without serializing evidence or secrets."""
+    """Build coverage; only an explicit CLI opt-in adds credential source lines."""
     normalized = parser.get_normalized_config()
     excluded = {
         item.casefold().replace("-", "_")
@@ -146,13 +146,18 @@ def build_report_context(parser: BaseDeviceParser) -> dict:
                 field["knowledge-state"] = "unknown"
                 field.pop("item-count", None)
                 field["detail"] = "Unrendered template; field inventory may be incomplete."
-    return {
+    result = {
         "coverage": coverage,
         "configuration-inventory": (
             {} if getattr(parser, "template_unresolved", False)
             else _inventory(normalized, parser.assessment_context.report_inventory)
         ),
     }
+    if parser.assessment_context.report_secret_evidence:
+        from .secret_evidence import collect_secret_evidence
+
+        result["secret-evidence"] = collect_secret_evidence(parser)
+    return result
 
 
 def build_parse_error_context(device: str, parser_name: str, line_number: int, excluded_categories=()) -> dict:

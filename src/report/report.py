@@ -10,6 +10,20 @@ from src.common.assessment import AssessmentContext
 TEMPLATE_FILE = "html_template.html"
 
 
+def _write_report_file(filename: str, content: str, *, sensitive: bool) -> None:
+    if sensitive:
+        descriptor = os.open(filename, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as report_file:
+            report_file.write(content)
+    else:
+        with open(filename, "w", encoding="utf-8", newline="") as report_file:
+            report_file.write(content)
+
+
+def _sensitive_report(data: dict) -> bool:
+    return data.get("assessment-policy", {}).get("report-secret-evidence") is True
+
+
 def _remediation_summary(issues: dict) -> dict:
     severity_counts: dict[str, int] = {}
     priorities = []
@@ -88,10 +102,11 @@ def _generate_html_report(filename: str, issues: dict, vulns: array, data: dict)
         coverage=coverage,
         configuration_inventory=inventory,
         remediation_summary=remediation_summary,
+        secret_evidence=data.get("secret-evidence"),
+        report_secret_evidence=_sensitive_report(data),
     )
 
-    with open(filename, "w", encoding="utf-8", newline="") as html_file:
-        html_file.write(text)
+    _write_report_file(filename, text, sensitive=_sensitive_report(data))
 
 
 def _generate_json_report(filename: str, issues: dict, vulns: array, data: dict) -> None:
@@ -115,6 +130,11 @@ def _generate_json_report(filename: str, issues: dict, vulns: array, data: dict)
     vulns_dict["coverage"] = coverage
     vulns_dict["configuration-inventory"] = inventory
     vulns_dict["remediation-summary"] = remediation_summary
+    if _sensitive_report(data):
+        vulns_dict["secret-evidence"] = data.get("secret-evidence", {
+            "status": "unavailable", "entries": [],
+            "scope-note": "Parsing failed before credential source lines could be selected.",
+        })
     json_text = json.dumps(
         vulns_dict,
         indent=4,
@@ -123,5 +143,4 @@ def _generate_json_report(filename: str, issues: dict, vulns: array, data: dict)
             x, datetime.datetime) else x.to_dict()
     )
 
-    with open(filename, "w", encoding="utf-8", newline="") as json_file:
-        json_file.write(json_text)
+    _write_report_file(filename, json_text, sensitive=_sensitive_report(data))

@@ -18,6 +18,10 @@ cli global-settings {
 }
 auth password-policy {
     policy-enforcement disabled
+    max-login-failures 0
+}
+auth user /Common/audit {
+    password ExampleExposedPassword
 }
 sys syslog {
     remote-servers none

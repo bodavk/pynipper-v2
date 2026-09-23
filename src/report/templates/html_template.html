@@ -28,6 +28,10 @@
                     Each issue includes a stable rule ID, severity, observation, impact,
                     exploitability, remediation guidance, and available evidence and references.
                 </p>
+                {% if report_secret_evidence %}
+                    <p><strong>WARNING: This report includes unmasked credential source lines.</strong>
+                    Handle it as sensitive material. Normal finding evidence remains redacted.</p>
+                {% endif %}
                 {% if assessment_policy %}
                     <p>
                         <strong>Assessment policy:</strong>
@@ -180,6 +184,23 @@
                     <p>No software advisories were included in this report.</p>
                 {% endif %}
             </section>
+
+            {% if report_secret_evidence %}
+            <section id="secret-evidence">
+                <hr>
+                <h2>Credential source lines (opt-in)</h2>
+                <p>{{ secret_evidence['scope-note'] if secret_evidence else 'Parsing failed before credential source lines could be selected.' }}</p>
+                {% if secret_evidence and secret_evidence['entries'] %}
+                    <ul>
+                    {% for entry in secret_evidence['entries'] %}
+                        <li>Line {{ entry['line-number'] }} ({{ entry['context'] }}): <code>{{ entry['source-line'] }}</code></li>
+                    {% endfor %}
+                    </ul>
+                {% else %}
+                    <p>No qualified credential lines were available. This does not prove that the configuration contains no secrets.</p>
+                {% endif %}
+            </section>
+            {% endif %}
         </main>
         <script type="text/javascript">
             {% include "impact-color.js" %}

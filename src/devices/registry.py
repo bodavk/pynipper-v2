@@ -199,6 +199,29 @@ def get_device_choices(include_aliases: bool = True) -> Tuple[str, ...]:
     return tuple(choices)
 
 
+_RECOMMENDED_DEVICE_GROUPS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
+    ("Cisco", ("cisco-ios", "cisco-ios-xe", "cisco-asa")),
+    ("Fortinet", ("fortios",)),
+    ("Juniper", ("junos", "screenos")),
+    ("Others", (
+        "checkpoint-fw1", "pan-os", "hp-procurve", "sonicos",
+        "arista-eos", "f5-bigip",
+    )),
+)
+
+
+def get_recommended_device_groups() -> Tuple[Tuple[str, Tuple[str, ...]], ...]:
+    """CLI help groups for supported family names, excluding historical aliases."""
+    return _RECOMMENDED_DEVICE_GROUPS
+
+
+def get_recommended_device_choices() -> Tuple[str, ...]:
+    """Short CLI names; historical IDs and aliases remain accepted."""
+    return tuple(
+        choice for _, choices in _RECOMMENDED_DEVICE_GROUPS for choice in choices
+    )
+
+
 def validate_device_registry() -> None:
     """Fail fast when enum and registry entries drift apart."""
 

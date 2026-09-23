@@ -40,6 +40,7 @@ class AssessmentContext:
     minimum_plaintext_credential_length: int | None = None
     credential_blocklist_sha256: tuple[str, ...] = ()
     report_inventory: tuple[str, ...] = ()
+    report_secret_evidence: bool = False
     excluded_categories: frozenset[str] = frozenset()
     provenance: str = "built-in default"
 
@@ -127,6 +128,8 @@ class AssessmentContext:
             raise ValueError(
                 "assessment report_inventory entries must be unique supported inventory categories"
             )
+        if not isinstance(self.report_secret_evidence, bool):
+            raise ValueError("report_secret_evidence must be a boolean")
         if any(not item or not item.replace("-", "_").isalnum() for item in self.excluded_categories):
             raise ValueError("assessment category names must be non-empty words")
 
@@ -287,6 +290,7 @@ class AssessmentContext:
             "minimum-plaintext-credential-length": self.minimum_plaintext_credential_length,
             "credential-blocklist-sha256-count": len(self.credential_blocklist_sha256),
             "report-inventory": list(self.report_inventory),
+            "report-secret-evidence": self.report_secret_evidence,
             "excluded-categories": sorted(self.excluded_categories),
             "provenance": self.provenance,
             "scope-note": "Excluded categories were not assessed and are not implied secure.",

@@ -60,6 +60,19 @@ class PanosInterface:
 
 
 @dataclass(frozen=True)
+class PanosZoneProtection:
+    device_scope: str
+    vsys: str
+    zone: str
+    interfaces: tuple[str, ...]
+    profile: str
+    resolution_state: str
+    syn_flood_state: str
+    dos_alternative_possible: bool
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
 class PanosSecurityRule:
     name: str
     device_scope: str
@@ -663,6 +676,71 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                     if interface:
                         mapping[interface] = (scope, zone_name)
         return mapping
+
+    def get_zone_protections(self) -> tuple[PanosZoneProtection, ...]:
+        """Resolve local ingress-zone SYN flood settings without assuming defaults."""
+        shared_profiles = {
+            entry.get("name", ""): entry
+            for entry in self.root.findall("./shared/network/profiles/zone-protection-profile/entry")
+        }
+        result: list[PanosZoneProtection] = []
+        for device in self._device_entries():
+            device_scope = self._device_scope(device)
+            local_profiles = {
+                entry.get("name", ""): entry
+                for entry in device.findall("./network/profiles/zone-protection-profile/entry")
+            }
+            for vsys in device.findall("./vsys/entry"):
+                vsys_name = vsys.get("name") or "vsys"
+                dos_rules = vsys.findall("./rulebase/dos/rules/entry")
+                dos_rules += vsys.findall("./pre-rulebase/dos/rules/entry")
+                dos_rules += vsys.findall("./post-rulebase/dos/rules/entry")
+                dos_alternative = any(
+                    self._text(rule.find("disabled")).casefold() != "yes"
+                    and (
+                        rule.find("./action/protect") is not None
+                        or self._text(rule.find("action")).casefold() == "protect"
+                    )
+                    for rule in dos_rules
+                )
+                for zone in vsys.findall("./zone/entry"):
+                    zone_name = zone.get("name") or ""
+                    if not zone_name:
+                        continue
+                    interfaces = tuple(dict.fromkeys(
+                        self._text(member)
+                        for member in zone.findall("./network/*/member")
+                        if self._text(member)
+                    ))
+                    profile_name = self._text(zone.find("./network/zone-protection-profile"))
+                    profile = local_profiles.get(profile_name)
+                    if profile is None:
+                        profile = shared_profiles.get(profile_name)
+                    syn_state = "unknown"
+                    if profile is not None:
+                        explicit = self._text(profile.find("./flood/tcp-syn/enable")).casefold()
+                        if explicit in {"yes", "no"}:
+                            syn_state = "enabled" if explicit == "yes" else "disabled"
+                    result.append(PanosZoneProtection(
+                        device_scope=device_scope,
+                        vsys=vsys_name,
+                        zone=zone_name,
+                        interfaces=interfaces,
+                        profile=profile_name,
+                        resolution_state="resolved" if profile is not None else (
+                            "unbound" if not profile_name else "unresolved"
+                        ),
+                        syn_flood_state=syn_state,
+                        dos_alternative_possible=dos_alternative,
+                        evidence=(self._evidence(
+                            f"{device_scope}/{vsys_name}: zone {zone_name} interfaces "
+                            f"{', '.join(interfaces) or 'unspecified'}; zone-protection-profile "
+                            f"{profile_name or 'unbound'}"
+                        ),) + ((self._evidence(
+                            f"zone-protection-profile {profile_name}: flood tcp-syn enable no"
+                        ),) if syn_state == "disabled" else ()),
+                    ))
+        return tuple(result)
 
     @staticmethod
     def _interface_nodes(device: ET.Element) -> Iterable[ET.Element]:

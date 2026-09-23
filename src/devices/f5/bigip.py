@@ -7,6 +7,7 @@ contain passwords, keys, and certificates, but none are retained as evidence.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import hashlib
 import re
 
 from src.devices.common.base_parser import BaseDeviceParser
@@ -22,7 +23,7 @@ _FIELDS = {
     "sys global-settings": {"hostname", "console-inactivity-timeout"},
     "cli global-settings": {"audit", "idle-timeout"},
     "sys syslog": {"remote-servers"},
-    "auth password-policy": {"policy-enforcement"},
+    "auth password-policy": {"policy-enforcement", "max-login-failures", "minimum-length"},
 }
 
 
@@ -46,6 +47,13 @@ class F5Setting:
     name: str
     value: str | int | None
     resolution_state: str
+    evidence: ConfigEvidence
+
+
+@dataclass(frozen=True)
+class F5UserCredential:
+    name: str
+    storage: str
     evidence: ConfigEvidence
 
 
@@ -131,11 +139,14 @@ class F5BIGIPParser(BaseDeviceParser):
         super().__init__(config_filepath)
         with open(config_filepath, encoding="utf-8-sig", errors="replace") as source:
             content = source.read()
+        self._source_digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
         version = _VERSION.search(content)
         self._version = version.group(1) if version else "?"
         self._settings: dict[tuple[str, str], F5Setting] = {}
         self._client_ssl: dict[str, F5ClientSSLProfile] = {}
         self._virtuals: dict[str, F5Virtual] = {}
+        self._user_secret_lines: dict[str, int] = {}
+        self._user_credentials: dict[str, F5UserCredential] = {}
         self._parse(_tokens(content))
         self._native = (*self._settings.values(), *self._client_ssl.values(), *self._virtuals.values())
 
@@ -171,8 +182,59 @@ class F5BIGIPParser(BaseDeviceParser):
             elif len(header) == 3 and header[:2] == ["ltm", "virtual"]:
                 recognized = True
                 self._read_virtual(header[2], header_line, tokens[body_start:cursor - 1])
+            elif len(header) == 3 and header[:2] == ["auth", "user"]:
+                recognized = True
+                self._read_user_credential(header[2], tokens[body_start:cursor - 1])
         if not recognized:
             raise F5ParseError(1)
+
+    def _read_user_credential(self, raw_name: str, body: list[_TokenValue]) -> None:
+        name = _object_name(raw_name)
+        if name is None:
+            return
+        depth = 0
+        for index, token in enumerate(body):
+            if token.text == "{":
+                depth += 1
+            elif token.text == "}":
+                depth -= 1
+            elif depth == 0 and token.text in {"password", "encrypted-password"}:
+                candidate = body[index + 1].text if index + 1 < len(body) else ""
+                if candidate and candidate not in {"{", "}", "none", "default"}:
+                    self._user_secret_lines[name] = token.line
+                    masked = candidate.casefold() in {"<redacted>", "redacted", "<hidden>"} or set(candidate) == {"*"}
+                    storage = "unknown" if masked else "plaintext" if token.text == "password" else "encrypted"
+                    self._user_credentials[name] = F5UserCredential(
+                        name=name,
+                        storage=storage,
+                        evidence=ConfigEvidence(
+                            f"auth user {name} {token.text} <redacted>",
+                            self.config_filepath,
+                            token.line,
+                        ),
+                    )
+
+    def get_local_user_credentials(self) -> tuple[F5UserCredential, ...]:
+        return tuple(self._user_credentials.values())
+
+    def get_report_secret_lines(self) -> list[dict]:
+        """Return user credential lines only after verifying the saved export is unchanged."""
+        with open(self.config_filepath, encoding="utf-8-sig", errors="replace") as source:
+            content = source.read()
+        if hashlib.sha256(content.encode("utf-8")).hexdigest() != self._source_digest:
+            raise ValueError("configuration changed after BIG-IP parsing; refusing secret report")
+        lines = content.splitlines()
+        entries = []
+        for name, number in sorted(self._user_secret_lines.items(), key=lambda item: item[1]):
+            if 1 <= number <= len(lines):
+                raw_line = lines[number - 1].strip()
+                if re.search(r"\b(?:encrypted-password|password)\s+\S+", raw_line):
+                    entries.append({
+                        "line-number": number,
+                        "context": "local_user",
+                        "source-line": raw_line,
+                    })
+        return entries
 
     def _read_settings(self, scope: str, body: list[_TokenValue]) -> None:
         depth = 0
@@ -197,7 +259,8 @@ class F5BIGIPParser(BaseDeviceParser):
                          and re.fullmatch(r"[A-Za-z0-9._-]+", candidate) else None)
             elif name in {"login", "redirect-http-to-https", "audit", "policy-enforcement"}:
                 value = candidate if candidate in {"enabled", "disabled"} else None
-            elif name in {"inactivity-timeout", "console-inactivity-timeout", "idle-timeout"}:
+            elif name in {"inactivity-timeout", "console-inactivity-timeout", "idle-timeout",
+                          "max-login-failures", "minimum-length"}:
                 if candidate == "disabled" and name == "idle-timeout":
                     value = candidate
                 elif re.fullmatch(r"[0-9]+", candidate):
