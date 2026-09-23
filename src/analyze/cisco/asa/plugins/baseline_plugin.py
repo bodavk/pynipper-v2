@@ -39,6 +39,22 @@ CISCO_ASA_FIREWALL_REFERENCE = (
     "https://www.cisco.com/c/en/us/td/docs/security/asa/asa91/configuration/"
     "firewall/asa_91_firewall_config/conns_connlimits.pdf",
 )
+CISCO_ASA_PASSWORD_POLICY_REFERENCE = (
+    "https://www.cisco.com/c/en/us/td/docs/security/asa/asa-cli-reference/"
+    "I-R/asa-command-ref-I-R/pa-pn-commands.html",
+)
+CISCO_ASA_HTTP_TIMEOUT_REFERENCE = (
+    "https://www.cisco.com/c/en/us/td/docs/security/asa/asa-cli-reference/"
+    "A-H/asa-command-ref-A-H/m_g-h.html",
+)
+CISCO_ASA_IKE_POLICY_REFERENCE = (
+    "https://www.cisco.com/c/en/us/td/docs/security/asa/"
+    "asa-cli-reference/A-H/asa-command-ref-A-H/crypto-a-to-crypto-ir-commands.html"
+)
+CISCO_ASA_WEBVPN_AUTH_REFERENCE = (
+    "https://www.cisco.com/c/en/us/td/docs/security/asa/asa916/"
+    "configuration/vpn/asa-916-vpn-config/vpn-groups.html"
+)
 NIST_CRYPTO_TRANSITIONS = "https://csrc.nist.gov/pubs/sp/800/131/a/r2/final"
 
 
@@ -153,6 +169,16 @@ class PluginASABaseline(BasePlugin):
 
         if not asa.get_management_grants("ssh"):
             return
+        ssh_timeout = asa.get_ssh_timeout()
+        if ssh_timeout.configured and ssh_timeout.value is not None and ssh_timeout.value > 10:
+            self.add_issue(self._finding(
+                parser, "cisco.asa.ssh.idle_timeout_excessive",
+                "ASA SSH administrative idle timeout is excessive",
+                f"The explicitly configured SSH idle timeout is {ssh_timeout.value} minutes, above the project's ten-minute management target.",
+                "An abandoned SSH session remains usable longer than intended.",
+                "Set 'ssh timeout' to ten minutes or less after validating the operational requirement.",
+                Severity.MEDIUM, (ssh_timeout.raw_line,), CISCO_ASA_MANAGEMENT_REFERENCE,
+            ))
         policy = asa.get_ssh_policy()
         if policy.version is not None and policy.version != "2":
             self.add_issue(self._finding(
@@ -237,6 +263,18 @@ class PluginASABaseline(BasePlugin):
                 "Add narrow 'http <network> <mask> <interface>' grants or disable the HTTP server.",
                 Severity.MEDIUM, ("http server enable",),
             ))
+        if grants:
+            idle = asa.get_asdm_idle_policy()
+            if idle.resolution_state == "explicit" and idle.minutes is not None and idle.minutes > 10:
+                self.add_issue(self._finding(
+                    parser, "cisco.asa.asdm.idle_timeout_excessive",
+                    "ASA ASDM administrative idle timeout is excessive",
+                    f"The explicitly configured {idle.source} allows {idle.minutes:g} minutes of inactivity, above the project's ten-minute management target.",
+                    "An abandoned ASDM session may remain usable longer than intended.",
+                    "Set the effective HTTP/ASDM idle timeout to ten minutes or less.",
+                    Severity.MEDIUM, tuple(item.text for item in idle.evidence),
+                    CISCO_ASA_HTTP_TIMEOUT_REFERENCE,
+                ))
         for grant in grants:
             if grant.is_any_source:
                 self.add_issue(self._finding(
@@ -463,6 +501,23 @@ class PluginASABaseline(BasePlugin):
                     "Use AES-GCM/AES-256, SHA-256 or stronger, and approved modern DH groups.",
                     Severity.HIGH, (block.text.strip(), *weak),
                 ))
+
+        approved_groups = parser.assessment_context.approved_asa_ike_dh_groups
+        if approved_groups:
+            for alternative in self._asa(parser).get_active_ike_dh_groups():
+                if (alternative.group in approved_groups
+                        or alternative.group in {"1", "2", "5", "14"}):
+                    continue  # Legacy groups have the existing finding; do not duplicate it.
+                self.add_issue(self._finding(
+                    parser, "cisco.asa.crypto.ike_dh_policy",
+                    "Enabled ASA IKE policy offers a DH group outside the approved profile",
+                    f"Enabled {alternative.version} policy {alternative.priority} offers group {alternative.group} on {', '.join(alternative.interfaces)}, outside the exact approved group set in assessment policy '{parser.assessment_context.policy_version}'.",
+                    "A negotiable group outside the approved profile weakens policy consistency even when another allowed alternative exists.",
+                    "Remove this DH alternative or revise the explicitly approved platform profile after review.",
+                    Severity.MEDIUM,
+                    tuple(item.text for item in alternative.evidence),
+                    (CISCO_ASA_IKE_POLICY_REFERENCE,),
+                ))
         for binding in self._asa(parser).get_active_ipsec_transform_bindings():
             if binding.declaration is None:
                 self.add_issue(self._finding(
@@ -482,6 +537,25 @@ class PluginASABaseline(BasePlugin):
                     Severity.HIGH, (binding.declaration, binding.map_binding, binding.map_attachment),
                 ))
 
+    def check_remote_access_authentication(self, parser: BaseDeviceParser) -> None:
+        if not parser.assessment_context.asa_ra_require_client_certificate:
+            return
+        for profile in self._asa(parser).get_selectable_webvpn_profiles():
+            if profile.authentication != "aaa":
+                continue
+            self.add_issue(self._finding(
+                parser,
+                "cisco.asa.remote_access.client_certificate_missing",
+                "Selectable ASA remote-access profile requires only AAA authentication",
+                f"WebVPN profile '{profile.name}' is selectable on enabled listener(s) {', '.join(profile.listener_interfaces)} and explicitly requires AAA but not a client certificate, contrary to assessment policy '{parser.assessment_context.policy_version}'.",
+                "A password-only configured path does not meet this audit's explicit client-certificate requirement; external identity-provider MFA is not inferred from the export.",
+                "Require certificate authentication for this profile or document and select a different approved authentication policy.",
+                Severity.HIGH,
+                tuple(item.text for item in profile.evidence)
+                + ("assessment policy: ASA remote access client certificate required",),
+                (CISCO_ASA_WEBVPN_AUTH_REFERENCE,),
+            ))
+
     def check_failover(self, parser: BaseDeviceParser) -> None:
         lines = self._lines(parser)
         failover = "failover" in lines and "no failover" not in lines
@@ -496,11 +570,58 @@ class PluginASABaseline(BasePlugin):
                 Severity.HIGH, ("failover",),
             ))
 
+    def check_local_administrator_policy(self, parser: BaseDeviceParser) -> None:
+        asa = self._asa(parser)
+        release = asa._release_tuple(asa.get_version())
+        if release is None or not asa.get_users():
+            return
+        bindings = {
+            item.protocol: item
+            for item in asa.get_administrative_aaa_bindings()
+            if item.binding_type == "authentication"
+        }
+        local_paths = [
+            protocol for protocol in ("ssh", "telnet", "http")
+            if asa.get_management_grants(protocol)
+            and (protocol != "http" or asa.get_http_server_enabled())
+            and (binding := bindings.get(protocol)) is not None
+            and binding.local_fallback
+        ]
+        if not local_paths:
+            return
+        lockout = asa.get_local_lockout_limit()
+        # On releases before 9.17, privilege-15 users are exempt from this
+        # control. Do not imply that a protected emergency administrator is
+        # subject to lockout on older ASA releases.
+        if release >= (9, 17) and lockout.raw_line.startswith(("no ", "default ")):
+            self.add_issue(self._finding(
+                parser, "cisco.asa.admin.local_lockout_disabled",
+                "ASA local administrative login lockout is explicitly disabled",
+                f"Local-database authentication is an active or fallback path for {', '.join(sorted(local_paths))}, while the maximum-failure limit is explicitly reset.",
+                "Repeated guesses against a local administrative account are not limited by this configured control.",
+                "Configure 'aaa local authentication attempts max-fail' to an approved value while retaining a tested emergency access path.",
+                Severity.HIGH, (lockout.raw_line,), CISCO_ASA_AAA_REFERENCE,
+            ))
+        minimum = asa.get_local_password_minimum()
+        if (
+            release >= (9, 1) and minimum.value is not None and minimum.value < 8
+            and (minimum.configured or minimum.raw_line.startswith(("no ", "default ")))
+        ):
+            self.add_issue(self._finding(
+                parser, "cisco.asa.admin.local_password_minimum",
+                "ASA local administrator password minimum is below vendor guidance",
+                f"The explicitly configured or reset local password policy permits {minimum.value}-character passwords, below Cisco's eight-character recommendation.",
+                "New or changed local administrative passwords may be easier to guess; existing passwords are not retroactively changed by this setting.",
+                "Set 'password-policy minimum-length' to at least eight or an approved stronger organizational value.",
+                Severity.MEDIUM, (minimum.raw_line,), CISCO_ASA_PASSWORD_POLICY_REFERENCE,
+            ))
+
     def analyze(self, parser: BaseDeviceParser) -> None:
         if parser.device_type != "ASA" or self._asa(parser).get_version() == "?":
             return
         self.check_aaa(parser)
         self.check_management_sessions_and_ssh(parser)
+        self.check_local_administrator_policy(parser)
         self.check_local_users(parser)
         self.check_http_management(parser)
         self.check_ntp(parser)
@@ -508,4 +629,5 @@ class PluginASABaseline(BasePlugin):
         self.check_connection_limits(parser)
         self.check_reverse_path(parser)
         self.check_vpn_crypto(parser)
+        self.check_remote_access_authentication(parser)
         self.check_failover(parser)

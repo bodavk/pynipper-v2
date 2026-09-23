@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import ipaddress
 import re
 import shlex
 from typing import Any
@@ -121,6 +122,18 @@ class HPPortProtection:
     source_lockdown: bool
     port_security: bool
     evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class HPRemoteLoggingPolicy:
+    destinations: tuple[LoggingDestination, ...]
+    destination_enabled: bool | None
+    event_enabled: bool | None
+    severity: str | None
+    severity_state: str
+    severity_evidence: tuple[ConfigEvidence, ...]
+    control_evidence: tuple[ConfigEvidence, ...]
+    event_evidence: tuple[ConfigEvidence, ...]
 
 
 class HPProCurveParser(BaseDeviceParser):
@@ -852,25 +865,79 @@ class HPProCurveParser(BaseDeviceParser):
                 active.update(values)
         return tuple(sorted(active))
 
-    def get_logging_destinations(self) -> list[LoggingDestination]:
+    def get_remote_logging_policy(self) -> HPRemoteLoggingPolicy:
+        """Resolve saved AOS-S syslog destination and Event Log forwarding state."""
         destinations: dict[str, LoggingDestination] = {}
-        expression = re.compile(r"(?P<no>no\s+)?logging\s+(?P<address>\S+)(?:\s+.*)?", re.IGNORECASE)
+        destination_enabled: bool | None = None
+        event_enabled: bool | None = None
+        severity: str | None = None
+        severity_state = "unknown"
+        severity_evidence: tuple[ConfigEvidence, ...] = ()
+        control_evidence: tuple[ConfigEvidence, ...] = ()
+        event_evidence: tuple[ConfigEvidence, ...] = ()
         for command in self.commands:
-            match = expression.fullmatch(command.text)
-            if not match or match.group("address").casefold() in {"facility", "severity", "origin-id"}:
+            text = command.text.casefold()
+            evidence = (self._evidence(command),)
+            if text == "no logging":
+                destinations.clear()
+                destination_enabled = False
+                control_evidence = evidence
+                continue
+            if text in {"debug destination logging", "no debug destination logging"}:
+                destination_enabled = not text.startswith("no ")
+                control_evidence = evidence
+                continue
+            if text in {"debug event", "no debug event"}:
+                event_enabled = not text.startswith("no ")
+                event_evidence = evidence
+                continue
+            if text.startswith(("logging severity", "no logging severity")):
+                if re.fullmatch(r"no logging severity(?: (?:major|error|warning|info|debug))?", text):
+                    severity, severity_state, severity_evidence = None, "default-reset", evidence
+                else:
+                    match = re.fullmatch(r"logging severity (\S+)", text)
+                    severity = match.group(1) if match else None
+                    severity_state = (
+                        "explicit" if severity in {"major", "error", "warning", "info", "debug"}
+                        else "invalid"
+                    )
+                    severity_evidence = evidence
+                continue
+            match = re.fullmatch(r"(?P<no>no )?logging (?:(?P<domain>domain-name) )?(?P<address>\S+)", text)
+            if not match:
                 continue
             address = match.group("address")
+            if not match.group("domain"):
+                try:
+                    ipaddress.ip_address(address)
+                except ValueError:
+                    continue
+            elif not re.fullmatch(r"[a-z0-9][a-z0-9.-]*[a-z0-9]", address):
+                continue
             if match.group("no"):
-                destinations.pop(address.casefold(), None)
+                destinations.pop(address, None)
+                if not destinations:
+                    destination_enabled = False
             else:
-                destinations[address.casefold()] = LoggingDestination(
+                if not destinations:
+                    destination_enabled = True
+                    event_enabled = True
+                destinations[address] = LoggingDestination(
                     destination_type="syslog",
                     state=ConfigurationState.ENABLED,
                     address=address,
                     scope="switch",
-                    evidence=(self._evidence(command),),
+                    evidence=evidence,
                 )
-        return list(destinations.values())
+        return HPRemoteLoggingPolicy(
+            tuple(destinations.values()), destination_enabled, event_enabled,
+            severity, severity_state, severity_evidence, control_evidence,
+            event_evidence,
+        )
+
+    def get_logging_destinations(self) -> list[LoggingDestination]:
+        policy = self.get_remote_logging_policy()
+        return list(policy.destinations) if policy.destination_enabled is not False else []
 
     def get_sntp_keys(self) -> dict[str, HPSNTPKey]:
         keys: dict[str, HPSNTPKey] = {}

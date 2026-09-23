@@ -18,6 +18,7 @@ ARISTA_DISPLAY_GUIDE = "https://www.arista.com/en/um-eos/eos-managing-display-at
 ARISTA_TLS_GUIDE = "https://www.arista.com/en/um-eos/eos-control-plane-security"
 ARISTA_CONTROL_PLANE_GUIDE = "https://www.arista.com/en/um-eos/eos-traffic-management"
 ARISTA_CONTROL_PLANE_ACL_GUIDE = "https://www.arista.com/en/um-eos/eos-data-transfer"
+ARISTA_LOGGING_GUIDE = "https://www.arista.com/en/um-eos/eos-switch-administration-commands"
 
 
 class PluginAristaChecks(BasePlugin):
@@ -254,6 +255,38 @@ class PluginAristaChecks(BasePlugin):
                     evidence=tuple(item.text for item in lockout.evidence),
                     references=(ARISTA_USER_SECURITY_GUIDE,),
                 ))
+
+        local_admin_path = bool(eos.get_administrators()) and remote_active and any(
+            policy.policy_type == "authentication"
+            and policy.service == "login"
+            and policy.connection == "default"
+            and policy.methods is not None
+            and "local" in policy.methods
+            for policy in eos.get_aaa_policies()
+        )
+        password_minimum = eos.get_password_minimum_policy()
+        if local_admin_path and password_minimum.resolution_state in {
+            "explicit-disabled", "explicit"
+        } and (
+            password_minimum.resolution_state == "explicit-disabled"
+            or password_minimum.minimum_length == 1
+        ):
+            self.add_issue(Finding(
+                rule_id="arista.eos.admin.local_password_minimum_ineffective",
+                device=parser.device_type,
+                title="EOS local administrative password minimum is ineffective",
+                observation=(
+                    "The global local-password policy is explicitly disabled."
+                    if password_minimum.resolution_state == "explicit-disabled" else
+                    "The explicit global minimum permits a one-character local password."
+                ),
+                impact="New or changed local administrator passwords may be trivially weak; existing secret strength is not inferred.",
+                exploitability="An attacker with a reachable local-login path has more opportunity to guess a short password.",
+                recommendation="Enable a local password minimum aligned with the approved administrative-password policy.",
+                severity=Severity.MEDIUM,
+                evidence=tuple(item.text for item in password_minimum.evidence),
+                references=(ARISTA_SESSION_GUIDE,),
+            ))
 
         for session in interactive:
             if session.resolution_state == "invalid" or session.idle_timeout_minutes is None:
@@ -619,13 +652,15 @@ class PluginAristaChecks(BasePlugin):
 
     def check_operations(self, parser: BaseDeviceParser) -> None:
         eos = self._eos(parser)
-        if not eos.get_logging_destinations():
+        destinations = eos.get_logging_destinations()
+        logging = eos.get_logging_severity_policy()
+        if not destinations:
             self.add_issue(
                 Finding(
                     rule_id="arista.eos.logging.remote_destination",
                     device=parser.device_type,
                     title="No remote syslog destination is configured",
-                    observation="No active 'logging host' destination was found.",
+                    observation="No active remote syslog destination is effective; no host is configured or system logging is explicitly disabled.",
                     impact="Security events may be lost through local rollover or device compromise.",
                     exploitability="An attacker with device access benefits from reduced external evidence.",
                     recommendation="Configure protected, redundant remote syslog destinations.",
@@ -634,6 +669,44 @@ class PluginAristaChecks(BasePlugin):
                     references=(ARISTA_SECURITY_GUIDE,),
                 )
             )
+        if (destinations and logging.logging_on is not False
+                and logging.trap_state == "explicit"
+                and logging.trap_level is not None and logging.trap_level < 3):
+            self.add_issue(Finding(
+                rule_id="arista.eos.logging.remote_severity_excludes_errors",
+                device=parser.device_type,
+                title="EOS remote logging excludes error-severity events",
+                observation=(
+                    f"An explicit remote trap threshold of {logging.trap_level} forwards "
+                    "only more urgent events; error-severity (level 3) events are excluded "
+                    f"from {len(destinations)} configured remote destination(s)."
+                ),
+                impact="Error-severity security and operational events can be absent from central monitoring.",
+                exploitability="A device fault or hostile action logged at error severity may not reach the remote collector.",
+                recommendation="Set the remote trap threshold to errors (3) or a more inclusive approved level.",
+                severity=Severity.MEDIUM,
+                evidence=tuple(item.text for item in logging.trap_evidence)
+                + tuple(item.text for destination in destinations for item in destination.evidence),
+                references=(ARISTA_LOGGING_GUIDE,),
+            ))
+        if (logging.logging_on is not False
+                and logging.buffer_state == "explicit" and logging.buffer_level is not None
+                and logging.buffer_level < 3):
+            self.add_issue(Finding(
+                rule_id="arista.eos.logging.buffer_severity_excludes_errors",
+                device=parser.device_type,
+                title="EOS local log buffer excludes error-severity events",
+                observation=(
+                    f"An explicit buffer threshold of {logging.buffer_level} excludes "
+                    "error-severity (level 3) events from the local log buffer."
+                ),
+                impact="Local troubleshooting and incident review may lack error-severity events.",
+                exploitability="An attacker with device access may benefit from reduced local evidence; remote logging is assessed separately.",
+                recommendation="Set the buffer threshold to errors (3) or a more inclusive approved level.",
+                severity=Severity.LOW,
+                evidence=tuple(item.text for item in logging.buffer_evidence),
+                references=(ARISTA_LOGGING_GUIDE,),
+            ))
         associations = eos.get_ntp_associations()
         if not associations:
             self.add_issue(

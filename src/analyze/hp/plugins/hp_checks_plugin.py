@@ -15,6 +15,14 @@ AOS_SWITCH_SNTP_GUIDE = (
     "https://arubanetworking.hpe.com/techdocs/AOS-S/16.11/MCG/KB/content/kb/"
     "snt-ser.htm"
 )
+AOS_SWITCH_LOGGING_GUIDE = (
+    "https://arubanetworking.hpe.com/techdocs/AOS-S/16.11/MCG/KB/content/kb/"
+    "cnf-sev-lev-eve-log.htm"
+)
+AOS_SWITCH_DEBUG_GUIDE = (
+    "https://arubanetworking.hpe.com/techdocs/AOS-S/16.11/MCG/YC/content/"
+    "common%20files/cnf-deb-ope.htm"
+)
 AOS_SWITCH_SNMPV3_GUIDE = (
     "https://arubanetworking.hpe.com/techdocs/AOS-S/16.11/MCG/WC/content/"
     "common%20files/snm-use-com.htm"
@@ -522,21 +530,62 @@ class PluginHPChecks(BasePlugin):
                 ))
     def _check_observability(self, parser: BaseDeviceParser) -> None:
         hp = self._hp(parser)
-        if not hp.get_logging_destinations():
+        logging = hp.get_remote_logging_policy()
+        destinations = hp.get_logging_destinations()
+        if not destinations:
             self.add_issue(
                 Finding(
                     rule_id="hp.procurve.logging.remote_destination",
                     device=parser.device_type,
-                    title="No remote syslog destination is configured",
-                    observation="No active AOS-S 'logging <address>' destination was found.",
+                    title="No effective remote syslog destination",
+                    observation=(
+                        "Configured syslog servers are inactive because remote debug logging is explicitly disabled."
+                        if logging.destinations and logging.destination_enabled is False else
+                        "No active AOS-S remote syslog destination was found."
+                    ),
                     impact="Security events may be lost with local log rollover or device compromise.",
                     exploitability="An attacker who gains device access can benefit from reduced external evidence.",
-                    recommendation="Configure at least one protected remote syslog destination.",
+                    recommendation=(
+                        "Re-enable the configured remote syslog destination with 'debug destination logging'."
+                        if logging.destinations and logging.destination_enabled is False else
+                        "Configure at least one protected remote syslog destination."
+                    ),
                     severity=Severity.MEDIUM,
-                    evidence=("remote logging destination absent",),
+                    evidence=(tuple(item.text for item in logging.control_evidence)
+                              if logging.destinations and logging.destination_enabled is False
+                              else ("remote logging destination absent",)),
                     references=(AOS_SWITCH_SECURITY_GUIDE,),
                 )
             )
+        if destinations and hp.has_supported_administrative_release():
+            if logging.event_enabled is False:
+                self.add_issue(Finding(
+                    rule_id="hp.procurve.logging.remote_event_disabled",
+                    device=parser.device_type,
+                    title="AOS-S Event Log forwarding is disabled",
+                    observation="Remote syslog servers are configured, but 'no debug event' suppresses switch Event Log messages to them.",
+                    impact="Security-relevant switch events may be absent from central retention even though other debug messages can still be sent.",
+                    exploitability="An attacker with device access may benefit from missing centrally retained events.",
+                    recommendation="Enable Event Log forwarding with 'debug event' and verify the remote logging destination.",
+                    severity=Severity.MEDIUM,
+                    evidence=tuple(item.text for item in logging.event_evidence)
+                    + tuple(item.text for destination in destinations for item in destination.evidence),
+                    references=(AOS_SWITCH_DEBUG_GUIDE,),
+                ))
+            elif logging.severity_state == "explicit" and logging.severity == "major":
+                self.add_issue(Finding(
+                    rule_id="hp.procurve.logging.remote_severity_excludes_errors",
+                    device=parser.device_type,
+                    title="AOS-S remote logging excludes error events",
+                    observation="The explicit 'major' filter forwards fatal events but excludes error-severity Event Log messages from configured syslog servers.",
+                    impact="Error-severity switch events may be absent from central monitoring; the local Event Log is unaffected by this filter.",
+                    exploitability="A fault or hostile action recorded at error severity may not reach the remote collector.",
+                    recommendation="Set remote Event Log severity to 'error' or a more inclusive approved level.",
+                    severity=Severity.MEDIUM,
+                    evidence=tuple(item.text for item in logging.severity_evidence)
+                    + tuple(item.text for destination in destinations for item in destination.evidence),
+                    references=(AOS_SWITCH_LOGGING_GUIDE,),
+                ))
         associations = hp.get_sntp_associations()
         if not associations:
             self.add_issue(

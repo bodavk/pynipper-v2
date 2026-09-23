@@ -40,6 +40,59 @@ CISCO_IOS_ARCHIVE_GUIDE = (
     "https://www.cisco.com/c/en/us/td/docs/routers/ios-xe/system-management/"
     "system-management/m_cm-config-versioning.html"
 )
+CISCO_IOS_AUTHORIZATION_GUIDE = (
+    "https://www.cisco.com/c/dam/en/us/td/docs/ios/security/configuration/guide/12_4t/sec_12_4t_book.pdf"
+)
+CISCO_IOS_ACCOUNTING_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/ios/sec_user_services/configuration/guide/convert/aaa/sec_cfg_accountg.html"
+)
+CISCO_IOS_AAA_GROUP_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/routers/ios-xe/security-vpn/security-vpn/m_sec-rad-aaa-server-groups.html"
+)
+CISCO_IOS_DOT1X_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/sec_usr_8021x/"
+    "configuration/xe-3e/sec-usr-8021x-xe-3e-book/config-ieee-802x-pba.html"
+)
+CISCO_IOS_OPEN_AUTH_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/sec_usr_8021x/"
+    "configuration/xe-3e/sec-usr-8021x-xe-3e-book/sec-ieee-open-auth.html"
+)
+CISCO_IOS_BPDU_GUARD_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/lanswitch/"
+    "command/lsw-cr-book/lsw-s2.html"
+)
+CISCO_IOS_RIP_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/ios/"
+    "iproute_rip/command/reference/irr_book/irr_rip.html"
+)
+CISCO_IOS_EIGRP_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/"
+    "iproute_eigrp/command/ire-cr-book/ire-i1.html"
+)
+CISCO_IOS_BGP_PREFIX_FILTER_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/routers/ios-xe/"
+    "ip-routing/b-ip-routing/m_irg-external-sp-0.html"
+)
+CISCO_IOS_ROUTE_MAP_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/routers/ios-xe/"
+    "ip-routing/b-ip-routing/m_iri-iprouting.html"
+)
+CISCO_IOS_AS_PATH_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/ios/"
+    "iproute_bgp/command/reference/irg_book/irg_bgp2.html"
+)
+CISCO_IOS_BOOT_CONFIG_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/ios/ios_xe/fundamentals/"
+    "configuration/guide/TIPs_conversion/config_mgmt_xe_3s_Book/cf_config-files_xe.html"
+)
+CISCO_IOS_KEY_LIFETIME_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/ios/"
+    "iproute_pi/command/reference/iri_book/iri_pi2.html"
+)
+CISCO_IOS_HTTPS_TRUSTPOINT_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/https/"
+    "command/nm-https-cr-book/nm-https-cr-cl-sh.html"
+)
 
 
 class PluginIOSBaseline(BasePlugin):
@@ -144,7 +197,6 @@ class PluginIOSBaseline(BasePlugin):
 
     def check_management_lines(self, parser: BaseDeviceParser) -> None:
         ios = self._ios(parser)
-        method_lists = ios.get_aaa_method_lists()
         aaa_enabled = self._effective_toggle(
             self._global_lines(parser), r"aaa new-model", r"no aaa new-model"
         )
@@ -153,40 +205,22 @@ class PluginIOSBaseline(BasePlugin):
         )
         aaa_server_groups = ios.get_aaa_server_groups()
 
-        def backend_resolves(method_list, *, authentication: bool = False) -> bool:
-            methods = method_list.methods
-            for index, method in enumerate(methods):
-                if method.casefold() != "group":
+        def login_backend_resolves(item) -> bool:
+            if "none" in item.methods or ("local" in item.methods and not has_local_users):
+                return False
+            for index, method in enumerate(item.methods):
+                if method != "group":
                     continue
-                if index + 1 >= len(methods):
+                if index + 1 >= len(item.methods):
                     return False
-                group = methods[index + 1]
-                if group.casefold() not in {"radius", "tacacs+"} and group not in aaa_server_groups:
+                group = item.methods[index + 1]
+                if group not in {"radius", "tacacs+"} and group not in aaa_server_groups:
                     return False
-            if authentication:
-                if any(method.casefold() == "none" for method in methods):
-                    return False
-                if any(method.casefold() == "local" for method in methods) and not has_local_users:
-                    return False
-            return bool(methods)
+            return bool(item.methods)
 
         login_lists = {
-            item.name
-            for item in method_lists
-            if item.service == "login_authentication"
-            and backend_resolves(item, authentication=True)
-        }
-        exec_lists = {
-            item.name
-            for item in method_lists
-            if item.service == "exec_authorization" and backend_resolves(item)
-        }
-        command_lists = {
-            item.name
-            for item in method_lists
-            if item.service == "command_authorization"
-            and item.privilege_level == 15
-            and backend_resolves(item)
+            item.name for item in ios.get_aaa_method_lists()
+            if item.service == "login_authentication" and login_backend_resolves(item)
         }
 
         def authentication_resolves(line) -> bool:
@@ -248,51 +282,6 @@ class PluginIOSBaseline(BasePlugin):
                         evidence or (line.line,),
                     )
                 )
-            active = line.accepts_inbound_connections is not False
-            if active and not authentication_resolves(line):
-                reason = (
-                    f"references undefined AAA login list '{line.login_list}'"
-                    if line.login_kind == "aaa" and line.login_list
-                    else "lacks a resolvable local or AAA login binding"
-                )
-                self.add_issue(
-                    self._finding(
-                        parser,
-                        "cisco.ios.vty.authentication",
-                        "VTY authentication is not explicitly bound",
-                        f"{line.line} {reason}.",
-                        "The line may use an unintended password-only or default authentication path.",
-                        "Bind each VTY range to a named AAA login method or explicit local authentication.",
-                        Severity.HIGH,
-                        evidence or (line.line,),
-                    )
-                )
-            if aaa_enabled and active:
-                effective_exec = line.exec_authorization_list or (
-                    "default" if "default" in exec_lists else None
-                )
-                command_map = dict(line.command_authorization)
-                effective_commands = command_map.get(15) or (
-                    "default" if "default" in command_lists else None
-                )
-                missing = []
-                if not effective_exec or effective_exec not in exec_lists:
-                    missing.append("EXEC authorization")
-                if not effective_commands or effective_commands not in command_lists:
-                    missing.append("privilege-15 command authorization")
-                if missing:
-                    self.add_issue(
-                        self._finding(
-                            parser,
-                            "cisco.ios.vty.authorization",
-                            "VTY administrative authorization is incomplete",
-                            f"{line.line} lacks resolved {', '.join(missing)}.",
-                            "Authenticated administrators may receive unintended EXEC access or execute commands without centralized authorization.",
-                            "Define and bind resolved AAA EXEC and privilege-15 command authorization method lists.",
-                            Severity.HIGH,
-                            evidence or (line.line,),
-                        )
-                    )
             if line.output_transports and any(
                 item in {"telnet", "rlogin", "all"} for item in line.output_transports
             ):
@@ -308,6 +297,8 @@ class PluginIOSBaseline(BasePlugin):
                         evidence or (line.line,),
                     )
                 )
+
+        self.check_effective_vty_aaa(parser)
 
         for console in ios.get_management_lines("console"):
             evidence = tuple(item.text for item in console.evidence)
@@ -357,8 +348,179 @@ class PluginIOSBaseline(BasePlugin):
                         "Disable the line or bind it to a tested AAA login method.",
                         Severity.HIGH,
                         evidence or (auxiliary.line,),
-                    )
                 )
+            )
+
+    def check_effective_vty_aaa(self, parser: BaseDeviceParser) -> None:
+        ios = self._ios(parser)
+        aaa_enabled = self._effective_toggle(
+            self._global_lines(parser), r"aaa new-model", r"no aaa new-model"
+        )
+        has_local_users = any(
+            item.context == "local_user" for item in ios.get_credential_metadata()
+        )
+        methods = {
+            (item.service, item.name, item.privilege_level): item
+            for item in ios.get_aaa_method_lists()
+        }
+        accounting = {
+            (item.service, item.name, item.privilege_level): item
+            for item in ios.get_aaa_accounting_lists()
+        }
+        groups = {}
+        for item in ios.get_aaa_server_group_records():
+            groups.setdefault(item.name, []).append(item)
+
+        def referenced_groups(tokens: tuple[str, ...]) -> tuple[str, ...]:
+            return tuple(
+                tokens[index + 1] for index, token in enumerate(tokens[:-1])
+                if token.casefold() == "group"
+            )
+
+        def valid(item, *, authentication: bool = False) -> bool:
+            if item is None or not item.methods:
+                return False
+            if item.methods[-1].casefold() == "group":
+                return False
+            if any(
+                group.casefold() not in {"radius", "tacacs+"} and group not in groups
+                for group in referenced_groups(item.methods)
+            ):
+                return False
+            if authentication and (
+                "none" in item.methods or ("local" in item.methods and not has_local_users)
+            ):
+                return False
+            return True
+
+        for line in ios.get_effective_vty_aaa():
+            if not line.active:
+                continue
+            evidence = tuple(item.text for item in line.evidence)
+            login = methods.get(("login_authentication", line.login_list, None))
+            authenticated = (
+                line.login_kind == "local" and has_local_users
+                or aaa_enabled and line.login_kind == "aaa" and valid(login, authentication=True)
+            )
+            if not authenticated:
+                reason = (
+                    f"references undefined AAA login list '{line.login_list}'"
+                    if line.login_kind == "aaa" and login is None
+                    else "lacks a resolvable local or AAA login binding"
+                )
+                self.add_issue(self._finding(
+                    parser, "cisco.ios.vty.authentication",
+                    "VTY authentication is not explicitly bound",
+                    f"{line.line} {reason}.",
+                    "The line may use an unintended password-only or default authentication path.",
+                    "Bind each VTY range to a named AAA login method or explicit local authentication.",
+                    Severity.HIGH, evidence or (line.line,),
+                ))
+
+            if not aaa_enabled:
+                continue
+            exec_name = line.exec_authorization_list or "default"
+            command_name = line.command_authorization_list or "default"
+            exec_method = methods.get(("exec_authorization", exec_name, None))
+            command_method = methods.get(("command_authorization", command_name, 15))
+            missing = []
+            if not valid(exec_method):
+                missing.append("EXEC authorization")
+            if not valid(command_method):
+                missing.append("privilege-15 command authorization")
+            if missing:
+                self.add_issue(self._finding(
+                    parser, "cisco.ios.vty.authorization",
+                    "VTY administrative authorization is incomplete",
+                    f"{line.line} lacks resolved {', '.join(missing)}.",
+                    "Authenticated administrators may receive unintended EXEC access or execute commands without centralized authorization.",
+                    "Define and bind resolved AAA EXEC and privilege-15 command authorization method lists.",
+                    Severity.HIGH, evidence or (line.line,),
+                ))
+
+            bypass = [
+                service for service, item in (("EXEC", exec_method), ("privilege-15 commands", command_method))
+                if item is not None and any(
+                    method.casefold() in {"none", "if-authenticated"} for method in item.methods
+                )
+            ]
+            if bypass:
+                self.add_issue(self._finding(
+                    parser, "cisco.ios.vty.authorization_bypass",
+                    "VTY authorization has an explicit bypass method",
+                    f"{line.line} binds {', '.join(bypass)} to an authorization list containing 'none' or 'if-authenticated'.",
+                    "A configured fallback can allow access without a server-backed or local privilege decision; this does not imply unauthenticated login.",
+                    "Replace the bypass method with an approved server-backed or local authorization fallback.",
+                    Severity.HIGH,
+                    evidence + tuple(item.evidence.text for item in (exec_method, command_method) if item is not None),
+                    (CISCO_IOS_AUTHORIZATION_GUIDE,),
+                ))
+
+            selected_accounting = []
+            missing_explicit = []
+            for service, level, explicit in (
+                ("exec", None, line.exec_accounting_list),
+                ("commands", 15, line.command_accounting_list),
+            ):
+                name = explicit or "default"
+                item = accounting.get((service, name, level))
+                if item is not None:
+                    selected_accounting.append(item)
+                elif explicit:
+                    missing_explicit.append(f"{service} list '{explicit}'")
+            disabled_accounting = [
+                item for item in selected_accounting if item.record_type == "none"
+            ]
+            if missing_explicit or (accounting and not any(
+                item.record_type != "none" and valid(item) for item in selected_accounting
+            ) and not disabled_accounting):
+                self.add_issue(self._finding(
+                    parser, "cisco.ios.vty.accounting_unbound",
+                    "Administrative accounting list is not effective on VTY",
+                    (
+                        f"{line.line} references undefined {', '.join(missing_explicit)}."
+                        if missing_explicit else
+                        f"{line.line} has no effective EXEC or privilege-15 command accounting list despite configured accounting declarations."
+                    ),
+                    "Administrative actions on this line may not generate central accounting records.",
+                    "Bind a usable named accounting list to the line or define an effective default list.",
+                    Severity.MEDIUM,
+                    evidence + tuple(item.evidence.text for item in selected_accounting),
+                    (CISCO_IOS_ACCOUNTING_GUIDE,),
+                ))
+            if disabled_accounting:
+                self.add_issue(self._finding(
+                    parser, "cisco.ios.vty.accounting_disabled",
+                    "VTY accounting is explicitly disabled",
+                    f"{line.line} selects an EXEC or privilege-15 command accounting list with record type 'none'.",
+                    "That selected accounting service does not create administrative activity records.",
+                    "Use an approved start-stop or stop-only accounting method on this line.",
+                    Severity.MEDIUM,
+                    evidence + tuple(item.evidence.text for item in disabled_accounting),
+                    (CISCO_IOS_ACCOUNTING_GUIDE,),
+                ))
+
+            bound_lists = tuple(
+                item for item in (login, exec_method, command_method, *selected_accounting)
+                if item is not None
+            )
+            unusable = sorted({
+                group for item in bound_lists for group in referenced_groups(item.methods)
+                if group.casefold() not in {"radius", "tacacs+"}
+                and (group not in groups or not any(record.members for record in groups[group]))
+            })
+            if unusable:
+                self.add_issue(self._finding(
+                    parser, "cisco.ios.vty.aaa_server_group_unusable",
+                    "Bound AAA list references an unusable server group",
+                    f"{line.line} references an undefined or explicitly empty AAA server group: {', '.join(unusable)}.",
+                    "Remote AAA cannot use the named group as configured; a separate local fallback may still work.",
+                    "Define the referenced group with qualified server members or remove the unusable method.",
+                    Severity.HIGH,
+                    evidence + tuple(record.evidence.text for name in unusable
+                                     for record in groups.get(name, ())),
+                    (CISCO_IOS_AAA_GROUP_GUIDE,),
+                ))
 
     def check_ssh_policy(self, parser: BaseDeviceParser) -> None:
         ios = self._ios(parser)
@@ -854,6 +1016,71 @@ class PluginIOSBaseline(BasePlugin):
                 )
             )
 
+    def check_https_public_certificate(self, parser: BaseDeviceParser) -> None:
+        binding = self._ios(parser).get_https_selected_public_certificate()
+        if binding is None:
+            return
+        result = binding.assessment
+        metadata = binding.metadata
+        evidence = tuple(item.text for item in binding.evidence)
+        if result.validity_state in {"expired", "not-yet-valid"}:
+            self.add_issue(self._finding(
+                parser, "cisco.ios.management.https_certificate_validity",
+                "HTTPS management certificate is outside its validity period",
+                f"Selected trustpoint '{binding.trustpoint}' identity certificate is {result.validity_state} at the explicit assessment time.",
+                "Clients validating the management endpoint may reject an expired or not-yet-valid certificate.",
+                "Renew or replace the selected HTTPS identity certificate.",
+                Severity.HIGH, evidence, (CISCO_IOS_HTTPS_TRUSTPOINT_GUIDE,),
+            ))
+        if result.identity_state == "mismatch":
+            self.add_issue(self._finding(
+                parser, "cisco.ios.management.https_certificate_identity",
+                "HTTPS management certificate identity does not match",
+                f"Selected trustpoint '{binding.trustpoint}' certificate does not match the explicitly declared IOS HTTPS management identity in subjectAltName.",
+                "Clients validating the intended hostname or address will reject this endpoint identity.",
+                "Select a certificate with the approved management DNS name or IP address in subjectAltName.",
+                Severity.HIGH, evidence, (CISCO_IOS_HTTPS_TRUSTPOINT_GUIDE,),
+            ))
+        if result.algorithm_state == "weak":
+            self.add_issue(self._finding(
+                parser, "cisco.ios.management.https_certificate_algorithm",
+                "HTTPS management certificate uses a legacy key or signature",
+                f"Selected trustpoint '{binding.trustpoint}' certificate uses {metadata.public_key_algorithm} {metadata.public_key_size or 'intrinsic'} and signature hash {metadata.signature_hash_algorithm}.",
+                "Legacy public-key sizes or signatures reduce certificate assurance.",
+                "Replace the selected certificate with an approved key and signature algorithm supported by this release.",
+                Severity.HIGH, evidence, (CISCO_IOS_HTTPS_TRUSTPOINT_GUIDE,),
+            ))
+        if (result.trust_state == "verification-failed"
+                and result.identity_state == "match"
+                and result.validity_state == "valid-at-assessment-time"):
+            self.add_issue(self._finding(
+                parser, "cisco.ios.management.https_certificate_trust",
+                "HTTPS management certificate chain does not validate to an approved anchor",
+                f"Selected trustpoint '{binding.trustpoint}' certificate matches identity and time but cannot be validated to the explicitly approved exported anchor.",
+                "The supplied chain does not establish trust under the selected assessment policy.",
+                "Install the intended issuing chain and independently approve its root fingerprint.",
+                Severity.HIGH, evidence, (CISCO_IOS_HTTPS_TRUSTPOINT_GUIDE,),
+            ))
+
+    def check_boot_config_retrieval(self, parser: BaseDeviceParser) -> None:
+        if parser.assessment_context.device_lifecycle != "commissioned":
+            return
+        for retrieval in self._ios(parser).get_explicit_boot_config_retrievals():
+            if retrieval.protocol != "tftp":
+                continue
+            self.add_issue(self._finding(
+                parser,
+                "cisco.ios.services.tftp_boot_config",
+                "Commissioned device fetches boot configuration over TFTP",
+                f"Explicit boot {retrieval.kind} configuration retrieval uses unauthenticated TFTP on an assessed commissioned device.",
+                "An attacker able to influence the boot-time path or server could supply altered configuration.",
+                "Remove the TFTP boot-configuration fetch or use an approved authenticated provisioning process with verified trust boundaries.",
+                Severity.HIGH,
+                tuple(item.text for item in retrieval.evidence)
+                + ("assessment policy: device lifecycle commissioned",),
+                (CISCO_IOS_BOOT_CONFIG_GUIDE,),
+            ))
+
     def check_interface_protections(self, parser: BaseDeviceParser) -> None:
         lines = self._global_lines(parser)
         if "no ip source-route" not in lines:
@@ -1021,6 +1248,27 @@ class PluginIOSBaseline(BasePlugin):
 
     def check_routing(self, parser: BaseDeviceParser) -> None:
         ios = self._ios(parser)
+        ipv4_prefix_lists = ios.get_bgp_ipv4_prefix_list_effects()
+        route_maps = ios.get_bgp_route_map_effects()
+        as_path_filters = ios.get_bgp_as_path_filter_effects()
+        key_lifetimes = ios.get_routing_key_lifetime_states()
+
+        def report_unusable_key_lifetime(scope: str, key_reference: str, evidence: tuple[str, ...]) -> None:
+            lifetime = key_lifetimes.get(key_reference.casefold()) if key_reference else None
+            if lifetime is None or lifetime[0] != "unusable":
+                return
+            self.add_issue(self._finding(
+                parser,
+                "cisco.ios.routing.key_lifetime_unusable",
+                "Routing key chain has no currently usable authentication key",
+                f"{scope} binds key chain '{key_reference}', but every exported key is outside its send or accept lifetime at the supplied assessment time.",
+                "The configuration cannot use this key chain to send and accept authenticated routing updates at the assessed time.",
+                "Renew or rotate the key chain with overlapping valid send and accept lifetimes, then verify adjacency state.",
+                Severity.HIGH,
+                evidence + tuple(item.text for item in lifetime[1])
+                + (f"assessment policy time: {parser.assessment_context.assessment_time}",),
+                (CISCO_IOS_KEY_LIFETIME_GUIDE,),
+            ))
         for peer in ios.get_bgp_neighbors():
             if not peer.active or peer.inheritance_unknown:
                 continue
@@ -1041,6 +1289,58 @@ class PluginIOSBaseline(BasePlugin):
                 ))
             if peer.peer_role != "external":
                 continue
+            if peer.address_family == "ipv4 unicast":
+                for direction in ("in", "out"):
+                    direction_label = "inbound" if direction == "in" else "outbound"
+                    bindings = [
+                        (kind, name) for bound_direction, kind, name in peer.policy_references
+                        if bound_direction == direction
+                    ]
+                    for kind, name in bindings:
+                        if kind not in {"prefix-list", "route-map", "filter-list"}:
+                            continue
+                        effect = (
+                            ipv4_prefix_lists.get(name.casefold()) if kind == "prefix-list"
+                            else route_maps.get(name.casefold()) if kind == "route-map"
+                            else as_path_filters.get(name)
+                        )
+                        policy_label = {
+                            "prefix-list": "prefix list", "route-map": "route map",
+                            "filter-list": "AS-path filter list",
+                        }[kind]
+                        reference = {
+                            "prefix-list": CISCO_IOS_BGP_PREFIX_FILTER_GUIDE,
+                            "route-map": CISCO_IOS_ROUTE_MAP_GUIDE,
+                            "filter-list": CISCO_IOS_AS_PATH_GUIDE,
+                        }[kind]
+                        if effect is None:
+                            self.add_issue(self._finding(
+                                parser,
+                                f"cisco.ios.routing.bgp.missing_{kind.replace('-', '_')}",
+                                f"BGP neighbor references an undefined {policy_label}",
+                                f"External BGP {scope} has {direction_label} {policy_label} '{name}' attached, but no definition is exported.",
+                                "The configured route boundary cannot be validated from this export.",
+                                f"Define the intended {policy_label} and verify its effective neighbor binding.",
+                                Severity.MEDIUM,
+                                evidence,
+                                (reference,),
+                            ))
+                        elif effect[0] == "permit-all" and len(bindings) == 1:
+                            self.add_issue(self._finding(
+                                parser,
+                                f"cisco.ios.routing.bgp.permit_all_{kind.replace('-', '_')}",
+                                f"BGP neighbor {policy_label} permits every IPv4 route",
+                                (f"External BGP {scope} uses {direction_label} prefix-list '{name}' whose sole rule permits 0.0.0.0/0 le 32."
+                                 if kind == "prefix-list" else
+                                 f"External BGP {scope} uses {direction_label} route map '{name}' whose sole permit clause has no match condition."
+                                 if kind == "route-map" else
+                                 f"External BGP {scope} uses {direction_label} AS-path filter list '{name}' whose sole rule permits every AS path."),
+                                f"The attached {policy_label} does not restrict IPv4 route exchange in this direction.",
+                                "Replace the permit-all clause with approved prefix boundaries.",
+                                Severity.HIGH,
+                                evidence + tuple(item.text for item in effect[1]),
+                                (reference,),
+                            ))
             for direction, present in (("inbound", peer.inbound_policy), ("outbound", peer.outbound_policy)):
                 if present:
                     continue
@@ -1069,6 +1369,12 @@ class PluginIOSBaseline(BasePlugin):
                 ))
 
         for interface in ios.get_ospf_interfaces():
+            if (not interface.shutdown and not interface.passive
+                    and interface.authentication_state == "authenticated"):
+                report_unusable_key_lifetime(
+                    f"OSPF process {interface.process_id} on {interface.interface}",
+                    interface.key_reference, tuple(item.text for item in interface.evidence),
+                )
             if interface.shutdown or interface.passive or interface.authentication_state in {"authenticated", "unknown"}:
                 continue
             evidence = tuple(item.text for item in interface.evidence)
@@ -1087,6 +1393,82 @@ class PluginIOSBaseline(BasePlugin):
                 "An unprotected routing adjacency can accept forged protocol packets from a reachable attacker.",
                 recommendation, Severity.HIGH if interface.authentication_state != "weak" else Severity.MEDIUM,
                 evidence, (CISCO_IOS_OSPF_AUTH_GUIDE,),
+            ))
+
+        for interface in ios.get_rip_interfaces():
+            state = interface.authentication_state
+            if state == "configured-md5":
+                report_unusable_key_lifetime(
+                    f"RIPv2 on {interface.interface}", interface.key_reference,
+                    tuple(item.text for item in interface.evidence),
+                )
+            if state in {"configured-md5", "unknown"}:
+                continue
+            scope = f"RIPv2 network {interface.network} on {interface.interface}"
+            if interface.passive:
+                scope += " (passive for outbound updates, still receiving)"
+            if state == "version1-accepted":
+                rule_id = "cisco.ios.routing.rip.version1_receive"
+                title = "RIP interface accepts unauthenticated version 1 updates"
+                observation = f"{scope} explicitly accepts RIP version 1 packets, which cannot use RIPv2 authentication."
+                recommendation = "Accept only RIPv2 on this active interface and configure an effective authenticated key chain."
+                severity = Severity.HIGH
+            elif state == "unauthenticated":
+                rule_id = "cisco.ios.routing.rip.authentication"
+                title = "Active RIP interface lacks authentication"
+                observation = f"{scope} has no effective RIP authentication key-chain binding."
+                recommendation = "Bind a qualified key chain and use message-digest authentication on this interface."
+                severity = Severity.HIGH
+            elif state == "unresolved":
+                rule_id = "cisco.ios.routing.rip.key_resolution"
+                title = "RIP authentication key chain is unresolved"
+                observation = f"{scope} references a key chain without an exported effective key value."
+                recommendation = "Define the referenced key chain with protected key material and verify its intended lifetime."
+                severity = Severity.MEDIUM
+            else:
+                rule_id = "cisco.ios.routing.rip.cleartext_authentication"
+                title = "RIP interface uses cleartext authentication"
+                observation = f"{scope} uses the RIPv2 text mode, which sends the authentication key in packets."
+                recommendation = "Use an effective message-digest key-chain mode supported by this platform and its neighbors."
+                severity = Severity.MEDIUM
+            self.add_issue(self._finding(
+                parser, rule_id, title, observation,
+                "A reachable attacker may inject or tamper with routing updates, or learn a cleartext routing key.",
+                recommendation, severity,
+                tuple(item.text for item in interface.evidence),
+                (CISCO_IOS_RIP_GUIDE,),
+            ))
+
+        for interface in ios.get_eigrp_interfaces():
+            if not interface.active or interface.passive:
+                continue
+            state = interface.authentication_state
+            if state == "configured-md5":
+                report_unusable_key_lifetime(
+                    f"EIGRP AS {interface.autonomous_system} on {interface.interface}",
+                    interface.key_reference, tuple(item.text for item in interface.evidence),
+                )
+            if state not in {"unauthenticated", "unresolved"}:
+                continue
+            scope = f"EIGRP AS {interface.autonomous_system} on {interface.interface}"
+            if state == "unauthenticated":
+                rule_id = "cisco.ios.routing.eigrp.authentication"
+                title = "Active EIGRP interface lacks authentication"
+                observation = f"{scope} has no effective EIGRP MD5 authentication mode."
+                recommendation = "Configure EIGRP authentication mode and a populated key chain for this AS on the interface."
+                severity = Severity.HIGH
+            else:
+                rule_id = "cisco.ios.routing.eigrp.key_resolution"
+                title = "EIGRP authentication key chain is unresolved"
+                observation = f"{scope} enables MD5 but has no bound key chain with exported key material."
+                recommendation = "Bind a populated key chain for this EIGRP AS and verify the intended key lifetime."
+                severity = Severity.MEDIUM
+            self.add_issue(self._finding(
+                parser, rule_id, title, observation,
+                "A reachable attacker may establish a routing adjacency or inject forged routing updates.",
+                recommendation, severity,
+                tuple(item.text for item in interface.evidence),
+                (CISCO_IOS_EIGRP_GUIDE,),
             ))
 
     def check_discovery(self, parser: BaseDeviceParser) -> None:
@@ -1173,12 +1555,84 @@ class PluginIOSBaseline(BasePlugin):
                     f"Enable and validate {label} for this access edge where supported by the exact switch model and attachment design.",
                     Severity.MEDIUM, evidence, (CISCO_IOS_ROUTING_HARDENING_GUIDE,),
                 ))
+
+    def check_access_admission(self, parser: BaseDeviceParser) -> None:
+        ios = self._ios(parser)
+        for port in ios.get_access_admission_interfaces():
+            if (not port.active or port.role != "access-edge"
+                    or port.mode not in {"access", "switchport"}):
+                continue
+            evidence = tuple(item.text for item in port.evidence) + (
+                f"assessment policy: {port.interface} role access-edge",
+            )
+            if port.port_control == "force-authorized":
+                self.add_issue(self._finding(
+                    parser, "cisco.ios.layer2.access_edge.dot1x_force_authorized",
+                    "Access-edge port bypasses 802.1X authentication",
+                    f"Interface {port.interface} is explicitly force-authorized, allowing port access without an 802.1X exchange.",
+                    "An endpoint can obtain link access without the intended port-based authentication; other independent restrictions are not assessed by this finding.",
+                    "Use an enforced port-control mode for this assessed access edge, or explicitly document and restrict an approved exception.",
+                    Severity.HIGH, evidence, (CISCO_IOS_DOT1X_GUIDE,),
+                ))
+            elif port.port_control == "auto" and port.global_dot1x is False:
+                self.add_issue(self._finding(
+                    parser, "cisco.ios.layer2.access_edge.dot1x_global_disabled",
+                    "Access-edge 802.1X is globally disabled",
+                    f"Interface {port.interface} selects automatic port authentication, but the effective global command disables 802.1X.",
+                    "The configured port authenticator cannot enforce the intended admission exchange while global system authentication is disabled.",
+                    "Enable global 802.1X system authentication and verify the port's AAA binding before relying on admission control.",
+                    Severity.HIGH, evidence, (CISCO_IOS_DOT1X_GUIDE,),
+                ))
+            elif (port.port_control == "auto" and port.global_dot1x is True
+                    and port.open_access is True):
+                self.add_issue(self._finding(
+                    parser, "cisco.ios.layer2.access_edge.dot1x_open_access",
+                    "Access-edge port permits pre-authentication access",
+                    f"Interface {port.interface} has active open authentication, so traffic can pass before 802.1X succeeds.",
+                    "Pre-authentication traffic is subject only to other independent port restrictions, which this static check does not establish.",
+                    "Disable open authentication on this assessed access edge unless a documented pre-authentication exception has suitable independent restrictions.",
+                    Severity.MEDIUM, evidence, (CISCO_IOS_OPEN_AUTH_GUIDE,),
+                ))
+
+    def check_bpdu_guard(self, parser: BaseDeviceParser) -> None:
+        ios = self._ios(parser)
+        for port in ios.get_bpdu_guard_policies():
+            if (not port.active or port.role != "access-edge" or port.lag_member
+                    or port.mode not in {"access", "switchport"}):
+                continue
+            evidence = tuple(item.text for item in port.evidence) + (
+                f"assessment policy: {port.interface} role access-edge",
+            )
+            if port.guard_enabled is False:
+                cause = {
+                    "local-disabled": "an explicit per-port BPDU-guard disable overrides any global guard setting",
+                    "global-disabled": "the global PortFast BPDU-guard setting is explicitly disabled",
+                    "portfast-disabled": "PortFast is explicitly disabled, so the global PortFast-only guard does not apply",
+                }.get(port.guard_state, "BPDU guard is explicitly ineffective")
+                self.add_issue(self._finding(
+                    parser, "cisco.ios.layer2.access_edge.bpdu_guard_ineffective",
+                    "Access-edge port has ineffective BPDU guard",
+                    f"Interface {port.interface} is an assessed access edge, but {cause}.",
+                    "A connected device can send BPDUs without this edge protection shutting down the port, potentially affecting spanning-tree topology.",
+                    "Enable effective BPDU guard on this access port; if relying on the global default, ensure the port is PortFast/edge-enabled and has no local guard disable.",
+                    Severity.MEDIUM, evidence, (CISCO_IOS_BPDU_GUARD_GUIDE,),
+                ))
+            elif port.guard_enabled is True and port.filter_enabled is True:
+                self.add_issue(self._finding(
+                    parser, "cisco.ios.layer2.access_edge.bpdu_filter_bypass",
+                    "Access-edge BPDU filtering can bypass guard",
+                    f"Interface {port.interface} has BPDU guard configured but also explicitly filters received BPDUs.",
+                    "A local BPDU filter can prevent the guard from seeing the very BPDU that should trigger edge-port shutdown.",
+                    "Remove local BPDU filtering on the assessed access edge and retain effective BPDU guard.",
+                    Severity.MEDIUM, evidence, (CISCO_IOS_BPDU_GUARD_GUIDE,),
+                ))
     def analyze(self, parser: BaseDeviceParser) -> None:
         if not self._applicable(parser):
             return
         self.check_aaa(parser)
         self.check_management_lines(parser)
         self.check_ssh_policy(parser)
+        self.check_https_public_certificate(parser)
         self.check_acl_effectiveness(parser)
         self.check_credentials(parser)
         self.check_snmp(parser)
@@ -1187,9 +1641,12 @@ class PluginIOSBaseline(BasePlugin):
         self.check_ntp(parser)
         self.check_banner(parser)
         self.check_unnecessary_services(parser)
+        self.check_boot_config_retrieval(parser)
         self.check_interface_protections(parser)
         self.check_control_plane(parser)
         self.check_crypto(parser)
         self.check_routing(parser)
         self.check_discovery(parser)
         self.check_switch_edge(parser)
+        self.check_access_admission(parser)
+        self.check_bpdu_guard(parser)

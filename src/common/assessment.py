@@ -16,6 +16,7 @@ _ROLES = {
     "uplink", "voice-fabric",
 }
 _CONFIGURATION_BACKUP_SCOPES = {"unspecified", "external-managed", "on-device-required"}
+_DEVICE_LIFECYCLES = {"unknown", "provisioning", "commissioned"}
 _REPORT_INVENTORY_CATEGORIES = {
     "interfaces", "logging-destinations", "management-services", "policies"
 }
@@ -27,6 +28,9 @@ class AssessmentContext:
 
     policy_version: str = "pynipper-v2/default-v1"
     device_role: str = "unknown"
+    device_lifecycle: str = "unknown"
+    approved_asa_ike_dh_groups: tuple[str, ...] = ()
+    asa_ra_require_client_certificate: bool = False
     interface_roles: tuple[tuple[str, str], ...] = ()
     protected_aaa_profiles: tuple[str, ...] = ()
     assessment_time: str | None = None
@@ -44,6 +48,14 @@ class AssessmentContext:
             raise ValueError("assessment policy_version must not be empty")
         if self.device_role not in _ROLES:
             raise ValueError(f"unsupported assessment device_role: {self.device_role}")
+        if self.device_lifecycle not in _DEVICE_LIFECYCLES:
+            raise ValueError(f"unsupported assessment device_lifecycle: {self.device_lifecycle}")
+        if (len(self.approved_asa_ike_dh_groups) != len(set(self.approved_asa_ike_dh_groups))
+                or any(not item.isdigit() or int(item) < 1
+                       for item in self.approved_asa_ike_dh_groups)):
+            raise ValueError("approved_asa_ike_dh_groups must be unique positive group numbers")
+        if not isinstance(self.asa_ra_require_client_certificate, bool):
+            raise ValueError("asa_ra_require_client_certificate must be a boolean")
         seen = set()
         for interface, role in self.interface_roles:
             key = interface.casefold()
@@ -121,7 +133,9 @@ class AssessmentContext:
     @classmethod
     def from_mapping(cls, value: Mapping, provenance: str = "explicit mapping") -> "AssessmentContext":
         allowed = {
-            "policy_version", "device_role", "interface_roles",
+            "policy_version", "device_role", "device_lifecycle", "interface_roles",
+            "approved_asa_ike_dh_groups",
+            "asa_ra_require_client_certificate",
             "protected_aaa_profiles", "assessment_time",
             "management_certificate_identities", "trusted_certificate_sha256",
             "configuration_backup_scope", "minimum_plaintext_credential_length",
@@ -172,9 +186,23 @@ class AssessmentContext:
             not isinstance(item, str) for item in report_inventory
         ):
             raise ValueError("assessment report_inventory must be a string list")
+        approved_dh = value.get("approved_asa_ike_dh_groups", [])
+        if not isinstance(approved_dh, list) or any(
+            isinstance(item, bool) or not isinstance(item, (str, int))
+            for item in approved_dh
+        ):
+            raise ValueError("assessment approved_asa_ike_dh_groups must be a string/integer list")
+        require_ra_certificate = value.get("asa_ra_require_client_certificate", False)
+        if not isinstance(require_ra_certificate, bool):
+            raise ValueError("assessment asa_ra_require_client_certificate must be a boolean")
         return cls(
             policy_version=str(value.get("policy_version", "pynipper-v2/default-v1")),
             device_role=str(value.get("device_role", "unknown")).casefold(),
+            device_lifecycle=str(value.get("device_lifecycle", "unknown")).casefold(),
+            approved_asa_ike_dh_groups=tuple(
+                str(int(item)) if str(item).isdigit() else str(item) for item in approved_dh
+            ),
+            asa_ra_require_client_certificate=require_ra_certificate,
             interface_roles=tuple((str(name), str(role).casefold()) for name, role in roles.items()),
             protected_aaa_profiles=tuple(protected_profiles),
             assessment_time=assessment_time,
@@ -247,6 +275,9 @@ class AssessmentContext:
         return {
             "policy-version": self.policy_version,
             "device-role": self.device_role,
+            "device-lifecycle": self.device_lifecycle,
+            "approved-asa-ike-dh-groups": list(self.approved_asa_ike_dh_groups),
+            "asa-ra-require-client-certificate": self.asa_ra_require_client_certificate,
             "interface-roles": dict(self.interface_roles),
             "protected-aaa-profiles": list(self.protected_aaa_profiles),
             "assessment-time": self.assessment_time,

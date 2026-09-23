@@ -87,6 +87,18 @@ class FortiAAAServerProfile:
 
 
 @dataclass(frozen=True)
+class FortiAdministratorRole:
+    scope: str
+    administrator: str
+    profile: str
+    definition_scope: str
+    resolution_state: str
+    privileged_state: str
+    writable_groups: Tuple[str, ...]
+    evidence: Tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
 class FortiManagementCertificateBinding:
     """Resolved FortiOS administrative HTTPS certificate evidence."""
 
@@ -100,6 +112,28 @@ class FortiManagementCertificateBinding:
 
 
 @dataclass(frozen=True)
+class FortiIPSSelector:
+    name: str
+    severities: Tuple[str, ...]
+    action: str
+    active_state: str
+    broad_match: bool
+    evidence: Tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class FortiSyslogSink:
+    name: str
+    scope: str
+    server: str
+    mode: str
+    encryption: str
+    tls_minimum: str
+    transport_state: str
+    evidence: Tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
 class FortiInspectionProfile:
     profile_type: str
     name: str
@@ -108,6 +142,7 @@ class FortiInspectionProfile:
     content_state: str
     actions: Tuple[str, ...]
     evidence: Tuple[ConfigEvidence, ...]
+    ips_selectors: Tuple[FortiIPSSelector, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -695,6 +730,73 @@ class FortiOSParser(BaseDeviceParser):
             for username, settings in section.items():
                 if isinstance(settings, dict):
                     yield scope, str(username), settings, path + (str(username),)
+
+    def get_administrator_roles(self) -> Tuple[FortiAdministratorRole, ...]:
+        """Bind enabled administrators to built-in or exported custom access profiles."""
+        profiles = {
+            (scope, str(name).casefold()): (settings, path + (str(name),))
+            for scope, section, path in self._scoped_sections("system accprofile")
+            for name, settings in section.items()
+            if isinstance(settings, dict)
+        }
+        result = []
+        permission_groups = {
+            "sysgrp", "netgrp", "loggrp", "fwgrp", "authgrp", "vpngrp",
+            "utmgrp", "wanoptgrp", "secfabgrp", "wifi", "ftviewgrp",
+        }
+        for scope, username, settings, path in self.iter_administrators():
+            if str(settings.get("status", "enable")).casefold() == "disable":
+                continue
+            profile = str(settings.get("accprofile", "super_admin"))
+            name = profile.casefold()
+            evidence = list(self.field_evidence(path + ("accprofile",)))
+            if name == "super_admin":
+                state, privileged, definition, writable = "known", "privileged", "builtin", ()
+            elif name in {"read_only", "prof_admin", "vdom_admin"}:
+                # Other built-ins have release/VDOM-specific privileges; only
+                # read_only is definitely non-writing in this bounded model.
+                state, privileged, definition, writable = (
+                    "known", "read-only" if name == "read_only" else "unknown", "builtin", ()
+                )
+            else:
+                match = next(
+                    ((candidate, profiles[(candidate, name)])
+                     for candidate in (scope, "global", "root")
+                     if (candidate, name) in profiles),
+                    None,
+                )
+                if match is None:
+                    state, privileged, definition, writable = "unresolved", "unknown", "", ()
+                else:
+                    definition, (values, profile_path) = match
+                    writable_set = {
+                        key for key in permission_groups
+                        if str(values.get(key, "")).casefold() == "read-write"
+                    }
+                    for group in ("sysgrp", "netgrp", "loggrp", "fwgrp", "utmgrp"):
+                        nested = values.get(group + "-permission")
+                        if isinstance(nested, dict) and any(
+                            str(value).casefold() == "read-write"
+                            for value in nested.values() if isinstance(value, str)
+                        ):
+                            writable_set.add(group)
+                    writable = tuple(sorted(writable_set))
+                    state = "known"
+                    privileged = "privileged" if writable else "unknown"
+                    evidence.extend(self.field_evidence(profile_path))
+                    for group in writable:
+                        evidence.extend(self.field_evidence(profile_path + (group,)))
+            result.append(FortiAdministratorRole(
+                scope=scope,
+                administrator=username,
+                profile=profile,
+                definition_scope=definition,
+                resolution_state=state,
+                privileged_state=privileged,
+                writable_groups=writable,
+                evidence=tuple(evidence),
+            ))
+        return tuple(result)
 
     def iter_interfaces(self):
         for scope, section, path in self._scoped_sections("system interface"):
@@ -1543,6 +1645,47 @@ class FortiOSParser(BaseDeviceParser):
             return "nonblocking", actions
         return "configured", actions
 
+    def _ips_selectors(
+        self, settings: FortiDict, path: Tuple[str, ...]
+    ) -> Tuple[FortiIPSSelector, ...]:
+        entries = settings.get("entries")
+        if not isinstance(entries, dict):
+            return ()
+        result: List[FortiIPSSelector] = []
+        for name, entry in entries.items():
+            if not isinstance(entry, dict):
+                continue
+            severities = tuple(value.casefold() for value in self._as_list(entry.get("severity")))
+            action = " ".join(self._as_list(entry.get("action"))).casefold()
+            status = str(entry.get("status", "default")).casefold()
+            filter_fields = {
+                "rule", "location", "protocol", "os", "application", "cve",
+                "vuln-type", "last-modified", "exempt-ip",
+            }
+            non_filter_fields = {
+                "severity", "action", "status", "log", "log-packet",
+                "log-attack-context", "default-action", "default-status",
+            }
+            broad_match = all(
+                field in filter_fields | non_filter_fields for field in entry
+            ) and all(
+                field not in entry or self._as_list(entry[field]) == ["all"]
+                for field in filter_fields
+            ) and all(
+                str(entry.get(field, "all")).casefold() == "all"
+                for field in ("default-action", "default-status")
+            )
+            evidence = (
+                self._field_evidence(path + ("entries", str(name), "severity"))
+                + self._field_evidence(path + ("entries", str(name), "action"))
+                + self._field_evidence(path + ("entries", str(name), "status"))
+            )
+            result.append(FortiIPSSelector(
+                name=str(name), severities=severities, action=action,
+                active_state=status, broad_match=broad_match, evidence=evidence,
+            ))
+        return tuple(result)
+
     @staticmethod
     def _resolution_scopes(scope: str) -> Tuple[str, ...]:
         ordered = [scope]
@@ -1579,6 +1722,7 @@ class FortiOSParser(BaseDeviceParser):
                 content_state=content_state,
                 actions=actions,
                 evidence=self._field_evidence(path),
+                ips_selectors=self._ips_selectors(settings, path) if profile_type == "ips-sensor" else (),
             )
         if name.casefold() in {"all_default", "default"}:
             return FortiInspectionProfile(
@@ -1675,6 +1819,71 @@ class FortiOSParser(BaseDeviceParser):
                     )
                 )
         return tuple(inspections)
+
+    def get_syslog_sinks(self) -> Tuple[FortiSyslogSink, ...]:
+        """Explicit active remote syslog transport, including enabled VDOM overrides."""
+        override_scopes = {
+            scope for scope, settings, _ in self._scoped_sections("log setting")
+            if str(settings.get("syslog-override", "")).casefold() == "enable"
+        }
+        result: List[FortiSyslogSink] = []
+        for number in ("", "2", "3", "4"):
+            base = f"log syslogd{number}"
+            sections = (
+                (f"{base} setting", False),
+                (f"{base} override-setting", True),
+            )
+            for section_name, override in sections:
+                for scope, settings, path in self._scoped_sections(section_name):
+                    if override and scope not in override_scopes:
+                        continue
+                    if override and str(settings.get("override", "enable")).casefold() == "disable":
+                        continue
+                    if not override and scope in override_scopes:
+                        continue
+                    # A global sink's applicability to every VDOM cannot be
+                    # established once an exported VDOM overrides syslog.
+                    if not override and scope == "global" and override_scopes:
+                        continue
+                    if str(settings.get("status", "")).casefold() != "enable":
+                        continue
+                    server = " ".join(self._as_list(settings.get("server")))
+                    if not server:
+                        continue
+                    mode = str(settings.get("mode", "")).casefold()
+                    encryption = str(settings.get("enc-algorithm", "")).casefold()
+                    tls_minimum = str(settings.get("ssl-min-proto-version", "")).casefold()
+                    if encryption == "disable":
+                        state = "explicit-cleartext"
+                    elif encryption in {"high", "high-medium", "low"} and mode in {
+                        "reliable", "legacy-reliable"
+                    }:
+                        state = (
+                            "explicit-weak-tls"
+                            if encryption == "low" or tls_minimum in {
+                                "sslv3", "tlsv1", "tlsv1-1"
+                            }
+                            else "explicit-tls"
+                        )
+                    else:
+                        state = "unknown"
+                    result.append(FortiSyslogSink(
+                        name=section_name,
+                        scope=scope,
+                        server=server,
+                        mode=mode,
+                        encryption=encryption,
+                        tls_minimum=tls_minimum,
+                        transport_state=state,
+                        evidence=(
+                            self._field_evidence(path + ("status",))
+                            + self._field_evidence(path + ("server",))
+                            + self._field_evidence(path + ("mode",))
+                            + self._field_evidence(path + ("enc-algorithm",))
+                            + self._field_evidence(path + ("ssl-min-proto-version",))
+                        ),
+                    ))
+        return tuple(result)
 
     def get_native_config(self) -> object:
         return self.config

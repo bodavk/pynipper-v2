@@ -1,0 +1,35 @@
+#TMSH-VERSION: 16.1.5
+sys global-settings {
+    hostname bigip-b.example.test
+    console-inactivity-timeout 300
+}
+sys sshd {
+    login enabled
+    allow { 192.0.2.0/255.255.255.0 }
+    inactivity-timeout 300
+}
+sys httpd {
+    allow { 192.0.2.0/255.255.255.0 }
+    redirect-http-to-https enabled
+}
+cli global-settings {
+    audit enabled
+    idle-timeout 15
+}
+auth password-policy {
+    policy-enforcement enabled
+}
+sys syslog {
+    remote-servers {
+        log1 { host 192.0.2.20 remote-port 514 }
+    }
+}
+ltm profile client-ssl /Common/protected_ssl {
+    mode enabled
+    allow-non-ssl disabled
+}
+ltm virtual /Common/application {
+    enabled
+    destination /Common/192.0.2.101:443
+    profiles { /Common/protected_ssl { context clientside } }
+}

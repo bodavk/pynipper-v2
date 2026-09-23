@@ -21,6 +21,9 @@ PANOS_POLICY_GUIDE = (
     "security-policy-best-practices/deploy-security-policy-best-practices/"
     "security-policy-rule-best-practices"
 )
+PANOS_DEFAULT_RULE_GUIDE = (
+    "https://docs.paloaltonetworks.com/pan-os/11-1/pan-os-admin/policy/security-policy"
+)
 PANOS_SECURITY_PROFILES_GUIDE = (
     "https://docs.paloaltonetworks.com/pan-os/11-1/pan-os-admin/policy/"
     "security-profiles"
@@ -825,6 +828,26 @@ class PluginPANOSChecks(BasePlugin):
             )
         ) and rule.schedule.casefold() in {"none", "any"}
 
+    def check_default_security_rules(self, parser: BaseDeviceParser) -> None:
+        for rule in self._panos(parser).get_default_security_rules():
+            if rule.resolution_state != "known" or rule.action != "allow":
+                continue
+            self.add_issue(Finding(
+                rule_id="paloalto.panos.policy.interzone_default_allow",
+                device=parser.device_type,
+                title="Interzone default security rule permits unmatched traffic",
+                observation=(
+                    f"Explicit interzone-default override in '{rule.device_scope}/{rule.scope}' "
+                    f"allows traffic that matches no earlier security rule."
+                ),
+                impact="Unmatched traffic between security zones is permitted instead of denied.",
+                exploitability="A source able to reach a different zone can use paths not explicitly permitted by named rules.",
+                recommendation="Set the interzone-default action to deny and create narrowly scoped allow rules for approved traffic.",
+                severity=Severity.HIGH,
+                evidence=self._evidence(rule.evidence),
+                references=(PANOS_DEFAULT_RULE_GUIDE,),
+            ))
+
     def check_security_rules(self, parser: BaseDeviceParser) -> None:
         panos = self._panos(parser)
         profiles = {
@@ -1016,6 +1039,41 @@ class PluginPANOSChecks(BasePlugin):
                             references=(PANOS_SECURITY_PROFILES_GUIDE,),
                         )
                     )
+                elif profile.resolution_state == "resolved" and profile.content_state == "configured":
+                    weak_severities: list[str] = []
+                    selector_evidence: list[str] = []
+                    # Signature rules are top-down. A broad earlier selector
+                    # determines the class action; a later weak selector must
+                    # not be mistaken for effective policy.
+                    for target in ("critical", "high"):
+                        first = next((
+                            selector for selector in profile.threat_selectors
+                            if selector.broad_match
+                            and (not selector.severities or target in selector.severities
+                                 or "any" in selector.severities)
+                        ), None)
+                        if first is not None and first.severities and first.action in {"allow", "alert"}:
+                            weak_severities.append(target)
+                            selector_evidence.extend(self._evidence(first.evidence))
+                    if weak_severities:
+                        self.add_issue(Finding(
+                            rule_id="paloalto.panos.policy.threat_selector_nonblocking",
+                            device=parser.device_type,
+                            title="Attached PAN-OS threat profile does not block selected high-severity threats",
+                            observation=(
+                                f"Enabled allow rule '{rule.name}' in '{rule.scope}' uses "
+                                f"{profile.profile_type} profile '{profile.name}' whose first broad "
+                                f"selector for {', '.join(weak_severities)} severity is explicitly "
+                                "allow or alert. Other blocking selectors in the profile do not "
+                                "protect these selected classes."
+                            ),
+                            impact="Matching critical or high-severity threats may be permitted instead of blocked.",
+                            exploitability="A matching threat can traverse this allowed traffic path without a blocking profile response.",
+                            recommendation="Review the selector order and set an approved blocking action for the affected severities.",
+                            severity=Severity.HIGH,
+                            evidence=profile_evidence + tuple(dict.fromkeys(selector_evidence)),
+                            references=(PANOS_SECURITY_PROFILES_GUIDE,),
+                        ))
 
     @staticmethod
     def _static_effectiveness_comparable(rule: PanosSecurityRule) -> bool:
@@ -1188,6 +1246,7 @@ class PluginPANOSChecks(BasePlugin):
 
     def analyze(self, parser: BaseDeviceParser) -> None:
         self.check_management(parser)
+        self.check_default_security_rules(parser)
         self.check_security_rules(parser)
         self.check_rule_effectiveness(parser)
         self.check_password_policy(parser)

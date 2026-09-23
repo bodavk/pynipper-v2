@@ -128,6 +128,12 @@ _DEVICE_DEFINITIONS: Tuple[DeviceDefinition, ...] = (
         "src.analyze.arista.analyze_arista_device:analyze_arista_device",
         "Arista EOS",
     ),
+    DeviceDefinition(
+        "F5_BIGIP", 20, ("BIGIP", "BIG_IP", "F5_TMOS"),
+        "src.devices.f5.bigip:F5BIGIPParser",
+        "src.analyze.f5.analyze_bigip_device:analyze_bigip_device",
+        "F5 BIG-IP TMOS",
+    ),
 )
 
 

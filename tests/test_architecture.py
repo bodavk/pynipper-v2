@@ -12,6 +12,7 @@ from src.devices.sonicwall.sonicos import SonicOSParser
 from src.devices.hp.procurve import HPProCurveParser
 from src.devices.paloalto.panos import PaloAltoPANOSParser
 from src.devices.arista.eos import AristaEOSParser
+from src.devices.f5.bigip import F5BIGIPParser
 from src.devices.common.base_parser import BaseDeviceParser
 from src import main as main_module
 from src.analyze.cisco.ios.core.process_cisco_ios_conf import IOS_PLUGINS
@@ -35,6 +36,7 @@ EXPECTED_PARSERS = {
     "IOS_XE": CiscoIOSXEParser,
     "JUNOS": JunOSParser,
     "ARISTA_EOS": AristaEOSParser,
+    "F5_BIGIP": F5BIGIPParser,
 }
 
 
@@ -53,6 +55,7 @@ EXPECTED_ANALYZERS = {
     "IOS_XE": "analyze_iosxe_device",
     "JUNOS": "analyze_junos_device",
     "ARISTA_EOS": "analyze_arista_device",
+    "F5_BIGIP": "analyze_bigip_device",
 }
 
 
@@ -71,6 +74,8 @@ def _minimal_config_source(tmp_path, canonical_id):
         content = "<config />"
     elif canonical_id == "SONICOS":
         content = 'firmware-version "SonicOS 7.1.2-7019"\n'
+    elif canonical_id == "F5_BIGIP":
+        content = "sys sshd { login disabled }\n"
     else:
         content = ""
     source.write_text(content, encoding="utf-8")

@@ -120,6 +120,24 @@ class AristaLockoutPolicy:
 
 
 @dataclass(frozen=True)
+class AristaPasswordMinimumPolicy:
+    minimum_length: int | None
+    resolution_state: str
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class AristaLoggingSeverityPolicy:
+    trap_level: int | None
+    trap_state: str
+    buffer_level: int | None
+    buffer_state: str
+    trap_evidence: tuple[ConfigEvidence, ...]
+    buffer_evidence: tuple[ConfigEvidence, ...]
+    logging_on: bool | None
+
+
+@dataclass(frozen=True)
 class AristaSSLProfile:
     name: str
     certificate: str
@@ -960,6 +978,75 @@ class AristaEOSParser(CiscoIOSParser):
                 evidence = (self._evidence(command),)
         return AristaLockoutPolicy(enabled, failures, duration, window, resolution, evidence)
 
+    def get_password_minimum_policy(self) -> AristaPasswordMinimumPolicy:
+        """Resolve the explicit global local-password minimum, not named profiles."""
+        release = self._release_tuple()
+        if release is None or release < (4, 36, 0):
+            return AristaPasswordMinimumPolicy(None, "unsupported-release", ())
+        value: int | None = None
+        state = "unknown"
+        evidence: tuple[ConfigEvidence, ...] = ()
+        named_profile_present = False
+
+        def apply(text: str, command: AristaCommand) -> None:
+            nonlocal value, state, evidence
+            match = re.fullmatch(r"minimum length(?:\s+(\S+))?", text, re.IGNORECASE)
+            if match:
+                evidence = (self._evidence(command),)
+                try:
+                    number = int(match.group(1)) if match.group(1) is not None else None
+                    if number is None or not 1 <= number <= 32:
+                        raise ValueError
+                    value, state = number, "explicit"
+                except ValueError:
+                    value, state = None, "invalid"
+            elif re.fullmatch(r"(?:no|default) minimum length(?:\s+.*)?", text, re.IGNORECASE):
+                value, state, evidence = None, "unknown-reset", (self._evidence(command),)
+            elif text.casefold() in {"no password", "default password"}:
+                value, state, evidence = None, "explicit-disabled", (self._evidence(command),)
+
+        events: list[tuple[str, AristaCommand]] = []
+        for command in self.commands:
+            if command.indent != 0:
+                continue
+            match = re.fullmatch(r"management security password\s+(.+)", command.text, re.IGNORECASE)
+            if match:
+                if match.group(1).casefold().startswith("policy "):
+                    named_profile_present = True
+                events.append((match.group(1), command))
+            elif re.fullmatch(r"(?:no|default) management security password", command.text, re.IGNORECASE):
+                events.append(("no password", command))
+        for _, children in self._blocks("management security"):
+            index = 0
+            while index < len(children):
+                command = children[index]
+                if command.text.casefold() == "password":
+                    parent_indent = command.indent
+                    index += 1
+                    direct_indent = None
+                    while index < len(children) and children[index].indent > parent_indent:
+                        nested = children[index]
+                        if direct_indent is None:
+                            direct_indent = nested.indent
+                        if nested.indent == direct_indent:
+                            if nested.text.casefold().startswith("policy "):
+                                named_profile_present = True
+                            events.append((nested.text, nested))
+                        index += 1
+                    continue
+                if command.text.casefold().startswith((
+                    "password minimum length", "password no minimum length",
+                    "password default minimum length", "no password", "default password",
+                )):
+                    body = command.text[9:] if command.text.casefold().startswith("password ") else command.text
+                    events.append((body, command))
+                index += 1
+        for text, command in sorted(events, key=lambda item: item[1].line_number):
+            apply(text, command)
+        if named_profile_present and state == "explicit":
+            state = "unknown-profile"
+        return AristaPasswordMinimumPolicy(value, state, evidence)
+
     def get_ssl_profiles(self) -> dict[str, AristaSSLProfile]:
         profiles: dict[str, AristaSSLProfile] = {}
         for index, command in enumerate(self.commands):
@@ -1480,22 +1567,111 @@ class AristaEOSParser(CiscoIOSParser):
 
     def get_logging_destinations(self) -> list[LoggingDestination]:
         destinations = {}
+        logging_on: bool | None = None
         for command in self.commands:
-            match = re.fullmatch(r"(?P<no>no\s+)?logging\s+host\s+(?P<address>\S+)(?:\s+.*)?", command.text, re.IGNORECASE)
+            if command.indent != 0:
+                continue
+            if command.text.casefold() == "logging on":
+                logging_on = True
+                continue
+            if command.text.casefold() in {"no logging on", "default logging on"}:
+                logging_on = False
+                continue
+            match = re.fullmatch(
+                r"(?P<remove>(?:no|default)\s+)?logging\s+"
+                r"(?:vrf\s+(?P<vrf>\S+)\s+)?host\s+(?P<address>\S+)(?:\s+.*)?",
+                command.text, re.IGNORECASE,
+            )
             if not match:
+                reset_vrf = re.fullmatch(
+                    r"(?:no|default) logging vrf (\S+)", command.text, re.IGNORECASE
+                )
+                if reset_vrf:
+                    destinations = {
+                        key: value for key, value in destinations.items()
+                        if key[0] != reset_vrf.group(1)
+                    }
                 continue
             address = match.group("address")
-            if match.group("no"):
-                destinations.pop(address, None)
+            scope = match.group("vrf") or "default"
+            key = (scope, address)
+            if match.group("remove"):
+                destinations.pop(key, None)
             else:
-                destinations[address] = LoggingDestination(
+                destinations[key] = LoggingDestination(
                     destination_type="syslog",
                     state=ConfigurationState.ENABLED,
                     address=address,
-                    scope="switch",
+                    scope="switch" if scope == "default" else scope,
                     evidence=(self._evidence(command),),
                 )
-        return list(destinations.values())
+        return list(destinations.values()) if logging_on is not False else []
+
+    def get_logging_severity_policy(self) -> AristaLoggingSeverityPolicy:
+        """Resolve explicit system trap and local-buffer severity without defaults."""
+        names = {
+            "emergencies": 0, "alerts": 1, "critical": 2, "errors": 3,
+            "warnings": 4, "notifications": 5, "informational": 6,
+            "debugging": 7,
+        }
+        trap: dict[str, tuple[int | None, str, tuple[ConfigEvidence, ...]]] = {}
+        buffer: tuple[int | None, str, tuple[ConfigEvidence, ...]] = (None, "unknown", ())
+        logging_on: bool | None = None
+        for command in self.commands:
+            if command.indent != 0:
+                continue
+            text = command.text.casefold()
+            evidence = (self._evidence(command),)
+            if text == "logging on":
+                logging_on = True
+                continue
+            if text in {"no logging on", "default logging on"}:
+                logging_on = False
+                continue
+            if text.startswith(("logging trap ", "no logging trap", "default logging trap")):
+                reset = re.fullmatch(r"(?:no|default) logging trap(?: system)?(?:\s+.*)?", text)
+                channel = "system" if re.match(r"(?:no |default )?logging trap system(?: |$)", text) else "general"
+                if reset:
+                    trap.pop(channel, None)
+                    continue
+                match = re.fullmatch(
+                    r"logging trap(?: (system))? (?:severity )?([a-z-]+|[0-7])", text
+                )
+                if match:
+                    value = names.get(match.group(2))
+                    if value is None and match.group(2).isdigit():
+                        value = int(match.group(2))
+                    trap[channel] = (value, "explicit" if value is not None else "invalid", evidence)
+                else:
+                    trap[channel] = (None, "unknown-filter", evidence)
+            elif text.startswith(("logging buffered", "no logging buffered", "default logging buffered")):
+                if re.fullmatch(r"(?:no|default) logging buffered(?:\s+.*)?", text):
+                    buffer = (None, "unknown-reset", evidence)
+                    continue
+                match = re.fullmatch(r"logging buffered (\S+)(?:\s+(\d+))?", text)
+                if not match:
+                    buffer = (None, "invalid", evidence)
+                    continue
+                token = match.group(1)
+                level = names.get(token)
+                if level is None and token.isdigit() and 0 <= int(token) <= 7:
+                    level = int(token)
+                buffer = (
+                    level, "explicit" if level is not None else "unknown-size-only"
+                    if token.isdigit() and match.group(2) is None else "invalid", evidence,
+                )
+        if len(trap) > 1:
+            general, system = trap["general"], trap["system"]
+            selected = (
+                (general[0], general[1], general[2] + system[2])
+                if general[:2] == system[:2] else
+                (None, "unknown-conflict", general[2] + system[2])
+            )
+        else:
+            selected = next(iter(trap.values()), (None, "unknown", ()))
+        return AristaLoggingSeverityPolicy(
+            selected[0], selected[1], buffer[0], buffer[1], selected[2], buffer[2], logging_on
+        )
 
     def get_ntp_keys(self) -> dict[str, AristaNTPKey]:
         configured: dict[str, tuple[str, bool, ConfigEvidence]] = {}

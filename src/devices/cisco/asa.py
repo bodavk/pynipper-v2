@@ -69,6 +69,14 @@ class ASANumericSetting:
 
 
 @dataclass(frozen=True)
+class ASAASDMIdlePolicy:
+    minutes: Optional[float]
+    resolution_state: str
+    source: str
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
 class ASAAAAdministrativeBinding:
     binding_type: str
     protocol: str
@@ -121,6 +129,27 @@ class ASAManagementCertificateBinding:
     public_material_state: str
     metadata: CertificateMetadata | None
     assessment: CertificateAssessment | None
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class ASAActiveIKEGroup:
+    """Explicit DH alternative in an enabled IKE policy family."""
+
+    version: str
+    priority: str
+    group: str
+    interfaces: tuple[str, ...]
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class ASASelectableWebVPNProfile:
+    """Explicitly selectable remote-access profile on an enabled WebVPN listener."""
+
+    name: str
+    listener_interfaces: tuple[str, ...]
+    authentication: str
     evidence: tuple[ConfigEvidence, ...]
 
 
@@ -300,6 +329,172 @@ class CiscoASAParser(BaseDeviceParser):
 
     def get_native_config(self) -> CiscoConfParse:
         return self.parser
+
+    def get_selectable_webvpn_profiles(self) -> tuple[ASASelectableWebVPNProfile, ...]:
+        """Bind explicit group URLs to enabled WebVPN and remote-access auth mode."""
+        release = self._release_tuple(self.get_version())
+        if release is None or release < (9, 16):
+            return ()
+        listeners: dict[str, ConfigEvidence] = {}
+        types: dict[str, bool] = {}
+        profiles: dict[str, dict[str, object]] = {}
+        current_kind = ""
+        current_name = ""
+        for number, raw in enumerate(self._source_lines, 1):
+            command = raw.strip()
+            if not command or command.startswith("!"):
+                continue
+            if not raw[:1].isspace():
+                current_kind = ""
+                current_name = ""
+                if command.casefold() == "webvpn":
+                    current_kind = "webvpn"
+                    continue
+                if command.casefold() == "no webvpn":
+                    listeners.clear()
+                    continue
+                removed_group = re.fullmatch(r"no tunnel-group (\S+)", command, re.IGNORECASE)
+                if removed_group:
+                    name = removed_group.group(1).casefold()
+                    types.pop(name, None)
+                    profiles.pop(name, None)
+                    continue
+                group_type = re.fullmatch(
+                    r"(no )?tunnel-group (\S+) type (remote-access|ipsec-l2l)",
+                    command, re.IGNORECASE,
+                )
+                if group_type:
+                    types[group_type.group(2).casefold()] = (
+                        not group_type.group(1)
+                        and group_type.group(3).casefold() == "remote-access"
+                    )
+                    continue
+                attributes = re.fullmatch(
+                    r"tunnel-group (\S+) webvpn-attributes", command, re.IGNORECASE,
+                )
+                if attributes:
+                    current_kind = "profile"
+                    current_name = attributes.group(1)
+                    data = profiles.setdefault(current_name.casefold(), {
+                        "name": current_name, "authentication": "unknown",
+                        "urls": {}, "evidence": [],
+                    })
+                    data["evidence"].append(ConfigEvidence(
+                        f"tunnel-group {current_name} webvpn-attributes",
+                        self.config_filepath, number,
+                    ))
+                continue
+            if current_kind == "webvpn":
+                listener = re.fullmatch(r"(no )?enable (\S+)", command, re.IGNORECASE)
+                if listener:
+                    interface = listener.group(2).casefold()
+                    if listener.group(1):
+                        listeners.pop(interface, None)
+                    else:
+                        listeners[interface] = ConfigEvidence(
+                            f"webvpn enable {interface}", self.config_filepath, number,
+                        )
+                continue
+            if current_kind != "profile":
+                continue
+            data = profiles[current_name.casefold()]
+            if command.casefold() in {"no authentication", "default authentication"}:
+                data["authentication"] = "unknown"
+                continue
+            authentication = re.fullmatch(r"authentication (.+)", command, re.IGNORECASE)
+            url = re.fullmatch(r"(no )?group-url (\S+)(?: (enable|disable))?", command, re.IGNORECASE)
+            if authentication:
+                mode = authentication.group(1).casefold()
+                data["authentication"] = mode
+                data["evidence"].append(ConfigEvidence(
+                    f"authentication {mode}", self.config_filepath, number,
+                ))
+            elif url:
+                target = url.group(2).casefold()
+                if url.group(1):
+                    data["urls"].pop(target, None)
+                else:
+                    enabled = (url.group(3) or "enable").casefold() == "enable"
+                    data["urls"][target] = enabled
+                    data["evidence"].append(ConfigEvidence(
+                        f"group-url <redacted> {'enable' if enabled else 'disable'}",
+                        self.config_filepath, number,
+                    ))
+        if not listeners:
+            return ()
+        records = []
+        for name, data in profiles.items():
+            if not types.get(name) or not any(data["urls"].values()):
+                continue
+            records.append(ASASelectableWebVPNProfile(
+                name=data["name"],
+                listener_interfaces=tuple(sorted(listeners)),
+                authentication=data["authentication"],
+                evidence=tuple(data["evidence"])
+                + tuple(listeners[item] for item in sorted(listeners)),
+            ))
+        return tuple(records)
+
+    def get_active_ike_dh_groups(self) -> tuple[ASAActiveIKEGroup, ...]:
+        """Resolve explicit IKE policy DH alternatives only for enabled interfaces."""
+        enabled: dict[str, dict[str, ConfigEvidence]] = {"ikev1": {}, "ikev2": {}}
+        policies: dict[tuple[str, str], tuple[tuple[str, ...], list[ConfigEvidence]]] = {}
+        current: tuple[str, str] | None = None
+        for number, raw in enumerate(self._source_lines, 1):
+            command = raw.strip()
+            if not command or command.startswith("!"):
+                continue
+            if not raw[:1].isspace():
+                current = None
+                activation = re.fullmatch(
+                    r"(no )?crypto (ikev[12]) enable (\S+)", command, re.IGNORECASE,
+                )
+                if activation:
+                    _, version, interface = activation.groups()
+                    if activation.group(1):
+                        enabled[version.casefold()].pop(interface.casefold(), None)
+                    else:
+                        enabled[version.casefold()][interface.casefold()] = ConfigEvidence(
+                            f"crypto {version.casefold()} enable {interface}", self.config_filepath, number,
+                        )
+                    continue
+                removal = re.fullmatch(
+                    r"no crypto (ikev[12]) policy (\d+)", command, re.IGNORECASE,
+                )
+                if removal:
+                    policies.pop((removal.group(1).casefold(), removal.group(2)), None)
+                    continue
+                policy = re.fullmatch(
+                    r"crypto (ikev[12]) policy (\d+)", command, re.IGNORECASE,
+                )
+                if policy:
+                    current = (policy.group(1).casefold(), policy.group(2))
+                    policies[current] = ((), [ConfigEvidence(command, self.config_filepath, number)])
+                continue
+            if current is None:
+                continue
+            group = re.fullmatch(r"group ((?:\d+)(?: \d+)*)", command, re.IGNORECASE)
+            if group:
+                policies[current] = (
+                    tuple(group.group(1).split()),
+                    policies[current][1] + [ConfigEvidence(command, self.config_filepath, number)],
+                )
+            elif command.casefold() == "no group":
+                policies[current] = ((), policies[current][1] + [
+                    ConfigEvidence(command, self.config_filepath, number),
+                ])
+        records = []
+        for (version, priority), (groups, evidence) in policies.items():
+            if not enabled[version]:
+                continue
+            interfaces = tuple(sorted(enabled[version]))
+            activation_evidence = tuple(enabled[version][name] for name in interfaces)
+            for group in groups:
+                records.append(ASAActiveIKEGroup(
+                    version, priority, group, interfaces,
+                    tuple(evidence) + activation_evidence,
+                ))
+        return tuple(records)
 
     def get_active_ipsec_transform_bindings(self) -> tuple[ASAIPsecTransformBinding, ...]:
         """Resolve declared transforms through effective, interface-attached crypto maps."""
@@ -647,6 +842,94 @@ class CiscoASAParser(BaseDeviceParser):
                 raw_line = line
                 parse_error = ""
         return ASANumericSetting(value, configured, known_default, raw_line, parse_error)
+
+    def get_local_lockout_limit(self) -> ASANumericSetting:
+        """ASA local-database max-fail; omitted and reset mean no limit."""
+        value: Optional[int] = None
+        configured = False
+        known_default = self._release_tuple(self.get_version()) is not None
+        evidence = ""
+        error = ""
+        for line in self._global_lines():
+            match = re.fullmatch(r"aaa local authentication attempts max-fail(?:\s+(\S+))?", line)
+            if match:
+                configured, known_default, evidence = True, False, line
+                try:
+                    value = int(match.group(1)) if match.group(1) is not None else None
+                    if value is None or not 1 <= value <= 16:
+                        raise ValueError
+                    error = ""
+                except ValueError:
+                    value, error = None, "invalid local lockout limit"
+            elif re.fullmatch(r"(?:no|default) aaa local authentication attempts max-fail(?:\s+.*)?", line):
+                value, configured, known_default, evidence, error = None, False, True, line, ""
+        return ASANumericSetting(value, configured, known_default, evidence, error)
+
+    def get_local_password_minimum(self) -> ASANumericSetting:
+        """Explicit ASA local-administrator password minimum; no inferred finding."""
+        release = self._release_tuple(self.get_version())
+        supported = release is not None and release >= (9, 1)
+        value: Optional[int] = 3 if supported else None
+        configured = False
+        evidence = ""
+        error = ""
+        for line in self._global_lines():
+            match = re.fullmatch(r"password-policy minimum-length(?:\s+(\S+))?", line)
+            if match:
+                configured, evidence = True, line
+                try:
+                    value = int(match.group(1)) if match.group(1) is not None else None
+                    if value is None or not 3 <= value <= 64:
+                        raise ValueError
+                    error = ""
+                except ValueError:
+                    value, error = None, "invalid local password minimum"
+            elif re.fullmatch(r"(?:no|default) password-policy minimum-length(?:\s+.*)?", line):
+                value, configured, evidence, error = (3 if supported else None), False, line, ""
+        return ASANumericSetting(value, configured, supported, evidence, error)
+
+    def get_asdm_idle_policy(self) -> ASAASDMIdlePolicy:
+        """Explicit ASDM idle setting; newer connection-wide timeout takes precedence."""
+        multiple_context = any(
+            re.fullmatch(r"mode multiple", line, re.IGNORECASE)
+            for line in self._global_lines()
+        )
+        settings: dict[str, ASAASDMIdlePolicy] = {}
+        for line_number, raw in enumerate(self._source_lines, start=1):
+            if raw[:1].isspace():
+                continue
+            line = raw.strip()
+            match = re.fullmatch(r"http server idle-timeout(?:\s+(\S+))?", line)
+            connection = re.fullmatch(r"http connection idle-timeout(?:\s+(\S+))?", line)
+            if match or connection:
+                selected = connection or match
+                source = "http connection idle-timeout" if connection else "http server idle-timeout"
+                evidence = (ConfigEvidence(line, self.config_filepath, line_number),)
+                release = self._release_tuple(self.get_version())
+                if (release is None or release < ((9, 14) if connection else (8, 2))
+                        or (multiple_context and not connection)):
+                    settings[source] = ASAASDMIdlePolicy(None, "unsupported-release", source, evidence)
+                    continue
+                try:
+                    value = int(selected.group(1)) if selected.group(1) is not None else None
+                    if value is None or not (10 <= value <= 86400 if connection else 1 <= value <= 1440):
+                        raise ValueError
+                    settings[source] = ASAASDMIdlePolicy(
+                        value / 60 if connection else float(value), "explicit", source, evidence
+                    )
+                except ValueError:
+                    settings[source] = ASAASDMIdlePolicy(None, "invalid", source, evidence)
+            else:
+                reset = re.fullmatch(
+                    r"(?:no|default) (http (?:server|connection) idle-timeout)(?:\s+.*)?", line
+                )
+                if reset:
+                    settings.pop(reset.group(1), None)
+        return (
+            settings.get("http connection idle-timeout")
+            or settings.get("http server idle-timeout")
+            or ASAASDMIdlePolicy(None, "unknown", "", ())
+        )
 
     def get_ssh_policy(self) -> ASASSHPolicy:
         release = self._release_tuple(self.get_version())

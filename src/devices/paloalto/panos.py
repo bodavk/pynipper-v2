@@ -89,6 +89,17 @@ class PanosSecurityRule:
 
 
 @dataclass(frozen=True)
+class PanosDefaultSecurityRule:
+    name: str
+    device_scope: str
+    scope: str
+    action: str
+    resolution_state: str
+    definition_scope: str
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
 class PanosAddressObject:
     name: str
     device_scope: str
@@ -122,6 +133,16 @@ class PanosInspectionProfile:
     resolution_state: str
     content_state: str
     actions: tuple[str, ...]
+    evidence: tuple[ConfigEvidence, ...]
+    threat_selectors: tuple[PanosThreatSelector, ...] = ()
+
+
+@dataclass(frozen=True)
+class PanosThreatSelector:
+    name: str
+    severities: tuple[str, ...]
+    action: str
+    broad_match: bool
     evidence: tuple[ConfigEvidence, ...]
 
 
@@ -1009,6 +1030,50 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                     )
         return rules
 
+    def get_default_security_rules(self) -> list[PanosDefaultSecurityRule]:
+        """Resolve explicit default-rule overrides, local before shared.
+
+        An unmerged Panorama export cannot establish an inherited default rule.
+        The platform's implicit defaults are deliberately not synthesized here.
+        """
+        result: list[PanosDefaultSecurityRule] = []
+        shared = self.root.findall(
+            "./shared/default-security-rules/rules/entry[@name='interzone-default']"
+        )
+        for device in self._device_entries():
+            device_scope = self._device_scope(device)
+            for vsys in device.findall("./vsys/entry"):
+                scope = vsys.get("name") or "vsys"
+                local = vsys.findall(
+                    "./rulebase/default-security-rules/rules/entry[@name='interzone-default']"
+                )
+                entries = local if local else shared
+                if not entries:
+                    continue
+                definition_scope = scope if local else "shared"
+                values = tuple(self._text(entry.find("action")).casefold() for entry in entries)
+                action = values[0] if len(values) == 1 else ""
+                state = (
+                    "unknown-inherited"
+                    if not local and self.panorama_inheritance_unknown
+                    else "known"
+                    if action in {"allow", "deny", "drop", "reset-client", "reset-server", "reset-both"}
+                    else "unknown"
+                )
+                result.append(PanosDefaultSecurityRule(
+                    name="interzone-default",
+                    device_scope=device_scope,
+                    scope=scope,
+                    action=action if state == "known" else "",
+                    resolution_state=state,
+                    definition_scope=definition_scope,
+                    evidence=(self._evidence(
+                        f"{device_scope}/{scope}: interzone-default override in {definition_scope}; "
+                        f"action {action or 'unresolved'}"
+                    ),),
+                ))
+        return result
+
     @staticmethod
     def _profile_actions(entry: ET.Element) -> tuple[str, ...]:
         actions: list[str] = []
@@ -1022,6 +1087,56 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                 child_value = (child.text or "").strip().casefold()
                 actions.append(child_value or child.tag.casefold())
         return tuple(dict.fromkeys(actions))
+
+    def _profile_threat_selectors(
+        self, scope: str, profile_type: str, profile_name: str, entry: ET.Element
+    ) -> tuple[PanosThreatSelector, ...]:
+        if profile_type not in {"spyware", "vulnerability"}:
+            return ()
+        result: list[PanosThreatSelector] = []
+        for rule in entry.findall("./rules/entry"):
+            name = rule.get("name") or "unnamed"
+            severity = rule.find("severity")
+            severities = tuple(dict.fromkeys(
+                value.casefold() for value in (
+                    [self._text(member) for member in severity.findall("member")]
+                    if severity is not None and severity.findall("member") else
+                    [child.tag for child in severity] if severity is not None and len(severity) else
+                    [self._text(severity)] if severity is not None else []
+                ) if value
+            ))
+            action_node = rule.find("action")
+            if action_node is None:
+                action = ""
+            elif self._text(action_node):
+                action = self._text(action_node).casefold()
+            elif len(action_node) == 1:
+                action = action_node[0].tag.casefold()
+            else:
+                action = ""
+            # Only a selector with no narrower threat/category/host predicate
+            # can establish the first applicable action for an entire severity.
+            match_fields = {"threat-name", "category", "host", "cve", "vendor-id"}
+            broad_match = all(
+                child.tag in {"severity", "action", "packet-capture"} | match_fields
+                for child in rule
+            ) and all(
+                (node := rule.find(field)) is None
+                or (not list(node) and self._text(node).casefold() in {"", "any"})
+                or (len(node) == 1 and node[0].tag.casefold() == "any")
+                for field in match_fields
+            )
+            result.append(PanosThreatSelector(
+                name=name,
+                severities=severities,
+                action=action,
+                broad_match=broad_match,
+                evidence=(self._evidence(
+                    f"{scope}: {profile_type} profile {profile_name} selector {name}; "
+                    f"severity {', '.join(severities)}; action {action or 'unresolved'}"
+                ),),
+            ))
+        return tuple(result)
 
     @staticmethod
     def _profile_has_content(entry: ET.Element) -> bool:
@@ -1043,6 +1158,7 @@ class PaloAltoPANOSParser(BaseDeviceParser):
         def add(scope: str, profile_type: str, entry: ET.Element) -> None:
             name = entry.get("name") or "unnamed"
             actions = self._profile_actions(entry)
+            selectors = self._profile_threat_selectors(scope, profile_type, name, entry)
             if not self._profile_has_content(entry):
                 content_state = "empty"
             elif actions and all(
@@ -1060,6 +1176,7 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                     content_state=content_state,
                     actions=actions,
                     evidence=(self._evidence(f"{scope}: {profile_type} profile {name}"),),
+                    threat_selectors=selectors,
                 )
             )
 

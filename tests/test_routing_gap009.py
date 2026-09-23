@@ -37,6 +37,12 @@ router bgp 65000
   neighbor 192.0.2.1 route-map V6-OUT out
   neighbor 192.0.2.1 maximum-prefix 999999
   neighbor 192.0.2.2 activate
+route-map IMPORT permit 10
+ match ip address prefix-list IMPORT-PREFIXES
+route-map EXPORT permit 10
+ match ip address prefix-list EXPORT-PREFIXES
+ip prefix-list IMPORT-PREFIXES permit 198.51.100.0/24
+ip prefix-list EXPORT-PREFIXES permit 203.0.113.0/24
 '''))
 
     peers = parser.get_bgp_neighbors()

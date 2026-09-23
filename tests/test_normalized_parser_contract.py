@@ -21,6 +21,8 @@ def _minimal_config_source(tmp_path, canonical_id):
         content = "<config />"
     elif canonical_id == "SONICOS":
         content = 'firmware-version "SonicOS 7.1.2-7019"\n'
+    elif canonical_id == "F5_BIGIP":
+        content = "sys sshd { login disabled }\n"
     else:
         content = ""
     source.write_text(content, encoding="utf-8")

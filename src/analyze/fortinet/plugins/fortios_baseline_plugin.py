@@ -88,6 +88,10 @@ FORTINET_PROFILE_GROUP_REFERENCE = (
     "https://docs.fortinet.com/document/fortigate/7.2.6/cli-reference/283620/"
     "config-firewall-profile-group"
 )
+FORTINET_SYSLOG_TRANSPORT_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.4.5/cli-reference/141516630/"
+    "config-log-syslogd-setting"
+)
 FORTINET_ADDRESS_REFERENCE = (
     "https://docs.fortinet.com/document/fortigate/7.6.4/cli-reference/306021697/"
     "config-firewall-address"
@@ -107,6 +111,10 @@ FORTINET_SERVICE_GROUP_REFERENCE = (
 FORTINET_IPS_REFERENCE = (
     "https://docs.fortinet.com/document/fortigate/7.2.0/cli-reference/407620/"
     "config-ips-sensor"
+)
+FORTINET_IPS_ORDER_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/6.4.10/administration-guide/"
+    "213498/signature-based-defense"
 )
 FORTINET_RADSEC_GUIDE = (
     "https://docs.fortinet.com/document/fortigate/7.6.5/administration-guide/"
@@ -232,11 +240,20 @@ class PluginFortiOSBaseline(BasePlugin):
     def check_administrators(self, parser: BaseDeviceParser) -> None:
         fortios = self._fortios(parser)
         privileged_local = []
+        roles = {
+            (role.scope, role.administrator): role
+            for role in fortios.get_administrator_roles()
+        }
         for scope, username, settings, path in fortios.iter_administrators():
             if not self._enabled(settings):
                 continue
             profile = self._text(settings.get("accprofile"), "super_admin").lower()
-            privileged = profile == "super_admin"
+            role = roles.get((scope, username))
+            privileged = role is not None and role.privileged_state == "privileged"
+            role_description = (
+                "super_admin account" if profile == "super_admin"
+                else f"privileged account using profile '{profile}'"
+            )
             trusts = [
                 " ".join(self._values(settings, key)).lower()
                 for key in settings
@@ -251,7 +268,7 @@ class PluginFortiOSBaseline(BasePlugin):
                         parser,
                         "fortinet.fortios.admin.trusted_hosts",
                         "Privileged administrator is not source restricted",
-                        f"Enabled super_admin account '{username}' in scope '{scope}' has no effective trusted-host restriction.",
+                        f"Enabled {role_description} '{username}' in scope '{scope}' has no effective trusted-host restriction.",
                         "Unrestricted administrator source addresses broaden the management-plane attack surface.",
                         "Configure restrictive trusthost and ip6-trusthost entries for the administrator.",
                         Severity.HIGH,
@@ -285,7 +302,7 @@ class PluginFortiOSBaseline(BasePlugin):
                             parser,
                             "fortinet.fortios.admin.mfa",
                             "Privileged local administrator lacks MFA",
-                            f"Local super_admin account '{username}' in scope '{scope}' has no enabled two-factor method.",
+                            f"Local {role_description} '{username}' in scope '{scope}' has no enabled two-factor method.",
                             "A stolen password alone may be sufficient for privileged access.",
                             "Enable an approved FortiToken, email, SMS, or organization-approved federated MFA method.",
                             Severity.HIGH,
@@ -297,10 +314,11 @@ class PluginFortiOSBaseline(BasePlugin):
         if self._supports_default_inference(fortios) and privileged_local:
             remote_privileged = any(
                 self._enabled(settings)
-                and self._text(settings.get("accprofile"), "super_admin").lower() == "super_admin"
+                and (roles.get((scope, username)) is not None
+                     and roles[(scope, username)].privileged_state == "privileged")
                 and self._text(settings.get("remote-auth"), "disable").lower() == "enable"
                 and bool(self._text(settings.get("remote-group")))
-                for _, _, settings, _ in fortios.iter_administrators()
+                for scope, username, settings, _ in fortios.iter_administrators()
             )
             if not remote_privileged:
                 self.add_issue(
@@ -308,7 +326,14 @@ class PluginFortiOSBaseline(BasePlugin):
                         parser,
                         "fortinet.fortios.admin.centralized_authentication",
                         "Privileged authentication is local only",
-                        "No enabled super_admin account is bound to remote authentication.",
+                        (
+                            "No enabled super_admin account is bound to remote authentication."
+                            if all(
+                                roles.get((scope, username)) is not None
+                                and roles[(scope, username)].profile.casefold() == "super_admin"
+                                for scope, username, _ in privileged_local
+                            ) else "No enabled privileged account is bound to remote authentication."
+                        ),
                         "Local-only privileged authentication reduces centralized control and accountability.",
                         "Configure a tested remote administrator group and retain only a protected emergency local account.",
                         Severity.MEDIUM,
@@ -988,6 +1013,79 @@ class PluginFortiOSBaseline(BasePlugin):
                         )
                     )
 
+    def check_syslog_transport(self, parser: BaseDeviceParser) -> None:
+        """Reliable TCP is not evidence that exported syslog is TLS protected."""
+        fortios = self._fortios(parser)
+        for sink in fortios.get_syslog_sinks():
+            if sink.transport_state == "explicit-cleartext":
+                self.add_issue(self._finding(
+                    parser,
+                    "fortinet.fortios.logging.remote_cleartext",
+                    "Enabled FortiOS remote syslog explicitly disables TLS",
+                    f"Enabled {sink.name} in scope '{sink.scope}' sends to '{sink.server}' with "
+                    f"'enc-algorithm disable'; mode '{sink.mode or 'unspecified'}' does not establish encryption.",
+                    "Remote audit events may be readable or modified in transit even when reliable delivery is selected.",
+                    "Use a protected syslog transport with an approved TLS configuration, or document an equivalent protected path.",
+                    Severity.MEDIUM,
+                    tuple(item.text for item in sink.evidence),
+                    (FORTINET_SYSLOG_TRANSPORT_REFERENCE,),
+                ))
+            elif sink.transport_state == "explicit-weak-tls":
+                self.add_issue(self._finding(
+                    parser,
+                    "fortinet.fortios.logging.remote_weak_tls",
+                    "Enabled FortiOS remote syslog permits weak TLS settings",
+                    f"Enabled {sink.name} in scope '{sink.scope}' sends to '{sink.server}' "
+                    f"with encryption level '{sink.encryption}' and minimum TLS version "
+                    f"'{sink.tls_minimum or 'inherited'}'.",
+                    "Weak ciphers or obsolete TLS versions can reduce the confidentiality and integrity of remote audit events.",
+                    "Use high-strength encryption and a minimum of TLS 1.2 or a stronger approved setting.",
+                    Severity.MEDIUM,
+                    tuple(item.text for item in sink.evidence),
+                    (FORTINET_SYSLOG_TRANSPORT_REFERENCE, NIST_CRYPTO_TRANSITIONS),
+                ))
+
+    def check_ips_selector_actions(self, parser: BaseDeviceParser) -> None:
+        """Report only a proven first broad passing high/critical IPS filter."""
+        fortios = self._fortios(parser)
+        for inspection in fortios.get_security_inspection():
+            for profile in inspection.profiles:
+                if (profile.profile_type != "ips-sensor"
+                        or profile.resolution_state != "resolved"
+                        or profile.content_state != "configured"):
+                    continue
+                weak: list[str] = []
+                evidence: list[str] = []
+                for target in ("critical", "high"):
+                    first = next((
+                        selector for selector in profile.ips_selectors
+                        if selector.active_state != "disable"
+                        and selector.broad_match
+                        and (not selector.severities or target in selector.severities
+                             or "all" in selector.severities)
+                    ), None)
+                    if (first is not None and first.severities
+                            and first.active_state == "enable"
+                            and first.action in {"pass", "monitor", "allow"}):
+                        weak.append(target)
+                        evidence.extend(item.text for item in first.evidence)
+                if not weak:
+                    continue
+                self.add_issue(self._finding(
+                    parser,
+                    "fortinet.fortios.policy.ips_selector_nonblocking",
+                    "Attached FortiOS IPS sensor passes selected high-severity signatures",
+                    f"Active accept policy '{inspection.policy_name}' in scope '{inspection.scope}' "
+                    f"uses IPS sensor '{profile.name}' whose first broad, explicitly enabled "
+                    f"selector for {', '.join(weak)} severity is set to pass/monitor.",
+                    "Matching critical or high-severity signatures may be logged or allowed instead of blocked.",
+                    "Review the IPS entry order and set an approved blocking action for these severities.",
+                    Severity.HIGH,
+                    tuple(item.text for item in inspection.evidence + profile.evidence)
+                    + tuple(dict.fromkeys(evidence)),
+                    (FORTINET_IPS_REFERENCE, FORTINET_IPS_ORDER_REFERENCE),
+                ))
+
     def check_policy_effectiveness(self, parser: BaseDeviceParser) -> None:
         """Report independent hygiene and only statically proven first-match effects."""
 
@@ -1544,6 +1642,8 @@ class PluginFortiOSBaseline(BasePlugin):
         self.check_management_certificates(parser)
         self.check_snmp(parser)
         self.check_logging_and_policy_profiles(parser)
+        self.check_syslog_transport(parser)
+        self.check_ips_selector_actions(parser)
         self.check_policy_effectiveness(parser)
         self.check_configuration_backups(parser)
         self.check_updates_and_unused_services(parser)
