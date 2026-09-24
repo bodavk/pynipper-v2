@@ -5,6 +5,9 @@ import array
 import json
 
 from .common.types import ReportType
+from .explanations import (
+    build_finding_views, coverage_counts, json_security_audit, severity_tiles,
+)
 from src.common.assessment import AssessmentContext
 
 TEMPLATE_FILE = "html_template.html"
@@ -91,12 +94,16 @@ def _generate_html_report(filename: str, issues: dict, vulns: array, data: dict)
     )
 
     template = env.get_template(TEMPLATE_FILE)
+    findings = build_finding_views(issues)
 
     text = template.render(
         device_type=device_type,
         hostname=hostname,
         date=date,
         issues=issues,
+        findings=findings,
+        severity_tiles=severity_tiles(issues),
+        coverage_counts=coverage_counts(coverage),
         vulns=vulns,
         assessment_policy=assessment_policy,
         coverage=coverage,
@@ -126,7 +133,7 @@ def _generate_json_report(filename: str, issues: dict, vulns: array, data: dict)
     vulns_dict = {}
     vulns_dict["data"] = report_data
     vulns_dict["vulnerabilities"] = vulns
-    vulns_dict["security-audit"] = issues
+    vulns_dict["security-audit"] = json_security_audit(issues)
     vulns_dict["coverage"] = coverage
     vulns_dict["configuration-inventory"] = inventory
     vulns_dict["remediation-summary"] = remediation_summary

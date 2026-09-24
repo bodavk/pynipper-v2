@@ -8,17 +8,203 @@
             {% include "style.css" %}
         </style>
     </head>
-    <body class="mainbody">
-        <main class="pagebody">
-            <header id="title_header" style="text-align:center">
-                <h1>pynipper-v2</h1>
-                <h2>{{ device_type }} security report</h2>
-                <p>{{ hostname }} &mdash; {{ date }}</p>
-            </header>
+    <body>
+        <header class="report-header">
+            <div class="wrap">
+                <p class="eyebrow">pynipper-v2 &middot; static configuration review</p>
+                <h1>{{ device_type }} security report</h1>
+                <p class="meta"><span>Host: <strong>{{ hostname }}</strong></span><span>Date: {{ date }}</span><span>Findings: <strong>{{ remediation_summary['finding-count'] }}</strong></span></p>
+                <nav class="toc" aria-label="Report sections">
+                    <a href="#summary">Summary</a>
+                    <a href="#security-issues">Findings</a>
+                    <a href="#coverage">Coverage</a>
+                    <a href="#about">About</a>
+                    {% if configuration_inventory %}<a href="#configuration-inventory">Inventory</a>{% endif %}
+                    <a href="#security-vulns">Advisories</a>
+                    {% if report_secret_evidence %}<a href="#secret-evidence">Credential lines</a>{% endif %}
+                </nav>
+            </div>
+        </header>
 
-            <section id="about">
-                <hr>
-                <h2>1. About this report</h2>
+        <main class="wrap">
+            {% if report_secret_evidence %}
+                <div class="alert alert-danger" role="alert"><strong>Sensitive report.</strong>
+                This report includes unmasked credential source lines in a separate appendix.
+                Handle it as sensitive material. Normal finding evidence remains redacted.</div>
+            {% endif %}
+            {% if coverage_counts.get('parse_error') %}
+                <div class="alert alert-danger" role="alert"><strong>The configuration could not be parsed completely.</strong>
+                Checks were not run for the affected scope. An empty or short findings list is not a clean result; see the coverage section.</div>
+            {% endif %}
+
+            <section id="summary" class="panel">
+                <h2>Remediation summary</h2>
+                <div class="tiles" role="list">
+                    {% for tile in severity_tiles %}
+                        <a role="listitem" class="tile sev-{{ tile.name }}{% if not tile.count %} tile-empty{% endif %}" href="#security-issues" data-filter="{{ tile.name }}">
+                            <span class="tile-count">{{ tile.count }}</span>
+                            <span class="tile-label">{{ tile.label }}</span>
+                        </a>
+                    {% endfor %}
+                </div>
+                <p class="muted"><strong>Total findings:</strong> {{ remediation_summary['finding-count'] }}.
+                {% if remediation_summary['severity-counts'] %}<strong>By severity:</strong>
+                {% for severity, count in remediation_summary['severity-counts'].items() %}{{ severity }}: {{ count }}{% if not loop.last %}; {% endif %}{% endfor %}.{% endif %}</p>
+                {% if remediation_summary['priority-actions'] %}
+                    <h3>Fix first</h3>
+                    <ol class="priorities">
+                    {% for action in remediation_summary['priority-actions'] %}
+                        <li><span class="badge sev-{{ findings[loop.index0]['severity-class'] }}">{{ action['severity'] }}</span>
+                            <a href="#{{ findings[loop.index0].anchor }}">{{ action['title'] }}</a>
+                            <span class="muted">&mdash; {{ action['recommendation'] }}</span></li>
+                    {% endfor %}
+                    </ol>
+                {% endif %}
+                <p class="note">{{ remediation_summary['scope-note'] }}</p>
+            </section>
+
+            <section id="security-issues" class="panel">
+                <h2>Findings <span class="muted">(security audit)</span></h2>
+                {% if findings %}
+                    <p class="muted">Findings are ordered by severity. Each one explains what was found, why it matters, how it could be abused and how to fix it, followed by the configuration lines it is based on.</p>
+                    <div class="filters" role="group" aria-label="Filter findings by severity">
+                        <button type="button" class="filter active" data-filter="all">All</button>
+                        {% for tile in severity_tiles if tile.count %}
+                            <button type="button" class="filter" data-filter="{{ tile.name }}">{{ tile.label }} ({{ tile.count }})</button>
+                        {% endfor %}
+                    </div>
+                    <div class="scroll">
+                    <table class="index">
+                        <thead><tr><th scope="col">#</th><th scope="col">Severity</th><th scope="col">Finding</th><th scope="col" class="wide-only">Area</th><th scope="col" class="wide-only">Rule ID</th></tr></thead>
+                        <tbody>
+                        {% for view in findings %}
+                            <tr data-severity="{{ view['severity-class'] }}">
+                                <td>{{ view.number }}</td>
+                                <td><span class="badge sev-{{ view['severity-class'] }}">{{ view.severity }}</span></td>
+                                <td><a href="#{{ view.anchor }}">{{ view.finding.title }}</a></td>
+                                <td class="wide-only">{{ view['area-title'] }}</td>
+                                <td class="wide-only"><code>{{ view.finding.rule_id }}</code></td>
+                            </tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                    </div>
+
+                    {% for view in findings %}
+                        {% set finding = view.finding %}
+                        {% set guide = view.guidance %}
+                        <article class="finding sev-{{ view['severity-class'] }}" id="{{ view.anchor }}" data-severity="{{ view['severity-class'] }}">
+                            <header class="finding-head">
+                                <span class="badge sev-{{ view['severity-class'] }}">{{ view.severity }}</span>
+                                <h3>{{ view.number }}. {{ finding.title }}</h3>
+                                <p class="finding-meta"><span class="chip">{{ view['area-title'] }}</span> <code>{{ finding.rule_id }}</code></p>
+                            </header>
+                            <div class="explain-grid">
+                                <div class="block">
+                                    <h4>What was found</h4>
+                                    <p>{{ finding.observation }}</p>
+                                </div>
+                                <div class="block">
+                                    <h4>Why it matters</h4>
+                                    <p>{{ finding.impact }}</p>
+                                    {% if guide %}<p class="plain"><strong>In plain terms:</strong> {{ guide.summary }}</p>{% endif %}
+                                </div>
+                                <div class="block">
+                                    <h4>How it could be abused</h4>
+                                    {% if finding.exploitability %}<p>{{ finding.exploitability }}</p>{% endif %}
+                                    {% if guide %}<p class="example"><strong>Example:</strong> {{ guide.example }}</p>{% endif %}
+                                </div>
+                            </div>
+                            <div class="fix">
+                                <h4>How to fix</h4>
+                                <p>{{ finding.recommendation }}</p>
+                                {% if guide %}<p class="verify"><strong>Before closing this finding:</strong> {{ guide.verify }}</p>{% endif %}
+                            </div>
+                            {% if finding.evidence_locations %}
+                                <h4>Evidence in the configuration</h4>
+                                <div class="scroll">
+                                <table class="evidence">
+                                    <thead><tr><th scope="col">Line</th><th scope="col">File</th><th scope="col">Configuration</th></tr></thead>
+                                    <tbody>
+                                    {% for item in finding.evidence_locations %}
+                                        <tr>
+                                            <td class="line">{% if item.line_number %}Line {{ item.line_number }}{% else %}&mdash;{% endif %}</td>
+                                            <td>{{ item.source if item.source else '' }}</td>
+                                            <td><code>{{ item.text }}</code>{% if not item.line_number %}<span class="muted small"> (no single source line, e.g. a missing setting or a summarized/redacted value)</span>{% endif %}</td>
+                                        </tr>
+                                    {% endfor %}
+                                    </tbody>
+                                </table>
+                                </div>
+                            {% endif %}
+                            {% if view.related %}
+                                <h4>Also check</h4>
+                                <ul class="related">
+                                {% for area in view.related %}
+                                    <li><strong>{{ area.title }}:</strong>
+                                        {% if area.findings %}
+                                            {% for other in area.findings[:5] %}<span class="badge small sev-{{ other['severity-class'] }}">{{ other.severity }}</span>&nbsp;<a href="#{{ other.anchor }}">{{ other.title }}</a>{% if not loop.last %}; {% endif %}{% endfor %}{% if area.findings|length > 5 %} <span class="muted">and {{ area.findings|length - 5 }} more in this area</span>{% endif %}
+                                        {% else %}
+                                            <span class="muted">{{ area.note }}</span>
+                                        {% endif %}
+                                    </li>
+                                {% endfor %}
+                                </ul>
+                            {% endif %}
+                            <details>
+                                <summary>Technical background and references</summary>
+                                {% if guide %}<p>{{ guide.technical }}</p>{% endif %}
+                                {% if finding.references %}
+                                    <ul class="refs">
+                                    {% for reference in finding.references %}
+                                        <li><a href="{{ reference }}">{{ reference }}</a></li>
+                                    {% endfor %}
+                                    </ul>
+                                {% endif %}
+                            </details>
+                        </article>
+                    {% endfor %}
+                {% else %}
+                    <p>No security findings were emitted for the supplied configuration. This does not mean every control passed; review the assessment coverage below for unknown, unsupported, parse-error, or excluded scope.</p>
+                {% endif %}
+            </section>
+
+            <section id="coverage" class="panel">
+                <h2>Assessment coverage</h2>
+                <p>{{ coverage['scope-note'] }}</p>
+                {% if coverage_counts %}
+                    <p class="coverage-counts">
+                    {% for state, count in coverage_counts|dictsort %}<span class="chip state-{{ state }}">{{ state }}: {{ count }}</span> {% endfor %}
+                    </p>
+                {% endif %}
+                {% if coverage['fields'] %}
+                    <details>
+                        <summary>Coverage by configuration field</summary>
+                        <table class="table">
+                            <thead><tr><th scope="col">Field</th><th scope="col">Category</th><th scope="col">Knowledge state</th><th scope="col">Selection</th><th scope="col">Items</th><th scope="col">Detail</th></tr></thead>
+                            <tbody>
+                            {% for field in coverage['fields'] %}
+                                <tr>
+                                    <td>{{ field['name'] }}</td>
+                                    <td>{{ field['category'] }}</td>
+                                    <td>{{ field['knowledge-state'] }}</td>
+                                    <td>{{ field['audit-selection'] }}</td>
+                                    <td>{{ field['item-count'] if field['item-count'] is defined and field['item-count'] is not none else 'n/a' }}</td>
+                                    <td>{{ field['detail'] if field['detail'] is defined else '' }}</td>
+                                </tr>
+                            {% endfor %}
+                            </tbody>
+                        </table>
+                    </details>
+                {% endif %}
+                {% if coverage['diagnostics'] %}
+                    <h3>Parser scope diagnostics</h3>
+                    <ul>{% for diagnostic in coverage['diagnostics'] %}<li>{{ diagnostic }}</li>{% endfor %}</ul>
+                {% endif %}
+            </section>
+
+            <section id="about" class="panel">
+                <h2>About this report</h2>
                 <p>
                     This static configuration security report was produced from the supplied
                     {{ device_type }} export. Findings describe configuration state visible to
@@ -27,11 +213,9 @@
                 <p>
                     Each issue includes a stable rule ID, severity, observation, impact,
                     exploitability, remediation guidance, and available evidence and references.
+                    Plain-language explanations and examples are general background for the kind
+                    of weakness; the finding text describes this device.
                 </p>
-                {% if report_secret_evidence %}
-                    <p><strong>WARNING: This report includes unmasked credential source lines.</strong>
-                    Handle it as sensitive material. Normal finding evidence remains redacted.</p>
-                {% endif %}
                 {% if assessment_policy %}
                     <p>
                         <strong>Assessment policy:</strong>
@@ -50,45 +234,17 @@
                 {% endif %}
             </section>
 
-            <section id="coverage">
-                <hr>
-                <h2>2. Assessment coverage</h2>
-                <p>{{ coverage['scope-note'] }}</p>
-                {% if coverage['fields'] %}
-                    <table class="table">
-                        <thead><tr><th>Field</th><th>Category</th><th>Knowledge state</th><th>Selection</th><th>Items</th><th>Detail</th></tr></thead>
-                        <tbody>
-                        {% for field in coverage['fields'] %}
-                            <tr>
-                                <td>{{ field['name'] }}</td>
-                                <td>{{ field['category'] }}</td>
-                                <td>{{ field['knowledge-state'] }}</td>
-                                <td>{{ field['audit-selection'] }}</td>
-                                <td>{{ field['item-count'] if field['item-count'] is defined and field['item-count'] is not none else 'n/a' }}</td>
-                                <td>{{ field['detail'] if field['detail'] is defined else '' }}</td>
-                            </tr>
-                        {% endfor %}
-                        </tbody>
-                    </table>
-                {% endif %}
-                {% if coverage['diagnostics'] %}
-                    <strong>Parser scope diagnostics:</strong>
-                    <ul>{% for diagnostic in coverage['diagnostics'] %}<li>{{ diagnostic }}</li>{% endfor %}</ul>
-                {% endif %}
-            </section>
-
             {% if configuration_inventory %}
-            <section id="configuration-inventory">
-                <hr>
-                <h2>3. Configuration inventory</h2>
+            <section id="configuration-inventory" class="panel">
+                <h2>Configuration inventory</h2>
                 <p>This opt-in inventory is sanitized configuration data, not a list of passed controls. Configuration evidence, credentials, local-user records, certificate material, and raw configuration are not included.</p>
                 {% for category, records in configuration_inventory.items() %}
                     <h3>{{ category }}</h3>
                     {% if records %}
                         {% for record in records %}
-                            <dl>
+                            <dl class="record">
                             {% for key, value in record.items() %}
-                                <dt><strong>{{ key }}</strong></dt><dd>{{ value|join(', ') if value is sequence and value is not string else value }}</dd>
+                                <dt>{{ key }}</dt><dd>{{ value|join(', ') if value is sequence and value is not string else value }}</dd>
                             {% endfor %}
                             </dl>
                         {% endfor %}
@@ -99,73 +255,18 @@
             </section>
             {% endif %}
 
-            <section id="remediation-summary">
-                <hr>
-                <h2>{{ '4' if configuration_inventory else '3' }}. Remediation summary</h2>
-                <p>{{ remediation_summary['scope-note'] }}</p>
-                <p><strong>Total findings:</strong> {{ remediation_summary['finding-count'] }}.</p>
-                {% if remediation_summary['severity-counts'] %}
-                    <p><strong>By severity:</strong>
-                    {% for severity, count in remediation_summary['severity-counts'].items() %}{{ severity }}: {{ count }}{% if not loop.last %}; {% endif %}{% endfor %}.</p>
-                {% endif %}
-                {% if remediation_summary['priority-actions'] %}
-                    <ol>
-                    {% for action in remediation_summary['priority-actions'] %}
-                        <li><strong>{{ action['severity'] }} — {{ action['title'] }}</strong> ({{ action['rule-id'] }}): {{ action['recommendation'] }}</li>
-                    {% endfor %}
-                    </ol>
-                {% endif %}
-            </section>
-
-            <section id="security-issues">
-                <hr>
-                <h2>{{ '5' if configuration_inventory else '4' }}. Security audit</h2>
-                {% if issues %}
-                    {% for key, value in issues.items() %}
-                        <article>
-                            <h3>{{ key }}</h3>
-                            <p><strong>Rule ID:</strong> {{ value.rule_id }}</p>
-                            <p><strong>Severity:</strong> {{ value.severity.value }}</p>
-                            <p><strong>Observation:</strong> {{ value.observation }}</p>
-                            <p><strong>Impact:</strong> {{ value.impact }}</p>
-                            <p><strong>Exploitability:</strong> {{ value.exploitability }}</p>
-                            <p><strong>Recommendation:</strong> {{ value.recommendation }}</p>
-                            {% if value.evidence %}
-                                <strong>Evidence:</strong>
-                                <ul>
-                                {% for item in value.evidence_locations %}
-                                    <li>{% if item.line_number %}<strong>Line {{ item.line_number }}{% if item.source %} ({{ item.source }}){% endif %}:</strong> {% endif %}<code>{{ item.text }}</code>{% if not item.line_number %} <em>(no single source line, e.g. a missing setting or a summarized/redacted value)</em>{% endif %}</li>
-                                {% endfor %}
-                                </ul>
-                            {% endif %}
-                            {% if value.references %}
-                                <strong>References:</strong>
-                                <ul>
-                                {% for reference in value.references %}
-                                    <li><a href="{{ reference }}">{{ reference }}</a></li>
-                                {% endfor %}
-                                </ul>
-                            {% endif %}
-                        </article>
-                    {% endfor %}
-                {% else %}
-                    <p>No security findings were emitted for the supplied configuration. This does not mean every control passed; review the assessment coverage above for unknown, unsupported, parse-error, or excluded scope.</p>
-                {% endif %}
-            </section>
-
-            <section id="security-vulns">
-                <hr>
-                <h2>{{ '6' if configuration_inventory else '5' }}. Software advisories</h2>
+            <section id="security-vulns" class="panel">
+                <h2>Software advisories</h2>
                 {% if vulns %}
                     <table class="table" id="vulnTable">
                         <caption>Advisories returned by the supported external integration</caption>
                         <thead>
                             <tr>
-                                <th>Title</th>
-                                <th>Summary</th>
-                                <th>CVEs</th>
-                                <th>CVSS</th>
-                                <th>Source</th>
+                                <th scope="col">Title</th>
+                                <th scope="col">Summary</th>
+                                <th scope="col">CVEs</th>
+                                <th scope="col">CVSS</th>
+                                <th scope="col">Source</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -186,23 +287,30 @@
             </section>
 
             {% if report_secret_evidence %}
-            <section id="secret-evidence">
-                <hr>
+            <section id="secret-evidence" class="panel panel-danger">
                 <h2>Credential source lines (opt-in)</h2>
                 <p>{{ secret_evidence['scope-note'] if secret_evidence else 'Parsing failed before credential source lines could be selected.' }}</p>
                 {% if secret_evidence and secret_evidence['entries'] %}
-                    <ul>
-                    {% for entry in secret_evidence['entries'] %}
-                        <li>Line {{ entry['line-number'] }} ({{ entry['context'] }}): <code>{{ entry['source-line'] }}</code></li>
-                    {% endfor %}
-                    </ul>
+                    <table class="evidence">
+                        <thead><tr><th scope="col">Line</th><th scope="col">Context</th><th scope="col">Source line</th></tr></thead>
+                        <tbody>
+                        {% for entry in secret_evidence['entries'] %}
+                            <tr><td class="line">Line {{ entry['line-number'] }}</td><td>{{ entry['context'] }}</td><td><code class="pre">{{ entry['source-line'] }}</code></td></tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
                 {% else %}
                     <p>No qualified credential lines were available. This does not prove that the configuration contains no secrets.</p>
                 {% endif %}
             </section>
             {% endif %}
+
+            <footer class="report-footer">
+                Generated by pynipper-v2 on {{ date }}. Static configuration analysis: an empty or short findings list is not proof that the device is secure.
+            </footer>
         </main>
         <script type="text/javascript">
+            {% include "report.js" %}
             {% include "impact-color.js" %}
         </script>
     </body>

@@ -1,6 +1,6 @@
 # Open tasks from practical testing
 
-Recorded **2026-09-24** from hands-on use of the tool. These are defects and usability gaps. PT-001 to PT-004 were implemented on 2026-09-24 (see status per task); PT-005 to PT-008 are open. Follow [Architecture](../ARCHITECTURE.md) and [Extending](../EXTENDING.md). Every task finishes with `.\.venv\Scripts\python.exe scripts\run_full_regression.py`, and any snapshot change must be reviewed deliberately.
+Recorded **2026-09-24** from hands-on use of the tool. These are defects and usability gaps. PT-001 to PT-007 were implemented on 2026-09-24 (see status per task); PT-008 is open. Follow [Architecture](../ARCHITECTURE.md) and [Extending](../EXTENDING.md). Every task finishes with `.\.venv\Scripts\python.exe scripts\run_full_regression.py`, and any snapshot change must be reviewed deliberately.
 
 | ID | Priority | Title |
 |---|---|---|
@@ -8,9 +8,9 @@ Recorded **2026-09-24** from hands-on use of the tool. These are defects and usa
 | PT-002 | P1 | FortiOS: parse quoted values that span several lines (**done**) |
 | PT-003 | P1 | Audit all other parsers for multi-line values (**done**) |
 | PT-004 | P1 | Show source line numbers with finding evidence (**done**, see remaining gaps) |
-| PT-005 | P2 | Redesign the HTML report for readability |
-| PT-006 | P2 | Layered, user-friendly finding explanations |
-| PT-007 | P2 | Point to related findings and compensating controls |
+| PT-005 | P2 | Redesign the HTML report for readability (**done**) |
+| PT-006 | P2 | Layered, user-friendly finding explanations (**done**) |
+| PT-007 | P2 | Point to related findings and compensating controls (**done**) |
 | PT-008 | P3 | Modernise the dependency stack (long-term fix for PT-001) |
 
 <a id="pt-001"></a>
@@ -100,6 +100,13 @@ Recorded **2026-09-24** from hands-on use of the tool. These are defects and usa
 - JSON output stays unchanged apart from additions.
 **Tests:** Template tests for ordering, escaping, the secret appendix and parse-error reports. Manual review against the real FortiGate and IOS samples.
 
+**Status:** Done.
+- New template, `style.css` and `report.js` (the filter is optional: the report is complete without JavaScript).
+- View data comes from `src/report/explanations.py`.
+- Checked in Chromium at desktop and 420 px widths, in light and dark mode, with no horizontal scroll on mobile.
+- Tests are in `tests/test_report_readability_pt005_007.py`.
+- Still to do: review against the real (non-sanitized) samples.
+
 <a id="pt-006"></a>
 ### PT-006: Layered finding explanations
 **Problem:** Descriptions are technically correct but vague for readers who don't administer the platform every day.
@@ -110,6 +117,10 @@ Recorded **2026-09-24** from hands-on use of the tool. These are defects and usa
 - Wording must not claim more than the static evidence proves.
 **Tests:** Every guidance key matches a real rule ID. A coverage test lists rules that still have no guidance.
 
+**Status:** Done, with one deliberate change: the catalogue is one vendor-neutral module (`src/analyze/common/guidance.py`) rather than per-vendor files. The same weakness has the same explanation on every vendor, and device-specific detail stays in each finding's observation.
+- 37 entries cover all 457 static and dynamic rule IDs, and the test requires full coverage.
+- Possible follow-up: rule-specific entries for individual high-value rules where the shared text is too generic.
+
 <a id="pt-007"></a>
 ### PT-007: Related findings and compensating controls
 **Problem:** Users aren't told which other controls to check when they see a finding. For example, a broad policy or broad admin rights should prompt a look at logging and audit settings.
@@ -119,6 +130,8 @@ Recorded **2026-09-24** from hands-on use of the tool. These are defects and usa
 - Where there are none, it says the control should be verified manually, because not assessed does not mean secure.
 - This is report-layer only: no new detections and no risk scoring.
 **Tests:** Mapping integrity, rendering when related findings are present, and rendering when they are absent.
+
+**Status:** Done. There are 18 areas with explicit relations. Cards list up to five related findings per area, and JSON lists all of them.
 
 <a id="pt-008"></a>
 ### PT-008: Dependency modernisation (deferred)

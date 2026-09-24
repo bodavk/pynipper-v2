@@ -7,7 +7,7 @@ An item is not permission to turn absent or incomplete configuration evidence in
 ## Priority: practical-testing defects
 
 - [x] PT-001 to PT-004 ([details](agent_notes/PRACTICAL_TESTING_TASKS.md)): MarkupSafe pin, FortiOS and cross-vendor multi-line value parsing, and evidence line numbers.
-- [ ] PT-005 to PT-007: report readability, layered explanations and related-control hints.
+- [x] PT-005 to PT-007: report readability, layered explanations and related-control hints.
 - [ ] PT-008 (deferred): dependency modernisation.
 
 ## Priority: report secret visibility

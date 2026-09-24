@@ -2,6 +2,7 @@
 
 import io
 import json
+import re
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -137,8 +138,10 @@ def test_reports_show_line_numbers(tmp_path):
     payload = tmp_path / "report.json"
     assert main(["-d", "cisco-ios", "-i", str(source), "-o", "HTML", "-f", str(html), "-x"]) == 0
     assert main(["-d", "cisco-ios", "-i", str(source), "-o", "JSON", "-f", str(payload), "-x"]) == 0
-    assert f"Line {number} (vulnerable.conf):</strong> <code>ip http server</code>" in (
-        html.read_text(encoding="utf-8")
+    rendered = re.sub(r"\s+", " ", html.read_text(encoding="utf-8"))
+    assert (
+        f'<td class="line">Line {number}</td> <td>vulnerable.conf</td> <td><code>ip http server</code>'
+        in rendered
     )
     issues = json.loads(payload.read_text(encoding="utf-8"))["security-audit"]
     http = next(item for item in issues.values() if item["rule_id"] == "cisco.ios.http.cleartext_service")

@@ -42,6 +42,7 @@ Every finding constructed by the twelve corpus pipelines now includes at least o
 - Evaluate ordered effective state, including negation, disablement, deletion, attachment, and scope.
 - Emit one root cause per stable rule ID and preserve object-specific evidence.
 - Pass parser `ConfigEvidence` objects as evidence so reports cite source line numbers; processors call `attach_source_lines` before filtering.
+- Make sure every rule ID maps to reader guidance in `src/analyze/common/guidance.py`.
 - Redact credentials, communities, keys, and other secrets before they become evidence.
 - Cite the vendor guide or control source in `Finding.references` for every check.
 - Add true-positive, true-negative, override, unknown/not-applicable, and public-pipeline tests.

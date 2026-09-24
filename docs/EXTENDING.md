@@ -73,6 +73,8 @@ Do not reuse a nearby policy model merely because its syntax has similar words. 
 
 For VPN checks, start from an active policy or interface attachment and follow named references to the effective gateway, policy and proposal objects. Ignore unreferenced weak definitions and inactive tunnels. Report an unresolved active chain separately from an explicitly weak configured transform, and never describe configured proposals as the live negotiated security association.
 
+Every new rule ID must match an entry in `src/analyze/common/guidance.py` (the coverage test fails otherwise). Reuse an existing entry when the weakness is the same kind across vendors; add a new entry, placed before any broader pattern, only for a genuinely different weakness. Keep its text vendor-neutral and within what a static export can prove; device-specific facts belong in the finding's observation.
+
 ### 4. Register explicitly
 
 Add the plugin class to the platform processor's ordered plugin tuple. Never rely on filename scanning or automatic subclass discovery.
