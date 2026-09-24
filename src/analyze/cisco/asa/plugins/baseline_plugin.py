@@ -189,7 +189,7 @@ class PluginASABaseline(BasePlugin):
                 "SSH version 1 has obsolete protocol and cryptographic design weaknesses.",
                 "Restrict SSH to version 2; on releases where version 1 has been removed, retain the secure release default.",
                 Severity.HIGH,
-                tuple(item.text for item in policy.evidence) or (f"ASA {asa.get_version()} SSH default",),
+                tuple(item for item in policy.evidence) or (f"ASA {asa.get_version()} SSH default",),
                 CISCO_ASA_SSH_REFERENCE,
             ))
 
@@ -217,7 +217,7 @@ class PluginASABaseline(BasePlugin):
                 "Legacy SSH algorithms weaken confidentiality, integrity, or key-exchange strength.",
                 "Use the release-supported high/custom encryption and integrity selections and a modern ECDH/Curve25519 key-exchange group.",
                 Severity.HIGH,
-                tuple(item.text for item in policy.evidence),
+                tuple(item for item in policy.evidence),
                 CISCO_ASA_SSH_REFERENCE,
             ))
 
@@ -239,7 +239,7 @@ class PluginASABaseline(BasePlugin):
                 ),
                 "Configuration disclosure can expose or accelerate compromise of a local administrative credential.",
                 "Use supported PBKDF2 storage with unique credentials and prefer centralized AAA.",
-                Severity.HIGH, tuple(item.text for item in credential.evidence),
+                Severity.HIGH, tuple(item for item in credential.evidence),
             ))
 
     def check_http_management(self, parser: BaseDeviceParser) -> None:
@@ -272,7 +272,7 @@ class PluginASABaseline(BasePlugin):
                     f"The explicitly configured {idle.source} allows {idle.minutes:g} minutes of inactivity, above the project's ten-minute management target.",
                     "An abandoned ASDM session may remain usable longer than intended.",
                     "Set the effective HTTP/ASDM idle timeout to ten minutes or less.",
-                    Severity.MEDIUM, tuple(item.text for item in idle.evidence),
+                    Severity.MEDIUM, tuple(item for item in idle.evidence),
                     CISCO_ASA_HTTP_TIMEOUT_REFERENCE,
                 ))
         for grant in grants:
@@ -297,7 +297,7 @@ class PluginASABaseline(BasePlugin):
             ))
             return
         for binding in certificate_bindings:
-            evidence = tuple(item.text for item in binding.evidence)
+            evidence = tuple(item for item in binding.evidence)
             if not binding.trustpoint_configured:
                 self.add_issue(self._finding(
                     parser, "cisco.asa.management.certificate_unresolved",
@@ -392,7 +392,7 @@ class PluginASABaseline(BasePlugin):
             return
         release = asa._release_tuple(asa.get_version())
         for association in associations:
-            evidence = tuple(item.text for item in association.evidence)
+            evidence = tuple(item for item in association.evidence)
             if association.authentication_state != "authenticated":
                 detail = (
                     "is not configured for authenticated NTP"
@@ -436,7 +436,7 @@ class PluginASABaseline(BasePlugin):
             return
         for policy in asa.get_connection_limit_policies():
             unlimited = sorted(name for name, value in policy.limits if value == 0)
-            evidence = tuple(item.text for item in policy.evidence)
+            evidence = tuple(item for item in policy.evidence)
             scope = ", ".join(policy.attachment_scopes)
             if policy.invalid_values:
                 self.add_issue(self._finding(
@@ -515,7 +515,7 @@ class PluginASABaseline(BasePlugin):
                     "A negotiable group outside the approved profile weakens policy consistency even when another allowed alternative exists.",
                     "Remove this DH alternative or revise the explicitly approved platform profile after review.",
                     Severity.MEDIUM,
-                    tuple(item.text for item in alternative.evidence),
+                    tuple(item for item in alternative.evidence),
                     (CISCO_ASA_IKE_POLICY_REFERENCE,),
                 ))
         for binding in self._asa(parser).get_active_ipsec_transform_bindings():
@@ -551,7 +551,7 @@ class PluginASABaseline(BasePlugin):
                 "A password-only configured path does not meet this audit's explicit client-certificate requirement; external identity-provider MFA is not inferred from the export.",
                 "Require certificate authentication for this profile or document and select a different approved authentication policy.",
                 Severity.HIGH,
-                tuple(item.text for item in profile.evidence)
+                tuple(item for item in profile.evidence)
                 + ("assessment policy: ASA remote access client certificate required",),
                 (CISCO_ASA_WEBVPN_AUTH_REFERENCE,),
             ))

@@ -147,7 +147,7 @@ class PluginASAChecks(BasePlugin):
         for user in users:
             if not user.active:
                 continue
-            evidence = tuple(item.text for item in user.evidence)
+            evidence = tuple(item for item in user.evidence)
             if not user.group_resolved:
                 self.add_issue(
                     Finding(
@@ -307,7 +307,7 @@ class PluginASAChecks(BasePlugin):
                     severity=Severity.MEDIUM,
                     exploitability="An on-path attacker may target weaknesses in a permitted legacy protocol version.",
                     recommendation="Set 'ssl server-version tlsv1.2' or a newer version supported by the platform.",
-                    evidence=tuple(item.text for item in policy.evidence if item.text.startswith(("ssl server-version", "enable "))),
+                    evidence=tuple(item for item in policy.evidence if item.text.startswith(("ssl server-version", "enable "))),
                     references=(CISCO_ASA_TLS_REFERENCE,),
                 )
             )

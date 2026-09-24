@@ -82,7 +82,7 @@ class PluginScreenOSBaseline(BasePlugin):
 
     @staticmethod
     def _evidence(commands: list[ScreenOSCommand]) -> tuple[str, ...]:
-        return tuple(command.evidence.text for command in commands)
+        return tuple(command.evidence for command in commands)
 
     def _applicable(self, parser: BaseDeviceParser) -> bool:
         return self._screenos(parser).get_version() != "?"
@@ -135,7 +135,7 @@ class PluginScreenOSBaseline(BasePlugin):
                 or (0 < control.timeout_minutes <= 10)
             ):
                 continue
-            evidence = tuple(item.text for item in control.evidence)
+            evidence = tuple(item for item in control.evidence)
             if control.scope == "console-telnet":
                 self.add_issue(
                     self._finding(
@@ -209,7 +209,7 @@ class PluginScreenOSBaseline(BasePlugin):
                         "The static export cannot establish the authentication source or its effective session policy.",
                         "Export the complete auth-server configuration and correct or remove the unresolved binding.",
                         Severity.HIGH,
-                        tuple(item.text for item in control.evidence)
+                        tuple(item for item in control.evidence)
                         or (f"unresolved auth-server {control.name}",),
                         (SCREENOS_DOCUMENTATION, SCREENOS_IPV4_CLI),
                     )
@@ -289,7 +289,7 @@ class PluginScreenOSBaseline(BasePlugin):
                         "Legacy encryption or hashes do not meet current transport-security policy.",
                         "Remove web management from ScreenOS and prioritize platform migration; restrict HTTPS sources in the interim.",
                         Severity.HIGH,
-                        (command.evidence.text,),
+                        (command.evidence,),
                         (SCREENOS_DOCUMENTATION, ORIGINAL_ADMIN_REFERENCE),
                     )
                 )
@@ -318,7 +318,7 @@ class PluginScreenOSBaseline(BasePlugin):
                         "Default administrative credentials can provide immediate privileged access.",
                         "Set a unique high-entropy credential, restrict manager sources, and plan platform migration.",
                         Severity.CRITICAL,
-                        tuple(item.text for item in credential.evidence),
+                        tuple(item for item in credential.evidence),
                         (SCREENOS_DOCUMENTATION,),
                     )
                 )
@@ -345,7 +345,7 @@ class PluginScreenOSBaseline(BasePlugin):
         if active:
             return
         evidence = tuple(
-            item.evidence[0].text for item in destinations if item.evidence
+            item.evidence[0] for item in destinations if item.evidence
         ) or ("enabled syslog destination absent",)
         self.add_issue(
             self._finding(
@@ -403,7 +403,7 @@ class PluginScreenOSBaseline(BasePlugin):
                     "ScreenOS supports community-based SNMP only, without SNMPv3 authentication and privacy.",
                     "Disable SNMP or constrain it to read-only access from explicit manager hosts until the platform is replaced.",
                     severity,
-                    (community.evidence.text,),
+                    (community.evidence,),
                     (SCREENOS_DOCUMENTATION, ORIGINAL_SNMP_REFERENCE),
                 )
             )
@@ -448,7 +448,7 @@ class PluginScreenOSBaseline(BasePlugin):
                     "Security-relevant permitted traffic may be unavailable for monitoring and incident investigation.",
                     "Enable appropriate session logging and send the resulting events to a protected remote destination.",
                     Severity.MEDIUM,
-                    tuple(item.text for item in policy.evidence),
+                    tuple(item for item in policy.evidence),
                     (SCREENOS_DOCUMENTATION,),
                 )
             )
@@ -466,7 +466,7 @@ class PluginScreenOSBaseline(BasePlugin):
                 "Traffic that fails to match an interzone or global policy can cross the firewall without an explicit allow rule.",
                 "Unset policy default-permit-all and create narrowly scoped explicit permit policies.",
                 Severity.CRITICAL,
-                tuple(item.text for item in state.evidence),
+                tuple(item for item in state.evidence),
                 (SCREENOS_DOCUMENTATION, SCREENOS_IPV4_CLI),
             )
         )
@@ -522,7 +522,7 @@ class PluginScreenOSBaseline(BasePlugin):
                     "suite as an interim control, then migrate the VPN to a "
                     "supported platform.",
                     Severity.HIGH,
-                    (proposal.evidence.text,),
+                    (proposal.evidence,),
                     (SCREENOS_DOCUMENTATION, JUNIPER_IPSEC_GUIDE),
                 )
             )

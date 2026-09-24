@@ -1,6 +1,7 @@
 """Version-aware Junos management and control-plane hardening checks."""
 
 from collections import defaultdict
+from dataclasses import replace
 
 from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.credentials import credential_policy_from_context, evaluate_credential
@@ -93,6 +94,22 @@ JUNIPER_DEFAULT_POLICY_REFERENCE = (
     "https://www.juniper.net/documentation/us/en/software/junos/cli-reference/"
     "topics/ref/statement/security-edit-default-policy.html"
 )
+JUNIPER_SCREEN_REFERENCE = (
+    "https://www.juniper.net/documentation/us/en/software/junos/"
+    "cli-reference/topics/ref/statement/security-edit-syn-flood.html"
+)
+JUNIPER_UDP_SCREEN_REFERENCE = (
+    "https://www.juniper.net/documentation/us/en/software/junos/"
+    "cli-reference/topics/ref/statement/security-edit-flood-udp.html"
+)
+JUNIPER_ICMP_SCREEN_REFERENCE = (
+    "https://www.juniper.net/documentation/us/en/software/junos/"
+    "cli-reference/topics/ref/statement/security-edit-flood-icmp.html"
+)
+JUNIPER_SCREEN_OPTION_REFERENCE = (
+    "https://www.juniper.net/documentation/us/en/software/junos/"
+    "cli-reference/topics/ref/statement/security-edit-ids-option.html"
+)
 
 
 class PluginJunOSBaseline(BasePlugin):
@@ -155,7 +172,7 @@ class PluginJunOSBaseline(BasePlugin):
 
     @staticmethod
     def _texts(statements: list[JunosStatement]) -> tuple[str, ...]:
-        return tuple(statement.evidence.text for statement in statements)
+        return tuple(statement.evidence for statement in statements)
 
     def _statements(
         self, parser: BaseDeviceParser, prefix: tuple[str, ...]
@@ -178,7 +195,7 @@ class PluginJunOSBaseline(BasePlugin):
             "Inter-zone and intra-zone traffic without an explicit matching security rule can traverse the firewall.",
             "Set security policies default-policy deny-all and create narrowly scoped explicit permit policies.",
             Severity.HIGH,
-            tuple(item.text for item in state.evidence),
+            tuple(item for item in state.evidence),
             (JUNIPER_DEFAULT_POLICY_REFERENCE,),
         ))
 
@@ -236,7 +253,7 @@ class PluginJunOSBaseline(BasePlugin):
                     f"Administrative user '{user['username']}' has class super-user but no effective authentication method.",
                     "An unusable or unexpectedly inherited account can undermine intended administrative access controls.",
                     "Configure an approved SSH key or strong encrypted password, or remove the account.",
-                    Severity.HIGH, tuple(item.text for item in user["evidence"]),
+                    Severity.HIGH, tuple(item for item in user["evidence"]),
                     (JUNIPER_AUTH_GUIDE,),
                 ))
 
@@ -250,7 +267,7 @@ class PluginJunOSBaseline(BasePlugin):
                     f"The {credential.context} credential for '{credential.account}' uses '{credential.method}' format '{credential.storage_type}', classified as '{result.storage_assessment.value}' under credential policy '{result.policy_version}'; the separate exact-default comparison is '{result.default_assessment.value}' and the blocklist comparison {result.blocklist_summary}. The value is redacted.",
                     "Configuration disclosure can expose or accelerate recovery of the credential.",
                     "Replace the credential with a supported strong hash or SSH public key.",
-                    Severity.HIGH, tuple(item.text for item in credential.evidence),
+                    Severity.HIGH, tuple(item for item in credential.evidence),
                     (JUNIPER_AUTH_GUIDE,),
                 ))
 
@@ -264,7 +281,7 @@ class PluginJunOSBaseline(BasePlugin):
                 "No effective system login message is configured; a post-login announcement does not replace the pre-authentication notice.",
                 "Users are not shown an approved access warning before supplying administrative credentials.",
                 "Configure an organization-approved system login message and retain announcements only for post-login information.",
-                Severity.MEDIUM, tuple(item.text for item in notice.evidence) or ("system login message absent",),
+                Severity.MEDIUM, tuple(item for item in notice.evidence) or ("system login message absent",),
                 (JUNIPER_LOGIN_GUIDE,),
             ))
 
@@ -277,14 +294,14 @@ class PluginJunOSBaseline(BasePlugin):
                     f"User '{user['username']}' has no effective login-class binding in the supplied configuration.",
                     "The export does not establish the authorization privileges applied to this identity.",
                     "Assign the user to a defined least-privilege login class or provide the complete inherited configuration.",
-                    Severity.HIGH, tuple(item.text for item in user["evidence"]),
+                    Severity.HIGH, tuple(item for item in user["evidence"]),
                     (JUNIPER_LOGIN_CLASS_REFERENCE,),
                 ))
 
         for policy in junos.get_login_class_policies():
             if not policy.users:
                 continue
-            evidence = tuple(item.text for item in policy.evidence)
+            evidence = tuple(item for item in policy.evidence)
             if not policy.defined and not policy.inheritance_unknown:
                 self.add_issue(self._finding(
                     parser, "juniper.junos.authentication.login_class_binding",
@@ -326,7 +343,7 @@ class PluginJunOSBaseline(BasePlugin):
             missing_events = sorted(
                 {"login", "change-log", "interactive-commands"} - set(accounting.events)
             )
-            evidence = tuple(item.text for item in accounting.evidence)
+            evidence = tuple(item for item in accounting.evidence)
             if missing_events and not accounting.inheritance_unknown:
                 self.add_issue(self._finding(
                     parser, "juniper.junos.authentication.accounting_events",
@@ -362,7 +379,7 @@ class PluginJunOSBaseline(BasePlugin):
         web = junos.get_web_management_policy()
         if not web.enabled:
             return
-        evidence = tuple(item.text for item in web.evidence)
+        evidence = tuple(item for item in web.evidence)
         if (
             web.idle_timeout_resolution == "known"
             and web.idle_timeout_minutes is not None
@@ -390,7 +407,7 @@ class PluginJunOSBaseline(BasePlugin):
         junos = self._junos(parser)
         inheritance_unknown = junos.has_unexpanded_inheritance()
         for profile in junos.get_aaa_transport_profiles():
-            evidence = tuple(item.text for item in profile.evidence) or (
+            evidence = tuple(item for item in profile.evidence) or (
                 f"system RADIUS server {profile.address}",
             )
             use = " and ".join(profile.roles)
@@ -522,7 +539,7 @@ class PluginJunOSBaseline(BasePlugin):
                     "Migrate to SNMPv3 USM with authentication and privacy, then remove the community.",
                     Severity.HIGH if severe else Severity.MEDIUM,
                     tuple(
-                        item.evidence.text.replace(community, "<redacted>")
+                        replace(item.evidence, text=item.evidence.text.replace(community, "<redacted>"))
                         for item in statements
                     ),
                     (JUNIPER_SNMP_GUIDE,),
@@ -567,7 +584,7 @@ class PluginJunOSBaseline(BasePlugin):
                     "Unauthenticated, unencrypted, or legacy SNMP protection exposes management data and control operations.",
                     "Configure a supported SHA authentication method and AES privacy for the USM user.",
                     Severity.HIGH,
-                    tuple(item.evidence.text for item in statements),
+                    tuple(item.evidence for item in statements),
                     (JUNIPER_SNMP_GUIDE,),
                 )
             )
@@ -575,7 +592,7 @@ class PluginJunOSBaseline(BasePlugin):
     def check_configuration_management(self, parser: BaseDeviceParser) -> None:
         junos = self._junos(parser)
         state = junos.get_configuration_management()
-        evidence = tuple(item.text for item in state.evidence)
+        evidence = tuple(item for item in state.evidence)
         authentication_order = self._statements(parser, ("system", "authentication-order"))
         remote_authentication = any(
             token in {"radius", "tacplus"}
@@ -645,7 +662,7 @@ class PluginJunOSBaseline(BasePlugin):
                 "Configuration backups can expose credentials, addressing, and security policy in transit.",
                 "Use SCP or SFTP and verify the archive host key through a trusted channel.",
                 Severity.HIGH,
-                tuple(item.text for item in site.evidence),
+                tuple(item for item in site.evidence),
                 (JUNIPER_CONFIGURATION_ARCHIVE_GUIDE,),
             ))
 
@@ -691,7 +708,7 @@ class PluginJunOSBaseline(BasePlugin):
                     "Authentication and administrative-command activity may be absent from this destination, creating a monitoring blind spot even when another host is complete.",
                     "Configure authorization and interactive-commands selectors at an approved severity, or an equivalently broad any selector, for each required destination.",
                     Severity.MEDIUM,
-                    tuple(item.text for item in destination.evidence),
+                    tuple(item for item in destination.evidence),
                     (JUNIPER_SYSLOG_GUIDE, JUNIPER_SYSLOG_HOST_REFERENCE),
                 )
             )
@@ -719,7 +736,7 @@ class PluginJunOSBaseline(BasePlugin):
             ("ex4300", "ex4600", "qfx5100")
         )
         for association in associations:
-            evidence = tuple(item.text for item in association.evidence)
+            evidence = tuple(item for item in association.evidence)
             if association.authentication_state != "authenticated":
                 detail = (
                     "has no key binding"
@@ -780,7 +797,7 @@ class PluginJunOSBaseline(BasePlugin):
             return
 
         for protection in protections:
-            evidence = tuple(item.text for item in protection.evidence)
+            evidence = tuple(item for item in protection.evidence)
             scope = f"{protection.interface}.{protection.unit} family {protection.family}"
             if not protection.filter_resolved:
                 if protection.protection_state == "unknown-inheritance":
@@ -822,7 +839,7 @@ class PluginJunOSBaseline(BasePlugin):
                     "A missing rate, burst limit, discard action, or policer definition cannot provide the intended rate enforcement.",
                     "Define the referenced policer with an operationally approved rate, burst limit, and discard action.",
                     Severity.HIGH,
-                    tuple(item.text for item in term.evidence) or evidence,
+                    tuple(item for item in term.evidence) or evidence,
                     (JUNIPER_POLICER_GUIDE,),
                 ))
 
@@ -865,7 +882,7 @@ class PluginJunOSBaseline(BasePlugin):
                 f"neighbor {peer.address} in group {peer.group}, "
                 f"family {peer.address_family}, routing-instance {peer.routing_instance}"
             )
-            evidence = tuple(item.text for item in peer.evidence)
+            evidence = tuple(item for item in peer.evidence)
             if peer.authentication_state in {"unauthenticated", "unresolved"}:
                 detail = "has no authentication" if peer.authentication_state == "unauthenticated" else "has an unresolved authentication key-chain or algorithm"
                 self.add_issue(self._finding(
@@ -911,7 +928,7 @@ class PluginJunOSBaseline(BasePlugin):
         for interface in junos.get_ospf_interfaces():
             if not interface.active or interface.passive or interface.authentication_state in {"authenticated", "unknown"}:
                 continue
-            evidence = tuple(item.text for item in interface.evidence)
+            evidence = tuple(item for item in interface.evidence)
             if interface.authentication_state == "weak":
                 rule_id = "juniper.junos.routing.ospf.weak_authentication"
                 title = "OSPF interface uses simple-password authentication"
@@ -941,7 +958,7 @@ class PluginJunOSBaseline(BasePlugin):
                 or not (interface.transmit or interface.receive)
             ):
                 continue
-            evidence = tuple(item.text for item in interface.evidence) + (
+            evidence = tuple(item for item in interface.evidence) + (
                 f"assessment policy: {interface.interface} role external",
             )
             self.add_issue(self._finding(
@@ -955,6 +972,68 @@ class PluginJunOSBaseline(BasePlugin):
                 evidence,
                 (JUNIPER_LLDP_GUIDE,),
             ))
+
+    def check_zone_screens(self, parser: BaseDeviceParser) -> None:
+        junos = self._junos(parser)
+        if (
+            junos.parse_error
+            or not junos.get_model().upper().startswith("SRX")
+            or junos.has_unexpanded_inheritance()
+        ):
+            return
+        for binding in junos.get_zone_screens():
+            external = tuple(
+                interface for interface in binding.interfaces
+                if junos.assessment_context.role_for_interface(interface) == "external"
+                or junos.assessment_context.role_for_interface(interface.split(".", 1)[0]) == "external"
+            )
+            if not external:
+                continue
+            evidence = tuple(item for item in binding.evidence) + tuple(
+                f"assessment policy: {interface} role external" for interface in external
+            )
+            for option, state, reference in (
+                ("syn_flood", binding.syn_flood_state, JUNIPER_SCREEN_REFERENCE),
+                ("udp_flood", binding.udp_flood_state, JUNIPER_UDP_SCREEN_REFERENCE),
+                ("icmp_flood", binding.icmp_flood_state, JUNIPER_ICMP_SCREEN_REFERENCE),
+            ):
+                if state != "explicitly-inactive":
+                    continue
+                label = {
+                    "syn_flood": "TCP SYN-flood",
+                    "udp_flood": "UDP-flood",
+                    "icmp_flood": "ICMP-flood",
+                }[option]
+                self.add_issue(self._finding(
+                    parser,
+                    f"juniper.junos.screen.{option}_inactive",
+                    f"Attached SRX screen has {label} protection deactivated",
+                    f"SRX zone {binding.zone} attaches screen {binding.screen} on assessed external interface(s) {', '.join(external)}, but its configured {label} option is explicitly inactive.",
+                    f"The attached screen does not provide its configured {label} defense on this ingress zone.",
+                    f"Activate and tune {label} protection in the attached screen after validating legitimate traffic levels.",
+                    Severity.HIGH,
+                    evidence,
+                    (reference,),
+                ))
+            if binding.alarm_without_drop:
+                for option, state, reference in (
+                    ("udp_flood", binding.udp_flood_state, JUNIPER_UDP_SCREEN_REFERENCE),
+                    ("icmp_flood", binding.icmp_flood_state, JUNIPER_ICMP_SCREEN_REFERENCE),
+                ):
+                    if state != "active":
+                        continue
+                    label = "UDP-flood" if option == "udp_flood" else "ICMP-flood"
+                    self.add_issue(self._finding(
+                        parser,
+                        f"juniper.junos.screen.{option}_alarm_only",
+                        f"Attached SRX {label} screen alarms without dropping",
+                        f"SRX zone {binding.zone} attaches screen {binding.screen} on assessed external interface(s) {', '.join(external)}; {label} detection is active but the screen explicitly uses alarm-without-drop.",
+                        f"The configured screen alarms on detected {label} traffic without blocking it.",
+                        "Remove alarm-without-drop where blocking is required, then validate thresholds against legitimate traffic.",
+                        Severity.HIGH,
+                        evidence,
+                        (JUNIPER_SCREEN_OPTION_REFERENCE, reference),
+                    ))
 
     def analyze(self, parser: BaseDeviceParser) -> None:
         self.check_ssh_algorithms(parser)
@@ -973,3 +1052,4 @@ class PluginJunOSBaseline(BasePlugin):
         self.check_redirects(parser)
         self.check_routing(parser)
         self.check_discovery(parser)
+        self.check_zone_screens(parser)

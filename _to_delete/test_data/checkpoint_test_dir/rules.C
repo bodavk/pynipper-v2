@@ -1,0 +1,1 @@
+( :rules ( :rule1 ( :action ( accept ) :src ( any ) :dst ( any ) :services ( any ) ) ) )

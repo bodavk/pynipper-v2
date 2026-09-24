@@ -78,7 +78,7 @@ class PluginSonicOSChecks(BasePlugin):
         for interface in self._sonic(parser).get_interfaces():
             if not interface.enabled:
                 continue
-            evidence = tuple(item.text for item in interface.evidence)
+            evidence = tuple(item for item in interface.evidence)
             if "http" in interface.management:
                 self.add_issue(
                     Finding(
@@ -129,7 +129,7 @@ class PluginSonicOSChecks(BasePlugin):
                     exploitability="Compromise or misuse of the account receives the effective higher privilege.",
                     recommendation="Place each administrator in one deliberate administrative group and use read-only or limited access wherever sufficient.",
                     severity=Severity.HIGH if administrator.effective_role == "full-admin" else Severity.MEDIUM,
-                    evidence=tuple(item.text for item in administrator.evidence),
+                    evidence=tuple(item for item in administrator.evidence),
                     references=(SONICOS_ADMIN_ROLES_GUIDE, SONICOS_CLI_GUIDE),
                 ))
             if administrator.otp_enabled is False and administrator.effective_role in {"full-admin", "limited-admin"}:
@@ -142,14 +142,14 @@ class PluginSonicOSChecks(BasePlugin):
                     exploitability="An attacker who obtains the local password does not need an independent authentication factor.",
                     recommendation="Require TOTP for privileged local administrators and maintain a separately controlled recovery procedure.",
                     severity=Severity.HIGH,
-                    evidence=tuple(item.text for item in administrator.evidence) or (
+                    evidence=tuple(item for item in administrator.evidence) or (
                         "SonicOS 7.0-7.2 documented default: built-in administrator TOTP disabled",
                     ),
                     references=(SONICOS_CLI_GUIDE,),
                 ))
 
         password = sonic.get_password_policy()
-        password_evidence = tuple(item.text for item in password.evidence)
+        password_evidence = tuple(item for item in password.evidence)
         if password.minimum_length is not None and password.minimum_length < 12:
             self.add_issue(Finding(
                 rule_id="sonicwall.sonicos.password.minimum_length",
@@ -195,7 +195,7 @@ class PluginSonicOSChecks(BasePlugin):
             ))
 
         session = sonic.get_admin_session_policy()
-        session_evidence = tuple(item.text for item in session.evidence)
+        session_evidence = tuple(item for item in session.evidence)
         management_active = any(services.values())
         if management_active and session.lockout_enabled is False:
             self.add_issue(Finding(
@@ -280,14 +280,14 @@ class PluginSonicOSChecks(BasePlugin):
                 exploitability="This is primarily a governance and legal-notice control rather than a direct technical exploit.",
                 recommendation="Configure an approved 'cli banner connection' notice and validate it before the credential prompt.",
                 severity=Severity.LOW,
-                evidence=tuple(item.text for item in banner.evidence) or (
+                evidence=tuple(item for item in banner.evidence) or (
                     "SonicOS 7.0-7.2 documented CLI connection banner default: absent",
                 ),
                 references=(SONICOS_LOGIN_BANNER_GUIDE, SONICOS_CLI_GUIDE),
             ))
 
         tls = sonic.get_management_tls_policy()
-        tls_evidence = tuple(item.text for item in tls.evidence)
+        tls_evidence = tuple(item for item in tls.evidence)
         if tls.applicable and tls.minimum_version == "tls1.0":
             self.add_issue(Finding(
                 rule_id="sonicwall.sonicos.management.legacy_tls",
@@ -322,7 +322,7 @@ class PluginSonicOSChecks(BasePlugin):
         for rule in self._sonic(parser).get_access_rules():
             if not rule.enabled or rule.action != "allow":
                 continue
-            evidence = tuple(item.text for item in rule.evidence)
+            evidence = tuple(item for item in rule.evidence)
             if all(
                 self._is_any(value)
                 for value in (
@@ -367,7 +367,7 @@ class PluginSonicOSChecks(BasePlugin):
         """Report only statically proven first-match policy relationships."""
         earlier_rules = []
         for rule in self._sonic(parser).get_access_rules():
-            evidence = tuple(item.text for item in rule.evidence) or (
+            evidence = tuple(item for item in rule.evidence) or (
                 f"access rule {rule.name}",
             )
             unrestricted = (
@@ -447,7 +447,7 @@ class PluginSonicOSChecks(BasePlugin):
                     exploitability="A conflicting shadowed rule can give reviewers a false impression of enforced access control.",
                     recommendation="Remove or reorder the rule after validating address/service objects, logging, and operational intent.",
                     severity=Severity.LOW if same_action else Severity.HIGH,
-                    evidence=evidence + tuple(item.text for item in earlier.evidence),
+                    evidence=evidence + tuple(item for item in earlier.evidence),
                     references=(SONICOS_POLICY_GUIDE, SONICOS_CLI_GUIDE),
                 ))
                 break
@@ -479,7 +479,7 @@ class PluginSonicOSChecks(BasePlugin):
                     exploitability="A capable network attacker may exploit cryptographic weaknesses or downgrade-compatible peers.",
                     recommendation="Use AES-GCM or AES-256, SHA-256 or stronger authentication, and a current approved DH group.",
                     severity=Severity.HIGH,
-                    evidence=tuple(item.text for item in policy.evidence),
+                    evidence=tuple(item for item in policy.evidence),
                     references=(SONICOS_VPN_GUIDE, SONICOS_CLI_GUIDE),
                 )
             )
@@ -504,7 +504,7 @@ class PluginSonicOSChecks(BasePlugin):
             )
         if snmp_enabled:
             for user in sonic.get_snmpv3_users():
-                evidence = tuple(item.text for item in user.evidence)
+                evidence = tuple(item for item in user.evidence)
                 missing = []
                 if user.authentication == "none":
                     missing.append("authentication")
@@ -590,7 +590,7 @@ class PluginSonicOSChecks(BasePlugin):
                         exploitability="A network-positioned attacker may spoof NTP responses if routing and filtering permit it.",
                         recommendation="Configure the platform-supported authenticated NTP fields for every custom server and restrict management-plane reachability.",
                         severity=Severity.MEDIUM,
-                        evidence=tuple(item.text for item in server.evidence),
+                        evidence=tuple(item for item in server.evidence),
                         references=(SONICOS_CLI_GUIDE,),
                     )
                 )

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from src.devices.common.base_parser import BaseDeviceParser
+from src.devices.common.source_lines import group_double_quoted_lines, single_line_evidence
 from src.devices.common.models import (
     BlocklistCredentialAssessment,
     ConfigEvidence,
@@ -45,6 +46,18 @@ class JunosStatement:
 class JunosDefaultSecurityPolicy:
     action: str | None
     resolution_state: str
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class JunosZoneScreen:
+    zone: str
+    screen: str
+    interfaces: tuple[str, ...]
+    syn_flood_state: str
+    udp_flood_state: str
+    icmp_flood_state: str
+    alarm_without_drop: bool
     evidence: tuple[ConfigEvidence, ...]
 
 
@@ -214,6 +227,27 @@ class JunosSecurityPolicy:
 
 
 @dataclass(frozen=True)
+class JunosIDPRule:
+    name: str
+    action: str | None
+    severity: str | None
+    has_match: bool
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class JunosIDPBinding:
+    from_zone: str
+    to_zone: str
+    security_policy: str
+    idp_policy: str | None
+    selection: str
+    rules: tuple[JunosIDPRule, ...]
+    resolution_state: str
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
 class JunosIPSecVPN:
     name: str
     active: bool
@@ -329,10 +363,16 @@ class JunOSParser(BaseDeviceParser):
         self.config = [statement.set_line for statement in self.statements if statement.active]
 
     def _detect_format(self) -> str:
+        # Group quoted values first so text inside a multi-line string is
+        # not mistaken for a hierarchical statement.
+        statements = group_double_quoted_lines(
+            self.raw_lines, comment_prefixes=("#", "/*", "*")
+        ).lines
         meaningful = [
-            line.strip()
-            for line in self.raw_lines
-            if line.strip() and not line.lstrip().startswith(('#', '/*', '*'))
+            statement.text.strip()
+            for statement in statements
+            if statement.text.strip()
+            and not statement.text.lstrip().startswith(('#', '/*', '*'))
         ]
         if meaningful and all(
             line.split(maxsplit=1)[0] in {"set", "delete", "activate", "deactivate"}
@@ -341,7 +381,9 @@ class JunOSParser(BaseDeviceParser):
             return "set"
         return "hierarchical"
 
-    def _evidence(self, text: str, line_number: int) -> ConfigEvidence:
+    def _evidence(
+        self, text: str, line_number: int, end_line: Optional[int] = None
+    ) -> ConfigEvidence:
         redacted = re.sub(
             r'''(?i)((?:encrypted-password|plain-text-password|authentication-password|privacy-password|secret)\s+)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\S+)''',
             r"\1<redacted>",
@@ -363,7 +405,7 @@ class JunOSParser(BaseDeviceParser):
             redacted,
         )
         return ConfigEvidence(
-            text=redacted,
+            text=single_line_evidence(redacted, end_line),
             source=self.config_filepath,
             line_number=line_number,
         )
@@ -375,8 +417,14 @@ class JunOSParser(BaseDeviceParser):
     def _parse_set_configuration(self) -> list[JunosStatement]:
         statements: list[JunosStatement] = []
         deactivated: list[tuple[str, ...]] = []
-        for line_number, raw_line in enumerate(self.raw_lines, 1):
-            stripped = raw_line.strip()
+        grouping = group_double_quoted_lines(self.raw_lines, comment_prefixes=("#",))
+        if grouping.unterminated_line is not None:
+            raise JunosParseError(
+                f"line {grouping.unterminated_line}: unterminated quoted string"
+            )
+        for statement in grouping.lines:
+            line_number = statement.start_line
+            stripped = statement.text.strip()
             if not stripped or stripped.startswith("#"):
                 continue
             try:
@@ -413,7 +461,11 @@ class JunOSParser(BaseDeviceParser):
             else:
                 statements = [item for item in statements if item.path != path]
                 statements.append(
-                    JunosStatement(path, True, self._evidence(stripped, line_number))
+                    JunosStatement(
+                        path,
+                        True,
+                        self._evidence(stripped, line_number, statement.end_line),
+                    )
                 )
 
         return [
@@ -587,6 +639,55 @@ class JunOSParser(BaseDeviceParser):
             for statement in self.statements
             if statement.active and self._is_prefix(prefix, statement.path)
         ]
+
+    def get_zone_screens(self) -> tuple[JunosZoneScreen, ...]:
+        """Resolve active zone bindings and explicit SYN-flood screen state."""
+        bindings: dict[str, JunosStatement] = {}
+        interfaces: dict[str, set[str]] = {}
+        for statement in self.statements:
+            path = statement.path
+            if not statement.active or path[:3] != ("security", "zones", "security-zone"):
+                continue
+            if len(path) == 6 and path[4] == "screen":
+                bindings[path[3]] = statement
+            elif len(path) >= 6 and path[4] == "interfaces":
+                interfaces.setdefault(path[3], set()).add(path[5])
+
+        screens = []
+        for zone, binding in sorted(bindings.items()):
+            screen = binding.path[5]
+            base = ("security", "screen", "ids-option", screen)
+            def option_state(suffix: tuple[str, ...]) -> tuple[str, list[JunosStatement]]:
+                options = [
+                    item for item in self.statements
+                    if self._is_prefix(base + suffix, item.path)
+                ]
+                if any(item.active for item in options):
+                    return "active", options
+                if options:
+                    return "explicitly-inactive", options
+                return "unknown", options
+
+            syn_state, syn_options = option_state(("tcp", "syn-flood"))
+            udp_state, udp_options = option_state(("udp", "flood"))
+            icmp_state, icmp_options = option_state(("icmp", "flood"))
+            alarm_options = [
+                item for item in self.statements
+                if item.path == base + ("alarm-without-drop",)
+            ]
+            screens.append(JunosZoneScreen(
+                zone=zone,
+                screen=screen,
+                interfaces=tuple(sorted(interfaces.get(zone, ()))),
+                syn_flood_state=syn_state,
+                udp_flood_state=udp_state,
+                icmp_flood_state=icmp_state,
+                alarm_without_drop=any(item.active for item in alarm_options),
+                evidence=(binding.evidence,) + tuple(
+                    item.evidence for item in syn_options + udp_options + icmp_options + alarm_options
+                ),
+            ))
+        return tuple(screens)
 
     def get_default_security_policy(self) -> JunosDefaultSecurityPolicy:
         """Resolve the fallback for traffic unmatched by SRX security policies."""
@@ -2040,6 +2141,92 @@ class JunOSParser(BaseDeviceParser):
             )
             for (from_zone, to_zone, name), data in policies.items()
         ]
+
+    def get_idp_bindings(self) -> tuple[JunosIDPBinding, ...]:
+        """Resolve IDP policy references only through active permit security rules.
+
+        This is inventory, not a blocking or signature-currency assessment.
+        """
+        if self.parse_error:
+            return ()
+        active = [item for item in self.statements if item.active]
+        global_policy = [
+            item for item in active
+            if item.path[:3] == ("security", "idp", "active-policy")
+            and len(item.path) == 4
+        ]
+        legacy = global_policy[-1] if global_policy else None
+        inheritance_unknown = self.has_unexpanded_inheritance()
+        bindings: list[JunosIDPBinding] = []
+        for policy in self.get_security_policies():
+            if not policy.active or policy.action != "permit":
+                continue
+            prefix = (
+                "security", "policies", "from-zone", policy.from_zone,
+                "to-zone", policy.to_zone, "policy", policy.name,
+                "then", "permit", "application-services",
+            )
+            selectors = [
+                item for item in active
+                if self._is_prefix(prefix, item.path)
+                and item.path[len(prefix):len(prefix) + 1] in {
+                    ("idp",), ("idp-policy",)
+                }
+            ]
+            for selector in selectors:
+                suffix = selector.path[len(prefix):]
+                if suffix == ("idp",):
+                    selection = "legacy-active-policy"
+                    selected = legacy.path[3] if legacy else None
+                elif len(suffix) == 2 and suffix[0] == "idp-policy":
+                    selection = "policy-direct"
+                    selected = suffix[1]
+                else:
+                    continue
+                rules: list[JunosIDPRule] = []
+                if selected:
+                    rule_prefix = ("security", "idp", "idp-policy", selected,
+                                   "rulebase-ips", "rule")
+                    grouped: dict[str, list[JunosStatement]] = {}
+                    for item in active:
+                        if self._is_prefix(rule_prefix, item.path) and len(item.path) >= 8:
+                            grouped.setdefault(item.path[6], []).append(item)
+                    for name, statements in grouped.items():
+                        actions = {
+                            item.path[9] for item in statements
+                            if len(item.path) == 10 and item.path[7:9] == ("then", "action")
+                        }
+                        severities = {
+                            item.path[9] for item in statements
+                            if len(item.path) == 10 and item.path[7:9] == ("then", "severity")
+                        }
+                        rules.append(JunosIDPRule(
+                            name=name,
+                            action=next(iter(actions)) if len(actions) == 1 else None,
+                            severity=next(iter(severities)) if len(severities) == 1 else None,
+                            has_match=any(item.path[7:8] == ("match",) for item in statements),
+                            evidence=tuple(item.evidence for item in statements),
+                        ))
+                resolution = (
+                    "inheritance-unknown" if inheritance_unknown or policy.inheritance_unknown
+                    else "missing-active-policy" if selected is None
+                    else "unresolved-policy" if not rules
+                    else "resolved"
+                )
+                evidence = (selector.evidence,)
+                if selection == "legacy-active-policy" and legacy:
+                    evidence += (legacy.evidence,)
+                bindings.append(JunosIDPBinding(
+                    from_zone=policy.from_zone,
+                    to_zone=policy.to_zone,
+                    security_policy=policy.name,
+                    idp_policy=selected,
+                    selection=selection,
+                    rules=tuple(rules),
+                    resolution_state=resolution,
+                    evidence=evidence,
+                ))
+        return tuple(bindings)
 
     def get_ipsec_vpns(self) -> list[JunosIPSecVPN]:
         """Resolve attached or interface-bound SRX VPN proposal chains."""

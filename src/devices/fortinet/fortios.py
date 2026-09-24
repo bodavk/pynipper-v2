@@ -16,6 +16,7 @@ from src.common.certificates import (
 )
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.input_scope import contains_unresolved_template
+from src.devices.common.source_lines import group_double_quoted_lines, single_line_evidence
 from src.devices.common.models import (
     ConfigEvidence,
     ConfigurationState,
@@ -349,15 +350,19 @@ class FortiOSParser(BaseDeviceParser):
         self.parse_diagnostics: List[str] = []
         self.template_unresolved = False
         self.metadata: Dict[str, str] = {}
+        # Logical statements spanning several physical lines (for example a
+        # quoted PEM private key), keyed by first line -> last line.
+        self._statement_end_lines: Dict[int, int] = {}
         self.config = self._parse_config(config_filepath)
 
     @staticmethod
     def _tokens(line: str, source: str, line_number: int) -> List[str]:
         public_material = re.fullmatch(
-            r'\s*set\s+(certificate|ca)\s+"(.*)"\s*', line, re.IGNORECASE
+            r'\s*set\s+(certificate|ca)\s+"(.*)"\s*', line, re.IGNORECASE | re.DOTALL
         )
         if public_material:
-            # FortiOS exports PEM values on one line with escaped newlines.
+            # FortiOS exports PEM values either on one line with escaped
+            # newlines or as a quoted value spanning several physical lines.
             value = public_material.group(2).replace(r"\n", "\n").replace(r'\"', '"')
             return ["set", public_material.group(1), value]
         try:
@@ -401,6 +406,7 @@ class FortiOSParser(BaseDeviceParser):
             and re.search(r"\bexecute\s+backup\b", text, re.IGNORECASE)
         ):
             text = f"{tokens[0]} {tokens[1]} <backup command redacted>"
+        text = single_line_evidence(text, self._statement_end_lines.get(line_number))
         self.evidence[path] = ConfigEvidence(
             text=text,
             source=self.config_filepath,
@@ -453,110 +459,119 @@ class FortiOSParser(BaseDeviceParser):
         source_digest = hashlib.sha256()
 
         with open(filepath, "r", encoding="utf-8", errors="replace") as config_file:
-            for line_number, raw_line in enumerate(config_file, start=1):
-                source_digest.update(raw_line.encode("utf-8"))
-                line = raw_line.strip()
-                if not line:
-                    continue
-                if line.startswith("#"):
-                    self._parse_header(line, line_number)
-                    continue
+            content = config_file.read()
+        source_digest.update(content.encode("utf-8"))
+        grouping = group_double_quoted_lines(content.split("\n"), comment_prefixes=("#",))
+        if grouping.unterminated_line is not None:
+            raise FortiOSParseError(
+                filepath, grouping.unterminated_line, "Invalid quoting: value is not closed before end of file"
+            )
+        for statement in grouping.lines:
+            line_number = statement.start_line
+            if statement.is_multiline:
+                self._statement_end_lines[line_number] = statement.end_line
+            line = statement.text.strip()
+            if not line:
+                continue
+            if line.startswith("#"):
+                self._parse_header(line, line_number)
+                continue
 
-                if contains_unresolved_template(line):
-                    self.template_unresolved = True
+            if contains_unresolved_template(line):
+                self.template_unresolved = True
 
-                tokens = self._tokens(line, filepath, line_number)
-                if not tokens:
-                    continue
-                command, arguments = tokens[0].lower(), tokens[1:]
-                current = frames[-1].node if frames else config
-                path = tuple(frame.name for frame in frames)
+            tokens = self._tokens(line, filepath, line_number)
+            if not tokens:
+                continue
+            command, arguments = tokens[0].lower(), tokens[1:]
+            current = frames[-1].node if frames else config
+            path = tuple(frame.name for frame in frames)
 
-                if command == "config":
-                    if not arguments:
-                        raise FortiOSParseError(filepath, line_number, "config requires a section name")
-                    section_name = " ".join(arguments)
-                    existing = current.setdefault(section_name, {})
-                    if not isinstance(existing, dict):
-                        raise FortiOSParseError(
-                            filepath, line_number, f"Section {section_name!r} conflicts with a value"
-                        )
-                    frames.append(_Frame("config", section_name, existing))
-                    self._record_evidence(path + (section_name,), line, line_number)
-                elif command == "edit":
-                    self._require_frame(frames, "config", line_number, command)
-                    if not arguments:
-                        raise FortiOSParseError(filepath, line_number, "edit requires an object name")
-                    object_name = " ".join(arguments)
-                    existing = current.setdefault(object_name, {})
-                    if not isinstance(existing, dict):
-                        raise FortiOSParseError(
-                            filepath, line_number, f"Object {object_name!r} conflicts with a value"
-                        )
-                    frames.append(_Frame("edit", object_name, existing))
-                    self._record_evidence(path + (object_name,), line, line_number)
-                elif command == "next":
-                    self._require_frame(frames, "edit", line_number, command)
-                    frames.pop()
-                elif command == "end":
-                    # FortiOS permits saving an edited entry and its table
-                    # together. Only close this table, retaining outer VDOMs.
-                    if frames and frames[-1].kind == "edit":
-                        frames.pop()
-                    self._require_frame(frames, "config", line_number, command)
-                    frames.pop()
-                elif command in {"set", "select", "append", "unselect"}:
-                    if not frames:
-                        raise FortiOSParseError(filepath, line_number, f"'{command}' outside a config block")
-                    if not arguments:
-                        raise FortiOSParseError(filepath, line_number, f"{command} requires a field name")
-                    key, values = arguments[0], arguments[1:]
-                    if command in {"set", "select"}:
-                        current[key] = self._value(values)
-                    elif command == "append":
-                        current[key] = self._as_list(current.get(key)) + values
-                    else:
-                        removed = set(values)
-                        remaining = [item for item in self._as_list(current.get(key)) if item not in removed]
-                        if remaining:
-                            current[key] = remaining[0] if len(remaining) == 1 else remaining
-                        else:
-                            current.pop(key, None)
-                    self._record_evidence(path + (key,), line, line_number)
-                elif command in {"unset", "purge"}:
-                    if not frames or not arguments:
-                        raise FortiOSParseError(filepath, line_number, f"{command} requires a field")
-                    current.pop(arguments[0], None)
-                    self._record_evidence(path + (arguments[0],), line, line_number)
-                elif command == "delete":
-                    self._require_frame(frames, "config", line_number, command)
-                    if not arguments:
-                        raise FortiOSParseError(filepath, line_number, "delete requires an object name")
-                    current.pop(" ".join(arguments), None)
-                elif command == "rename":
-                    self._require_frame(frames, "config", line_number, command)
-                    if len(arguments) < 3 or "to" not in arguments:
-                        raise FortiOSParseError(filepath, line_number, "rename requires '<old> to <new>'")
-                    split_at = arguments.index("to")
-                    old_name = " ".join(arguments[:split_at])
-                    new_name = " ".join(arguments[split_at + 1:])
-                    if old_name not in current:
-                        self.parse_diagnostics.append(
-                            f"{filepath}:{line_number}: rename references unknown object {old_name!r}"
-                        )
-                    else:
-                        current[new_name] = current.pop(old_name)
-                elif command == "move":
-                    self._require_frame(frames, "config", line_number, command)
-                    if len(arguments) != 3 or arguments[1] not in {"before", "after"}:
-                        raise FortiOSParseError(
-                            filepath, line_number, "move requires '<object> before|after <object>'"
-                        )
-                    self._reorder_object(current, arguments[0], arguments[1], arguments[2], line_number)
-                else:
-                    self.parse_diagnostics.append(
-                        f"{filepath}:{line_number}: unsupported command {tokens[0]!r}"
+            if command == "config":
+                if not arguments:
+                    raise FortiOSParseError(filepath, line_number, "config requires a section name")
+                section_name = " ".join(arguments)
+                existing = current.setdefault(section_name, {})
+                if not isinstance(existing, dict):
+                    raise FortiOSParseError(
+                        filepath, line_number, f"Section {section_name!r} conflicts with a value"
                     )
+                frames.append(_Frame("config", section_name, existing))
+                self._record_evidence(path + (section_name,), line, line_number)
+            elif command == "edit":
+                self._require_frame(frames, "config", line_number, command)
+                if not arguments:
+                    raise FortiOSParseError(filepath, line_number, "edit requires an object name")
+                object_name = " ".join(arguments)
+                existing = current.setdefault(object_name, {})
+                if not isinstance(existing, dict):
+                    raise FortiOSParseError(
+                        filepath, line_number, f"Object {object_name!r} conflicts with a value"
+                    )
+                frames.append(_Frame("edit", object_name, existing))
+                self._record_evidence(path + (object_name,), line, line_number)
+            elif command == "next":
+                self._require_frame(frames, "edit", line_number, command)
+                frames.pop()
+            elif command == "end":
+                # FortiOS permits saving an edited entry and its table
+                # together. Only close this table, retaining outer VDOMs.
+                if frames and frames[-1].kind == "edit":
+                    frames.pop()
+                self._require_frame(frames, "config", line_number, command)
+                frames.pop()
+            elif command in {"set", "select", "append", "unselect"}:
+                if not frames:
+                    raise FortiOSParseError(filepath, line_number, f"'{command}' outside a config block")
+                if not arguments:
+                    raise FortiOSParseError(filepath, line_number, f"{command} requires a field name")
+                key, values = arguments[0], arguments[1:]
+                if command in {"set", "select"}:
+                    current[key] = self._value(values)
+                elif command == "append":
+                    current[key] = self._as_list(current.get(key)) + values
+                else:
+                    removed = set(values)
+                    remaining = [item for item in self._as_list(current.get(key)) if item not in removed]
+                    if remaining:
+                        current[key] = remaining[0] if len(remaining) == 1 else remaining
+                    else:
+                        current.pop(key, None)
+                self._record_evidence(path + (key,), line, line_number)
+            elif command in {"unset", "purge"}:
+                if not frames or not arguments:
+                    raise FortiOSParseError(filepath, line_number, f"{command} requires a field")
+                current.pop(arguments[0], None)
+                self._record_evidence(path + (arguments[0],), line, line_number)
+            elif command == "delete":
+                self._require_frame(frames, "config", line_number, command)
+                if not arguments:
+                    raise FortiOSParseError(filepath, line_number, "delete requires an object name")
+                current.pop(" ".join(arguments), None)
+            elif command == "rename":
+                self._require_frame(frames, "config", line_number, command)
+                if len(arguments) < 3 or "to" not in arguments:
+                    raise FortiOSParseError(filepath, line_number, "rename requires '<old> to <new>'")
+                split_at = arguments.index("to")
+                old_name = " ".join(arguments[:split_at])
+                new_name = " ".join(arguments[split_at + 1:])
+                if old_name not in current:
+                    self.parse_diagnostics.append(
+                        f"{filepath}:{line_number}: rename references unknown object {old_name!r}"
+                    )
+                else:
+                    current[new_name] = current.pop(old_name)
+            elif command == "move":
+                self._require_frame(frames, "config", line_number, command)
+                if len(arguments) != 3 or arguments[1] not in {"before", "after"}:
+                    raise FortiOSParseError(
+                        filepath, line_number, "move requires '<object> before|after <object>'"
+                    )
+                self._reorder_object(current, arguments[0], arguments[1], arguments[2], line_number)
+            else:
+                self.parse_diagnostics.append(
+                    f"{filepath}:{line_number}: unsupported command {tokens[0]!r}"
+                )
 
         if frames:
             open_path = " / ".join(frame.name for frame in frames)
@@ -594,7 +609,8 @@ class FortiOSParser(BaseDeviceParser):
                 number = evidence.line_number
                 if not 1 <= number <= len(original_lines) or "<redacted>" not in evidence.text:
                     continue
-                raw_line = original_lines[number - 1].strip()
+                end_line = self._statement_end_lines.get(number, number)
+                raw_line = "".join(original_lines[number - 1:end_line]).strip()
                 if re.match(r"(?i)^(?:set|append|select)\s+" + re.escape(str(name)) + r"\s+", raw_line):
                     entries[number] = {
                         "line-number": number,

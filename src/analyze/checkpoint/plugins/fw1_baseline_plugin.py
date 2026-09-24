@@ -127,7 +127,7 @@ class PluginCheckPointBaseline(BasePlugin):
 
     @staticmethod
     def _evidence(rule: CheckPointRule) -> tuple[str, ...]:
-        return tuple(item.text for item in rule.evidence)
+        return tuple(item for item in rule.evidence)
 
     @classmethod
     def _all_any(cls, values: tuple[str, ...]) -> bool:
@@ -609,7 +609,7 @@ class PluginCheckPointBaseline(BasePlugin):
                         "An incomplete group hierarchy prevents accurate policy expansion and review.",
                         "Regenerate a complete object export and repair stale group membership.",
                         Severity.MEDIUM,
-                        tuple(item.text for item in record.evidence),
+                        tuple(item for item in record.evidence),
                         (CHECKPOINT_RULE_COLUMNS, CHECKPOINT_MANAGEMENT_GUIDE),
                     )
                 )

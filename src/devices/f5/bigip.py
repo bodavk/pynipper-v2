@@ -24,6 +24,7 @@ _FIELDS = {
     "cli global-settings": {"audit", "idle-timeout"},
     "sys syslog": {"remote-servers"},
     "auth password-policy": {"policy-enforcement", "max-login-failures", "minimum-length"},
+    "auth source": {"type", "fallback"},
 }
 
 
@@ -54,6 +55,16 @@ class F5Setting:
 class F5UserCredential:
     name: str
     storage: str
+    evidence: ConfigEvidence
+
+
+@dataclass(frozen=True)
+class F5RemoteAuthProfile:
+    provider_type: str
+    name: str
+    servers_state: str
+    ssl_state: str
+    peer_check_state: str
     evidence: ConfigEvidence
 
 
@@ -147,8 +158,12 @@ class F5BIGIPParser(BaseDeviceParser):
         self._virtuals: dict[str, F5Virtual] = {}
         self._user_secret_lines: dict[str, int] = {}
         self._user_credentials: dict[str, F5UserCredential] = {}
+        self._remote_auth_profiles: dict[tuple[str, str], F5RemoteAuthProfile] = {}
         self._parse(_tokens(content))
-        self._native = (*self._settings.values(), *self._client_ssl.values(), *self._virtuals.values())
+        self._native = (
+            *self._settings.values(), *self._remote_auth_profiles.values(),
+            *self._client_ssl.values(), *self._virtuals.values(),
+        )
 
     def _parse(self, tokens: list[_TokenValue]) -> None:
         cursor = 0
@@ -185,6 +200,14 @@ class F5BIGIPParser(BaseDeviceParser):
             elif len(header) == 3 and header[:2] == ["auth", "user"]:
                 recognized = True
                 self._read_user_credential(header[2], tokens[body_start:cursor - 1])
+            elif len(header) == 3 and header[:2] in (
+                ["auth", "radius"], ["auth", "ldap"],
+                ["auth", "tacacs"], ["auth", "cert-ldap"],
+            ):
+                recognized = True
+                self._read_remote_auth_profile(
+                    header[1], header[2], header_line, tokens[body_start:cursor - 1]
+                )
         if not recognized:
             raise F5ParseError(1)
 
@@ -216,6 +239,51 @@ class F5BIGIPParser(BaseDeviceParser):
 
     def get_local_user_credentials(self) -> tuple[F5UserCredential, ...]:
         return tuple(self._user_credentials.values())
+
+    def _read_remote_auth_profile(self, provider_type: str, raw_name: str,
+                                  line_number: int, body: list[_TokenValue]) -> None:
+        name = _object_name(raw_name)
+        if name is None:
+            return
+        previous = self._remote_auth_profiles.get((provider_type, name))
+        state = previous.servers_state if previous else "unknown"
+        ssl_state = previous.ssl_state if previous else "unknown"
+        peer_check_state = previous.peer_check_state if previous else "unknown"
+        depth = 0
+        for index, token in enumerate(body):
+            if token.text == "{":
+                depth += 1
+            elif token.text == "}":
+                depth -= 1
+            elif depth == 0 and token.text == "servers":
+                next_index = index + 1
+                if next_index < len(body) and body[next_index].text == "replace-all-with":
+                    next_index += 1
+                candidate = body[next_index].text if next_index < len(body) else ""
+                group = _group_values(body, next_index) if candidate == "{" else None
+                state = "none" if candidate == "none" else (
+                    "configured" if group else "unknown"
+                )
+            elif depth == 0 and token.text == "ssl" and provider_type in {"ldap", "cert-ldap"}:
+                candidate = body[index + 1].text if index + 1 < len(body) else ""
+                ssl_state = candidate if candidate in {"enabled", "disabled", "start-tls"} else "unknown"
+            elif depth == 0 and token.text == "ssl-check-peer" and provider_type in {"ldap", "cert-ldap"}:
+                candidate = body[index + 1].text if index + 1 < len(body) else ""
+                peer_check_state = candidate if candidate in {"enabled", "disabled"} else "unknown"
+        self._remote_auth_profiles[(provider_type, name)] = F5RemoteAuthProfile(
+            provider_type, name, state, ssl_state, peer_check_state,
+            ConfigEvidence(
+                f"auth {provider_type} {name} servers {state} ssl {ssl_state} "
+                f"ssl-check-peer {peer_check_state}",
+                self.config_filepath, line_number,
+            ),
+        )
+
+    def get_remote_auth_profiles(self, provider_type: str) -> tuple[F5RemoteAuthProfile, ...]:
+        return tuple(
+            profile for profile in self._remote_auth_profiles.values()
+            if profile.provider_type == provider_type
+        )
 
     def get_report_secret_lines(self) -> list[dict]:
         """Return user credential lines only after verifying the saved export is unchanged."""
@@ -279,6 +347,13 @@ class F5BIGIPParser(BaseDeviceParser):
                     value = "none"
                 elif group:
                     value = "configured"
+            elif name == "type" and scope == "auth source":
+                if candidate in {"local", "radius", "ldap", "tacacs", "cert-ldap",
+                                 "active-directory", "apm-auth"}:
+                    value = candidate
+            elif name == "fallback" and scope == "auth source":
+                if candidate in {"true", "false"}:
+                    value = candidate
             state = "explicit" if value is not None else "unknown"
             safe_value = str(value) if value is not None else "<unknown>"
             evidence = ConfigEvidence(
@@ -390,7 +465,7 @@ class F5BIGIPParser(BaseDeviceParser):
         login = self.get_setting("sys sshd", "login")
         return {"ssh": login.value == "enabled"} if login and login.value is not None else {}
 
-    def get_native_config(self) -> tuple[F5Setting | F5ClientSSLProfile | F5Virtual, ...]:
+    def get_native_config(self) -> tuple[F5Setting | F5RemoteAuthProfile | F5ClientSSLProfile | F5Virtual, ...]:
         return self._native
 
     def get_normalized_config(self) -> NormalizedConfig:

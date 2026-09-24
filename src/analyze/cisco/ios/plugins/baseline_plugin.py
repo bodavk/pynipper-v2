@@ -239,7 +239,7 @@ class PluginIOSBaseline(BasePlugin):
                 or timeout.timeout_seconds is None
             ):
                 continue
-            evidence = tuple(item.text for item in timeout.evidence)
+            evidence = tuple(item for item in timeout.evidence)
             total_seconds = timeout.timeout_minutes * 60 + timeout.timeout_seconds
             if total_seconds == 0:
                 rule_scope = "auxiliary" if timeout.line_type == "aux" else timeout.line_type
@@ -266,7 +266,7 @@ class PluginIOSBaseline(BasePlugin):
                 ))
 
         for line in ios.get_management_lines("vty"):
-            evidence = tuple(item.text for item in line.evidence)
+            evidence = tuple(item for item in line.evidence)
             if line.transports is None or any(
                 token in line.transports for token in ("telnet", "all")
             ):
@@ -301,7 +301,7 @@ class PluginIOSBaseline(BasePlugin):
         self.check_effective_vty_aaa(parser)
 
         for console in ios.get_management_lines("console"):
-            evidence = tuple(item.text for item in console.evidence)
+            evidence = tuple(item for item in console.evidence)
             if not authentication_resolves(console):
                 self.add_issue(
                     self._finding(
@@ -317,7 +317,7 @@ class PluginIOSBaseline(BasePlugin):
                 )
 
         for auxiliary in ios.get_management_lines("aux"):
-            evidence = tuple(item.text for item in auxiliary.evidence)
+            evidence = tuple(item for item in auxiliary.evidence)
             fully_disabled = (
                 auxiliary.exec_enabled is False
                 and auxiliary.transports == ("none",)
@@ -396,7 +396,7 @@ class PluginIOSBaseline(BasePlugin):
         for line in ios.get_effective_vty_aaa():
             if not line.active:
                 continue
-            evidence = tuple(item.text for item in line.evidence)
+            evidence = tuple(item for item in line.evidence)
             login = methods.get(("login_authentication", line.login_list, None))
             authenticated = (
                 line.login_kind == "local" and has_local_users
@@ -452,7 +452,7 @@ class PluginIOSBaseline(BasePlugin):
                     "A configured fallback can allow access without a server-backed or local privilege decision; this does not imply unauthenticated login.",
                     "Replace the bypass method with an approved server-backed or local authorization fallback.",
                     Severity.HIGH,
-                    evidence + tuple(item.evidence.text for item in (exec_method, command_method) if item is not None),
+                    evidence + tuple(item.evidence for item in (exec_method, command_method) if item is not None),
                     (CISCO_IOS_AUTHORIZATION_GUIDE,),
                 ))
 
@@ -485,7 +485,7 @@ class PluginIOSBaseline(BasePlugin):
                     "Administrative actions on this line may not generate central accounting records.",
                     "Bind a usable named accounting list to the line or define an effective default list.",
                     Severity.MEDIUM,
-                    evidence + tuple(item.evidence.text for item in selected_accounting),
+                    evidence + tuple(item.evidence for item in selected_accounting),
                     (CISCO_IOS_ACCOUNTING_GUIDE,),
                 ))
             if disabled_accounting:
@@ -496,7 +496,7 @@ class PluginIOSBaseline(BasePlugin):
                     "That selected accounting service does not create administrative activity records.",
                     "Use an approved start-stop or stop-only accounting method on this line.",
                     Severity.MEDIUM,
-                    evidence + tuple(item.evidence.text for item in disabled_accounting),
+                    evidence + tuple(item.evidence for item in disabled_accounting),
                     (CISCO_IOS_ACCOUNTING_GUIDE,),
                 ))
 
@@ -517,7 +517,7 @@ class PluginIOSBaseline(BasePlugin):
                     "Remote AAA cannot use the named group as configured; a separate local fallback may still work.",
                     "Define the referenced group with qualified server members or remove the unusable method.",
                     Severity.HIGH,
-                    evidence + tuple(record.evidence.text for name in unusable
+                    evidence + tuple(record.evidence for name in unusable
                                      for record in groups.get(name, ())),
                     (CISCO_IOS_AAA_GROUP_GUIDE,),
                 ))
@@ -540,7 +540,7 @@ class PluginIOSBaseline(BasePlugin):
             selected = sorted(set(policy.algorithms) & weak_algorithms[policy.category])
             if selected:
                 weak.append(f"{policy.category}: {', '.join(selected)}")
-                evidence.extend(item.text for item in policy.evidence)
+                evidence.extend(item for item in policy.evidence)
         if weak:
             self.add_issue(
                 self._finding(
@@ -605,7 +605,7 @@ class PluginIOSBaseline(BasePlugin):
                     "The later entry cannot alter first-match filtering for the statically proven traffic scope; a conflicting shadowed entry can give reviewers a false impression of enforced access control.",
                     "Remove or reorder the entry after validating interface direction, address/service scope, logging and operational intent.",
                     Severity.LOW if same_action else Severity.HIGH,
-                    tuple(item.text for item in rule.evidence + earlier.evidence),
+                    tuple(item for item in rule.evidence + earlier.evidence),
                     (CISCO_IOS_HARDENING_GUIDE,),
                 ))
                 break
@@ -624,7 +624,7 @@ class PluginIOSBaseline(BasePlugin):
                     "A widely known credential can permit direct administrative access.",
                     "Replace it with a unique strong value and prefer centralized AAA.",
                     Severity.HIGH,
-                    tuple(item.text for item in credential.evidence),
+                    tuple(item for item in credential.evidence),
                 ))
             if not result.unsafe_storage:
                 continue
@@ -644,7 +644,7 @@ class PluginIOSBaseline(BasePlugin):
                         "Plaintext, reversible, or legacy hashes are more readily recovered from a configuration disclosure.",
                         "Use a supported strong secret algorithm and migrate administrative authentication to AAA.",
                         Severity.HIGH,
-                        tuple(item.text for item in credential.evidence),
+                        tuple(item for item in credential.evidence),
                     )
                 )
             elif credential.context == "enable":
@@ -662,7 +662,7 @@ class PluginIOSBaseline(BasePlugin):
                         "Configuration disclosure can expose or accelerate recovery of the privileged credential.",
                         "Replace it with a strong 'enable secret' algorithm and remove the enable password.",
                         Severity.HIGH,
-                        tuple(item.text for item in credential.evidence),
+                        tuple(item for item in credential.evidence),
                     )
                 )
             elif credential.context in {"radius_key", "line_password"}:
@@ -674,7 +674,7 @@ class PluginIOSBaseline(BasePlugin):
                     "Configuration disclosure can expose or permit recovery of the credential.",
                     "Use supported protected storage and rotate the exposed value.",
                     Severity.HIGH,
-                    tuple(item.text for item in credential.evidence),
+                    tuple(item for item in credential.evidence),
                 ))
 
     def check_snmp(self, parser: BaseDeviceParser) -> None:
@@ -690,7 +690,7 @@ class PluginIOSBaseline(BasePlugin):
                     "Widely known community strings can allow unauthorized SNMP access.",
                     "Replace the community with a unique value, restrict managers, and migrate to SNMPv3 authPriv.",
                     Severity.HIGH,
-                    (evidence.text,),
+                    (evidence,),
                 ))
             if access == "rw":
                 problems.append("read-write access")
@@ -703,7 +703,7 @@ class PluginIOSBaseline(BasePlugin):
                     "Community-based SNMP lacks modern per-user authentication and privacy protections.",
                     "Migrate to SNMPv3 authPriv, restrict managers, and remove v1/v2c communities.",
                     Severity.HIGH if access == "rw" else Severity.MEDIUM,
-                    (evidence.text,),
+                    (evidence,),
                 )
             )
 
@@ -711,7 +711,7 @@ class PluginIOSBaseline(BasePlugin):
         view_map = {view.name.casefold(): view for view in views}
         group_map = {group.name.casefold(): group for group in groups}
         for user in users:
-            evidence = tuple(item.text for item in user.evidence)
+            evidence = tuple(item for item in user.evidence)
             if not user.group_resolved or (user.read_view and not user.read_view_resolved):
                 unresolved = (
                     f"group '{user.group}'"
@@ -852,7 +852,7 @@ class PluginIOSBaseline(BasePlugin):
 
     def check_configuration_management(self, parser: BaseDeviceParser) -> None:
         state = self._ios(parser).get_configuration_management()
-        evidence = tuple(item.text for item in state.evidence)
+        evidence = tuple(item for item in state.evidence)
         if not state.change_logging:
             self.add_issue(self._finding(
                 parser,
@@ -970,7 +970,7 @@ class PluginIOSBaseline(BasePlugin):
                     "A spoofed time source can disrupt logs and time-dependent security controls.",
                     "Enable NTP authentication and configure, trust, and bind a key for this association.",
                     Severity.MEDIUM,
-                    tuple(item.text for item in association.evidence),
+                    tuple(item for item in association.evidence),
                 )
             )
 
@@ -1022,7 +1022,7 @@ class PluginIOSBaseline(BasePlugin):
             return
         result = binding.assessment
         metadata = binding.metadata
-        evidence = tuple(item.text for item in binding.evidence)
+        evidence = tuple(item for item in binding.evidence)
         if result.validity_state in {"expired", "not-yet-valid"}:
             self.add_issue(self._finding(
                 parser, "cisco.ios.management.https_certificate_validity",
@@ -1076,7 +1076,7 @@ class PluginIOSBaseline(BasePlugin):
                 "An attacker able to influence the boot-time path or server could supply altered configuration.",
                 "Remove the TFTP boot-configuration fetch or use an approved authenticated provisioning process with verified trust boundaries.",
                 Severity.HIGH,
-                tuple(item.text for item in retrieval.evidence)
+                tuple(item for item in retrieval.evidence)
                 + ("assessment policy: device lifecycle commissioned",),
                 (CISCO_IOS_BOOT_CONFIG_GUIDE,),
             ))
@@ -1141,7 +1141,7 @@ class PluginIOSBaseline(BasePlugin):
             return
 
         for policy in policies:
-            evidence = tuple(item.text for item in policy.evidence)
+            evidence = tuple(item for item in policy.evidence)
             scope = policy.scope.replace("-", " ")
             if policy.protection_state == "platform-managed":
                 # Several Catalyst IOS-XE families expose the system-generated
@@ -1186,7 +1186,7 @@ class PluginIOSBaseline(BasePlugin):
                     "An undefined class map, empty class map, or missing ACL can prevent the intended traffic classification.",
                     "Define the class map and every referenced ACL with the intended control-plane traffic selectors.",
                     Severity.HIGH,
-                    tuple(item.text for item in policy_class.evidence) or evidence,
+                    tuple(item for item in policy_class.evidence) or evidence,
                     (CISCO_IOS_COPP_GUIDE,),
                 ))
 
@@ -1265,7 +1265,7 @@ class PluginIOSBaseline(BasePlugin):
                 "The configuration cannot use this key chain to send and accept authenticated routing updates at the assessed time.",
                 "Renew or rotate the key chain with overlapping valid send and accept lifetimes, then verify adjacency state.",
                 Severity.HIGH,
-                evidence + tuple(item.text for item in lifetime[1])
+                evidence + tuple(item for item in lifetime[1])
                 + (f"assessment policy time: {parser.assessment_context.assessment_time}",),
                 (CISCO_IOS_KEY_LIFETIME_GUIDE,),
             ))
@@ -1273,7 +1273,7 @@ class PluginIOSBaseline(BasePlugin):
             if not peer.active or peer.inheritance_unknown:
                 continue
             scope = f"neighbor {peer.address} in {peer.address_family}, VRF {peer.vrf}"
-            evidence = tuple(item.text for item in peer.evidence)
+            evidence = tuple(item for item in peer.evidence)
             if peer.authentication_state in {"unauthenticated", "unresolved"}:
                 detail = "has no authentication" if peer.authentication_state == "unauthenticated" else "has an unresolved authentication reference"
                 self.add_issue(self._finding(
@@ -1338,7 +1338,7 @@ class PluginIOSBaseline(BasePlugin):
                                 f"The attached {policy_label} does not restrict IPv4 route exchange in this direction.",
                                 "Replace the permit-all clause with approved prefix boundaries.",
                                 Severity.HIGH,
-                                evidence + tuple(item.text for item in effect[1]),
+                                evidence + tuple(item for item in effect[1]),
                                 (reference,),
                             ))
             for direction, present in (("inbound", peer.inbound_policy), ("outbound", peer.outbound_policy)):
@@ -1373,11 +1373,11 @@ class PluginIOSBaseline(BasePlugin):
                     and interface.authentication_state == "authenticated"):
                 report_unusable_key_lifetime(
                     f"OSPF process {interface.process_id} on {interface.interface}",
-                    interface.key_reference, tuple(item.text for item in interface.evidence),
+                    interface.key_reference, tuple(item for item in interface.evidence),
                 )
             if interface.shutdown or interface.passive or interface.authentication_state in {"authenticated", "unknown"}:
                 continue
-            evidence = tuple(item.text for item in interface.evidence)
+            evidence = tuple(item for item in interface.evidence)
             if interface.authentication_state == "weak":
                 title = "OSPF interface uses simple-password authentication"
                 observation = f"OSPF process {interface.process_id}, interface {interface.interface}, area {interface.area} uses clear-text simple authentication."
@@ -1400,7 +1400,7 @@ class PluginIOSBaseline(BasePlugin):
             if state == "configured-md5":
                 report_unusable_key_lifetime(
                     f"RIPv2 on {interface.interface}", interface.key_reference,
-                    tuple(item.text for item in interface.evidence),
+                    tuple(item for item in interface.evidence),
                 )
             if state in {"configured-md5", "unknown"}:
                 continue
@@ -1435,7 +1435,7 @@ class PluginIOSBaseline(BasePlugin):
                 parser, rule_id, title, observation,
                 "A reachable attacker may inject or tamper with routing updates, or learn a cleartext routing key.",
                 recommendation, severity,
-                tuple(item.text for item in interface.evidence),
+                tuple(item for item in interface.evidence),
                 (CISCO_IOS_RIP_GUIDE,),
             ))
 
@@ -1446,7 +1446,7 @@ class PluginIOSBaseline(BasePlugin):
             if state == "configured-md5":
                 report_unusable_key_lifetime(
                     f"EIGRP AS {interface.autonomous_system} on {interface.interface}",
-                    interface.key_reference, tuple(item.text for item in interface.evidence),
+                    interface.key_reference, tuple(item for item in interface.evidence),
                 )
             if state not in {"unauthenticated", "unresolved"}:
                 continue
@@ -1467,7 +1467,7 @@ class PluginIOSBaseline(BasePlugin):
                 parser, rule_id, title, observation,
                 "A reachable attacker may establish a routing adjacency or inject forged routing updates.",
                 recommendation, severity,
-                tuple(item.text for item in interface.evidence),
+                tuple(item for item in interface.evidence),
                 (CISCO_IOS_EIGRP_GUIDE,),
             ))
 
@@ -1485,7 +1485,7 @@ class PluginIOSBaseline(BasePlugin):
             ]
             if not directions:
                 continue
-            evidence = tuple(item.text for item in interface.evidence) + (
+            evidence = tuple(item for item in interface.evidence) + (
                 f"assessment policy: {interface.interface} role external",
             )
             self.add_issue(self._finding(
@@ -1507,7 +1507,7 @@ class PluginIOSBaseline(BasePlugin):
         for interface in ios.get_switch_edge_interfaces():
             if not interface.active or interface.role != "access-edge" or interface.mode == "routed":
                 continue
-            evidence = tuple(item.text for item in interface.evidence) + (
+            evidence = tuple(item for item in interface.evidence) + (
                 f"assessment policy: {interface.interface} role access-edge",
             )
             if interface.mode == "trunk":
@@ -1562,7 +1562,7 @@ class PluginIOSBaseline(BasePlugin):
             if (not port.active or port.role != "access-edge"
                     or port.mode not in {"access", "switchport"}):
                 continue
-            evidence = tuple(item.text for item in port.evidence) + (
+            evidence = tuple(item for item in port.evidence) + (
                 f"assessment policy: {port.interface} role access-edge",
             )
             if port.port_control == "force-authorized":
@@ -1600,7 +1600,7 @@ class PluginIOSBaseline(BasePlugin):
             if (not port.active or port.role != "access-edge" or port.lag_member
                     or port.mode not in {"access", "switchport"}):
                 continue
-            evidence = tuple(item.text for item in port.evidence) + (
+            evidence = tuple(item for item in port.evidence) + (
                 f"assessment policy: {port.interface} role access-edge",
             )
             if port.guard_enabled is False:

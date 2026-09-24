@@ -333,6 +333,7 @@ class CheckPointFW1Parser(BaseDeviceParser):
                 ConfigEvidence(
                     text=f"Check Point layer '{layer}' rule {position} '{name}'",
                     source=document.source,
+                    line_number=getattr(rule, "line", None),
                 ),
             )
             rules.append(
@@ -458,6 +459,7 @@ class CheckPointFW1Parser(BaseDeviceParser):
                 ConfigEvidence(
                     text=f"Check Point object '{name}' ({normalized_kind})",
                     source=document.source,
+                    line_number=getattr(record, "line", None),
                 ),
             )
             path_is_service = any("service" in element.casefold() for element in path[:-1])

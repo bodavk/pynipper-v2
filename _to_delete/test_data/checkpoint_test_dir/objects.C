@@ -1,0 +1,1 @@
+( :objects ( :obj1 ( any ) ) )

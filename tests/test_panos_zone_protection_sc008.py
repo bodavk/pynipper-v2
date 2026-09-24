@@ -6,14 +6,25 @@ from src.devices.paloalto.panos import PaloAltoPANOSParser
 
 
 RULE_ID = "paloalto.panos.zone.syn_flood_disabled"
+OTHER_RULE_ID = "paloalto.panos.zone.other_flood_disabled"
+SCAN_RULE_ID = "paloalto.panos.zone.scan_allow"
 
 
-def _scan(tmp_path, *, syn="no", attached=True, dos=False, dos_disabled=False,
-          role="external",
+def _scan(tmp_path, *, syn="no", udp=None, icmp=None, attached=True,
+          dos=False, dos_disabled=False,
+          role="external", scan_action=None,
           panorama=False, extra_vsys=""):
+    other_floods = "".join(
+        f"<{name}><enable>{value}</enable></{name}>"
+        for name, value in (("udp", udp), ("icmp", icmp)) if value is not None
+    )
+    scan = (
+        f'<scan><entry name="tcp-port-scan"><action><{scan_action}/></action>'
+        '</entry></scan>' if scan_action else ''
+    )
     profile = (
         '<entry name="ZP"><flood><tcp-syn><enable>' + syn
-        + '</enable></tcp-syn></flood></entry>'
+        + '</enable></tcp-syn>' + other_floods + '</flood>' + scan + '</entry>'
     )
     binding = '<zone-protection-profile>ZP</zone-protection-profile>' if attached else ""
     dos_rule = (
@@ -76,3 +87,51 @@ def test_same_profile_in_another_vsys_without_assessed_external_interface(tmp_pa
 def test_disabled_dos_rule_is_not_treated_as_an_alternative(tmp_path):
     _, findings = _scan(tmp_path, dos=True, dos_disabled=True)
     assert len(findings) == 1
+
+
+def test_explicit_udp_and_icmp_flood_disablement_is_independent_of_syn(tmp_path):
+    parser, findings = _scan(tmp_path, syn="yes", udp="no", icmp="no")
+    assert findings == []
+    assert parser.get_zone_protections()[0].disabled_other_floods == ("udp", "icmp")
+    plugin = PluginPANOSChecks()
+    plugin.check_zone_protection(parser)
+    other = [item for item in plugin.get_issues() if item.rule_id == OTHER_RULE_ID]
+    assert len(other) == 1
+    assert "UDP, ICMP" in other[0].observation
+    assert any("flood udp enable no" in value for value in other[0].evidence)
+
+
+def test_other_flood_disablement_respects_dos_alternative(tmp_path):
+    parser, _ = _scan(tmp_path, syn="yes", udp="no", dos=True)
+    plugin = PluginPANOSChecks()
+    plugin.check_zone_protection(parser)
+    assert not [item for item in plugin.get_issues() if item.rule_id == OTHER_RULE_ID]
+
+
+def test_explicit_scan_allow_on_attached_external_zone(tmp_path):
+    parser, _ = _scan(tmp_path, syn="yes", scan_action="allow")
+    assert parser.get_zone_protections()[0].allowed_scans == ("tcp-port-scan",)
+    plugin = PluginPANOSChecks()
+    plugin.check_zone_protection(parser)
+    findings = [item for item in plugin.get_issues() if item.rule_id == SCAN_RULE_ID]
+    assert len(findings) == 1
+    assert any("scan tcp-port-scan action allow" in value for value in findings[0].evidence)
+
+
+def test_alert_scan_and_unbound_profile_do_not_report(tmp_path):
+    for options in ({"scan_action": "alert"},
+                    {"scan_action": "block"},
+                    {"scan_action": "allow", "attached": False},
+                    {"scan_action": "allow", "role": "internal"},
+                    {"scan_action": "allow", "panorama": True}):
+        parser, _ = _scan(tmp_path, syn="yes", **options)
+        plugin = PluginPANOSChecks()
+        plugin.check_zone_protection(parser)
+        assert not [item for item in plugin.get_issues() if item.rule_id == SCAN_RULE_ID]
+
+
+def test_dos_flood_alternative_does_not_override_scan_allow(tmp_path):
+    parser, _ = _scan(tmp_path, syn="yes", scan_action="allow", dos=True)
+    plugin = PluginPANOSChecks()
+    plugin.check_zone_protection(parser)
+    assert [item.rule_id for item in plugin.get_issues()] == [SCAN_RULE_ID]

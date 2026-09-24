@@ -2,7 +2,7 @@
 
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class CheckPointParseError(ValueError):
@@ -27,6 +27,20 @@ class CheckPointSExpression:
     items: Tuple[Any, ...]
     line: int
     column: int
+
+
+class CheckPointFields(dict):
+    """Field mapping of one parenthesized expression plus its source line.
+
+    It compares and behaves exactly like ``dict``; ``line`` lets typed records
+    cite where a rule or object starts in the export.
+    """
+
+    __slots__ = ("line",)
+
+    def __init__(self, *args, line: Optional[int] = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.line = line
 
 
 @dataclass(frozen=True)
@@ -188,7 +202,7 @@ class CheckPointFileParser:
         if isinstance(expression, CheckPointToken):
             return expression.value
 
-        fields: Dict[str, Any] = {}
+        fields: Dict[str, Any] = CheckPointFields(line=expression.line)
         anonymous = []
         items = list(expression.items)
         index = 0
@@ -224,6 +238,7 @@ class CheckPointFileParser:
 
 __all__ = [
     "CheckPointDocument",
+    "CheckPointFields",
     "CheckPointFileParser",
     "CheckPointParseError",
     "CheckPointSExpression",

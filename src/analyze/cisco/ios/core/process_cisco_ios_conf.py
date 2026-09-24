@@ -4,6 +4,7 @@ from typing import Iterable
 
 from src.analyze.common.issue import Finding
 from src.devices.common.base_parser import BaseDeviceParser
+from src.analyze.common.evidence_lines import attach_source_lines
 from ..plugins.baseline_plugin import PluginIOSBaseline
 from ..plugins.http_plugin import PluginHTTP
 from ..plugins.ssh_plugin import PluginSSH
@@ -33,7 +34,7 @@ def process_cisco_ios_conf(parser: BaseDeviceParser) -> dict:
         plugin = plugin_class()
         plugin.analyze(parser)
         findings.extend(plugin.get_issues())
-    return _generate_section(parser.assessment_context.filter_findings(_deduplicate(findings)), {}, 0)
+    return _generate_section(parser.assessment_context.filter_findings(attach_source_lines(parser, _deduplicate(findings))), {}, 0)
 
 
 def _generate_section(findings: list[Finding], issue_dict: dict, index: int) -> dict:

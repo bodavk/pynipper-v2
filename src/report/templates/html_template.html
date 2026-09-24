@@ -133,8 +133,8 @@
                             {% if value.evidence %}
                                 <strong>Evidence:</strong>
                                 <ul>
-                                {% for item in value.evidence %}
-                                    <li>{{ item }}</li>
+                                {% for item in value.evidence_locations %}
+                                    <li>{% if item.line_number %}<strong>Line {{ item.line_number }}{% if item.source %} ({{ item.source }}){% endif %}:</strong> {% endif %}<code>{{ item.text }}</code>{% if not item.line_number %} <em>(no single source line, e.g. a missing setting or a summarized/redacted value)</em>{% endif %}</li>
                                 {% endfor %}
                                 </ul>
                             {% endif %}

@@ -78,7 +78,7 @@ class PluginFortiOSChecks(BasePlugin):
                     severity=Severity.HIGH,
                     exploitability="An attacker with reachability to the named interface can intercept or attempt access to the insecure service.",
                     recommendation=f"Remove {protocol} from this interface's allowaccess list and use HTTPS or SSH with restricted administrator trusted hosts.",
-                    evidence=tuple(item.text for item in service.evidence) or (
+                    evidence=tuple(item for item in service.evidence) or (
                         f"{service.scope}:{service.interface}:allowaccess {protocol}",
                     ),
                     references=(FORTINET_MANAGEMENT_GUIDE,),
@@ -122,7 +122,7 @@ class PluginFortiOSChecks(BasePlugin):
                     severity=Severity.CRITICAL,
                     exploitability="Any source matching the interface scope can target any reachable destination and service.",
                     recommendation="Constrain source and destination addresses, services, schedule, and interfaces; enable appropriate policy logging.",
-                    evidence=tuple(item.text for item in evidence) or (f"firewall policy {name}",),
+                    evidence=tuple(item for item in evidence) or (f"firewall policy {name}",),
                     references=(FORTINET_POLICY_GUIDE,),
                 )
             )
@@ -147,7 +147,7 @@ class PluginFortiOSChecks(BasePlugin):
                 continue
             evidence = []
             for key in ("ssl-min-proto-version", "admin-https-ssl-versions"):
-                evidence.extend(item.text for item in fortios._field_evidence(path + (key,)))
+                evidence.extend(item for item in fortios._field_evidence(path + (key,)))
             self.add_issue(
                 Finding(
                     rule_id="fortinet.fortios.tls.minimum_version",

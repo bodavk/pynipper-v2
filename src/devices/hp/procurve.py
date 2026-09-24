@@ -9,6 +9,7 @@ import shlex
 from typing import Any
 
 from src.devices.common.base_parser import BaseDeviceParser
+from src.devices.common.source_lines import group_double_quoted_lines, single_line_evidence
 from src.devices.common.models import (
     ConfigEvidence,
     ConfigurationState,
@@ -172,13 +173,38 @@ class HPProCurveParser(BaseDeviceParser):
     def __init__(self, config_filepath: str):
         super().__init__(config_filepath)
         with open(config_filepath, encoding="utf-8-sig") as config_file:
-            raw_lines = tuple(config_file)
-            self.raw_lines = raw_lines
-            self.commands = tuple(
-                HPCommand(line.strip(), number)
-                for number, line in enumerate(raw_lines, start=1)
-                if line.strip()
+            physical_lines = tuple(config_file)
+        # Quoted values such as a multi-line "banner motd" span several
+        # physical lines; their body must not be read as commands.
+        grouping = group_double_quoted_lines(
+            [line.rstrip("\r\n") for line in physical_lines], comment_prefixes=(";",)
+        )
+        self.diagnostics: list[str] = []
+        if grouping.unterminated_line is not None:
+            self.diagnostics.append(
+                f"line {grouping.unterminated_line}: quoted value is not closed before end of file"
             )
+        continuation = {
+            number
+            for statement in grouping.lines
+            for number in range(statement.start_line + 1, statement.end_line + 1)
+        }
+        # Keep physical numbering for line-oriented readers, blanking the
+        # continuation lines of multi-line values.
+        self.raw_lines = tuple(
+            "\n" if number in continuation else line
+            for number, line in enumerate(physical_lines, start=1)
+        )
+        self._statement_end_lines = {
+            statement.start_line: statement.end_line
+            for statement in grouping.lines
+            if statement.is_multiline
+        }
+        self.commands = tuple(
+            HPCommand(statement.text.strip(), statement.start_line)
+            for statement in grouping.lines
+            if statement.text.strip()
+        )
         self.config = [command.text for command in self.commands]
 
     def _evidence(self, command: HPCommand, *, redact: bool = False) -> ConfigEvidence:
@@ -186,6 +212,7 @@ class HPProCurveParser(BaseDeviceParser):
         if redact:
             tokens = self._tokens(text)
             text = " ".join(tokens[:4] + ["<redacted>"]) if len(tokens) > 4 else "credential configured"
+        text = single_line_evidence(text, self._statement_end_lines.get(command.line_number))
         return ConfigEvidence(text=text, source=self.config_filepath, line_number=command.line_number)
 
     @staticmethod
@@ -775,7 +802,7 @@ class HPProCurveParser(BaseDeviceParser):
                 state = ConfigurationState.DISABLED
                 resolution = "explicit"
                 evidence = (self._evidence(command),)
-            elif re.fullmatch(r"banner\s+motd\s+.+", command.text, re.I):
+            elif re.fullmatch(r"banner\s+motd\s+.+", command.text, re.I | re.S):
                 state = ConfigurationState.ENABLED
                 resolution = "explicit"
                 evidence = (self._evidence(command),)

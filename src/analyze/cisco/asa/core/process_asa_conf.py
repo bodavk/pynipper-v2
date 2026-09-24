@@ -2,6 +2,7 @@ from typing import Iterable, List
 
 from src.analyze.common.issue import Finding
 from src.devices.common.base_parser import BaseDeviceParser
+from src.analyze.common.evidence_lines import attach_source_lines
 from ..plugins.asa_checks_plugin import PluginASAChecks
 from ..plugins.baseline_plugin import PluginASABaseline
 
@@ -23,7 +24,7 @@ def process_asa_conf(parser: BaseDeviceParser) -> dict:
         found_issues.extend(plugin.get_issues())
 
     issues = _generate_section(
-        parser.assessment_context.filter_findings(_deduplicate_findings(found_issues)),
+        parser.assessment_context.filter_findings(attach_source_lines(parser, _deduplicate_findings(found_issues))),
         issues,
         0,
     )

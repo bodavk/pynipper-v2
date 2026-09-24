@@ -84,7 +84,7 @@ This table describes **implemented subsets**, not complete coverage of a categor
 | HP_PROCURVE | AOS-S management/AAA/manager-operator/password/SSH/SNMP, logging/NTP and DHCP/DAI/source-lockdown/port-security subset | [SC-003](#sc-003), [SC-004](#sc-004), routing-role [SC-005](#sc-005), [SC-012](#sc-012), [SC-021](#sc-021), [SC-022](#sc-022) |
 | SONICOS | E-CLI management/admin, access rules/effectiveness, VPN algorithms, logging/NTP/SNMP, global security services and Capture ATP dependencies | [SC-013](#sc-013), [SC-018](#sc-018), [SC-021](#sc-021), [SC-022](#sc-022) |
 | ARISTA_EOS | eAPI/TLS-profile/SSH, admin roles/AAA/authz/accounting/session/lockout/banner, SNMP/credentials/authenticated NTP/CoPP | [SC-002](#sc-002), [SC-003](#sc-003), [SC-004](#sc-004), [SC-005](#sc-005), [SC-012](#sc-012), [SC-021](#sc-021), [SC-022](#sc-022) |
-| F5_BIGIP | Explicit management source/redirect/idle settings, tmsh audit, password-enforcement and zero-lockout/minimum-length checks, plaintext local-user password storage, remote-syslog-none, bound ClientSSL allow-non-SSL | [SC-014](#sc-014), [SC-015](#sc-015), [SC-016](#sc-016), [SC-022](#sc-022), conditional-module [SC-024](#sc-024) |
+| F5_BIGIP | Explicit management source/redirect/idle settings, tmsh audit, password-enforcement and zero-lockout/minimum-length checks, plaintext local-user password storage, active remote-auth empty-server and LDAP SSL/peer-check disablement, remote-syslog-none, bound ClientSSL allow-non-SSL | [SC-014](#sc-014), [SC-015](#sc-015), [SC-016](#sc-016), [SC-022](#sc-022), conditional-module [SC-024](#sc-024) |
 
 Administrative access, AAA, credentials, SNMP, logging, time, services, routing, filtering, crypto, certificates, discovery and control-plane protection were considered. Banners already have checks on several families and are not a priority expansion here. Missing routing/L2 functions on appliances that do not use those roles are not automatically applicable. Certificate selection is not equivalent to certificate validation; algorithm blacklists are not credential-value checks; configured backup/update schedules are not proof of successful operation. No missing checks are inferred simply from an absent category name in a plugin.
 
@@ -335,7 +335,7 @@ Implement by risk and fixture quality. Shared L2 and routing concepts offer reus
 
 **Priority:** P1.
 
-**Status:** Bounded local-firewall stage implemented for a resolved zone-protection profile with explicit SYN flood disablement on a zone containing an interface assigned the external assessment role. A possible local DoS protect rule or unmerged Panorama/template state suppresses this narrow finding. Required protection, flood types beyond SYN, malformed/spoofed-packet settings, and exact DoS policy applicability remain open.
+**Status:** Bounded local-firewall stage implemented for a resolved zone-protection profile with explicit SYN, UDP or ICMP flood disablement or a scan entry set to `allow` on a zone containing an interface assigned the external assessment role. A possible local DoS protect rule suppresses flood findings but not scan-allow findings; unmerged Panorama/template state suppresses both. Alert-only scan entries are not findings because the vendor documents alerting as a valid action. Required protection, other flood types, malformed/spoofed-packet settings, and exact DoS policy applicability remain open.
 
 **Source of Truth:** S05; PAN parser/plugin currently lack zone-protection/DoS models and evaluation.
 
@@ -358,7 +358,7 @@ Implement by risk and fixture quality. Shared L2 and routing concepts offer reus
 
 **Priority:** P1 screens; P2 IDP ineffective-action depth.
 
-**Status:** Ready after SRX release/grammar fixtures are qualified.
+**Status:** Stage A started: active zone-to-screen binding, explicit deactivated SYN/UDP/ICMP-flood options, and UDP/ICMP-flood alarm-only state are covered for assessed external SRX zones. Other screen controls, required-protection absence and Stage B IDP remain open pending scope and grammar qualification.
 
 **Source of Truth:** S08; [Junos baseline](../../src/analyze/juniper/junos/plugins/baseline_plugin.py) and [parser](../../src/devices/juniper/junos.py) do not evaluate `security screen ids-option` or active bound IDP protection.
 
@@ -404,7 +404,7 @@ Implement by risk and fixture quality. Shared L2 and routing concepts offer reus
 
 **Priority:** P1.
 
-**Status:** Bounded explicit password-policy login-lockout, zero-minimum-length and plaintext `auth user` storage checks implemented for saved TMOS exports. Effective roles, remote AAA bindings and other local constraints remain open after syntax/fixture qualification.
+**Status:** Bounded explicit password-policy login-lockout, zero-minimum-length and plaintext `auth user` storage checks implemented for saved TMOS exports. Active RADIUS/LDAP/TACACS+/certificate-LDAP source types detect provider objects that all explicitly set `servers none`; active LDAP/certificate-LDAP providers also detect explicit `ssl disabled` or, separately, `ssl-check-peer disabled` on SSL/StartTLS when all exported provider objects have configured servers and matching weak state. Missing/unresolved providers, unknown TLS values and external protected paths remain unknown. Effective roles, full remote AAA bindings and other local constraints remain open after syntax/fixture qualification.
 
 **Source of Truth:** S12; [F5 parser](../../src/devices/f5/bigip.py) `_FIELDS`/`get_users` and [plugin](../../src/analyze/f5/plugins/bigip_checks_plugin.py). Current checks cover password enforcement toggle and explicit timers, not effective identity policy.
 
@@ -684,7 +684,7 @@ Source evidence below is the current implementation boundary. Method names are s
 | AOS-S | [procurve.py](../../src/devices/hp/procurve.py) | [checks](../../src/analyze/hp/plugins/hp_checks_plugin.py): `check_ssh_crypto`, `check_operational_baseline`, `check_administrative_policy`, `check_advanced_baseline`, `check_edge_protections` alongside basic management checks. AOS-CX not included. |
 | SonicOS | [sonicos.py](../../src/devices/sonicwall/sonicos.py) | [checks](../../src/analyze/sonicwall/plugins/sonicos_checks_plugin.py): `check_management`, `check_administration`, `check_access_rules`, `check_policy_effectiveness`, `check_vpn`, `check_operations`; global protection is not zone/protocol effectiveness. |
 | EOS | [eos.py](../../src/devices/arista/eos.py) | [checks](../../src/analyze/arista/plugins/arista_checks_plugin.py): administrative/services/crypto/SNMP/AAA/time/CoPP; no equivalent routing or access-edge admission evaluation. |
-| F5 | [bigip.py](../../src/devices/f5/bigip.py) | [checks](../../src/analyze/f5/plugins/bigip_checks_plugin.py) `analyze`: thirteen bounded explicit-setting/credential-storage/bound-cleartext checks. `_FIELDS`, user, profile and virtual records define the small supported evidence set. |
+| F5 | [bigip.py](../../src/devices/f5/bigip.py) | [checks](../../src/analyze/f5/plugins/bigip_checks_plugin.py) `analyze`: bounded explicit-setting/credential-storage/remote-auth-provider/bound-cleartext checks. `_FIELDS`, user, remote-auth, profile and virtual records define the small supported evidence set. |
 
 Deferred intentionally: generic banner wording, low-severity GTSM-only expansion, wholesale disablement of discovery on all ports, speculative SSL decryption mandates, runtime-unused ACL detection, signature freshness, live MFA/certificate revocation verification and successful backup proof. Those need different scope or operational evidence. Existing static ACL effectiveness, stored-secret classification, known-default credential checks and report coverage are retained, not relisted as absent capabilities.
 

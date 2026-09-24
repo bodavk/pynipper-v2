@@ -60,7 +60,7 @@ class PluginScreenOSChecks(BasePlugin):
                     "",
                     "",
                     tuple(screenos.manager_ips),
-                    (evidence.text,) if evidence else (),
+                    (evidence,) if evidence else (),
                 )
             )
         for interface in screenos.interfaces.values():
@@ -74,7 +74,7 @@ class PluginScreenOSChecks(BasePlugin):
                         interface.name,
                         interface.zone,
                         tuple(interface.manager_ips or screenos.manager_ips),
-                        tuple(item.text for item in interface.evidence),
+                        tuple(item for item in interface.evidence),
                     )
                 )
 
@@ -102,7 +102,7 @@ class PluginScreenOSChecks(BasePlugin):
                     severity=Severity.CRITICAL,
                     exploitability="Any source in the source zone can target any destination and service in the destination zone.",
                     recommendation="Replace Any source, destination, and service values with explicit objects and enable session logging.",
-                    evidence=tuple(item.text for item in policy.evidence),
+                    evidence=tuple(item for item in policy.evidence),
                     references=(JUNIPER_SCREENOS_DOCUMENTATION,),
                 )
             )
@@ -111,7 +111,7 @@ class PluginScreenOSChecks(BasePlugin):
         screenos = self._screenos(parser)
         prior_by_zone_pair = {}
         for policy in screenos.get_policy_semantics():
-            evidence = tuple(item.text for item in policy.evidence) or (
+            evidence = tuple(item for item in policy.evidence) or (
                 f"policy id {policy.policy_id}",
             )
             if not policy.enabled:
@@ -191,7 +191,7 @@ class PluginScreenOSChecks(BasePlugin):
                     severity=Severity.LOW if same_action else Severity.HIGH,
                     exploitability="A conflicting shadowed policy can give reviewers a false impression of enforced access control.",
                     recommendation="Remove or reorder the policy after validating address/service objects, logging and operational intent.",
-                    evidence=evidence + tuple(item.text for item in earlier.evidence),
+                    evidence=evidence + tuple(item for item in earlier.evidence),
                     references=(JUNIPER_SCREENOS_DOCUMENTATION,),
                 ))
                 break

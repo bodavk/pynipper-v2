@@ -20,6 +20,13 @@ auth password-policy {
     policy-enforcement disabled
     max-login-failures 0
 }
+auth source {
+    type radius
+    fallback false
+}
+auth radius /Common/system-auth {
+    servers none
+}
 auth user /Common/audit {
     password ExampleExposedPassword
 }

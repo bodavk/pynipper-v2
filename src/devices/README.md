@@ -21,6 +21,6 @@ The authoritative device list is `src/devices/registry.py`. Every registered par
 
 Registered aliases are resolved centrally. Additions must include registry, parser-contract, analyzer-dispatch, and alias tests.
 
-The permanent corpus includes 35 inputs across twelve public pipelines. Its paired and edge-case configurations cover unknown defaults, inactive APIs and objects, format rejection, scope isolation, reference resolution, ordered negation, and bounded administrative-policy state. F5 has paired and syntax-variant basic-support cases.
+The permanent corpus includes 36 inputs across twelve public pipelines, including a FortiOS export with multi-line quoted private-key, certificate and replacement-message values. Its paired and edge-case configurations cover unknown defaults, inactive APIs and objects, format rejection, scope isolation, reference resolution, ordered negation, and bounded administrative-policy state. F5 has paired and syntax-variant basic-support cases.
 
 See [`docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md) for parser responsibilities and [`docs/EXTENDING.md`](../../docs/EXTENDING.md) before adding a device or input dialect.

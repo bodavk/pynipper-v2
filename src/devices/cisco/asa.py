@@ -277,10 +277,15 @@ class CiscoASAParser(BaseDeviceParser):
 
     def __init__(self, config_filepath: str):
         super().__init__(config_filepath)
-        with open(config_filepath, "r", encoding="utf-8", errors="replace") as source:
+        with open(config_filepath, "r", encoding="utf-8-sig", errors="replace") as source:
             self._source_lines = source.read().splitlines()
-        # ciscoconfparse supports 'asa' syntax
-        self.parser = CiscoConfParse(config_filepath, syntax='asa')
+        # CiscoConfParse drops blank lines, which would shift every evidence
+        # line number after them. A comment placeholder keeps positions equal
+        # to physical line numbers. ASA banners are single-line commands.
+        self.parser = CiscoConfParse(
+            [line if line.strip() else "!" for line in self._source_lines],
+            syntax='asa',
+        )
         self._acl_object_cache: Optional[dict[str, dict]] = None
 
     def get_hostname(self) -> str:

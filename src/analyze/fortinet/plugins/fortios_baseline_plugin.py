@@ -1,6 +1,7 @@
 """VDOM-aware FortiOS management, monitoring, and policy hardening checks."""
 
 from collections import defaultdict
+from dataclasses import replace
 import re
 
 from src.analyze.common.base_plugin import BasePlugin
@@ -235,7 +236,7 @@ class PluginFortiOSBaseline(BasePlugin):
 
     @staticmethod
     def _evidence(fortios: FortiOSParser, path: tuple[str, ...], fallback: str) -> tuple[str, ...]:
-        return tuple(item.text for item in fortios.field_evidence(path)) or (fallback,)
+        return tuple(item for item in fortios.field_evidence(path)) or (fallback,)
 
     def check_administrators(self, parser: BaseDeviceParser) -> None:
         fortios = self._fortios(parser)
@@ -553,7 +554,7 @@ class PluginFortiOSBaseline(BasePlugin):
             FORTINET_CA_CERTIFICATE_REFERENCE,
         )
         for binding in fortios.get_management_certificate_bindings():
-            evidence = tuple(item.text for item in binding.evidence) or (
+            evidence = tuple(item for item in binding.evidence) or (
                 f"admin-server-cert {binding.certificate}",
             )
             if binding.reference_state == "unavailable":
@@ -664,7 +665,7 @@ class PluginFortiOSBaseline(BasePlugin):
             for name, settings in section.items():
                 if isinstance(settings, dict) and self._enabled(settings):
                     community_evidence = tuple(
-                        item.text.replace(str(name), "<redacted>")
+                        replace(item, text=item.text.replace(str(name), "<redacted>"))
                         for item in fortios.field_evidence(path + (str(name),))
                     ) or ("system snmp community <redacted>",)
                     self.add_issue(
@@ -934,7 +935,7 @@ class PluginFortiOSBaseline(BasePlugin):
 
             for profile in inspection.profiles:
                 profile_evidence = policy_evidence + tuple(
-                    item.text for item in profile.evidence
+                    item for item in profile.evidence
                 ) + (f"{scope}: {profile.profile_type} profile {profile.name}",)
                 if profile.resolution_state == "unresolved":
                     self.add_issue(
@@ -1027,7 +1028,7 @@ class PluginFortiOSBaseline(BasePlugin):
                     "Remote audit events may be readable or modified in transit even when reliable delivery is selected.",
                     "Use a protected syslog transport with an approved TLS configuration, or document an equivalent protected path.",
                     Severity.MEDIUM,
-                    tuple(item.text for item in sink.evidence),
+                    tuple(item for item in sink.evidence),
                     (FORTINET_SYSLOG_TRANSPORT_REFERENCE,),
                 ))
             elif sink.transport_state == "explicit-weak-tls":
@@ -1041,7 +1042,7 @@ class PluginFortiOSBaseline(BasePlugin):
                     "Weak ciphers or obsolete TLS versions can reduce the confidentiality and integrity of remote audit events.",
                     "Use high-strength encryption and a minimum of TLS 1.2 or a stronger approved setting.",
                     Severity.MEDIUM,
-                    tuple(item.text for item in sink.evidence),
+                    tuple(item for item in sink.evidence),
                     (FORTINET_SYSLOG_TRANSPORT_REFERENCE, NIST_CRYPTO_TRANSITIONS),
                 ))
 
@@ -1070,12 +1071,12 @@ class PluginFortiOSBaseline(BasePlugin):
                             and first.active_state == "enable"
                             and first.action in {"pass", "monitor", "allow"}):
                         weak.append(target)
-                        evidence.extend(item.text for item in first.evidence)
+                        evidence.extend(item for item in first.evidence)
                     if (first is not None and first.severities
                             and first.active_state == "enable"
                             and first.action == "block" and first.exemptions):
                         exempted.append(target)
-                        exemption_evidence.extend(item.text for item in first.evidence + first.exemptions)
+                        exemption_evidence.extend(item for item in first.evidence + first.exemptions)
                 if weak:
                     self.add_issue(self._finding(
                         parser,
@@ -1087,7 +1088,7 @@ class PluginFortiOSBaseline(BasePlugin):
                         "Matching critical or high-severity signatures may be logged or allowed instead of blocked.",
                         "Review the IPS entry order and set an approved blocking action for these severities.",
                         Severity.HIGH,
-                        tuple(item.text for item in inspection.evidence + profile.evidence)
+                        tuple(item for item in inspection.evidence + profile.evidence)
                         + tuple(dict.fromkeys(evidence)),
                         (FORTINET_IPS_REFERENCE, FORTINET_IPS_ORDER_REFERENCE),
                     ))
@@ -1102,7 +1103,7 @@ class PluginFortiOSBaseline(BasePlugin):
                         "Traffic matching the exemption is not inspected by the affected signatures.",
                         "Remove the exemption or narrowly justify and review its source/destination scope.",
                         Severity.HIGH,
-                        tuple(item.text for item in inspection.evidence + profile.evidence)
+                        tuple(item for item in inspection.evidence + profile.evidence)
                         + tuple(dict.fromkeys(exemption_evidence)),
                         (FORTINET_IPS_REFERENCE, FORTINET_IPS_ORDER_REFERENCE),
                     ))
@@ -1120,7 +1121,7 @@ class PluginFortiOSBaseline(BasePlugin):
             FORTINET_SERVICE_GROUP_REFERENCE,
         )
         for policy in fortios.get_firewall_policy_semantics():
-            evidence = tuple(item.text for item in policy.evidence) or (
+            evidence = tuple(item for item in policy.evidence) or (
                 f"firewall policy {policy.name}",
             )
             if not policy.enabled:
@@ -1204,7 +1205,7 @@ class PluginFortiOSBaseline(BasePlugin):
                     "The later policy cannot alter first-match enforcement for the statically proven traffic scope and obscures policy intent.",
                     "Remove or reorder the policy after validating VDOM scope, NAT/inspection behavior and operational intent.",
                     Severity.LOW if same_action else Severity.HIGH,
-                    evidence + tuple(item.text for item in earlier.evidence),
+                    evidence + tuple(item for item in earlier.evidence),
                     references,
                 ))
                 break
@@ -1242,7 +1243,7 @@ class PluginFortiOSBaseline(BasePlugin):
                 "The configured automation cannot provide continuing configuration checkpoints as intended.",
                 "Configure an automatic backup script with a positive interval, repeat 0, and a supported destination, or use a documented external backup process.",
                 Severity.MEDIUM,
-                tuple(item.text for item in backup.evidence),
+                tuple(item for item in backup.evidence),
                 (FORTINET_CONFIGURATION_BACKUP_GUIDE, FORTINET_AUTO_SCRIPT_REFERENCE),
             ))
 
@@ -1275,7 +1276,7 @@ class PluginFortiOSBaseline(BasePlugin):
                 "Configuration backups can expose credentials, addressing, and security policy in transit.",
                 "Use SFTP or a protected management station and secure the stored backup independently.",
                 Severity.HIGH,
-                tuple(item.text for item in backup.evidence),
+                tuple(item for item in backup.evidence),
                 (FORTINET_CONFIGURATION_BACKUP_GUIDE,),
             ))
 
@@ -1395,7 +1396,7 @@ class PluginFortiOSBaseline(BasePlugin):
                 configured[policy.scope].update(interface.casefold() for interface in policy.interfaces)
             monitor_only = [anomaly.name for anomaly in active if anomaly.action != "block"]
             blocking = [anomaly.name for anomaly in active if anomaly.action == "block"]
-            evidence = tuple(item.text for item in policy.evidence) or (
+            evidence = tuple(item for item in policy.evidence) or (
                 f"firewall DoS-policy{('6' if policy.family == 'ipv6' else '')} {policy.name}",
             )
             if not blocking or monitor_only:
@@ -1478,7 +1479,7 @@ class PluginFortiOSBaseline(BasePlugin):
                 f"administrators {', '.join(profile.administrators)} through group(s) "
                 f"{', '.join(profile.administrator_groups)}"
             )
-            evidence = tuple(item.text for item in profile.evidence) or (
+            evidence = tuple(item for item in profile.evidence) or (
                 f"config user radius / edit {profile.name}",
             )
 
@@ -1567,7 +1568,7 @@ class PluginFortiOSBaseline(BasePlugin):
                 continue
             if policy.schedule.casefold() != "always":
                 continue
-            evidence = tuple(item.text for item in policy.evidence) or (
+            evidence = tuple(item for item in policy.evidence) or (
                 f"firewall local-in-policy{'' if policy.family == 'ipv4' else '6'} {policy.name}",
             )
             self.add_issue(
@@ -1598,7 +1599,7 @@ class PluginFortiOSBaseline(BasePlugin):
         for tunnel in self._fortios(parser).get_ipsec_tunnels():
             if not tunnel.active:
                 continue
-            evidence = tuple(item.text for item in tunnel.evidence) or (
+            evidence = tuple(item for item in tunnel.evidence) or (
                 f"vpn ipsec phase2 {tunnel.name} -> {tunnel.phase1_name or '<missing>'}",
             )
             if tunnel.resolution_state == "unresolved":

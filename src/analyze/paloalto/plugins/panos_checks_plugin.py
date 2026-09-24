@@ -77,6 +77,10 @@ PANOS_ZONE_PROTECTION_GUIDE = (
     "https://docs.paloaltonetworks.com/ngfw/administration/"
     "zone-protection-and-dos-protection/zone-defense/zone-protection-profiles"
 )
+PANOS_RECONNAISSANCE_GUIDE = (
+    "https://docs.paloaltonetworks.com/ngfw/administration/zone-protection-and-dos-protection/"
+    "zone-defense/zone-protection-profiles/configure-reconnaissance-protection"
+)
 
 
 class PluginPANOSChecks(BasePlugin):
@@ -95,7 +99,7 @@ class PluginPANOSChecks(BasePlugin):
 
     @staticmethod
     def _evidence(items) -> tuple[str, ...]:
-        return tuple(item.text for item in items)
+        return tuple(item for item in items)
 
     @staticmethod
     def _all_any(values: tuple[str, ...]) -> bool:
@@ -170,7 +174,7 @@ class PluginPANOSChecks(BasePlugin):
                     recommendation="Use RADIUS, SAML, TACACS+, or another approved external authentication profile, with a controlled emergency local account.",
                     severity=Severity.MEDIUM,
                     evidence=tuple(
-                        evidence.text for user in users for evidence in user.evidence
+                        evidence for user in users for evidence in user.evidence
                     ),
                     references=(PANOS_ADMIN_GUIDE,),
                 )
@@ -796,7 +800,7 @@ class PluginPANOSChecks(BasePlugin):
                     recommendation="Configure a recurring Applications and Threats update schedule using download-and-install with an approved rollout threshold.",
                     severity=Severity.HIGH,
                     evidence=tuple(
-                        item.text for schedule in threat_schedules for item in schedule.evidence
+                        item for schedule in threat_schedules for item in schedule.evidence
                     ) or ("deviceconfig system update-schedule threats absent",),
                     references=(PANOS_UPDATE_GUIDE,),
                 )
@@ -1258,30 +1262,73 @@ class PluginPANOSChecks(BasePlugin):
                 interface for interface in zone.interfaces
                 if panos.assessment_context.role_for_interface(interface) == "external"
             )
-            if (not external or zone.resolution_state != "resolved"
-                    or zone.syn_flood_state != "disabled"
-                    or zone.dos_alternative_possible):
+            if not external or zone.resolution_state != "resolved":
                 continue
-            self.add_issue(Finding(
-                rule_id="paloalto.panos.zone.syn_flood_disabled",
-                device=parser.device_type,
-                title="Attached PAN-OS zone profile explicitly disables SYN flood protection",
-                observation=(
-                    f"Zone '{zone.zone}' in '{zone.device_scope}/{zone.vsys}' contains assessed "
-                    f"external interface(s) {', '.join(external)} and uses profile '{zone.profile}' "
-                    "with flood tcp-syn enable no. No configured DoS protect rule was found in "
-                    "this local vsys export."
-                ),
-                impact="SYN floods entering this zone are not mitigated by the attached zone profile.",
-                exploitability="An attacker reaching the assessed ingress zone may send a SYN flood.",
-                recommendation=(
-                    "Enable a reviewed SYN flood action and thresholds on the attached zone "
-                    "profile, or verify an applicable DoS or upstream protection path."
-                ),
-                severity=Severity.MEDIUM,
-                evidence=self._evidence(zone.evidence),
-                references=(PANOS_ZONE_PROTECTION_GUIDE,),
-            ))
+            if zone.allowed_scans:
+                self.add_issue(Finding(
+                    rule_id="paloalto.panos.zone.scan_allow",
+                    device=parser.device_type,
+                    title="Attached PAN-OS zone profile explicitly allows reconnaissance scans",
+                    observation=(
+                        f"Zone '{zone.zone}' in '{zone.device_scope}/{zone.vsys}' contains assessed "
+                        f"external interface(s) {', '.join(external)} and uses profile '{zone.profile}' "
+                        f"whose scan entries {', '.join(zone.allowed_scans)} explicitly set action allow."
+                    ),
+                    impact="Matching reconnaissance scans are permitted by the attached zone profile.",
+                    exploitability="A scanner reaching the assessed ingress zone may continue matching probes.",
+                    recommendation=(
+                        "Review these scan exceptions and use an approved alert or blocking action "
+                        "for the exposed zone."
+                    ),
+                    severity=Severity.MEDIUM,
+                    evidence=self._evidence(zone.evidence),
+                    references=(PANOS_RECONNAISSANCE_GUIDE,),
+                ))
+            if zone.dos_alternative_possible:
+                continue
+            if zone.syn_flood_state == "disabled":
+                self.add_issue(Finding(
+                    rule_id="paloalto.panos.zone.syn_flood_disabled",
+                    device=parser.device_type,
+                    title="Attached PAN-OS zone profile explicitly disables SYN flood protection",
+                    observation=(
+                        f"Zone '{zone.zone}' in '{zone.device_scope}/{zone.vsys}' contains assessed "
+                        f"external interface(s) {', '.join(external)} and uses profile '{zone.profile}' "
+                        "with flood tcp-syn enable no. No configured DoS protect rule was found in "
+                        "this local vsys export."
+                    ),
+                    impact="SYN floods entering this zone are not mitigated by the attached zone profile.",
+                    exploitability="An attacker reaching the assessed ingress zone may send a SYN flood.",
+                    recommendation=(
+                        "Enable a reviewed SYN flood action and thresholds on the attached zone "
+                        "profile, or verify an applicable DoS or upstream protection path."
+                    ),
+                    severity=Severity.MEDIUM,
+                    evidence=self._evidence(zone.evidence),
+                    references=(PANOS_ZONE_PROTECTION_GUIDE,),
+                ))
+            if zone.disabled_other_floods:
+                self.add_issue(Finding(
+                    rule_id="paloalto.panos.zone.other_flood_disabled",
+                    device=parser.device_type,
+                    title="Attached PAN-OS zone profile explicitly disables flood protection",
+                    observation=(
+                        f"Zone '{zone.zone}' in '{zone.device_scope}/{zone.vsys}' contains assessed "
+                        f"external interface(s) {', '.join(external)} and uses profile '{zone.profile}' "
+                        f"with flood protection explicitly disabled for "
+                        f"{', '.join(zone.disabled_other_floods).upper()}. No configured DoS protect "
+                        "rule was found in this local vsys export."
+                    ),
+                    impact="The named floods are not mitigated by this attached zone profile.",
+                    exploitability="An attacker reaching the assessed ingress zone may send these floods.",
+                    recommendation=(
+                        "Enable the relevant flood protections with reviewed thresholds, or verify "
+                        "an applicable DoS or upstream protection path."
+                    ),
+                    severity=Severity.MEDIUM,
+                    evidence=self._evidence(zone.evidence),
+                    references=(PANOS_ZONE_PROTECTION_GUIDE,),
+                ))
 
     def analyze(self, parser: BaseDeviceParser) -> None:
         self.check_management(parser)

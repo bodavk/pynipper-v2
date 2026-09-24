@@ -1,4 +1,5 @@
 from src.devices.common.base_parser import BaseDeviceParser
+from src.analyze.common.evidence_lines import attach_source_lines
 from ..plugins.hp_checks_plugin import PluginHPChecks
 
 
@@ -10,7 +11,7 @@ def process_hp_conf(parser: BaseDeviceParser) -> dict:
     plugin.analyze(parser)
     
     i = plugin.get_issues()
-    issues = _generate_section(parser.assessment_context.filter_findings(i), issues, idx)
+    issues = _generate_section(parser.assessment_context.filter_findings(attach_source_lines(parser, i)), issues, idx)
     
     return issues
 

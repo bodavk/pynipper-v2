@@ -1,4 +1,5 @@
 from src.devices.common.base_parser import BaseDeviceParser
+from src.analyze.common.evidence_lines import attach_source_lines
 from ..plugins.fw1_checks_plugin import PluginCheckPointChecks
 from ..plugins.fw1_baseline_plugin import PluginCheckPointBaseline
 
@@ -10,7 +11,7 @@ def process_checkpoint_fw1_conf(parser: BaseDeviceParser) -> dict:
     for plugin_class in (PluginCheckPointChecks, PluginCheckPointBaseline):
         plugin = plugin_class()
         plugin.analyze(parser)
-        selected = parser.assessment_context.filter_findings(plugin.get_issues())
+        selected = parser.assessment_context.filter_findings(attach_source_lines(parser, plugin.get_issues()))
         issues = _generate_section(selected, issues, idx)
         idx += 1
     

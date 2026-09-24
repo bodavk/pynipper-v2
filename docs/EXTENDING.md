@@ -34,7 +34,7 @@ If the shared normalized model lacks a concept, add the smallest generally meani
 
 ### 3. Implement the plugin rule
 
-Extend `BasePlugin`, accept `BaseDeviceParser`, narrow to the required parser type when using vendor-specific APIs, and emit `Finding` with keyword arguments.
+Extend `BasePlugin`, accept `BaseDeviceParser`, narrow to the required parser type when using vendor-specific APIs, and emit `Finding` with keyword arguments. Pass the parser's `ConfigEvidence` objects as `evidence` (not their `.text`) so the report can cite the source line; if a plugin must rewrite evidence text, use `dataclasses.replace` to keep the line number. Plain strings remain valid for absence or derived statements, which have no source line.
 
 ```python
 from src.analyze.common.base_plugin import BasePlugin
@@ -102,7 +102,8 @@ Required behavior:
 - call the base constructor with the input path;
 - implement `get_hostname()`, `get_version()`, `get_users()`, `get_services()`, and `get_native_config()`;
 - implement `get_normalized_config()` with honest knowledge states;
-- preserve scope, ordering, enablement, and source evidence;
+- preserve scope, ordering, enablement, and source evidence with physical line numbers;
+- group values that span several physical lines (quoted PEM material, banners, comments) with `src/devices/common/source_lines.py` or a vendor-specific delimiter rule, so their body is never read as commands;
 - expose parser diagnostics for malformed input;
 - ensure evidence is sanitized before plugins receive it.
 

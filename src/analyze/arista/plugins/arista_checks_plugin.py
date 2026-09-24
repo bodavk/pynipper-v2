@@ -44,7 +44,7 @@ class PluginAristaChecks(BasePlugin):
         for endpoint in self._eos(parser).get_eapi_endpoints():
             if not endpoint.active:
                 continue
-            evidence = tuple(item.text for item in endpoint.evidence)
+            evidence = tuple(item for item in endpoint.evidence)
             if endpoint.http:
                 self.add_issue(
                     Finding(
@@ -137,7 +137,7 @@ class PluginAristaChecks(BasePlugin):
                 exploitability="A fallback/default role may grant different access than operators intended.",
                 recommendation="Define the referenced role or assign a verified built-in/custom role explicitly.",
                 severity=Severity.HIGH,
-                evidence=tuple(item.text for item in administrator.evidence),
+                evidence=tuple(item for item in administrator.evidence),
                 references=(ARISTA_USER_SECURITY_GUIDE,),
             ))
 
@@ -163,7 +163,7 @@ class PluginAristaChecks(BasePlugin):
                 exploitability="A reachable user can be accepted if earlier methods are unavailable and EOS reaches the none method.",
                 recommendation="Remove 'none' and use an approved centralized method with a controlled local emergency fallback.",
                 severity=Severity.CRITICAL,
-                evidence=tuple(item.text for item in policy.evidence),
+                evidence=tuple(item for item in policy.evidence),
                 references=(ARISTA_USER_SECURITY_GUIDE,),
             ))
 
@@ -215,7 +215,7 @@ class PluginAristaChecks(BasePlugin):
                     recommendation="Configure default EXEC and all-command accounting to TACACS+, RADIUS, or protected syslog.",
                     severity=Severity.MEDIUM,
                     evidence=tuple(
-                        evidence.text for item in accounting for evidence in item.evidence
+                        evidence for item in accounting for evidence in item.evidence
                     ) or ("default EXEC/all-command accounting incomplete",),
                     references=(ARISTA_USER_SECURITY_GUIDE,),
                 ))
@@ -231,7 +231,7 @@ class PluginAristaChecks(BasePlugin):
                 exploitability="A reachable attacker can sustain password-guessing attempts.",
                 recommendation="Configure AAA lockout with no more than five failures and a duration of at least 300 seconds.",
                 severity=Severity.HIGH,
-                evidence=tuple(item.text for item in lockout.evidence) or (
+                evidence=tuple(item for item in lockout.evidence) or (
                     "identified EOS release default: AAA time-based lockout disabled",
                 ),
                 references=(ARISTA_USER_SECURITY_GUIDE,),
@@ -252,7 +252,7 @@ class PluginAristaChecks(BasePlugin):
                     exploitability="A reachable attacker receives more opportunities to guess a password.",
                     recommendation="Allow no more than five failures and lock the account for at least 300 seconds.",
                     severity=Severity.MEDIUM,
-                    evidence=tuple(item.text for item in lockout.evidence),
+                    evidence=tuple(item for item in lockout.evidence),
                     references=(ARISTA_USER_SECURITY_GUIDE,),
                 ))
 
@@ -284,7 +284,7 @@ class PluginAristaChecks(BasePlugin):
                 exploitability="An attacker with a reachable local-login path has more opportunity to guess a short password.",
                 recommendation="Enable a local password minimum aligned with the approved administrative-password policy.",
                 severity=Severity.MEDIUM,
-                evidence=tuple(item.text for item in password_minimum.evidence),
+                evidence=tuple(item for item in password_minimum.evidence),
                 references=(ARISTA_SESSION_GUIDE,),
             ))
 
@@ -308,7 +308,7 @@ class PluginAristaChecks(BasePlugin):
                 exploitability="A person or process with access to an abandoned session can inherit its privileges.",
                 recommendation=f"Set the {session.channel} idle-timeout to ten minutes or less.",
                 severity=Severity.MEDIUM,
-                evidence=tuple(item.text for item in session.evidence),
+                evidence=tuple(item for item in session.evidence),
                 references=(ARISTA_SESSION_GUIDE,),
             ))
 
@@ -323,7 +323,7 @@ class PluginAristaChecks(BasePlugin):
                 exploitability="This is primarily a governance and legal-notice control rather than a direct technical exploit.",
                 recommendation="Configure an approved 'banner login' notice and validate it before the credential prompt.",
                 severity=Severity.LOW,
-                evidence=tuple(item.text for item in banner.evidence) or (
+                evidence=tuple(item for item in banner.evidence) or (
                     "banner login absent from identified EOS configuration",
                 ),
                 references=(ARISTA_DISPLAY_GUIDE,),
@@ -333,7 +333,7 @@ class PluginAristaChecks(BasePlugin):
         for endpoint in endpoints:
             if not endpoint.active or not endpoint.https:
                 continue
-            evidence = tuple(item.text for item in endpoint.evidence)
+            evidence = tuple(item for item in endpoint.evidence)
             if not endpoint.ssl_profile:
                 self.add_issue(Finding(
                     rule_id="arista.eos.eapi.tls_profile",
@@ -363,7 +363,7 @@ class PluginAristaChecks(BasePlugin):
                     references=(ARISTA_TLS_GUIDE, ARISTA_SESSION_GUIDE),
                 ))
                 continue
-            profile_evidence = evidence + tuple(item.text for item in profile.evidence)
+            profile_evidence = evidence + tuple(item for item in profile.evidence)
             if not profile.certificate:
                 self.add_issue(Finding(
                     rule_id="arista.eos.eapi.tls_certificate",
@@ -395,7 +395,7 @@ class PluginAristaChecks(BasePlugin):
         eos = self._eos(parser)
         ssh = eos.get_ssh_settings()
         if ssh.configured:
-            evidence = tuple(item.text for item in ssh.evidence)
+            evidence = tuple(item for item in ssh.evidence)
             if ssh.empty_passwords == "permit":
                 self.add_issue(
                     Finding(
@@ -482,7 +482,7 @@ class PluginAristaChecks(BasePlugin):
                         exploitability="An attacker needs SNMP reachability and can try the known value directly.",
                         recommendation="Remove the default community and use authenticated, encrypted SNMPv3.",
                         severity=Severity.HIGH,
-                        evidence=(evidence.text,),
+                        evidence=(evidence,),
                         references=(ARISTA_SNMP_GUIDE,),
                     )
                 )
@@ -497,7 +497,7 @@ class PluginAristaChecks(BasePlugin):
                     exploitability="A network-positioned attacker can capture or guess a community value.",
                     recommendation="Configure an SNMPv3 authPriv user and remove community-based access.",
                     severity=Severity.MEDIUM,
-                    evidence=tuple(item.text for _, item in communities),
+                    evidence=tuple(item for _, item in communities),
                     references=(ARISTA_SNMP_GUIDE,),
                 )
             )
@@ -506,7 +506,7 @@ class PluginAristaChecks(BasePlugin):
         view_map = {view.name.casefold(): view for view in views}
         group_map = {group.name.casefold(): group for group in groups}
         for user in users:
-            evidence = tuple(item.text for item in user.evidence)
+            evidence = tuple(item for item in user.evidence)
             if not user.group_resolved or (user.read_view and not user.read_view_resolved):
                 unresolved = f"group '{user.group}'" if not user.group_resolved else f"view '{user.read_view}'"
                 self.add_issue(
@@ -622,7 +622,7 @@ class PluginAristaChecks(BasePlugin):
                         if credential.storage_assessment == CredentialStorageAssessment.EMPTY
                         else Severity.HIGH
                     ),
-                    evidence=tuple(item.text for item in credential.evidence),
+                    evidence=tuple(item for item in credential.evidence),
                     references=(ARISTA_SECURITY_GUIDE,),
                 )
             )
@@ -646,7 +646,7 @@ class PluginAristaChecks(BasePlugin):
                 exploitability="An attacker who obtains the configuration may acquire the authentication material; runtime reachability and reuse are not inferred.",
                 recommendation="Rotate the value and use an appropriately protected authentication method where supported.",
                 severity=Severity.HIGH,
-                evidence=tuple(item.text for item in credential.evidence),
+                evidence=tuple(item for item in credential.evidence),
                 references=(ARISTA_USER_SECURITY_GUIDE,),
             ))
 
@@ -685,8 +685,8 @@ class PluginAristaChecks(BasePlugin):
                 exploitability="A device fault or hostile action logged at error severity may not reach the remote collector.",
                 recommendation="Set the remote trap threshold to errors (3) or a more inclusive approved level.",
                 severity=Severity.MEDIUM,
-                evidence=tuple(item.text for item in logging.trap_evidence)
-                + tuple(item.text for destination in destinations for item in destination.evidence),
+                evidence=tuple(item for item in logging.trap_evidence)
+                + tuple(item for destination in destinations for item in destination.evidence),
                 references=(ARISTA_LOGGING_GUIDE,),
             ))
         if (logging.logging_on is not False
@@ -704,7 +704,7 @@ class PluginAristaChecks(BasePlugin):
                 exploitability="An attacker with device access may benefit from reduced local evidence; remote logging is assessed separately.",
                 recommendation="Set the buffer threshold to errors (3) or a more inclusive approved level.",
                 severity=Severity.LOW,
-                evidence=tuple(item.text for item in logging.buffer_evidence),
+                evidence=tuple(item for item in logging.buffer_evidence),
                 references=(ARISTA_LOGGING_GUIDE,),
             ))
         associations = eos.get_ntp_associations()
@@ -736,7 +736,7 @@ class PluginAristaChecks(BasePlugin):
                             exploitability="A network-positioned attacker may spoof NTP responses if routing and filtering permit it.",
                             recommendation="Enable NTP authentication and bind a configured trusted key, or use a resolved NTS SSL profile on EOS 4.35.0F or later.",
                             severity=Severity.MEDIUM,
-                            evidence=tuple(item.text for item in association.evidence),
+                            evidence=tuple(item for item in association.evidence),
                             references=(ARISTA_TIME_GUIDE,),
                         )
                     )
@@ -752,7 +752,7 @@ class PluginAristaChecks(BasePlugin):
                             exploitability="Authentication failure can cause loss of synchronization or use of an unintended source.",
                             recommendation="Resolve the trusted key binding, or on EOS 4.35.0F or later attach an SSL profile containing a trusted certificate.",
                             severity=Severity.MEDIUM,
-                            evidence=tuple(item.text for item in association.evidence),
+                            evidence=tuple(item for item in association.evidence),
                             references=(ARISTA_TIME_GUIDE,),
                         )
                     )
@@ -771,7 +771,7 @@ class PluginAristaChecks(BasePlugin):
                             exploitability="A network-positioned attacker can target weaknesses in the legacy authentication scheme.",
                             recommendation="Migrate the association to NTS using a valid SSL trust profile.",
                             severity=Severity.MEDIUM,
-                            evidence=tuple(item.text for item in association.evidence),
+                            evidence=tuple(item for item in association.evidence),
                             references=(ARISTA_TIME_GUIDE,),
                         )
                     )
@@ -779,7 +779,7 @@ class PluginAristaChecks(BasePlugin):
     def check_control_plane(self, parser: BaseDeviceParser) -> None:
         eos = self._eos(parser)
         for acl in eos.get_control_plane_acls():
-            evidence = tuple(item.text for item in acl.evidence)
+            evidence = tuple(item for item in acl.evidence)
             if acl.resolution_state == "undefined":
                 self.add_issue(Finding(
                     rule_id="arista.eos.control_plane.acl_reference",
@@ -822,7 +822,7 @@ class PluginAristaChecks(BasePlugin):
 
         policy = eos.get_copp_policy()
         for policy_class in policy.classes:
-            evidence = tuple(item.text for item in policy_class.evidence)
+            evidence = tuple(item for item in policy_class.evidence)
             if policy_class.selector_state == "undefined-class":
                 self.add_issue(Finding(
                     rule_id="arista.eos.control_plane.copp_class_reference",

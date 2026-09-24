@@ -414,11 +414,56 @@ class CiscoIOSParser(BaseDeviceParser):
 
     device_type = "IOS_ROUTER"
 
+    # IOS shows the ETX delimiter as the two characters "^C"; a raw startup
+    # configuration may contain the control character itself.
+    _BANNER_START = re.compile(r"^banner\s+\S+\s+(?P<rest>\S.*)$", re.IGNORECASE)
+
     def __init__(self, config_filepath: str):
         super().__init__(config_filepath)
-        with open(config_filepath, "r", encoding="utf-8", errors="replace") as source:
-            self._source_lines = source.read().splitlines()
-        self.parser = CiscoConfParse(config_filepath, syntax='ios')
+        with open(config_filepath, "r", encoding="utf-8-sig", errors="replace") as source:
+            physical_lines = source.read().splitlines()
+        # Line-oriented readers must never treat banner text as commands.
+        self._source_lines = self._mask_multiline_text(physical_lines)
+        # CiscoConfParse drops blank lines, which would shift every evidence
+        # line number after them. A comment placeholder keeps positions equal
+        # to physical line numbers.
+        self.parser = CiscoConfParse(
+            [line if line.strip() else "!" for line in self._source_lines],
+            syntax='ios',
+        )
+
+    @classmethod
+    def _mask_multiline_text(cls, lines: list[str]) -> list[str]:
+        """Blank the body of delimited ``banner`` text, keeping line numbers.
+
+        The banner command line is kept (so banner presence is still known)
+        and the closing line is reduced to its delimiter so CiscoConfParse
+        still sees a closed banner. An unclosed banner is left unchanged.
+        """
+
+        masked = list(lines)
+        index = 0
+        while index < len(masked):
+            match = cls._BANNER_START.match(masked[index].strip())
+            if not match:
+                index += 1
+                continue
+            rest = match.group("rest")
+            delimiter = "^C" if rest.startswith("^C") else rest[0]
+            if delimiter in rest[len(delimiter):]:
+                index += 1
+                continue
+            closing = next(
+                (number for number in range(index + 1, len(masked)) if delimiter in masked[number]),
+                None,
+            )
+            if closing is None:
+                break
+            for number in range(index + 1, closing):
+                masked[number] = ""
+            masked[closing] = delimiter
+            index = closing + 1
+        return masked
 
     def get_hostname(self) -> str:
         host = self.parser.find_objects("^hostname")

@@ -80,7 +80,7 @@ class PluginCheckPointChecks(BasePlugin):
                     severity=Severity.CRITICAL,
                     exploitability="Any reachable source can target any destination and service covered by the rule's install-on scope.",
                     recommendation="Replace wildcard source, destination, and service fields with explicit objects and enable appropriate tracking.",
-                    evidence=tuple(item.text for item in policy.evidence) or (
+                    evidence=tuple(item for item in policy.evidence) or (
                         f"Check Point rule {policy.name}",
                     ),
                     references=(CHECKPOINT_ACCESS_BEST_PRACTICES,),

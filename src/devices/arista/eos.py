@@ -232,16 +232,41 @@ class AristaEOSParser(CiscoIOSParser):
 
     def __init__(self, config_filepath: str):
         super().__init__(config_filepath)
-        with open(config_filepath, encoding="utf-8-sig") as config_file:
-            self.commands = tuple(
-                AristaCommand(
-                    text=line.strip(),
-                    line_number=number,
-                    indent=len(line) - len(line.lstrip()),
-                )
-                for number, line in enumerate(config_file, start=1)
-                if line.strip() and line.strip() != "!"
+        # Built from the masked source so banner text is never a command.
+        self.commands = tuple(
+            AristaCommand(
+                text=line.strip(),
+                line_number=number,
+                indent=len(line) - len(line.lstrip()),
             )
+            for number, line in enumerate(self._source_lines, start=1)
+            if line.strip() and line.strip() != "!"
+        )
+
+    @classmethod
+    def _mask_multiline_text(cls, lines: list[str]) -> list[str]:
+        """Blank EOS ``banner login|motd`` text up to its closing ``EOF`` line.
+
+        The banner command is kept so banner presence remains known. An
+        unclosed banner is left unchanged.
+        """
+
+        masked = list(lines)
+        index = 0
+        while index < len(masked):
+            if not re.fullmatch(r"banner\s+(?:login|motd)", masked[index].strip(), re.IGNORECASE):
+                index += 1
+                continue
+            closing = next(
+                (number for number in range(index + 1, len(masked)) if masked[number].strip() == "EOF"),
+                None,
+            )
+            if closing is None:
+                break
+            for number in range(index + 1, closing + 1):
+                masked[number] = ""
+            index = closing + 1
+        return masked
 
     def _evidence(self, command: AristaCommand) -> ConfigEvidence:
         return ConfigEvidence(command.text, self.config_filepath, command.line_number)

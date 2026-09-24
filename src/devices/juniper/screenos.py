@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from src.devices.common.base_parser import BaseDeviceParser
+from src.devices.common.source_lines import group_double_quoted_lines, single_line_evidence
 from src.devices.common.models import (
     BlocklistCredentialAssessment,
     ConfigEvidence,
@@ -167,6 +168,7 @@ class JuniperScreenOSParser(BaseDeviceParser):
         self.global_management_evidence: dict[str, ConfigEvidence] = {}
         self.manager_ips: list[str] = []
         self.effective_commands: list[ScreenOSCommand] = []
+        self._statement_end_lines: dict[int, int] = {}
         self._parse()
         self.config = self._effective_native_lines()
 
@@ -178,6 +180,9 @@ class JuniperScreenOSParser(BaseDeviceParser):
                 r"\1 <redacted>",
                 evidence_text,
             )
+        evidence_text = single_line_evidence(
+            evidence_text, self._statement_end_lines.get(line_number)
+        )
         return ConfigEvidence(evidence_text, self.config_filepath, line_number)
 
     @staticmethod
@@ -421,8 +426,18 @@ class JuniperScreenOSParser(BaseDeviceParser):
 
     def _parse(self) -> None:
         policy_context: Optional[str] = None
-        for line_number, raw_line in enumerate(self.raw_lines, 1):
-            stripped = raw_line.strip()
+        # A quoted value (for example banner text) may span several physical
+        # lines; its body must not be read as separate set/unset commands.
+        grouping = group_double_quoted_lines(self.raw_lines, comment_prefixes=("#",))
+        if grouping.unterminated_line is not None:
+            self.diagnostics.append(
+                f"line {grouping.unterminated_line}: quoted value is not closed before end of file"
+            )
+        for statement in grouping.lines:
+            line_number = statement.start_line
+            if statement.is_multiline:
+                self._statement_end_lines[line_number] = statement.end_line
+            stripped = statement.text.strip()
             if not stripped:
                 continue
             self._parse_metadata_line(stripped)

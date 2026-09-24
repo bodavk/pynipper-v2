@@ -12,6 +12,9 @@ CONSOLE = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules/sys/sys_gl
 CLI = "https://clouddocs.f5.com/cli/tmsh-reference/v15/modules/cli/cli_global-settings.html"
 PASSWORD = "https://clouddocs.f5.com/cli/tmsh-reference/v16/modules/auth/auth_password-policy.html"
 USER = "https://clouddocs.f5.com/cli/tmsh-reference/v16/modules/auth/auth_user.html"
+AUTH_SOURCE = "https://clouddocs.f5.com/cli/tmsh-reference/v16/modules/auth/auth_source.html"
+AUTH_LDAP = "https://clouddocs.f5.com/cli/tmsh-reference/v16/modules/auth/auth_ldap.html"
+AUTH_CERT_LDAP = "https://clouddocs.f5.com/cli/tmsh-reference/v16/modules/auth/auth_cert-ldap.html"
 SYSLOG = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules/sys/sys_syslog.html"
 CLIENT_SSL = "https://clouddocs.f5.com/cli/tmsh-reference/v16/modules/ltm/ltm_profile_client-ssl.html"
 VIRTUAL = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules/ltm/ltm_virtual.html"
@@ -26,7 +29,7 @@ class PluginF5BIGIPChecks(BasePlugin):
             observation=observation, impact=impact,
             exploitability="An attacker who can reach the management service or obtain administrative access may exploit this setting.",
             recommendation=recommendation, severity=severity,
-            evidence=(setting.evidence.text,), references=(reference,),
+            evidence=(setting.evidence,), references=(reference,),
         ))
 
     def analyze(self, parser: BaseDeviceParser) -> None:
@@ -127,9 +130,82 @@ class PluginF5BIGIPChecks(BasePlugin):
                 exploitability="An attacker needs access to the saved configuration or report source.",
                 recommendation="Replace the exposed password and use an export that stores only protected credential material.",
                 severity=Severity.HIGH,
-                evidence=(credential.evidence.text,),
+                evidence=(credential.evidence,),
                 references=(USER,),
             ))
+        active_auth = setting("auth source", "type")
+        if active_auth and active_auth.value in {"radius", "ldap", "tacacs", "cert-ldap"}:
+            profiles = parser.get_remote_auth_profiles(str(active_auth.value))
+            if profiles and all(profile.servers_state == "none" for profile in profiles):
+                self.add_issue(Finding(
+                    rule_id="f5.bigip.auth.active_remote_servers_none",
+                    device=parser.device_type,
+                    title="Active remote authentication has no configured servers",
+                    observation=(
+                        f"The explicit auth source selects {active_auth.value}, while every "
+                        "exported provider object of that type explicitly sets servers none."
+                    ),
+                    impact="Remote administrators may be unable to authenticate through the selected source.",
+                    exploitability="This is an availability and administrative-access risk, not proof of a live login failure.",
+                    recommendation=(
+                        "Configure valid servers for the selected authentication provider and "
+                        "verify the intended emergency local-access policy."
+                    ),
+                    severity=Severity.MEDIUM,
+                    evidence=(active_auth.evidence,) + tuple(
+                        profile.evidence for profile in profiles
+                    ),
+                    references=(AUTH_SOURCE,),
+                ))
+            if (active_auth.value in {"ldap", "cert-ldap"} and profiles
+                    and all(profile.servers_state == "configured"
+                            and profile.ssl_state == "disabled" for profile in profiles)):
+                self.add_issue(Finding(
+                    rule_id="f5.bigip.auth.ldap_ssl_disabled",
+                    device=parser.device_type,
+                    title="Active LDAP authentication explicitly disables protected transport",
+                    observation=(
+                        f"The selected {active_auth.value} authentication source has configured "
+                        "server references, but every exported provider object explicitly sets ssl disabled."
+                    ),
+                    impact="LDAP authentication traffic is not protected by the provider's SSL/TLS setting.",
+                    exploitability="An observer on an unprotected path to an LDAP server may inspect or alter traffic.",
+                    recommendation=(
+                        "Enable verified TLS or StartTLS for the selected LDAP provider, or document "
+                        "a separately protected path and its trust boundary."
+                    ),
+                    severity=Severity.MEDIUM,
+                    evidence=(active_auth.evidence,) + tuple(
+                        profile.evidence for profile in profiles
+                    ),
+                    references=(AUTH_SOURCE, AUTH_CERT_LDAP if active_auth.value == "cert-ldap" else AUTH_LDAP),
+                ))
+            if (active_auth.value in {"ldap", "cert-ldap"} and profiles
+                    and all(profile.servers_state == "configured"
+                            and profile.ssl_state in {"enabled", "start-tls"}
+                            and profile.peer_check_state == "disabled"
+                            for profile in profiles)):
+                self.add_issue(Finding(
+                    rule_id="f5.bigip.auth.ldap_peer_check_disabled",
+                    device=parser.device_type,
+                    title="Active LDAP authentication does not verify the TLS peer",
+                    observation=(
+                        f"The selected {active_auth.value} authentication source uses protected "
+                        "transport, but every exported provider object explicitly sets "
+                        "ssl-check-peer disabled."
+                    ),
+                    impact="The device may accept an untrusted LDAP server certificate.",
+                    exploitability="A network attacker able to impersonate the LDAP endpoint may intercept or alter authentication traffic.",
+                    recommendation=(
+                        "Enable LDAP TLS peer verification and configure the appropriate trusted CA "
+                        "for each selected provider."
+                    ),
+                    severity=Severity.MEDIUM,
+                    evidence=(active_auth.evidence,) + tuple(
+                        profile.evidence for profile in profiles
+                    ),
+                    references=(AUTH_SOURCE, AUTH_CERT_LDAP if active_auth.value == "cert-ldap" else AUTH_LDAP),
+                ))
         remote = setting("sys syslog", "remote-servers")
         if remote and remote.value == "none":
             self._emit(parser, remote, rule_id="f5.bigip.logging.syslog_remote_none",
@@ -149,6 +225,6 @@ class PluginF5BIGIPChecks(BasePlugin):
                 exploitability="A client reaching this virtual server may send plaintext traffic when the profile permits it.",
                 recommendation="Disable allow-non-ssl on the attached Client SSL profile after validating application requirements.",
                 severity=Severity.HIGH,
-                evidence=(virtual.evidence.text, profile.evidence.text),
+                evidence=(virtual.evidence, profile.evidence),
                 references=(VIRTUAL, CLIENT_SSL),
             ))

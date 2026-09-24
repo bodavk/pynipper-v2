@@ -1,4 +1,6 @@
 from abc import ABC, abstractmethod
+import os
+from typing import Dict, List, Optional
 
 from .models import NormalizedConfig
 from src.common.assessment import AssessmentContext
@@ -62,3 +64,33 @@ class BaseDeviceParser(ABC):
         """
 
         return NormalizedConfig.unknown(self.device_type)
+
+    def locate_source_line(self, text: str) -> Optional[int]:
+        """Return the line number of ``text`` if exactly one source line equals it.
+
+        This is a conservative lookup for evidence that a plugin reports as a
+        verbatim configuration line without a parser-owned line number. The
+        comparison ignores surrounding whitespace only. Redacted, summarized
+        or repeated text returns ``None``: the report then shows no line
+        rather than a guessed one. Multi-file inputs return ``None`` unless a
+        parser overrides this method.
+        """
+
+        numbers = self._source_line_index().get(text.strip())
+        if numbers is not None and len(numbers) == 1:
+            return numbers[0]
+        return None
+
+    def _source_line_index(self) -> Dict[str, List[int]]:
+        index = getattr(self, "_located_source_line_index", None)
+        if index is not None:
+            return index
+        index = {}
+        if os.path.isfile(self.config_filepath):
+            with open(self.config_filepath, "r", encoding="utf-8-sig", errors="replace") as source:
+                for number, line in enumerate(source.read().split("\n"), start=1):
+                    stripped = line.strip()
+                    if stripped:
+                        index.setdefault(stripped, []).append(number)
+        self._located_source_line_index = index
+        return index

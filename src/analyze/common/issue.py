@@ -1,7 +1,11 @@
 """Vendor-neutral security finding model."""
 
+from dataclasses import dataclass
 from enum import Enum
-from typing import Iterable, Tuple, Union
+from pathlib import PurePath
+from typing import Iterable, Optional, Tuple, Union
+
+from src.devices.common.models import ConfigEvidence
 
 
 class Severity(str, Enum):
@@ -24,6 +28,43 @@ class Severity(str, Enum):
         raise ValueError(f"Invalid severity {value!r}. Expected one of: {allowed}")
 
 
+@dataclass(frozen=True)
+class EvidenceLocation:
+    """Sanitized evidence text with its source position when the parser knows it.
+
+    ``origin`` records how the line was established: ``parser`` means it was
+    copied from parser-owned ``ConfigEvidence``; ``source-match`` means the
+    evidence text equals exactly one line of the input file (see
+    ``BaseDeviceParser.locate_source_line``). Evidence with neither, such as
+    a statement that a setting is absent, has no line. ``source`` is the file
+    name only, which matters for multi-file inputs such as Check Point exports.
+    """
+
+    text: str
+    line_number: Optional[int] = None
+    source: Optional[str] = None
+    origin: Optional[str] = None
+
+    @classmethod
+    def from_item(cls, item: Union[str, ConfigEvidence]) -> "EvidenceLocation":
+        if isinstance(item, ConfigEvidence):
+            return cls(
+                item.text,
+                item.line_number,
+                PurePath(item.source).name or None,
+                "parser" if item.line_number is not None else None,
+            )
+        return cls(item)
+
+    def to_dict(self) -> dict:
+        return {
+            "text": self.text,
+            "line": self.line_number,
+            "source": self.source,
+            "line_origin": self.origin,
+        }
+
+
 class Finding:
     """A validated finding shared by every device plugin."""
 
@@ -38,7 +79,7 @@ class Finding:
         recommendation: str,
         severity: Union[Severity, str] = Severity.UNKNOWN,
         exploitability: str = "",
-        evidence: Iterable[str] = (),
+        evidence: Iterable[Union[str, ConfigEvidence]] = (),
         references: Iterable[str] = (),
     ):
         required = {
@@ -55,9 +96,14 @@ class Finding:
         if not isinstance(exploitability, str):
             raise TypeError("exploitability must be a string")
 
-        normalized_evidence = tuple(evidence)
-        if any(not isinstance(item, str) or not item.strip() for item in normalized_evidence):
-            raise ValueError("evidence entries must be non-empty strings")
+        # Plugins pass parser ConfigEvidence where available so the report can
+        # cite the source line; plain strings remain valid (no known line).
+        locations = []
+        for item in evidence:
+            text = item.text if isinstance(item, ConfigEvidence) else item
+            if not isinstance(text, str) or not text.strip():
+                raise ValueError("evidence entries must be non-empty strings or ConfigEvidence")
+            locations.append(EvidenceLocation.from_item(item))
         normalized_references = tuple(references)
         if any(
             not isinstance(item, str) or not item.strip()
@@ -73,8 +119,23 @@ class Finding:
         self.recommendation = recommendation.strip()
         self.severity = Severity.parse(severity)
         self.exploitability = exploitability.strip()
-        self.evidence: Tuple[str, ...] = normalized_evidence
+        self.evidence: Tuple[str, ...] = tuple(location.text for location in locations)
+        self.evidence_locations: Tuple[EvidenceLocation, ...] = tuple(locations)
         self.references: Tuple[str, ...] = normalized_references
+
+    def locate_evidence(self, locate_line, source_name: Optional[str]) -> None:
+        """Fill missing line numbers using a conservative exact-line lookup."""
+
+        located = []
+        for location in self.evidence_locations:
+            if location.line_number is None:
+                number = locate_line(location.text)
+                if number is not None:
+                    location = EvidenceLocation(
+                        location.text, number, location.source or source_name, "source-match"
+                    )
+            located.append(location)
+        self.evidence_locations = tuple(located)
 
     @property
     def ease(self) -> str:
@@ -111,6 +172,8 @@ class Finding:
             "ease": self.exploitability,
             "recommendation": self.recommendation,
             "evidence": list(self.evidence),
+            # Additive: the same evidence with source line/file where known.
+            "evidence_locations": [location.to_dict() for location in self.evidence_locations],
             "references": list(self.references),
         }
 
@@ -118,4 +181,4 @@ class Finding:
 # Compatibility name for callers that imported the old generic class.
 Issue = Finding
 
-__all__ = ["Finding", "Issue", "Severity"]
+__all__ = ["EvidenceLocation", "Finding", "Issue", "Severity"]

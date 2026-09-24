@@ -66,7 +66,7 @@ class PluginJunOSChecks(BasePlugin):
                     exploitability="An attacker on the management traffic path may intercept credentials or sessions.",
                     recommendation=f"Delete system services {protocol} and use SSH or HTTPS with source restrictions.",
                     evidence=tuple(
-                        statement.evidence.text
+                        statement.evidence
                         for statement in self._junos(parser).statements
                         if statement.active and protocol in statement.path
                     ),
@@ -115,7 +115,7 @@ class PluginJunOSChecks(BasePlugin):
                             severity=Severity.CRITICAL,
                             exploitability="Any source can reach any destination and protocol within the attached filter scope.",
                             recommendation="Add explicit source, destination, and protocol matches before accepting traffic.",
-                            evidence=tuple(item.text for item in term.evidence),
+                            evidence=tuple(item for item in term.evidence),
                             references=(JUNIPER_FILTER_GUIDE,),
                         )
                     )
@@ -143,7 +143,7 @@ class PluginJunOSChecks(BasePlugin):
                 severity=Severity.HIGH if value == "allow" else Severity.MEDIUM,
                 exploitability="An attacker who compromises an allowed root credential obtains immediate full privilege.",
                 recommendation="Configure 'set system services ssh root-login deny' and use named administrative accounts.",
-                evidence=tuple(item.text for item in evidence) or (f"root-login {value}",),
+                evidence=tuple(item for item in evidence) or (f"root-login {value}",),
                 references=(JUNIPER_SSH_REFERENCE,),
             )
         )
@@ -175,7 +175,7 @@ class PluginJunOSChecks(BasePlugin):
                     severity=Severity.CRITICAL,
                     exploitability="Any source entering the source zone can attempt any application toward any destination in the destination zone allowed by routing and surrounding controls.",
                     recommendation="Replace wildcard address and application matches with explicitly required objects and applications, preserving an ordered terminal deny policy.",
-                    evidence=tuple(item.text for item in policy.evidence),
+                    evidence=tuple(item for item in policy.evidence),
                     references=(JUNIPER_SECURITY_POLICY_GUIDE,),
                 )
             )
@@ -191,7 +191,7 @@ class PluginJunOSChecks(BasePlugin):
             JUNIPER_APPLICATION_GUIDE,
         )
         for policy in self._junos(parser).get_security_policies():
-            evidence = tuple(item.text for item in policy.evidence) or (
+            evidence = tuple(item for item in policy.evidence) or (
                 f"security policy {policy.name}",
             )
             if (
@@ -254,7 +254,7 @@ class PluginJunOSChecks(BasePlugin):
                     severity=Severity.LOW if same_action else Severity.HIGH,
                     exploitability="A conflicting shadowed policy can give reviewers a false impression of enforced zone access control.",
                     recommendation="Remove or reorder the policy after validating address-book, application, logging, tunnel and operational intent.",
-                    evidence=evidence + tuple(item.text for item in earlier.evidence),
+                    evidence=evidence + tuple(item for item in earlier.evidence),
                     references=references,
                 ))
                 break
@@ -269,7 +269,7 @@ class PluginJunOSChecks(BasePlugin):
         for vpn in junos.get_ipsec_vpns():
             if not vpn.active:
                 continue
-            evidence = tuple(item.text for item in vpn.evidence) or (
+            evidence = tuple(item for item in vpn.evidence) or (
                 f"security ipsec vpn {vpn.name}",
             )
             if vpn.resolution_state == "unresolved":

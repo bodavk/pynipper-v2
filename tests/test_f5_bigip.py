@@ -105,6 +105,95 @@ auth password-policy { max-login-failures 6 minimum-length bogus }
     assert parser.get_setting("auth password-policy", "minimum-length").resolution_state == "unknown"
 
 
+def test_active_remote_auth_with_explicitly_empty_provider_servers(tmp_path):
+    parser = _parse(tmp_path, """#TMSH-VERSION: 16.1.5
+auth source { type radius fallback false }
+auth radius /Common/system-auth { servers none }
+""")
+    assert _ids(parser) == ["f5.bigip.auth.active_remote_servers_none"]
+    assert parser.get_remote_auth_profiles("radius")[0].servers_state == "none"
+
+
+@pytest.mark.parametrize("content", [
+    "auth source { type local }\nauth radius /Common/unused { servers none }\n",
+    "auth source { type radius }\n",
+    "auth source { type radius }\nauth radius /Common/unknown { }\n",
+    "auth source { type radius }\nauth radius /Common/live { servers { /Common/one } }\n",
+    "auth source { type radius }\nauth radius /Common/empty { servers none }\n"
+    "auth radius /Common/live { servers { /Common/one } }\n",
+])
+def test_remote_auth_missing_or_usable_server_state_is_not_inferred(tmp_path, content):
+    parser = _parse(tmp_path, content)
+    assert "f5.bigip.auth.active_remote_servers_none" not in _ids(parser)
+
+
+def test_active_remote_auth_last_server_setting_wins(tmp_path):
+    parser = _parse(tmp_path, """auth source { type ldap }
+auth ldap /Common/system-auth { servers none }
+auth ldap /Common/system-auth { servers { 192.0.2.10 } }
+""")
+    assert "f5.bigip.auth.active_remote_servers_none" not in _ids(parser)
+    parser = _parse(tmp_path, """auth source { type tacacs }
+auth tacacs /Common/system-auth { servers { 192.0.2.10 } }
+auth tacacs /Common/system-auth { servers none }
+""")
+    assert "f5.bigip.auth.active_remote_servers_none" in _ids(parser)
+
+
+def test_remote_auth_provider_secret_is_not_retained_in_evidence(tmp_path):
+    parser = _parse(tmp_path, """auth source { type tacacs }
+auth tacacs /Common/system-auth { secret PrivateSyntheticKey servers none }
+""")
+    assert _ids(parser) == ["f5.bigip.auth.active_remote_servers_none"]
+    assert "PrivateSyntheticKey" not in str(parser.get_native_config())
+    assert "PrivateSyntheticKey" not in str(process_bigip_conf(parser))
+
+
+@pytest.mark.parametrize("provider", ["ldap", "cert-ldap"])
+def test_active_ldap_provider_with_explicit_ssl_disablement(tmp_path, provider):
+    parser = _parse(tmp_path, f"""auth source {{ type {provider} }}
+auth {provider} /Common/system-auth {{ servers {{ ldap.example.test }} ssl disabled bind-pw SyntheticBindPassword }}
+""")
+    assert _ids(parser) == ["f5.bigip.auth.ldap_ssl_disabled"]
+    assert "SyntheticBindPassword" not in str(parser.get_native_config())
+    assert "SyntheticBindPassword" not in str(process_bigip_conf(parser))
+
+
+@pytest.mark.parametrize("content", [
+    "auth source { type local }\nauth ldap /Common/unused { servers { ldap.example.test } ssl disabled }",
+    "auth source { type ldap }\nauth ldap /Common/unknown { servers { ldap.example.test } }",
+    "auth source { type ldap }\nauth ldap /Common/secure { servers { ldap.example.test } ssl enabled }",
+    "auth source { type ldap }\nauth ldap /Common/secure { servers { ldap.example.test } ssl start-tls }",
+    "auth source { type ldap }\nauth ldap /Common/empty { servers none ssl disabled }",
+    "auth source { type ldap }\nauth ldap /Common/weak { servers { ldap.example.test } ssl disabled }\n"
+    "auth ldap /Common/secure { servers { ldap2.example.test } ssl enabled }",
+])
+def test_ldap_transport_qualification_avoids_unknown_or_alternative_profiles(tmp_path, content):
+    parser = _parse(tmp_path, content)
+    assert "f5.bigip.auth.ldap_ssl_disabled" not in _ids(parser)
+
+
+@pytest.mark.parametrize("transport", ["enabled", "start-tls"])
+def test_active_ldap_tls_peer_check_explicitly_disabled(tmp_path, transport):
+    parser = _parse(tmp_path, f"""auth source {{ type ldap }}
+auth ldap /Common/system-auth {{ servers {{ ldap.example.test }} ssl {transport} ssl-check-peer disabled }}
+""")
+    assert _ids(parser) == ["f5.bigip.auth.ldap_peer_check_disabled"]
+
+
+@pytest.mark.parametrize("content", [
+    "auth source { type local }\nauth ldap /Common/unused { servers { ldap.example.test } ssl enabled ssl-check-peer disabled }",
+    "auth source { type ldap }\nauth ldap /Common/unknown { servers { ldap.example.test } ssl enabled }",
+    "auth source { type ldap }\nauth ldap /Common/verified { servers { ldap.example.test } ssl enabled ssl-check-peer enabled }",
+    "auth source { type ldap }\nauth ldap /Common/no-tls { servers { ldap.example.test } ssl disabled ssl-check-peer disabled }",
+    "auth source { type ldap }\nauth ldap /Common/weak { servers { ldap.example.test } ssl enabled ssl-check-peer disabled }\n"
+    "auth ldap /Common/verified { servers { ldap2.example.test } ssl enabled ssl-check-peer enabled }",
+])
+def test_ldap_peer_check_requires_only_active_verifiably_unchecked_providers(tmp_path, content):
+    parser = _parse(tmp_path, content)
+    assert "f5.bigip.auth.ldap_peer_check_disabled" not in _ids(parser)
+
+
 @pytest.mark.parametrize("output_type", ["JSON", "HTML"])
 def test_public_password_policy_report_is_secret_free(tmp_path, output_type):
     source = tmp_path / "device.scf"

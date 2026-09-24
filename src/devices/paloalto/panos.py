@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import ipaddress
 import re
 import xml.etree.ElementTree as ET
+from xml.parsers import expat
 from typing import Any, Iterable
 
 from src.common.certificates import (
@@ -68,6 +69,8 @@ class PanosZoneProtection:
     profile: str
     resolution_state: str
     syn_flood_state: str
+    disabled_other_floods: tuple[str, ...]
+    allowed_scans: tuple[str, ...]
     dos_alternative_possible: bool
     evidence: tuple[ConfigEvidence, ...]
 
@@ -330,7 +333,7 @@ class PaloAltoPANOSParser(BaseDeviceParser):
 
     def __init__(self, config_filepath: str):
         super().__init__(config_filepath)
-        self.tree = ET.parse(config_filepath)
+        self.tree, self._element_lines = self._parse_with_line_numbers(config_filepath)
         self.root = self.tree.getroot()
         for element in self.root.iter():
             element.tag = element.tag.rsplit("}", 1)[-1]
@@ -350,8 +353,47 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                 "Panorama device-group/template inheritance is present and is not resolved by an individual-file audit"
             )
 
-    def _evidence(self, text: str) -> ConfigEvidence:
-        return ConfigEvidence(text=text, source=self.config_filepath)
+    @staticmethod
+    def _parse_with_line_numbers(config_filepath: str) -> tuple[ET.ElementTree, dict]:
+        """Build the ElementTree and record each element's start line.
+
+        ElementTree does not keep source positions, so expat drives a normal
+        ``TreeBuilder``. Namespaced names use ElementTree's ``{uri}tag`` form;
+        like ``ET.parse``, external entities are not resolved.
+        """
+
+        builder = ET.TreeBuilder()
+        parser = expat.ParserCreate(namespace_separator="}")
+        lines: dict = {}
+
+        def qualified(name: str) -> str:
+            return "{" + name if "}" in name else name
+
+        def start(tag, attributes):
+            element = builder.start(
+                qualified(tag), {qualified(key): value for key, value in attributes.items()}
+            )
+            lines[element] = parser.CurrentLineNumber
+
+        parser.StartElementHandler = start
+        parser.EndElementHandler = lambda tag: builder.end(qualified(tag))
+        parser.CharacterDataHandler = builder.data
+        parser.buffer_text = True
+        try:
+            with open(config_filepath, "rb") as source:
+                parser.ParseFile(source)
+        except expat.ExpatError as error:
+            raise ET.ParseError(str(error)) from error
+        return ET.ElementTree(builder.close()), lines
+
+    def _evidence(self, text: str, node: ET.Element | None = None) -> ConfigEvidence:
+        """Evidence for ``text``, citing the start line of ``node`` when given."""
+
+        return ConfigEvidence(
+            text=text,
+            source=self.config_filepath,
+            line_number=self._element_lines.get(node) if node is not None else None,
+        )
 
     @staticmethod
     def _text(node: ET.Element | None, default: str = "") -> str:
@@ -591,7 +633,7 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                 mfa_state,
                 auth_evidence,
             ) = self._resolve_authentication_reference(auth_profile)
-            evidence = [self._evidence(f"mgt-config user {username}")]
+            evidence = [self._evidence(f"mgt-config user {username}", entry)]
             evidence.extend(auth_evidence)
             policies.append(
                 PanosAdministratorPolicy(
@@ -660,7 +702,7 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                         scope=scope,
                         protocols=tuple(protocol for protocol in protocols if self._yes(entry, protocol)),
                         permitted_sources=permitted,
-                        evidence=(self._evidence(f"{scope}: interface-management-profile {name}"),),
+                        evidence=(self._evidence(f"{scope}: interface-management-profile {name}", entry),),
                     )
                 )
         return profiles
@@ -717,10 +759,24 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                     if profile is None:
                         profile = shared_profiles.get(profile_name)
                     syn_state = "unknown"
+                    disabled_other: tuple[str, ...] = ()
+                    allowed_scans: tuple[str, ...] = ()
                     if profile is not None:
                         explicit = self._text(profile.find("./flood/tcp-syn/enable")).casefold()
                         if explicit in {"yes", "no"}:
                             syn_state = "enabled" if explicit == "yes" else "disabled"
+                        disabled_other = tuple(
+                            flood_type for flood_type in ("udp", "icmp")
+                            if self._text(profile.find(
+                                f"./flood/{flood_type}/enable"
+                            )).casefold() == "no"
+                        )
+                        allowed_scans = tuple(
+                            scan.get("name") or "unnamed"
+                            for scan in profile.findall("./scan/entry")
+                            if scan.find("./action/allow") is not None
+                            or self._text(scan.find("action")).casefold() == "allow"
+                        )
                     result.append(PanosZoneProtection(
                         device_scope=device_scope,
                         vsys=vsys_name,
@@ -731,14 +787,28 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                             "unbound" if not profile_name else "unresolved"
                         ),
                         syn_flood_state=syn_state,
+                        disabled_other_floods=disabled_other,
+                        allowed_scans=allowed_scans,
                         dos_alternative_possible=dos_alternative,
                         evidence=(self._evidence(
                             f"{device_scope}/{vsys_name}: zone {zone_name} interfaces "
                             f"{', '.join(interfaces) or 'unspecified'}; zone-protection-profile "
-                            f"{profile_name or 'unbound'}"
+                            f"{profile_name or 'unbound'}",
+                            zone,
                         ),) + ((self._evidence(
-                            f"zone-protection-profile {profile_name}: flood tcp-syn enable no"
-                        ),) if syn_state == "disabled" else ()),
+                            f"zone-protection-profile {profile_name}: flood tcp-syn enable no",
+                            profile,
+                        ),) if syn_state == "disabled" else ()) + tuple(
+                            self._evidence(
+                                f"zone-protection-profile {profile_name}: flood {flood_type} enable no",
+                                profile,
+                            ) for flood_type in disabled_other
+                        ) + tuple(
+                            self._evidence(
+                                f"zone-protection-profile {profile_name}: scan {scan_name} action allow",
+                                profile,
+                            ) for scan_name in allowed_scans
+                        ),
                     ))
         return tuple(result)
 
@@ -786,7 +856,7 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                         management_profile=profile,
                         enabled=not disabled,
                         addresses=addresses,
-                        evidence=(self._evidence(f"{vsys_scope}: interface {name}"),),
+                        evidence=(self._evidence(f"{vsys_scope}: interface {name}", entry),),
                     )
                 )
         return interfaces
@@ -829,14 +899,14 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                         break
                 result.append(PanosAddressObject(
                     name, device_scope, scope, kind, value, (), False,
-                    (self._evidence(f"{scope}: address object {name}"),),
+                    (self._evidence(f"{scope}: address object {name}", entry),),
                 ))
             for entry in parent.findall("./address-group/entry"):
                 name = entry.get("name") or "<unnamed-address-group>"
                 result.append(PanosAddressObject(
                     name, device_scope, scope, "address-group", "",
                     self._members(entry, "static"), entry.find("dynamic") is not None,
-                    (self._evidence(f"{scope}: address group {name}"),),
+                    (self._evidence(f"{scope}: address group {name}", entry),),
                 ))
 
         shared = self.root.find("./shared")
@@ -867,14 +937,14 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                             break
                 result.append(PanosServiceObject(
                     name, device_scope, scope, protocol, destination_port,
-                    source_port, (), (self._evidence(f"{scope}: service object {name}"),),
+                    source_port, (), (self._evidence(f"{scope}: service object {name}", entry),),
                 ))
             for entry in parent.findall("./service-group/entry"):
                 name = entry.get("name") or "<unnamed-service-group>"
                 result.append(PanosServiceObject(
                     name, device_scope, scope, "", "", "",
                     self._members(entry, "members"),
-                    (self._evidence(f"{scope}: service group {name}"),),
+                    (self._evidence(f"{scope}: service group {name}", entry),),
                 ))
 
         shared = self.root.find("./shared")
@@ -1102,7 +1172,8 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                             profile_group=profile_group,
                             individual_profiles=tuple(individual_profiles),
                             evidence=(self._evidence(
-                                f"{device_scope}/{scope}/{rulebase_name}: security rule {position} {name}"
+                                f"{device_scope}/{scope}/{rulebase_name}: security rule {position} {name}",
+                                entry,
                             ),),
                         )
                     )
@@ -1211,7 +1282,8 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                 broad_match=broad_match,
                 evidence=(self._evidence(
                     f"{scope}: {profile_type} profile {profile_name} selector {name}; "
-                    f"severity {', '.join(severities)}; action {action or 'unresolved'}"
+                    f"severity {', '.join(severities)}; action {action or 'unresolved'}",
+                    rule,
                 ),),
             ))
         return tuple(result)
@@ -1253,7 +1325,7 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                     resolution_state="resolved",
                     content_state=content_state,
                     actions=actions,
-                    evidence=(self._evidence(f"{scope}: {profile_type} profile {name}"),),
+                    evidence=(self._evidence(f"{scope}: {profile_type} profile {name}", entry),),
                     threat_selectors=selectors,
                 )
             )
@@ -1289,7 +1361,7 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                     name=name,
                     scope=scope,
                     members=tuple(members),
-                    evidence=(self._evidence(f"{scope}: security profile group {name}"),),
+                    evidence=(self._evidence(f"{scope}: security profile group {name}", entry),),
                 )
             )
 
@@ -1416,7 +1488,7 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                             name=name,
                             scope=scope,
                             syslog_servers=servers,
-                            evidence=(self._evidence(f"{scope}: log-forwarding profile {name}"),),
+                            evidence=(self._evidence(f"{scope}: log-forwarding profile {name}", entry),),
                         )
                     )
         return profiles
@@ -1453,7 +1525,7 @@ class PaloAltoPANOSParser(BaseDeviceParser):
             minimum_special=number("minimum-special-characters"),
             history_count=history_count,
             blocks_username=yes_no("block-username-inclusion"),
-            evidence=(self._evidence("mgt-config password-complexity"),),
+            evidence=(self._evidence("mgt-config password-complexity", node),),
         )
 
     def get_administrative_settings(self) -> tuple[PanosAdministrativeSettings, ...]:
@@ -1537,7 +1609,7 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                     max_session_minutes=session_time,
                     max_session_time_state=time_state,
                     evidence=(
-                        self._evidence(f"{scope}: administrative management settings"),
+                        self._evidence(f"{scope}: administrative management settings", management),
                     ) + authentication_evidence,
                 )
             )
@@ -1596,7 +1668,7 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                 )
             else:
                 resolution = "known"
-            evidence = [self._evidence(f"{scope}: management SSH profile {selected or 'absent'}")]
+            evidence = [self._evidence(f"{scope}: management SSH profile {selected or 'absent'}", ssh)]
             policies.append(
                 PanosSSHManagementPolicy(
                     device_scope=scope,
@@ -1625,7 +1697,7 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                     certificate=self._text(entry.find("certificate")),
                     minimum_version=self._text(entry.find("./protocol-settings/min-version")).casefold(),
                     maximum_version=self._text(entry.find("./protocol-settings/max-version")).casefold(),
-                    evidence=(self._evidence(f"shared: ssl-tls-service-profile {name}"),),
+                    evidence=(self._evidence(f"shared: ssl-tls-service-profile {name}", entry),),
                 )
             )
         for device in self._device_entries():
@@ -1640,7 +1712,7 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                             certificate=self._text(entry.find("certificate")),
                             minimum_version=self._text(entry.find("./protocol-settings/min-version")).casefold(),
                             maximum_version=self._text(entry.find("./protocol-settings/max-version")).casefold(),
-                            evidence=(self._evidence(f"{scope}: ssl-tls-service-profile {name}"),),
+                            evidence=(self._evidence(f"{scope}: ssl-tls-service-profile {name}", entry),),
                         )
                     )
         return profiles
@@ -1658,7 +1730,7 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                     profile=self._text(system.find("ssl-tls-service-profile")),
                     tls_mode=self._text(system.find("management-tls-mode")).casefold(),
                     certificate=self._text(system.find("management-tls-certificate")),
-                    evidence=(self._evidence(f"{scope}: deviceconfig system management TLS"),),
+                    evidence=(self._evidence(f"{scope}: deviceconfig system management TLS", system),),
                 )
             )
         return settings
@@ -1699,7 +1771,7 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                     public_material_state=state,
                     metadata=metadata,
                     private_key_present=bool(self._text(entry.find("private-key"))),
-                    evidence=(self._evidence(f"{scope}: certificate object {name}"),),
+                    evidence=(self._evidence(f"{scope}: certificate object {name}", entry),),
                 )
             )
         return objects
@@ -1798,7 +1870,7 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                         content_type=content_type,
                         recurrence=recurrence,
                         action=action,
-                        evidence=(self._evidence(f"{scope}: update-schedule {content_type} {recurrence or 'unresolved'} {action or 'no-action'}"),),
+                        evidence=(self._evidence(f"{scope}: update-schedule {content_type} {recurrence or 'unresolved'} {action or 'no-action'}", recurring),),
                     )
                 )
         return schedules
@@ -1876,7 +1948,7 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                         zone="management",
                         scope=scope,
                         permitted_sources=permitted_sources,
-                        evidence=(self._evidence(f"{scope}: MGT disable-{protocol} no"),),
+                        evidence=(self._evidence(f"{scope}: MGT disable-{protocol} no", service),),
                     )
                 )
         return services
@@ -1948,7 +2020,7 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                     key_id=key_id,
                     algorithm=algorithm,
                     key_material_state=key_material_state,
-                    evidence=(self._evidence(summary),),
+                    evidence=(self._evidence(summary, server),),
                 ))
         return associations
 
@@ -2003,7 +2075,8 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                     evidence=(self._evidence(
                         f"{scope}: SNMPv3 user {name}; auth {authentication or 'unknown'} "
                         f"<key {authentication_key_state}>; priv {privacy or 'unknown'} "
-                        f"<key {privacy_key_state}>"
+                        f"<key {privacy_key_state}>",
+                        user,
                     ),),
                 ))
         return users

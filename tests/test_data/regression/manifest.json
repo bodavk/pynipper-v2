@@ -5,6 +5,7 @@
       "device": "F5_BIGIP",
       "input": "f5_bigip/vulnerable.scf",
       "expected_rule_ids": [
+        "f5.bigip.auth.active_remote_servers_none",
         "f5.bigip.cli.audit_disabled",
         "f5.bigip.cli.idle_timeout_disabled",
         "f5.bigip.console.idle_timeout_disabled",
@@ -18,7 +19,7 @@
         "f5.bigip.ssh.idle_timeout_disabled",
         "f5.bigip.ssh.unrestricted_sources"
       ],
-      "expected_finding_count": 12
+      "expected_finding_count": 13
     },
     {
       "name": "f5-bigip-secure",
@@ -212,6 +213,17 @@
       "expected_finding_count": 0
     },
     {
+      "name": "fortios-multiline-values",
+      "device": "FORTIOS",
+      "input": "fortios/multiline_values.conf",
+      "assessment_policy": {
+        "policy_version": "regression-v1",
+        "protected_aaa_profiles": ["root:LEGACY-PROTECTED"]
+      },
+      "expected_rule_ids": [],
+      "expected_finding_count": 0
+    },
+    {
       "name": "junos-vulnerable",
       "device": "JUNOS",
       "input": "junos/vulnerable.conf",
@@ -240,11 +252,14 @@
         "juniper.junos.routing.bgp.outbound_policy",
         "juniper.junos.routing.bgp.prefix_limit",
         "juniper.junos.routing.ospf.authentication",
+        "juniper.junos.screen.icmp_flood_inactive",
+        "juniper.junos.screen.syn_flood_inactive",
+        "juniper.junos.screen.udp_flood_alarm_only",
         "juniper.junos.snmp.legacy_community",
         "juniper.junos.ssh.root_login",
         "juniper.junos.ssh.weak_ciphers"
       ],
-      "expected_finding_count": 23
+      "expected_finding_count": 26
     },
     {
       "name": "junos-secure",

@@ -62,7 +62,7 @@ class PluginHPChecks(BasePlugin):
 
     @staticmethod
     def _evidence(feature: HPFeature) -> tuple[str, ...]:
-        return tuple(item.text for item in feature.evidence)
+        return tuple(item for item in feature.evidence)
 
     def check_management(self, parser: BaseDeviceParser) -> None:
         hp = self._hp(parser)
@@ -110,7 +110,7 @@ class PluginHPChecks(BasePlugin):
                     recommendation="Restrict management access with explicit authorized IP managers and network controls.",
                     severity=Severity.MEDIUM,
                     evidence=tuple(
-                        evidence.text
+                        evidence
                         for name in exposed_secure
                         for evidence in states[name].evidence
                     ),
@@ -122,7 +122,7 @@ class PluginHPChecks(BasePlugin):
         hp = self._hp(parser)
         communities = hp.get_snmp_communities()
         for community in communities:
-            evidence = tuple(item.text for item in community.evidence)
+            evidence = tuple(item for item in community.evidence)
             if community.name.casefold() in {"public", "private"}:
                 self.add_issue(
                     Finding(
@@ -172,7 +172,7 @@ class PluginHPChecks(BasePlugin):
                         exploitability="A network-positioned attacker can capture or guess a community and query the device.",
                         recommendation="Configure an SNMPv3 user with authentication and privacy, then disable SNMPv1/v2c access.",
                         severity=Severity.MEDIUM,
-                        evidence=tuple(item.text for community in communities for item in community.evidence),
+                        evidence=tuple(item for community in communities for item in community.evidence),
                         references=(AOS_SWITCH_SECURITY_GUIDE,),
                     )
                 )
@@ -180,7 +180,7 @@ class PluginHPChecks(BasePlugin):
         if hp.get_snmpv3_agent_state() is False:
             return
         for user in hp.get_snmpv3_users():
-            evidence = tuple(item.text for item in user.evidence)
+            evidence = tuple(item for item in user.evidence)
             missing = []
             if user.authentication == "none":
                 missing.append("authentication")
@@ -255,7 +255,7 @@ class PluginHPChecks(BasePlugin):
         summary = "; ".join(f"{kind}: {', '.join(values)}" for kind, values in weak.items())
         evidence = list(self._evidence(ssh))
         for kind in weak:
-            evidence.extend(item.text for item in algorithms[f"{kind}_state"].evidence)
+            evidence.extend(item for item in algorithms[f"{kind}_state"].evidence)
         self.add_issue(
             Finding(
                 rule_id="hp.procurve.ssh.weak_algorithms",
@@ -289,7 +289,7 @@ class PluginHPChecks(BasePlugin):
                     recommendation="Configure RADIUS or TACACS+ for management login with a documented emergency local fallback.",
                     severity=Severity.MEDIUM,
                     evidence=tuple(
-                        evidence.text
+                        evidence
                         for feature in states.values()
                         for evidence in feature.evidence
                     ),
@@ -324,7 +324,7 @@ class PluginHPChecks(BasePlugin):
                 exploitability="A user who reaches a locally authenticated management channel may obtain full configuration privileges.",
                 recommendation="Configure a unique manager credential and retain local fallback only as a controlled emergency-access path.",
                 severity=Severity.HIGH,
-                evidence=tuple(item.text for item in manager.evidence) + tuple(
+                evidence=tuple(item for item in manager.evidence) + tuple(
                     item.text
                     for policy in policies
                     if policy.applicable is True and "local" in {policy.primary, policy.secondary}
@@ -348,7 +348,7 @@ class PluginHPChecks(BasePlugin):
                 exploitability="A user who can reach the affected management service may be admitted when that method is selected.",
                 recommendation="Replace 'authorized' with a validated primary method and either a controlled local fallback or fail-closed 'none'.",
                 severity=Severity.CRITICAL if policy.access_level == "enable" else Severity.HIGH,
-                evidence=tuple(item.text for item in policy.evidence),
+                evidence=tuple(item for item in policy.evidence),
                 references=(AOS_SWITCH_AUTHENTICATION_GUIDE,),
             ))
 
@@ -363,7 +363,7 @@ class PluginHPChecks(BasePlugin):
                 exploitability="This is primarily a governance and legal-notice control rather than a direct technical exploit.",
                 recommendation="Configure an approved message with 'banner motd' and validate its presentation on each enabled management channel.",
                 severity=Severity.LOW,
-                evidence=tuple(item.text for item in banner.evidence) or ("banner motd absent from supported AOS-S export",),
+                evidence=tuple(item for item in banner.evidence) or ("banner motd absent from supported AOS-S export",),
                 references=(AOS_SWITCH_BASIC_OPERATION_GUIDE,),
             ))
 
@@ -403,7 +403,7 @@ class PluginHPChecks(BasePlugin):
                 exploitability="A person or process with access to an abandoned management session can inherit its privileges.",
                 recommendation=f"Set a timeout of at most 600 seconds (for example, '{command}').",
                 severity=Severity.MEDIUM,
-                evidence=tuple(item.text for item in session.evidence),
+                evidence=tuple(item for item in session.evidence),
                 references=(AOS_SWITCH_BASIC_OPERATION_GUIDE,),
             ))
 
@@ -473,7 +473,7 @@ class PluginHPChecks(BasePlugin):
         for port in ports:
             if not port.active or port.role != "access-edge":
                 continue
-            evidence = tuple(item.text for item in port.evidence) + (
+            evidence = tuple(item for item in port.evidence) + (
                 f"assessment policy: port {port.port} role access-edge",
             )
             if port.tagged:
@@ -551,7 +551,7 @@ class PluginHPChecks(BasePlugin):
                         "Configure at least one protected remote syslog destination."
                     ),
                     severity=Severity.MEDIUM,
-                    evidence=(tuple(item.text for item in logging.control_evidence)
+                    evidence=(tuple(item for item in logging.control_evidence)
                               if logging.destinations and logging.destination_enabled is False
                               else ("remote logging destination absent",)),
                     references=(AOS_SWITCH_SECURITY_GUIDE,),
@@ -568,8 +568,8 @@ class PluginHPChecks(BasePlugin):
                     exploitability="An attacker with device access may benefit from missing centrally retained events.",
                     recommendation="Enable Event Log forwarding with 'debug event' and verify the remote logging destination.",
                     severity=Severity.MEDIUM,
-                    evidence=tuple(item.text for item in logging.event_evidence)
-                    + tuple(item.text for destination in destinations for item in destination.evidence),
+                    evidence=tuple(item for item in logging.event_evidence)
+                    + tuple(item for destination in destinations for item in destination.evidence),
                     references=(AOS_SWITCH_DEBUG_GUIDE,),
                 ))
             elif logging.severity_state == "explicit" and logging.severity == "major":
@@ -582,8 +582,8 @@ class PluginHPChecks(BasePlugin):
                     exploitability="A fault or hostile action recorded at error severity may not reach the remote collector.",
                     recommendation="Set remote Event Log severity to 'error' or a more inclusive approved level.",
                     severity=Severity.MEDIUM,
-                    evidence=tuple(item.text for item in logging.severity_evidence)
-                    + tuple(item.text for destination in destinations for item in destination.evidence),
+                    evidence=tuple(item for item in logging.severity_evidence)
+                    + tuple(item for destination in destinations for item in destination.evidence),
                     references=(AOS_SWITCH_LOGGING_GUIDE,),
                 ))
         associations = hp.get_sntp_associations()
@@ -615,7 +615,7 @@ class PluginHPChecks(BasePlugin):
                             exploitability="A network-positioned attacker may spoof SNTP responses if routing and filtering permit it.",
                             recommendation="Enable SNTP authentication and associate a configured trusted key with every unicast server.",
                             severity=Severity.MEDIUM,
-                            evidence=tuple(item.text for item in association.evidence),
+                            evidence=tuple(item for item in association.evidence),
                             references=(AOS_SWITCH_SNTP_GUIDE,),
                         )
                     )
@@ -630,7 +630,7 @@ class PluginHPChecks(BasePlugin):
                             exploitability="Authentication failure can cause loss of synchronization or fallback to an unintended time source.",
                             recommendation="Define the referenced MD5 key with secret material, mark it trusted, and retain its per-server binding.",
                             severity=Severity.MEDIUM,
-                            evidence=tuple(item.text for item in association.evidence),
+                            evidence=tuple(item for item in association.evidence),
                             references=(AOS_SWITCH_SNTP_GUIDE,),
                         )
                     )

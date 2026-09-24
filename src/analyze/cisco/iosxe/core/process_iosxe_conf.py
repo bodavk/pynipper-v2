@@ -5,6 +5,7 @@ from src.analyze.cisco.ios.plugins.http_plugin import PluginHTTP
 from src.analyze.cisco.ios.plugins.ssh_plugin import PluginSSH
 from src.analyze.cisco.ios.plugins.baseline_plugin import PluginIOSBaseline
 from src.devices.common.base_parser import BaseDeviceParser
+from src.analyze.common.evidence_lines import attach_source_lines
 from ..plugins.iosxe_checks_plugin import PluginIOSXEChecks
 
 
@@ -28,7 +29,7 @@ def process_iosxe_conf(parser: BaseDeviceParser) -> dict:
         plugin = plugin_class()
         plugin.analyze(parser)
         findings.extend(plugin.get_issues())
-    return _generate_section(parser.assessment_context.filter_findings(_deduplicate(findings)), {}, 0)
+    return _generate_section(parser.assessment_context.filter_findings(attach_source_lines(parser, _deduplicate(findings))), {}, 0)
 
 
 def _generate_section(issues: list, issue_dict: dict, index: int) -> dict:

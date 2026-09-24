@@ -11,6 +11,7 @@ import shlex
 from typing import Any
 
 from src.devices.common.base_parser import BaseDeviceParser
+from src.devices.common.source_lines import group_double_quoted_lines, single_line_evidence
 from src.devices.common.policy_semantics import (
     AddressInterval,
     NetworkSemantics,
@@ -190,16 +191,31 @@ class SonicOSParser(BaseDeviceParser):
         super().__init__(config_filepath)
         source_bytes = Path(config_filepath).read_bytes()
         self._source_digest = hashlib.sha256(source_bytes).digest()
+        # Quoted values (for example banner text) may span several physical
+        # lines; group them so their body is not read as E-CLI commands.
+        grouping = group_double_quoted_lines(
+            source_bytes.decode("utf-8-sig").splitlines(), comment_prefixes=("#", "//")
+        )
+        self.diagnostics: list[str] = []
+        if grouping.unterminated_line is not None:
+            self.diagnostics.append(
+                f"line {grouping.unterminated_line}: quoted value is not closed before end of file"
+            )
+        self._statement_end_lines = {
+            statement.start_line: statement.end_line
+            for statement in grouping.lines
+            if statement.is_multiline
+        }
         self.commands = tuple(
             SonicCommand(
-                text=line.strip(),
-                line_number=number,
-                indent=len(line) - len(line.lstrip()),
+                text=statement.text.strip(),
+                line_number=statement.start_line,
+                indent=len(statement.text) - len(statement.text.lstrip()),
             )
-            for number, line in enumerate(source_bytes.decode("utf-8-sig").splitlines(), start=1)
-            if line.strip()
-            and not line.strip().startswith(("#", "//"))
-            and line.strip() not in {"configure", "commit", "exit"}
+            for statement in grouping.lines
+            if statement.text.strip()
+            and not statement.text.strip().startswith(("#", "//"))
+            and statement.text.strip() not in {"configure", "commit", "exit"}
         )
         self.config = [command.text for command in self.commands]
         self._policy_object_cache: dict[str, dict] | None = None
@@ -232,6 +248,7 @@ class SonicOSParser(BaseDeviceParser):
             ):
                 keep += 1
             text = " ".join(words[:keep] + ["<redacted>"])
+        text = single_line_evidence(text, self._statement_end_lines.get(command.line_number))
         return ConfigEvidence(text, self.config_filepath, command.line_number)
 
     @staticmethod

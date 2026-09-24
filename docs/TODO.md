@@ -4,6 +4,12 @@ Reconciled on 2026-09-22. The prioritized, source-backed implementation backlog 
 
 An item is not permission to turn absent or incomplete configuration evidence into a finding: first verify the vendor grammar, applicable release, authoritative control source, and representative sanitized fixtures. Follow [Extending pynipper-v2](EXTENDING.md) for implementation and validation requirements.
 
+## Priority: practical-testing defects
+
+- [x] PT-001 to PT-004 ([details](agent_notes/PRACTICAL_TESTING_TASKS.md)): MarkupSafe pin, FortiOS and cross-vendor multi-line value parsing, and evidence line numbers.
+- [ ] PT-005 to PT-007: report readability, layered explanations and related-control hints.
+- [ ] PT-008 (deferred): dependency modernisation.
+
 ## Priority: report secret visibility
 
 - [ ] Complete opt-in report-secret visibility across supported families. The CLI now provides `--show-secrets` for parser-qualified credential lines on IOS/IOS-XE/ASA, FortiOS, Junos, ScreenOS, SonicOS 7, AOS-S, EOS, and F5 TMOS; default findings remain masked, unsupported families fail explicitly, and sensitive output requires a new path. SonicOS coverage is limited to explicit built-in/local administrator passwords. Extend parser-owned mappings to remaining families and additional secret types only with precise effective-state and redaction tests. Do not imply hashes can be reversed or hidden values recovered; review Windows ACL handling and output containment before declaring this fully complete.
