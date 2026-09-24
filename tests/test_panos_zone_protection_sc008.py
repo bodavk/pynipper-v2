@@ -10,13 +10,14 @@ OTHER_RULE_ID = "paloalto.panos.zone.other_flood_disabled"
 SCAN_RULE_ID = "paloalto.panos.zone.scan_allow"
 
 
-def _scan(tmp_path, *, syn="no", udp=None, icmp=None, attached=True,
+def _scan(tmp_path, *, syn="no", udp=None, icmp=None, icmpv6=None, other_ip=None, attached=True,
           dos=False, dos_disabled=False,
           role="external", scan_action=None,
           panorama=False, extra_vsys=""):
     other_floods = "".join(
         f"<{name}><enable>{value}</enable></{name}>"
-        for name, value in (("udp", udp), ("icmp", icmp)) if value is not None
+        for name, value in (("udp", udp), ("icmp", icmp), ("icmpv6", icmpv6), ("other-ip", other_ip))
+        if value is not None
     )
     scan = (
         f'<scan><entry name="tcp-port-scan"><action><{scan_action}/></action>'
@@ -135,3 +136,17 @@ def test_dos_flood_alternative_does_not_override_scan_allow(tmp_path):
     plugin = PluginPANOSChecks()
     plugin.check_zone_protection(parser)
     assert [item.rule_id for item in plugin.get_issues()] == [SCAN_RULE_ID]
+
+
+def test_icmpv6_and_other_ip_flood_disablement_is_reported(tmp_path):
+    parser, _ = _scan(tmp_path, syn="yes", icmp="yes", icmpv6="no", other_ip="no")
+    assert parser.get_zone_protections()[0].disabled_other_floods == ("icmpv6", "other-ip")
+    plugin = PluginPANOSChecks()
+    plugin.check_zone_protection(parser)
+    other, = [item for item in plugin.get_issues() if item.rule_id == OTHER_RULE_ID]
+    assert "ICMPV6, OTHER-IP" in other.observation
+
+
+def test_enabled_or_omitted_icmpv6_and_other_ip_are_not_reported(tmp_path):
+    parser, _ = _scan(tmp_path, syn="yes", icmpv6="yes")
+    assert parser.get_zone_protections()[0].disabled_other_floods == ()

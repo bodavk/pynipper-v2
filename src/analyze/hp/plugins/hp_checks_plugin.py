@@ -31,6 +31,16 @@ AOS_SWITCH_LAYER2_GUIDE = (
     "https://arubanetworking.hpe.com/techdocs/AOS-Switch/16.11/"
     "Aruba%203810M5400R%20Access%20Security%20Guide%20for%20AOS-S%2016.11.pdf"
 )
+AOS_SWITCH_PORT_ACCESS_GUIDE = (
+    "https://arubanetworking.hpe.com/techdocs/AOS-S/16.10/ASG/WC/content/common%20files/"
+    "rec-set-por-acc-16.-16..htm"
+)
+AOS_SWITCH_BPDU_PROTECTION_GUIDE = (
+    "https://arubanetworking.hpe.com/techdocs/AOS-S/16.10/ATMG/KB/content/kb/ena-dis-bpd-pro.htm"
+)
+AOS_SWITCH_BPDU_FILTER_GUIDE = (
+    "https://arubanetworking.hpe.com/techdocs/AOS-S/16.10/ATMG/WB/content/common%20files/cnf-bpd-fil.htm"
+)
 AOS_SWITCH_BASIC_OPERATION_GUIDE = (
     "https://arubanetworking.hpe.com/techdocs/AOS-Switch/16.11/"
     "Aruba%20Basic%20Operation%20Guide%20for%20AOS-S%2016.11.pdf"
@@ -508,6 +518,45 @@ class PluginHPChecks(BasePlugin):
                     severity=Severity.HIGH,
                     evidence=evidence,
                     references=(AOS_SWITCH_LAYER2_GUIDE,),
+                ))
+            if port.dot1x_control == "authorized":
+                self.add_issue(Finding(
+                    rule_id="hp.procurve.layer2.access_edge.dot1x_force_authorized",
+                    device=parser.device_type,
+                    title="Access-edge 802.1X port is forced authorized",
+                    observation=f"Port {port.port} is an assessed access edge with 802.1X authenticator control set to authorized (force authorized).",
+                    impact="Any connected device gets network access without 802.1X authentication.",
+                    exploitability="A person with physical access to the port can connect an unauthenticated device.",
+                    recommendation="Set the authenticator port control to auto, or document an approved exception for this port.",
+                    severity=Severity.HIGH,
+                    evidence=evidence,
+                    references=(AOS_SWITCH_PORT_ACCESS_GUIDE,),
+                ))
+            if port.bpdu_protection is False:
+                self.add_issue(Finding(
+                    rule_id="hp.procurve.layer2.access_edge.bpdu_guard_ineffective",
+                    device=parser.device_type,
+                    title="Access-edge port has BPDU protection explicitly disabled",
+                    observation=f"Port {port.port} is an assessed access edge and BPDU protection is explicitly disabled for it.",
+                    impact="A connected device can send BPDUs without the port being disabled, potentially affecting spanning-tree topology.",
+                    exploitability="A user or attacker on the access port can connect a bridge or send crafted BPDUs.",
+                    recommendation="Enable 'spanning-tree <port> bpdu-protection' on this access edge.",
+                    severity=Severity.MEDIUM,
+                    evidence=evidence,
+                    references=(AOS_SWITCH_BPDU_PROTECTION_GUIDE,),
+                ))
+            elif port.bpdu_protection is True and port.bpdu_filter is True:
+                self.add_issue(Finding(
+                    rule_id="hp.procurve.layer2.access_edge.bpdu_filter_bypass",
+                    device=parser.device_type,
+                    title="Access-edge BPDU filtering can bypass protection",
+                    observation=f"Port {port.port} has BPDU protection but also BPDU filtering, which makes the port ignore incoming BPDUs.",
+                    impact="The filter can prevent BPDU protection from seeing the BPDU that should disable the port.",
+                    exploitability="A bridge connected to the access port may go undetected.",
+                    recommendation="Remove BPDU filtering from the assessed access edge and keep BPDU protection.",
+                    severity=Severity.MEDIUM,
+                    evidence=evidence,
+                    references=(AOS_SWITCH_BPDU_PROTECTION_GUIDE, AOS_SWITCH_BPDU_FILTER_GUIDE),
                 ))
             for suffix, present, label in (
                 ("arp_protection", port.arp_protected, "Dynamic ARP protection on its VLAN"),

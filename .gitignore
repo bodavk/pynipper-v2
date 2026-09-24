@@ -133,3 +133,5 @@ dmypy.json
 
 # Local reference copy of original nipper-ng
 reference/
+
+Claude outputs/

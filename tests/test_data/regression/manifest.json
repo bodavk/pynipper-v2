@@ -10,16 +10,22 @@
         "f5.bigip.cli.idle_timeout_disabled",
         "f5.bigip.console.idle_timeout_disabled",
         "f5.bigip.credentials.local_plaintext",
+        "f5.bigip.http.legacy_tls_protocol",
         "f5.bigip.http.redirect_disabled",
         "f5.bigip.http.unrestricted_sources",
-        "f5.bigip.ltm.clientssl_cleartext_enabled",
+        "f5.bigip.http.weak_cipher_suite",
         "f5.bigip.logging.syslog_remote_none",
+        "f5.bigip.ltm.clientssl_cleartext_enabled",
         "f5.bigip.password_policy.enforcement_disabled",
         "f5.bigip.password_policy.login_lockout_disabled",
+        "f5.bigip.snmp.community_access",
+        "f5.bigip.snmp.default_community",
+        "f5.bigip.snmp.v3_security",
+        "f5.bigip.snmp.write_community",
         "f5.bigip.ssh.idle_timeout_disabled",
         "f5.bigip.ssh.unrestricted_sources"
       ],
-      "expected_finding_count": 13
+      "expected_finding_count": 19
     },
     {
       "name": "f5-bigip-secure",
@@ -247,6 +253,7 @@
         "juniper.junos.logging.remote_destination",
         "juniper.junos.management.insecure_protocol",
         "juniper.junos.ntp.authentication",
+        "juniper.junos.policy.idp_nonblocking",
         "juniper.junos.routing.bgp.authentication",
         "juniper.junos.routing.bgp.inbound_policy",
         "juniper.junos.routing.bgp.outbound_policy",
@@ -259,7 +266,7 @@
         "juniper.junos.ssh.root_login",
         "juniper.junos.ssh.weak_ciphers"
       ],
-      "expected_finding_count": 26
+      "expected_finding_count": 27
     },
     {
       "name": "junos-secure",

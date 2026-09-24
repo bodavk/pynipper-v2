@@ -11,6 +11,25 @@ sys sshd {
 sys httpd {
     allow { all }
     redirect-http-to-https disabled
+    ssl-protocol "all -SSLv2 -SSLv3"
+    ssl-ciphersuite ECDHE-RSA-AES128-GCM-SHA256:DES-CBC3-SHA
+}
+sys snmp {
+    allowed-addresses { 0.0.0.0/0 }
+    communities {
+        /Common/comm-public {
+            community-name public
+            access rw
+            source default
+        }
+    }
+    users {
+        /Common/monitor {
+            username monitor
+            security-level no-auth-no-privacy
+            access ro
+        }
+    }
 }
 cli global-settings {
     audit disabled

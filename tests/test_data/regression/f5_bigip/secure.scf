@@ -11,6 +11,23 @@ sys sshd {
 sys httpd {
     allow { 192.0.2.0/255.255.255.0 }
     redirect-http-to-https enabled
+    ssl-protocol "all -SSLv2 -SSLv3 -TLSv1 -TLSv1.1"
+    ssl-ciphersuite ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384
+}
+sys snmp {
+    allowed-addresses { 127. 192.0.2.30 }
+    communities none
+    users {
+        /Common/monitor {
+            username monitor
+            auth-protocol sha
+            auth-password SyntheticSnmpAuthSecret
+            privacy-protocol aes
+            privacy-password SyntheticSnmpPrivSecret
+            security-level auth-privacy
+            access ro
+        }
+    }
 }
 cli global-settings {
     audit enabled

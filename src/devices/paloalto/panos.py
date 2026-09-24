@@ -766,7 +766,8 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                         if explicit in {"yes", "no"}:
                             syn_state = "enabled" if explicit == "yes" else "disabled"
                         disabled_other = tuple(
-                            flood_type for flood_type in ("udp", "icmp")
+                            # Flood types named by the PAN-OS zone-protection profile.
+                            flood_type for flood_type in ("udp", "icmp", "icmpv6", "other-ip")
                             if self._text(profile.find(
                                 f"./flood/{flood_type}/enable"
                             )).casefold() == "no"

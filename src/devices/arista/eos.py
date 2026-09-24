@@ -7,7 +7,7 @@ import re
 import shlex
 from typing import Any
 
-from src.devices.cisco.ios import CiscoIOSParser
+from src.devices.cisco.ios import CiscoIOSParser, IOSBpduGuardPolicy
 from src.devices.common.models import (
     BlocklistCredentialAssessment,
     ConfigEvidence,
@@ -267,6 +267,104 @@ class AristaEOSParser(CiscoIOSParser):
                 masked[number] = ""
             index = closing + 1
         return masked
+
+    def get_bpdu_guard_policies(self) -> list[IOSBpduGuardPolicy]:
+        """Resolve EOS edge-port BPDU guard: global portfast default and per-port overrides.
+
+        EOS grammar differs from IOS: ``spanning-tree edge-port bpduguard default``
+        enables guard on all portfast ports, and interface ``spanning-tree bpduguard``
+        settings take precedence. Ethernet interfaces are switchports unless
+        ``no switchport`` is configured. ``portfast auto`` is operational
+        auto-edge detection, so its edge state stays unknown.
+        """
+        guard_default: bool | None = None
+        global_evidence: list[ConfigEvidence] = []
+        for command in self.commands:
+            if command.indent:
+                continue
+            text = command.text.casefold()
+            if text == "spanning-tree edge-port bpduguard default":
+                guard_default = True
+            elif text in {"no spanning-tree edge-port bpduguard default",
+                          "default spanning-tree edge-port bpduguard default"}:
+                guard_default = False
+            else:
+                continue
+            global_evidence.append(self._evidence(command))
+
+        records: list[IOSBpduGuardPolicy] = []
+        for header, header_line, children in self._indented_blocks("interface "):
+            interface = header.split(maxsplit=1)[1]
+            ethernet = interface.casefold().startswith("ethernet")
+            active = True
+            mode = "access" if ethernet else "unknown"
+            lag_member = False
+            portfast: bool | None = None
+            local_guard: bool | None = None
+            filter_enabled: bool | None = None
+            evidence = [ConfigEvidence(header, self.config_filepath, header_line)]
+            for line_number, _, command in children:
+                text = command.casefold()
+                if text == "shutdown":
+                    active = False
+                elif text == "no shutdown":
+                    active = True
+                elif text == "no switchport":
+                    mode = "routed"
+                elif text == "switchport":
+                    mode = "access" if mode == "routed" else mode
+                elif text.startswith("switchport mode "):
+                    mode = text.split()[2]
+                elif re.fullmatch(r"channel-group \d+ mode \S+", text):
+                    lag_member = True
+                elif re.fullmatch(r"no channel-group(?: \d+)?", text):
+                    lag_member = False
+                elif text == "spanning-tree portfast":
+                    portfast = True
+                elif text in {"spanning-tree portfast network", "spanning-tree portfast normal"}:
+                    portfast = False
+                elif text in {"spanning-tree portfast auto", "no spanning-tree portfast",
+                              "default spanning-tree portfast"}:
+                    portfast = None
+                elif text == "spanning-tree bpduguard enable":
+                    local_guard = True
+                elif text == "spanning-tree bpduguard disable":
+                    local_guard = False
+                elif text in {"no spanning-tree bpduguard", "default spanning-tree bpduguard"}:
+                    local_guard = None
+                elif text == "spanning-tree bpdufilter enable":
+                    filter_enabled = True
+                elif text in {"spanning-tree bpdufilter disable", "no spanning-tree bpdufilter",
+                              "default spanning-tree bpdufilter"}:
+                    filter_enabled = False
+                else:
+                    continue
+                evidence.append(ConfigEvidence(command, self.config_filepath, line_number))
+            if local_guard is True:
+                guard_enabled, guard_state = True, "local-enabled"
+            elif local_guard is False:
+                guard_enabled, guard_state = False, "local-disabled"
+            elif guard_default is True and portfast is True:
+                guard_enabled, guard_state = True, "inherited-enabled"
+            elif guard_default is False and portfast is True:
+                guard_enabled, guard_state = False, "global-disabled"
+            elif guard_default is True and portfast is False:
+                guard_enabled, guard_state = False, "portfast-disabled"
+            else:
+                guard_enabled, guard_state = None, "unknown"
+            records.append(IOSBpduGuardPolicy(
+                interface=interface,
+                role=self.assessment_context.role_for_interface(interface),
+                active=active,
+                mode=mode,
+                lag_member=lag_member or interface.casefold().startswith("port-channel"),
+                portfast=portfast,
+                guard_enabled=guard_enabled,
+                guard_state=guard_state,
+                filter_enabled=filter_enabled,
+                evidence=tuple(global_evidence + evidence),
+            ))
+        return records
 
     def _evidence(self, command: AristaCommand) -> ConfigEvidence:
         return ConfigEvidence(command.text, self.config_filepath, command.line_number)

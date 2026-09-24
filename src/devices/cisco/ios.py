@@ -517,6 +517,38 @@ class CiscoIOSParser(BaseDeviceParser):
             for kind, entries in configured.items() for _, protocol, evidence in entries
         ]
 
+    def get_cns_config_retrievals(self) -> list[IOSConfigRetrieval]:
+        """Return effective CNS configuration-agent retrievals without endpoint details.
+
+        ``cns config initial|partial <host> [encrypt] ...`` fetches configuration
+        from a CNS server; without ``encrypt`` the transfer uses HTTP (default
+        port 80), with it SSL. ``no cns config initial|partial`` removes the
+        agent. Only the kind and transport cross the parser boundary.
+        """
+        configured: dict[str, IOSConfigRetrieval] = {}
+        for line_number, raw in enumerate(self.parser.ioscfg, 1):
+            if raw[:1].isspace():
+                continue
+            match = re.fullmatch(
+                r"(no )?cns config (initial|partial)(?: (\S+)(.*))?", raw.strip(), re.IGNORECASE
+            )
+            if not match:
+                continue
+            removal, kind, host, options = match.groups()
+            kind = f"cns {kind.casefold()}"
+            if removal:
+                configured.pop(kind, None)
+                continue
+            if not host:
+                continue
+            encrypted = "encrypt" in (options or "").casefold().split()
+            protocol = "https" if encrypted else "http"
+            configured[kind] = IOSConfigRetrieval(kind, protocol, (ConfigEvidence(
+                f"cns config {kind.split()[1]} <endpoint redacted>{' encrypt' if encrypted else ''}",
+                self.config_filepath, line_number,
+            ),))
+        return list(configured.values())
+
     def _global_lines(self) -> list[str]:
         """Return top-level commands in source order with whitespace removed."""
 

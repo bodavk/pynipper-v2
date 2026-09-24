@@ -105,3 +105,63 @@ security {
     binding, = JunOSParser(str(source)).get_idp_bindings()
     assert binding.resolution_state == "resolved"
     assert binding.rules[0].action == "no-action"
+
+
+# Stage B detection: an applied IDP policy whose every active IPS rule is non-blocking.
+from src.analyze.juniper.junos.core.process_junos_conf import process_junos_conf  # noqa: E402
+
+IDP_RULE_ID = "juniper.junos.policy.idp_nonblocking"
+
+
+def _rule(name, action):
+    return (
+        f"set security idp idp-policy edge-idp rulebase-ips rule {name} match application default\n"
+        f"set security idp idp-policy edge-idp rulebase-ips rule {name} then action {action}\n"
+    )
+
+
+def _idp_findings(tmp_path, body, model="SRX345"):
+    source = tmp_path / "idp-plugin.conf"
+    source.write_text(f"## Model: {model}\nset version 22.4R1.10\n" + body, encoding="utf-8")
+    return [item for item in process_junos_conf(JunOSParser(str(source))).values()
+            if item.rule_id == IDP_RULE_ID]
+
+
+def test_all_non_blocking_rules_are_reported(tmp_path):
+    finding, = _idp_findings(
+        tmp_path, POLICY + DIRECT + _rule("log-only", "no-action") + _rule("skip", "ignore-connection")
+    )
+    assert "edge-idp" in finding.observation and "ignore-connection, no-action" in finding.observation
+    assert all(item.line_number for item in finding.evidence_locations)
+
+
+def test_one_blocking_or_recommended_rule_suppresses_the_finding(tmp_path):
+    assert _idp_findings(tmp_path, POLICY + DIRECT + _rule("a", "no-action") + _rule("b", "drop-connection")) == []
+    assert _idp_findings(tmp_path, POLICY + DIRECT + _rule("a", "no-action") + _rule("b", "recommended")) == []
+
+
+def test_unknown_or_unresolved_state_is_not_graded(tmp_path):
+    ambiguous = POLICY + DIRECT + _rule("a", "no-action") + (
+        "set security idp idp-policy edge-idp rulebase-ips rule b match application default\n"
+    )
+    assert _idp_findings(tmp_path, ambiguous) == []  # rule b has no explicit action
+    assert _idp_findings(tmp_path, POLICY + DIRECT) == []  # no exported rules
+    assert _idp_findings(tmp_path, POLICY + LEGACY + _rule("a", "no-action")
+                         + "deactivate security idp active-policy edge-idp\n") == []
+    assert _idp_findings(tmp_path, POLICY + DIRECT + _rule("a", "no-action")
+                         + "set security apply-groups inherited\n") == []
+
+
+def test_unbound_inactive_and_non_srx_cases_are_not_reported(tmp_path):
+    unbound = POLICY + "set security policies from-zone trust to-zone untrust policy web then permit\n"
+    assert _idp_findings(tmp_path, unbound + _rule("a", "no-action")) == []
+    inactive = POLICY + DIRECT + _rule("a", "no-action") + (
+        "deactivate security policies from-zone trust to-zone untrust policy web\n"
+    )
+    assert _idp_findings(tmp_path, inactive) == []
+    assert _idp_findings(tmp_path, POLICY + DIRECT + _rule("a", "no-action"), model="EX4300") == []
+
+
+def test_legacy_active_policy_binding_is_reported(tmp_path):
+    finding, = _idp_findings(tmp_path, POLICY + LEGACY + _rule("a", "no-action"))
+    assert "edge-idp" in finding.observation

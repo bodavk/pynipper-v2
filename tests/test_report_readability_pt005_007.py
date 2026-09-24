@@ -36,6 +36,15 @@ DYNAMIC_RULE_IDS = (
     "fortinet.fortios.crypto.ssh_cbc_cipher",
     "fortinet.fortios.ssh.weak_enc_algo",
     "hp.procurve.layer2.access_edge.trunk",
+    "juniper.junos.routing.bgp.inbound_policy",
+    "juniper.junos.screen.syn_flood_inactive",
+    "juniper.junos.screen.udp_flood_alarm_only",
+    "juniper.junos.ssh.weak_ciphers",
+    "paloalto.panos.management.http",
+    "paloalto.panos.management.telnet",
+)
+F_STRING_RULE = re.compile(
+    r'f"((?:cisco|fortinet|juniper|checkpoint|paloalto|hp|arista|sonicwall|f5)\.[^"]*)"'
 )
 
 
@@ -44,6 +53,15 @@ def _source_rule_ids():
     for path in ANALYZE_ROOT.rglob("*.py"):
         ids.update(RULE_LITERAL.findall(path.read_text(encoding="utf-8")))
     return ids
+
+
+def test_every_f_string_rule_template_has_a_listed_expansion():
+    for path in ANALYZE_ROOT.rglob("*.py"):
+        for template in F_STRING_RULE.findall(path.read_text(encoding="utf-8")):
+            placeholder = "PLACEHOLDER"
+            pattern = re.escape(re.sub(r"\{[^}]*\}", placeholder, template))
+            pattern = pattern.replace(placeholder, "[a-z0-9_.]+")
+            assert any(re.fullmatch(pattern, rule) for rule in DYNAMIC_RULE_IDS), (path.name, template)
 
 
 def test_every_rule_id_has_layered_guidance():

@@ -19,13 +19,67 @@ _VERSION = re.compile(r"(?m)^\s*#\s*TMSH-VERSION:\s*([0-9][A-Za-z0-9._-]*)\s*$",
 _SAFE_NAME = re.compile(r"[A-Za-z0-9_./:-]+")
 _FIELDS = {
     "sys sshd": {"login", "allow", "inactivity-timeout"},
-    "sys httpd": {"allow", "redirect-http-to-https"},
+    "sys httpd": {"allow", "redirect-http-to-https", "ssl-protocol", "ssl-ciphersuite"},
     "sys global-settings": {"hostname", "console-inactivity-timeout"},
     "cli global-settings": {"audit", "idle-timeout"},
     "sys syslog": {"remote-servers"},
     "auth password-policy": {"policy-enforcement", "max-login-failures", "minimum-length"},
     "auth source": {"type", "fallback"},
 }
+
+
+# Apache mod_ssl SSLProtocol tokens accepted by `sys httpd ssl-protocol`.
+_SSL_PROTOCOL_TOKEN = re.compile(r"([+-]?)(all|SSLv2|SSLv3|TLSv1|TLSv1\.1|TLSv1\.2|TLSv1\.3)", re.I)
+_ALL_TLS = ("TLSv1", "TLSv1.1", "TLSv1.2", "TLSv1.3")
+_CIPHER_LIST = re.compile(r"[A-Za-z0-9!+@:=._-]+")
+_LITERAL_SUITE = re.compile(r"[A-Z0-9]+(?:-[A-Z0-9]+)+")
+_WEAK_SUITE = re.compile(r"(?:^|-)(?:DES-CBC3|DES-CBC|DES|RC4|RC2|NULL|EXP|EXPORT|MD5|IDEA|SEED)(?:-|$)")
+_LOOPBACK = {"127", "127.", "127.0.0.1", "127.0.0.0/8", "127.0.0.0/255.0.0.0", "::1", "::1/128"}
+_ANY_ADDRESS = {"0.0.0.0/0", "0.0.0.0/0.0.0.0", "::/0", "any", "all", "0.0.0.0"}
+_DEFAULT_COMMUNITIES = {"public", "private"}
+
+
+def resolve_ssl_protocols(value: str) -> tuple[str, ...] | None:
+    """Resolve an Apache ``SSLProtocol`` token list to the protocols it enables.
+
+    ``all`` enables the TLS versions; SSLv3 is only counted when named
+    explicitly, because whether ``all`` includes it depends on the TLS
+    library build. A token without ``+``/``-`` replaces the set, as in
+    mod_ssl. Unknown tokens return ``None``.
+    """
+
+    enabled: list[str] = []
+    tokens = value.split()
+    if not tokens:
+        return None
+    for token in tokens:
+        match = _SSL_PROTOCOL_TOKEN.fullmatch(token)
+        if not match:
+            return None
+        sign, name = match.groups()
+        canonical = next(item for item in ("all", "SSLv2", "SSLv3", *_ALL_TLS) if item.casefold() == name.casefold())
+        members = list(_ALL_TLS) if canonical == "all" else [canonical]
+        if sign == "-":
+            enabled = [item for item in enabled if item not in members]
+        elif sign == "+":
+            enabled += [item for item in members if item not in enabled]
+        else:
+            enabled = members
+    return tuple(enabled)
+
+
+def weak_literal_cipher_suites(value: str) -> tuple[str, ...] | None:
+    """Weak suites in a cipher list made only of literal OpenSSL suite names.
+
+    Keywords (DEFAULT, HIGH, ...), exclusions (``!``/``-``) and other
+    operators change the meaning of the whole list; such lists return
+    ``None`` because their effective content is not proven here.
+    """
+
+    suites = [item for item in value.split(":") if item]
+    if not suites or not all(_LITERAL_SUITE.fullmatch(item) for item in suites):
+        return None
+    return tuple(item for item in suites if _WEAK_SUITE.search(item))
 
 
 class F5ParseError(ValueError):
@@ -65,6 +119,33 @@ class F5RemoteAuthProfile:
     servers_state: str
     ssl_state: str
     peer_check_state: str
+    evidence: ConfigEvidence
+
+
+@dataclass(frozen=True)
+class F5SNMPAgent:
+    """Effective ``sys snmp allowed-addresses`` scope: which clients may query."""
+
+    client_scope: str  # unrestricted | restricted | loopback-only | none | unknown
+    evidence: ConfigEvidence
+
+
+@dataclass(frozen=True)
+class F5SNMPCommunity:
+    name: str
+    default_name: bool | None
+    access: str  # ro | rw | unknown
+    source: str  # any | restricted | unknown
+    evidence: ConfigEvidence
+
+
+@dataclass(frozen=True)
+class F5SNMPUser:
+    name: str
+    security_level: str
+    auth_protocol: str
+    privacy_protocol: str
+    access: str
     evidence: ConfigEvidence
 
 
@@ -159,10 +240,15 @@ class F5BIGIPParser(BaseDeviceParser):
         self._user_secret_lines: dict[str, int] = {}
         self._user_credentials: dict[str, F5UserCredential] = {}
         self._remote_auth_profiles: dict[tuple[str, str], F5RemoteAuthProfile] = {}
+        self._snmp_agent: F5SNMPAgent | None = None
+        self._snmp_communities: dict[str, F5SNMPCommunity] = {}
+        self._snmp_users: dict[str, F5SNMPUser] = {}
         self._parse(_tokens(content))
         self._native = (
             *self._settings.values(), *self._remote_auth_profiles.values(),
             *self._client_ssl.values(), *self._virtuals.values(),
+            *((self._snmp_agent,) if self._snmp_agent else ()),
+            *self._snmp_communities.values(), *self._snmp_users.values(),
         )
 
     def _parse(self, tokens: list[_TokenValue]) -> None:
@@ -191,6 +277,9 @@ class F5BIGIPParser(BaseDeviceParser):
             if scope in _FIELDS:
                 recognized = True
                 self._read_settings(scope, tokens[body_start:cursor - 1])
+            elif scope == "sys snmp":
+                recognized = True
+                self._read_snmp(header_line, tokens[body_start:cursor - 1])
             elif len(header) == 4 and header[:3] == ["ltm", "profile", "client-ssl"]:
                 recognized = True
                 self._read_client_ssl(header[3], header_line, tokens[body_start:cursor - 1])
@@ -351,6 +440,10 @@ class F5BIGIPParser(BaseDeviceParser):
                 if candidate in {"local", "radius", "ldap", "tacacs", "cert-ldap",
                                  "active-directory", "apm-auth"}:
                     value = candidate
+            elif name == "ssl-protocol":
+                value = candidate if resolve_ssl_protocols(candidate) is not None else None
+            elif name == "ssl-ciphersuite":
+                value = candidate if _CIPHER_LIST.fullmatch(candidate) else None
             elif name == "fallback" and scope == "auth source":
                 if candidate in {"true", "false"}:
                     value = candidate
@@ -447,6 +540,123 @@ class F5BIGIPParser(BaseDeviceParser):
             if (profile := self._client_ssl.get(name)) is not None
             and profile.mode_enabled is True and profile.allow_non_ssl is True
         )
+
+    @staticmethod
+    def _named_blocks(body: list[_TokenValue], start: int) -> list[tuple[str, int, dict[str, str]]]:
+        """``name { key value ... }`` members of a group; nested groups are skipped."""
+
+        members = _block_contents(body, start)
+        if members is None:
+            return []
+        result = []
+        depth = 0
+        for index, member in enumerate(members):
+            if member.text == "{":
+                depth += 1
+            elif member.text == "}":
+                depth -= 1
+            elif depth == 0 and index + 1 < len(members) and members[index + 1].text == "{":
+                attributes = _block_contents(members, index + 1) or []
+                values: dict[str, str] = {}
+                position = 0
+                while position < len(attributes):
+                    key = attributes[position].text
+                    following = attributes[position + 1].text if position + 1 < len(attributes) else None
+                    if following == "{":
+                        nested = _block_contents(attributes, position + 1)
+                        position += 2 + (len(nested) + 1 if nested is not None else 0)
+                    elif following is not None and following != "}" and key not in {"{", "}"}:
+                        values[key] = following
+                        position += 2
+                    else:
+                        position += 1
+                result.append((member.text, member.line, values))
+        return result
+
+    def _read_snmp(self, line_number: int, body: list[_TokenValue]) -> None:
+        """Read SNMP access scope, communities and v3 users without secret values."""
+
+        depth = 0
+        for index, token in enumerate(body):
+            if token.text == "{":
+                depth += 1
+                continue
+            if token.text == "}":
+                depth -= 1
+                continue
+            if depth != 0:
+                continue
+            next_index = index + 1
+            if next_index < len(body) and body[next_index].text in {"replace-all-with", "add"}:
+                next_index += 1
+            candidate = body[next_index].text if next_index < len(body) else ""
+            if token.text == "allowed-addresses":
+                entries = _group_values(body, next_index) if candidate == "{" else [candidate]
+                if entries is None or not entries:
+                    scope = "unknown"
+                elif entries == ["none"]:
+                    scope = "none"
+                elif any(item.casefold() in _ANY_ADDRESS for item in entries):
+                    scope = "unrestricted"
+                elif all(item in _LOOPBACK for item in entries):
+                    scope = "loopback-only"
+                else:
+                    scope = "restricted"
+                self._snmp_agent = F5SNMPAgent(scope, ConfigEvidence(
+                    f"sys snmp allowed-addresses {scope}", self.config_filepath, token.line,
+                ))
+            elif token.text == "communities":
+                if candidate == "none":
+                    self._snmp_communities = {}
+                    continue
+                for raw_name, member_line, values in self._named_blocks(body, next_index):
+                    name = _object_name(raw_name) or "<unnamed>"
+                    community = values.get("community-name")
+                    default_name = None if community is None else community.casefold() in _DEFAULT_COMMUNITIES
+                    access = values.get("access", "unknown")
+                    access = access if access in {"ro", "rw"} else "unknown"
+                    source_value = values.get("source")
+                    source = ("unknown" if source_value is None
+                              else "any" if source_value.casefold() in _ANY_ADDRESS | {"default"}
+                              else "restricted")
+                    label = ("<known default>" if default_name
+                             else "<redacted>" if community is not None else "<not exported>")
+                    self._snmp_communities[name] = F5SNMPCommunity(
+                        name, default_name, access, source,
+                        ConfigEvidence(
+                            f"sys snmp communities {name} community-name {label} access {access} source {source}",
+                            self.config_filepath, member_line,
+                        ),
+                    )
+            elif token.text == "users":
+                if candidate == "none":
+                    self._snmp_users = {}
+                    continue
+                for raw_name, member_line, values in self._named_blocks(body, next_index):
+                    name = _object_name(raw_name) or "<unnamed>"
+                    fields = {
+                        key: values.get(key, "unknown")
+                        for key in ("security-level", "auth-protocol", "privacy-protocol", "access")
+                    }
+                    self._snmp_users[name] = F5SNMPUser(
+                        name, fields["security-level"], fields["auth-protocol"],
+                        fields["privacy-protocol"], fields["access"],
+                        ConfigEvidence(
+                            f"sys snmp users {name} security-level {fields['security-level']} "
+                            f"auth-protocol {fields['auth-protocol']} privacy-protocol "
+                            f"{fields['privacy-protocol']} access {fields['access']}",
+                            self.config_filepath, member_line,
+                        ),
+                    )
+
+    def get_snmp_agent(self) -> F5SNMPAgent | None:
+        return self._snmp_agent
+
+    def get_snmp_communities(self) -> tuple[F5SNMPCommunity, ...]:
+        return tuple(self._snmp_communities.values())
+
+    def get_snmp_users(self) -> tuple[F5SNMPUser, ...]:
+        return tuple(self._snmp_users.values())
 
     def get_setting(self, scope: str, name: str) -> F5Setting | None:
         return self._settings.get((scope, name))

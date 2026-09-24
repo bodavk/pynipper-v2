@@ -3,7 +3,9 @@
 from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.issue import Finding, Severity
 from src.devices.common.base_parser import BaseDeviceParser
-from src.devices.f5.bigip import F5BIGIPParser, F5Setting
+from src.devices.f5.bigip import (
+    F5BIGIPParser, F5Setting, resolve_ssl_protocols, weak_literal_cipher_suites,
+)
 
 
 SSHD = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules/sys/sys_sshd.html"
@@ -18,6 +20,11 @@ AUTH_CERT_LDAP = "https://clouddocs.f5.com/cli/tmsh-reference/v16/modules/auth/a
 SYSLOG = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules/sys/sys_syslog.html"
 CLIENT_SSL = "https://clouddocs.f5.com/cli/tmsh-reference/v16/modules/ltm/ltm_profile_client-ssl.html"
 VIRTUAL = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules/ltm/ltm_virtual.html"
+HTTPD_TLS_DEFAULT = "https://cdn.f5.com/product/bugtracker/ID668624.html"
+RFC_8996 = "https://www.rfc-editor.org/rfc/rfc8996"
+NIST_TLS = "https://csrc.nist.gov/pubs/sp/800/52/r2/final"
+SNMP = "https://clouddocs.f5.com/cli/tmsh-reference/v16/modules/sys/sys_snmp.html"
+RFC_3414 = "https://www.rfc-editor.org/rfc/rfc3414"
 
 
 class PluginF5BIGIPChecks(BasePlugin):
@@ -70,6 +77,9 @@ class PluginF5BIGIPChecks(BasePlugin):
                        impact="HTTP requests to the configuration utility are not automatically upgraded to HTTPS where its HTTP path is reachable.",
                        recommendation="Enable HTTP-to-HTTPS redirection and restrict management access.",
                        severity=Severity.MEDIUM, reference=HTTPD)
+        if not (http_allow and http_allow.value == "none"):
+            self._check_management_tls(parser)
+        self._check_snmp(parser)
         console = setting("sys global-settings", "console-inactivity-timeout")
         if console and console.value == 0:
             self._emit(parser, console, rule_id="f5.bigip.console.idle_timeout_disabled",
@@ -228,3 +238,119 @@ class PluginF5BIGIPChecks(BasePlugin):
                 evidence=(virtual.evidence, profile.evidence),
                 references=(VIRTUAL, CLIENT_SSL),
             ))
+
+    def _check_management_tls(self, parser: F5BIGIPParser) -> None:
+        protocol = parser.get_setting("sys httpd", "ssl-protocol")
+        enabled = resolve_ssl_protocols(str(protocol.value)) if protocol and protocol.value else None
+        legacy = [item for item in (enabled or ()) if item in {"SSLv2", "SSLv3", "TLSv1", "TLSv1.1"}]
+        if legacy:
+            self.add_issue(Finding(
+                rule_id="f5.bigip.http.legacy_tls_protocol",
+                device=parser.device_type,
+                title="Configuration utility accepts legacy SSL/TLS versions",
+                observation=(
+                    f"The explicit sys httpd ssl-protocol value enables {', '.join(legacy)} for the "
+                    "configuration utility (mod_ssl SSLProtocol semantics)."
+                ),
+                impact="Administrative HTTPS sessions can be negotiated with deprecated protocol versions.",
+                exploitability="A network attacker on the management path may attempt protocol downgrade or known attacks on legacy TLS.",
+                recommendation="Set ssl-protocol so only TLS 1.2 and TLS 1.3 are accepted, for example 'all -SSLv2 -SSLv3 -TLSv1 -TLSv1.1'.",
+                severity=Severity.HIGH,
+                evidence=(protocol.evidence,),
+                references=(HTTPD, HTTPD_TLS_DEFAULT, RFC_8996),
+            ))
+        suites = parser.get_setting("sys httpd", "ssl-ciphersuite")
+        weak = weak_literal_cipher_suites(str(suites.value)) if suites and suites.value else None
+        if weak:
+            self.add_issue(Finding(
+                rule_id="f5.bigip.http.weak_cipher_suite",
+                device=parser.device_type,
+                title="Configuration utility offers weak cipher suites",
+                observation=(
+                    "The explicit sys httpd ssl-ciphersuite list includes "
+                    f"{', '.join(weak)}."
+                ),
+                impact="Administrative HTTPS sessions may use obsolete ciphers such as 3DES, RC4, NULL or export suites.",
+                exploitability="An attacker who can observe or influence the management connection may exploit weak cipher properties.",
+                recommendation="Remove legacy suites and offer only AEAD suites with forward secrecy (for example ECDHE with AES-GCM).",
+                severity=Severity.MEDIUM,
+                evidence=(suites.evidence,),
+                references=(HTTPD, NIST_TLS),
+            ))
+
+    def _check_snmp(self, parser: F5BIGIPParser) -> None:
+        agent = parser.get_snmp_agent()
+        # Only an explicitly exported non-loopback client scope makes SNMP access reachable.
+        if agent is None or agent.client_scope not in {"unrestricted", "restricted"}:
+            return
+        communities = parser.get_snmp_communities()
+        if agent.client_scope == "unrestricted" and communities:
+            self.add_issue(Finding(
+                rule_id="f5.bigip.snmp.community_access",
+                device=parser.device_type,
+                title="SNMP community access is allowed from any address",
+                observation="sys snmp allowed-addresses explicitly admits every client address while community-based access is configured.",
+                impact="Any host that can reach the management address may attempt SNMP queries with a guessed or captured community.",
+                exploitability="An attacker with network reach can query SNMP data using a known or observed community string.",
+                recommendation="Limit allowed-addresses to the monitoring systems and replace communities with SNMPv3 users.",
+                severity=Severity.HIGH,
+                evidence=(agent.evidence,) + tuple(item.evidence for item in communities),
+                references=(SNMP,),
+            ))
+        for community in communities:
+            if community.default_name:
+                self.add_issue(Finding(
+                    rule_id="f5.bigip.snmp.default_community",
+                    device=parser.device_type,
+                    title="Default SNMP community is configured",
+                    observation=f"SNMP community object '{community.name}' uses a well-known default community name.",
+                    impact="Default community strings are the first values tried by scanners and grant the object's SNMP access.",
+                    exploitability="An attacker permitted by allowed-addresses can query the device without learning a secret.",
+                    recommendation="Remove the default community; use SNMPv3 users or a unique community restricted to monitoring hosts.",
+                    severity=Severity.HIGH,
+                    evidence=(agent.evidence, community.evidence),
+                    references=(SNMP,),
+                ))
+            if community.access == "rw":
+                self.add_issue(Finding(
+                    rule_id="f5.bigip.snmp.write_community",
+                    device=parser.device_type,
+                    title="SNMP community grants write access",
+                    observation=f"SNMP community object '{community.name}' has access rw.",
+                    impact="A holder of the community string can change SNMP-writable settings over an unauthenticated, unencrypted protocol.",
+                    exploitability="An attacker permitted by allowed-addresses who learns the community can modify writable objects.",
+                    recommendation="Set community access to ro, or remove the community and use an authenticated SNMPv3 user.",
+                    severity=Severity.HIGH,
+                    evidence=(agent.evidence, community.evidence),
+                    references=(SNMP,),
+                ))
+        for user in parser.get_snmp_users():
+            if user.security_level in {"no-auth-no-privacy", "auth-no-privacy"}:
+                self.add_issue(Finding(
+                    rule_id="f5.bigip.snmp.v3_security",
+                    device=parser.device_type,
+                    title="SNMPv3 user does not require authentication and privacy",
+                    observation=f"SNMPv3 user '{user.name}' has security-level {user.security_level}.",
+                    impact="SNMP messages for this user are not both authenticated and encrypted.",
+                    exploitability="An attacker on the monitoring path may read or forge this user's SNMP traffic.",
+                    recommendation="Set security-level auth-privacy with SHA authentication and AES privacy.",
+                    severity=Severity.MEDIUM,
+                    evidence=(agent.evidence, user.evidence),
+                    references=(SNMP, RFC_3414),
+                ))
+            elif user.auth_protocol == "md5" or user.privacy_protocol == "des":
+                self.add_issue(Finding(
+                    rule_id="f5.bigip.snmp.v3_weak_algorithm",
+                    device=parser.device_type,
+                    title="SNMPv3 user uses a legacy algorithm",
+                    observation=(
+                        f"SNMPv3 user '{user.name}' uses auth-protocol {user.auth_protocol} "
+                        f"and privacy-protocol {user.privacy_protocol}."
+                    ),
+                    impact="MD5 authentication and DES privacy provide weak protection for SNMP messages.",
+                    exploitability="An attacker who captures SNMP traffic has a better chance to recover or forge protected messages.",
+                    recommendation="Use SHA authentication and AES privacy for SNMPv3 users.",
+                    severity=Severity.MEDIUM,
+                    evidence=(agent.evidence, user.evidence),
+                    references=(SNMP, RFC_3414),
+                ))

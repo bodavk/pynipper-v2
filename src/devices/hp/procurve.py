@@ -123,6 +123,10 @@ class HPPortProtection:
     source_lockdown: bool
     port_security: bool
     evidence: tuple[ConfigEvidence, ...]
+    # Explicit spanning-tree edge and 802.1X authenticator state; None = not exported.
+    bpdu_protection: bool | None = None
+    bpdu_filter: bool | None = None
+    dot1x_control: str | None = None
 
 
 @dataclass(frozen=True)
@@ -340,7 +344,45 @@ class HPProCurveParser(BaseDeviceParser):
                     control_evidence.setdefault(port, []).append(self._evidence(command))
                 break
 
+        # Ordered spanning-tree BPDU protection/filter and 802.1X port control.
+        # "all" applies to every port, including ports listed later.
+        stp: dict[str, dict[str, bool]] = {"bpdu-protection": {}, "bpdu-filter": {}}
+        stp_all: dict[str, bool | None] = {"bpdu-protection": None, "bpdu-filter": None}
+        dot1x: dict[str, str | None] = {}
+        for command in self.commands:
+            spanning = re.fullmatch(
+                r"(?P<no>no\s+)?spanning-tree\s+(?P<ports>.+?)\s+(?P<feature>bpdu-protection|bpdu-filter)",
+                command.text, re.I,
+            )
+            if spanning:
+                feature = spanning.group("feature").casefold()
+                enabled = not spanning.group("no")
+                if spanning.group("ports").strip().casefold() == "all":
+                    stp_all[feature] = enabled
+                    stp[feature] = {port: enabled for port in stp[feature]}
+                    targets: set[str] = set()
+                else:
+                    targets = self._expand_ports(spanning.group("ports"))
+                    stp[feature].update({port: enabled for port in targets})
+                for port in targets or {"all"}:
+                    control_evidence.setdefault(port, []).append(self._evidence(command))
+                continue
+            control = re.fullmatch(
+                r"aaa\s+port-access\s+authenticator\s+(?P<ports>\S+)\s+control\s+(?P<mode>authorized|auto|unauthorized)",
+                command.text, re.I,
+            )
+            removed = re.fullmatch(r"no\s+aaa\s+port-access\s+authenticator\s+(?P<ports>\S+)", command.text, re.I)
+            if control or removed:
+                match = control or removed
+                for port in self._expand_ports(match.group("ports")):
+                    dot1x[port] = control.group("mode").casefold() if control else None
+                    control_evidence.setdefault(port, []).append(self._evidence(command))
+
         ports = set(memberships) | {name for name, _ in self.assessment_context.interface_roles}
+
+        def stp_state(feature: str, port: str) -> bool | None:
+            return stp[feature].get(port, stp_all[feature])
+
         return [
             HPPortProtection(
                 port=port,
@@ -353,7 +395,15 @@ class HPProCurveParser(BaseDeviceParser):
                 arp_protected=bool(memberships.get(port, set()) & arp_vlans),
                 source_lockdown=port in controls["source_lockdown"],
                 port_security=port in controls["port_security"],
-                evidence=tuple(membership_evidence.get(port, []) + control_evidence.get(port, [])),
+                evidence=tuple(
+                    membership_evidence.get(port, []) + control_evidence.get(port, [])
+                    + (control_evidence.get("all", []) if any(
+                        port not in stp[feature] and stp_all[feature] is not None for feature in stp
+                    ) else [])
+                ),
+                bpdu_protection=stp_state("bpdu-protection", port),
+                bpdu_filter=stp_state("bpdu-filter", port),
+                dot1x_control=dot1x.get(port),
             )
             for port in sorted(ports)
         ]

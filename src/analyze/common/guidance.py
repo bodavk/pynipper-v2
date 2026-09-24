@@ -131,7 +131,7 @@ _CATALOGUE = (
         "hit counters on the device before deleting anything.",
     )),
     # Threat inspection -----------------------------------------------------------
-    (r"^(policy\.(security_profile\w*|ips_selector_\w+|threat_selector_nonblocking)|security_services\.\w+|capture_atp\.\w+|updates\.\w+|fortiguard\.\w+|firmware\.automatic_updates|threat_detection\.\w+)$", _G(
+    (r"^(policy\.(security_profile\w*|ips_selector_\w+|threat_selector_nonblocking|idp_\w+)|security_services\.\w+|capture_atp\.\w+|updates\.\w+|fortiguard\.\w+|firmware\.automatic_updates|threat_detection\.\w+)$", _G(
         "threat-inspection", "threat-inspection",
         "Traffic that the firewall allows is not fully checked for known attacks or malware, or "
         "the signatures used for that check are not kept up to date.",
@@ -189,7 +189,7 @@ _CATALOGUE = (
         "separate out-of-band network), and confirm that strong authentication, lockout and "
         "logging are in place for the exposed service.",
     )),
-    (r"^(ssh\.(weak_\w+|protocol_version)|tls\.\w+|management\.(legacy_tls|tls_\w+)|eapi\.(legacy_tls|tls_profile\w*)|admin\.ssh_profile_\w+|crypto\.(strong_crypto|admin_ssh_v1|ssl_static_key_ciphers|ssh_cbc_cipher|dh_parameters)|https\.(legacy_cipher|global_activation))$", _G(
+    (r"^(ssh\.(weak_\w+|protocol_version)|tls\.\w+|management\.(legacy_tls|tls_\w+)|eapi\.(legacy_tls|tls_profile\w*)|admin\.ssh_profile_\w+|crypto\.(strong_crypto|admin_ssh_v1|ssl_static_key_ciphers|ssh_cbc_cipher|dh_parameters)|https\.(legacy_cipher|global_activation)|http\.(legacy_tls_protocol|weak_cipher_suite))$", _G(
         "management-crypto", "management-crypto",
         "The encrypted management connection (SSH or HTTPS) still allows outdated protocol "
         "versions or algorithms that are known to be weak.",
@@ -418,7 +418,7 @@ _CATALOGUE = (
         "to syslog so it is kept off the device.",
         "Check whether a configuration-management system detects drift between backups.",
     )),
-    (r"^(configuration\.(archive_\w+|backup_\w+)|services\.tftp_boot_config)$", _G(
+    (r"^(configuration\.(archive_\w+|backup_\w+)|services\.(tftp_boot_config|cns_config_cleartext))$", _G(
         "backup", "backup",
         "Configuration backups are missing, incomplete or sent over an unencrypted protocol "
         "(FTP/TFTP), or the device loads its configuration over TFTP at boot.",
@@ -458,7 +458,7 @@ _CATALOGUE = (
         "in place.",
     )),
     # Device self-protection -----------------------------------------------------------------------
-    (r"^(control_plane\.\w+|dos\.\w+|zone\.\w+)$", _G(
+    (r"^(control_plane\.\w+|dos\.\w+|zone\.\w+|screen\.\w+)$", _G(
         "control-plane", "control-plane",
         "The device's own CPU and management plane are not protected from floods, or "
         "denial-of-service protections are disabled on an exposed interface or zone.",

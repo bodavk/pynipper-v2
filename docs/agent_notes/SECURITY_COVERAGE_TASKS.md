@@ -243,7 +243,7 @@ Implement by risk and fixture quality. Shared L2 and routing concepts offer reus
 
 **Priority:** P1 for explicitly assessed endpoint access ports.
 
-**Status:** Bounded explicit IOS/XE assessed access-edge bypass checks implemented; missing-control policy, fallback/AAA effectiveness and AOS-S/EOS/Junos EX grammar/fixtures remain open.
+**Status:** Bounded explicit IOS/XE assessed access-edge bypass checks implemented. An AOS-S stage was added on 2026-09-24: ordered `aaa port-access authenticator <ports> control authorized` (force authorized, per the AOS-S 16.10 access security guide) is reported on assessed access edges, and `control auto` or `no aaa port-access authenticator` overrides it. Missing-control policy, fallback/AAA effectiveness and the EOS/Junos EX grammar/fixtures remain open; the Arista 802.1X guide was not reachable for qualification.
 
 **Source of Truth:** S02; IOS `check_access_admission` now resolves explicit force-authorized, open and global-disable bypasses from parser-owned port records. HP `check_edge_protections`, EOS plugin and Junos baseline still lack effective 802.1X admission analysis despite existing DHCP/ARP/port-security subsets. [Cisco IOS-XE port-control guide](https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/sec_usr_8021x/configuration/xe-3e/sec-usr-8021x-xe-3e-book/config-ieee-802x-pba.html) and [open-auth guide](https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/sec_usr_8021x/configuration/xe-3e/sec-usr-8021x-xe-3e-book/sec-ieee-open-auth.html) qualify the bounded implementation.
 
@@ -266,7 +266,7 @@ Implement by risk and fixture quality. Shared L2 and routing concepts offer reus
 
 **Priority:** P2; a common local foothold can disrupt a switched network.
 
-**Status:** Bounded explicit IOS/XE assessed access-edge BPDU-guard inheritance/override and local filter-bypass checks implemented; omitted-default conclusions and AOS-S/EOS/Junos EX mappings remain open.
+**Status:** Bounded explicit IOS/XE assessed access-edge BPDU-guard inheritance/override and local filter-bypass checks implemented. The EOS mapping was added on 2026-09-24 from the Arista spanning-tree guide: the global `spanning-tree edge-port bpduguard default` applies to portfast ports, interface `spanning-tree bpduguard` takes precedence, and `portfast auto` stays unknown. The AOS-S mapping was also added: ordered `spanning-tree <ports|all> bpdu-protection` and `bpdu-filter`. Explicitly disabled protection, and protection combined with a filter (which makes the port ignore BPDUs), are reported on assessed access edges of verified 16.10/16.11 exports. Omitted-default conclusions and the Junos EX mapping remain open.
 
 **Source of Truth:** S02; IOS/XE now resolves explicit global PortFast/BPDU-guard settings and per-port overrides in parser-owned records, using the [Cisco IOS LAN switching command reference](https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/lanswitch/command/lsw-cr-book/lsw-s2.html). AOS-S, EOS and Junos EX still require independent vendor-qualified mappings.
 
@@ -289,7 +289,7 @@ Implement by risk and fixture quality. Shared L2 and routing concepts offer reus
 
 **Priority:** P1 for unauthenticated active routing; P2 for policy/key-lifetime depth.
 
-**Status:** Bounded IOS/XE classic default-VRF IPv4 RIPv2 and EIGRP authentication; direct external-BGP IPv4 prefix-list, route-map and AS-path filter-list missing-reference/sole-permit-all checks; and explicit-UTC, assessment-time-gated OSPF/RIP/EIGRP key-lifetime viability implemented. Named/address-family EIGRP, named/VRF RIP, EOS/HP routing, broader filter effectiveness and other-platform/ambiguous-clock key-lifetime stages remain open. SC-005 remains partial.
+**Status:** Bounded IOS/XE classic default-VRF IPv4 RIPv2 and EIGRP authentication; direct external-BGP IPv4 prefix-list, route-map and AS-path filter-list missing-reference/sole-permit-all checks; and explicit-UTC, assessment-time-gated OSPF/RIP/EIGRP key-lifetime viability implemented. Named/address-family EIGRP, named/VRF RIP, EOS/HP routing, broader filter effectiveness and other-platform/ambiguous-clock key-lifetime stages remain open. For the EOS BGP stage (2026-09-24), the peer-group and VRF grammar was confirmed from the Arista BGP guide, but IPv4-unicast default activation and the `maximum-routes` default could not be confirmed from accessible sources. Those two defaults decide which peers are active and whether a prefix-limit finding is valid, so the stage waits for that evidence. SC-005 remains partial.
 
 **Source of Truth:** S03; IOS `check_routing` covers BGP/OSPF plus bounded classic RIPv2 and EIGRP interface/key-chain slices, using the [Cisco IOS RIP command reference](https://www.cisco.com/c/en/us/td/docs/ios/iproute_rip/command/reference/irr_book/irr_rip.html), [Cisco EIGRP command reference](https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/iproute_eigrp/command/ire-cr-book/ire-i1.html), and [Cisco EIGRP passive-interface FAQ](https://www.cisco.com/c/en/us/support/docs/ip/enhanced-interior-gateway-routing-protocol-eigrp/13681-eigrpfaq.html). Narrow BGP effects follow [Cisco's explicit prefix-list permit-all example](https://www.cisco.com/c/en/us/td/docs/routers/ios-xe/ip-routing/b-ip-routing/m_irg-external-sp-0.html), [route-map no-match semantics](https://www.cisco.com/c/en/us/td/docs/routers/ios-xe/ip-routing/b-ip-routing/m_iri-iprouting.html), and the [Cisco AS-path filter command reference](https://www.cisco.com/c/en/us/td/docs/ios/iproute_bgp/command/reference/irg_book/irg_bgp2.html); most routing filter forms still test attachment presence only. Junos baseline has BGP/OSPF; EOS/HP plugins lack equivalent routing-security analysis.
 
@@ -312,7 +312,7 @@ Implement by risk and fixture quality. Shared L2 and routing concepts offer reus
 
 **Priority:** P2.
 
-**Status:** Bounded 15.x-or-later IOS/XE explicit TFTP boot host/network retrieval implemented when assessment policy declares the device commissioned; CNS, PnP, other protocols and unqualified release/default interactions remain evidence-gated. SC-006 remains partial.
+**Status:** Bounded 15.x-or-later IOS/XE explicit TFTP boot host/network retrieval implemented when assessment policy declares the device commissioned. A CNS stage was added on 2026-09-24: an effective `cns config initial|partial <host>` without `encrypt` uses HTTP per the Cisco CNS command syntax (default port 80, or 443 with SSL) and is reported on commissioned devices, with ordered `no cns config` removal and the endpoint redacted. PnP, other protocols and unqualified release/default interactions remain evidence-gated. SC-006 remains partial.
 
 **Source of Truth:** S03 zero-touch control; IOS `check_unnecessary_services` covers finger/small servers/BOOTP. The bounded boot-config slice follows the [Cisco IOS XE configuration-file guide](https://www.cisco.com/c/en/us/td/docs/ios/ios_xe/fundamentals/configuration/guide/TIPs_conversion/config_mgmt_xe_3s_Book/cf_config-files_xe.html) and [Cisco IOS boot command reference](https://www.cisco.com/c/en/us/td/docs/ios/fundamentals/command/reference/cf_book/cf_a1.html), which qualifies the `no service config` interaction on modern releases. CNS/PnP remain open.
 
@@ -335,7 +335,7 @@ Implement by risk and fixture quality. Shared L2 and routing concepts offer reus
 
 **Priority:** P1.
 
-**Status:** Bounded local-firewall stage implemented for a resolved zone-protection profile with explicit SYN, UDP or ICMP flood disablement or a scan entry set to `allow` on a zone containing an interface assigned the external assessment role. A possible local DoS protect rule suppresses flood findings but not scan-allow findings; unmerged Panorama/template state suppresses both. Alert-only scan entries are not findings because the vendor documents alerting as a valid action. Required protection, other flood types, malformed/spoofed-packet settings, and exact DoS policy applicability remain open.
+**Status:** Bounded local-firewall stage implemented for a resolved zone-protection profile with explicit SYN, UDP or ICMP flood disablement or a scan entry set to `allow` on a zone containing an interface assigned the external assessment role. A possible local DoS protect rule suppresses flood findings but not scan-allow findings; unmerged Panorama/template state suppresses both. Alert-only scan entries are not findings because the vendor documents alerting as a valid action. Explicit ICMPv6 and other-IP flood disablement was added on 2026-09-24 (flood types named in the PAN-OS zone-protection documentation). Still open: required protection, SCTP INIT (release-dependent), malformed/spoofed-packet settings, and exact DoS policy applicability.
 
 **Source of Truth:** S05; PAN parser/plugin currently lack zone-protection/DoS models and evaluation.
 
@@ -358,7 +358,11 @@ Implement by risk and fixture quality. Shared L2 and routing concepts offer reus
 
 **Priority:** P1 screens; P2 IDP ineffective-action depth.
 
-**Status:** Stage A started: active zone-to-screen binding, explicit deactivated SYN/UDP/ICMP-flood options, and UDP/ICMP-flood alarm-only state are covered for assessed external SRX zones. Other screen controls, required-protection absence and Stage B IDP remain open pending scope and grammar qualification.
+**Status:**
+- **Stage A (started):** active zone-to-screen binding, explicit deactivated SYN/UDP/ICMP-flood options, and UDP/ICMP-flood alarm-only state are covered for assessed external SRX zones.
+- **Stage B (first increment, 2026-09-24):** the parser resolves IDP policies applied by active permit rules, both direct `idp-policy` and the legacy global `active-policy`. The plugin reports a resolved applied policy whose every active IPS rule has an explicit non-blocking action (`no-action`, `ignore-connection`, `mark-diffserv`, `class-of-service`; Junos IPS action reference).
+- **Not graded:** `recommended` actions, missing or ambiguous actions, unresolved or inherited policies, EX models, and attack-object/terminal-rule precedence.
+- **Still open:** other screen controls, required-protection absence, and per-attack-group blocking depth.
 
 **Source of Truth:** S08; [Junos baseline](../../src/analyze/juniper/junos/plugins/baseline_plugin.py) and [parser](../../src/devices/juniper/junos.py) do not evaluate `security screen ids-option` or active bound IDP protection.
 
@@ -427,7 +431,7 @@ Implement by risk and fixture quality. Shared L2 and routing concepts offer reus
 
 **Priority:** P1.
 
-**Status:** Ready after versioned inheritance/default qualification.
+**Status:** Management stage implemented (2026-09-24): an explicit `sys httpd ssl-protocol` is resolved with Apache mod_ssl `SSLProtocol` semantics and reported when it enables SSLv2/SSLv3/TLS 1.0/TLS 1.1. An explicit `ssl-ciphersuite` made only of literal OpenSSL suite names is reported when it offers 3DES/DES/RC4/NULL/export/MD5 suites. Keyword or exclusion lists and omitted, release-dependent defaults stay ungraded; for example, the pre-14.0 default enabled TLS 1.0. ClientSSL/ServerSSL protocol and cipher resolution through `defaults-from`, F5 cipher-string/cipher-group semantics and certificate material remain open.
 
 **Source of Truth:** S13; F5 parser currently resolves bound ClientSSL `allow-non-ssl`; it does not evaluate offered protocols/ciphers or certificate trust. Vendor [ClientSSL reference](https://clouddocs.f5.com/cli/tmsh-reference/v16/modules/ltm/ltm_profile_client-ssl.html) and management references are already in the plugin.
 
@@ -450,7 +454,7 @@ Implement by risk and fixture quality. Shared L2 and routing concepts offer reus
 
 **Priority:** P1 unrestricted writable SNMP; P2 other management/time weaknesses.
 
-**Status:** Evidence gate for saved-export grammar and supported authentication modes.
+**Status:** SNMP stage implemented (2026-09-24) from the TMOS `sys snmp` reference. Findings need an exported, reachable `allowed-addresses` scope (not loopback-only or `none`); the documented default is 127/localhost and is not graded. With that scope the tool reports: an any-address scope combined with communities; per-community well-known default names or `rw` access; and SNMPv3 users without `auth-privacy` or with MD5/DES. Community strings and user keys never leave the parser. NTP authentication remains an evidence gate: `sys ntp` has no key properties, and keys are only configurable through the unsupported raw `include` option, so configured servers are not graded.
 
 **Source of Truth:** F5 NDM benchmark above; F5 parser `_FIELDS` and plugin have no SNMP/NTP analysis. Qualify exact NDM control text and TMOS `sys snmp`/`sys ntp` documentation before selecting policy thresholds.
 
@@ -473,7 +477,7 @@ Implement by risk and fixture quality. Shared L2 and routing concepts offer reus
 
 **Priority:** P1 proven complete inspection bypass; P2 narrower content gaps.
 
-**Status:** Vendor intent verified; E-CLI grammar qualification required.
+**Status:** Vendor intent verified; E-CLI grammar qualification required. A research attempt on 2026-09-24 confirmed that IPS is enabled per zone (Object > Match Objects > Zones, "Enable IPS"), in addition to global enablement. The SonicWall CLI reference and knowledge-base pages were not machine-readable (bot protection), so the E-CLI zone syntax is still unverified. A sanitized `show current-config custom` export with zone security-service lines is needed before implementation.
 
 **Source of Truth:** S14; [Sonic plugin](../../src/analyze/sonicwall/plugins/sonicos_checks_plugin.py) `check_operations` checks global security-service toggles and Capture ATP dependencies; [parser](../../src/devices/sonicwall/sonicos.py) does not establish equivalent effective zone/protocol inspection.
 
@@ -496,7 +500,7 @@ Implement by risk and fixture quality. Shared L2 and routing concepts offer reus
 
 **Priority:** P1 explicit weak active crypto; P2 additional certificate/policy constraints.
 
-**Status:** IOS/XE selected HTTPS trustpoint public-certificate assessment and opt-in exact approved ASA IKE DH alternatives on enabled policy families implemented as bounded increments; ASA integrity/PFS depth and other platform stages remain evidence/policy-gated. SC-021 remains partial.
+**Status:** IOS/XE selected HTTPS trustpoint public-certificate assessment and opt-in exact approved ASA IKE DH alternatives on enabled policy families implemented as bounded increments; An ASA PFS stage was added on 2026-09-24. An explicit `set pfs groupN` on a static crypto-map entry attached to an interface, or on a dynamic-map entry referenced by an attached map, is reported for the project's existing legacy group set (1/2/5/14; the ASA command reference removed 1/2/5 from IKE in 9.15). `set pfs` without a group is release-dependent and is not graded. ASA integrity depth and the other platform stages remain evidence/policy-gated. SC-021 remains partial.
 
 **Source of Truth:** S04 VPN controls and source-linked platform crypto/certificate methods below. Existing obsolete-algorithm checks do not establish exact DH/hash/key-size policy or certificate validation. EOS eAPI TLS-profile selection is not full public-certificate assessment.
 

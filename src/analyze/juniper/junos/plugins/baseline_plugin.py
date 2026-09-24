@@ -94,6 +94,16 @@ JUNIPER_DEFAULT_POLICY_REFERENCE = (
     "https://www.juniper.net/documentation/us/en/software/junos/cli-reference/"
     "topics/ref/statement/security-edit-default-policy.html"
 )
+JUNIPER_IDP_ACTION_REFERENCE = (
+    "https://www.juniper.net/documentation/us/en/software/junos/cli-reference/"
+    "topics/ref/statement/security-edit-action.html"
+)
+JUNIPER_IDP_RULEBASE_REFERENCE = (
+    "https://www.juniper.net/documentation/us/en/software/junos/idp-policy/"
+    "topics/topic-map/security-idp-policy-rules-and-rulebases.html"
+)
+# IPS rulebase actions that never stop an attack (vendor action reference).
+IDP_NON_BLOCKING_ACTIONS = frozenset({"no-action", "ignore-connection", "mark-diffserv", "class-of-service"})
 JUNIPER_SCREEN_REFERENCE = (
     "https://www.juniper.net/documentation/us/en/software/junos/"
     "cli-reference/topics/ref/statement/security-edit-syn-flood.html"
@@ -1035,6 +1045,41 @@ class PluginJunOSBaseline(BasePlugin):
                         (JUNIPER_SCREEN_OPTION_REFERENCE, reference),
                     ))
 
+    def check_idp_actions(self, parser: BaseDeviceParser) -> None:
+        """Report an IDP policy applied by a permit rule whose every IPS rule is non-blocking."""
+
+        junos = self._junos(parser)
+        if (
+            junos.parse_error
+            or not junos.get_model().upper().startswith("SRX")
+            or junos.has_unexpanded_inheritance()
+        ):
+            return
+        for binding in junos.get_idp_bindings():
+            if binding.resolution_state != "resolved" or not binding.rules:
+                continue
+            actions = {rule.action for rule in binding.rules}
+            if None in actions or not actions <= IDP_NON_BLOCKING_ACTIONS:
+                continue
+            evidence = tuple(binding.evidence) + tuple(
+                item for rule in binding.rules for item in rule.evidence
+            )
+            self.add_issue(self._finding(
+                parser,
+                "juniper.junos.policy.idp_nonblocking",
+                "Applied IDP policy has no blocking rule",
+                (
+                    f"Security policy {binding.from_zone}->{binding.to_zone} '{binding.security_policy}' "
+                    f"permits traffic with IDP policy '{binding.idp_policy}', but every active IPS rule "
+                    f"in that policy uses a non-blocking action ({', '.join(sorted(actions))})."
+                ),
+                "Detected attacks in this permitted traffic are at most logged; the IDP policy cannot stop them.",
+                "Use a blocking action (for example drop-connection or recommended) for rules that match high-risk attacks, after validating false positives.",
+                Severity.MEDIUM,
+                evidence,
+                (JUNIPER_IDP_ACTION_REFERENCE, JUNIPER_IDP_RULEBASE_REFERENCE),
+            ))
+
     def analyze(self, parser: BaseDeviceParser) -> None:
         self.check_ssh_algorithms(parser)
         self.check_additional_services(parser)
@@ -1053,3 +1098,4 @@ class PluginJunOSBaseline(BasePlugin):
         self.check_routing(parser)
         self.check_discovery(parser)
         self.check_zone_screens(parser)
+        self.check_idp_actions(parser)

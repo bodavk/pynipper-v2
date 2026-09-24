@@ -85,6 +85,10 @@ CISCO_IOS_BOOT_CONFIG_GUIDE = (
     "https://www.cisco.com/c/en/us/td/docs/ios/ios_xe/fundamentals/"
     "configuration/guide/TIPs_conversion/config_mgmt_xe_3s_Book/cf_config-files_xe.html"
 )
+CISCO_IOS_CNS_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/cns/configuration/xe-16/"
+    "cns-xe-16-book/cns-config-agent.html"
+)
 CISCO_IOS_KEY_LIFETIME_GUIDE = (
     "https://www.cisco.com/c/en/us/td/docs/ios/"
     "iproute_pi/command/reference/iri_book/iri_pi2.html"
@@ -1079,6 +1083,21 @@ class PluginIOSBaseline(BasePlugin):
                 tuple(item for item in retrieval.evidence)
                 + ("assessment policy: device lifecycle commissioned",),
                 (CISCO_IOS_BOOT_CONFIG_GUIDE,),
+            ))
+        for retrieval in self._ios(parser).get_cns_config_retrievals():
+            if retrieval.protocol != "http":
+                continue
+            self.add_issue(self._finding(
+                parser,
+                "cisco.ios.services.cns_config_cleartext",
+                "Commissioned device retrieves CNS configuration without encryption",
+                f"The {retrieval.kind} configuration agent is configured without the 'encrypt' keyword, so it retrieves configuration over HTTP on an assessed commissioned device.",
+                "An attacker able to observe or influence the path to the CNS server could read or alter configuration pushed to the device.",
+                "Remove the CNS configuration agent from commissioned devices, or add 'encrypt' and use an approved authenticated configuration server.",
+                Severity.HIGH,
+                tuple(item for item in retrieval.evidence)
+                + ("assessment policy: device lifecycle commissioned",),
+                (CISCO_IOS_CNS_GUIDE,),
             ))
 
     def check_interface_protections(self, parser: BaseDeviceParser) -> None:

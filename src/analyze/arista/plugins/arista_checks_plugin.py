@@ -18,6 +18,7 @@ ARISTA_DISPLAY_GUIDE = "https://www.arista.com/en/um-eos/eos-managing-display-at
 ARISTA_TLS_GUIDE = "https://www.arista.com/en/um-eos/eos-control-plane-security"
 ARISTA_CONTROL_PLANE_GUIDE = "https://www.arista.com/en/um-eos/eos-traffic-management"
 ARISTA_CONTROL_PLANE_ACL_GUIDE = "https://www.arista.com/en/um-eos/eos-data-transfer"
+ARISTA_STP_GUIDE = "https://www.arista.com/en/um-eos/eos-spanning-tree-protocol"
 ARISTA_LOGGING_GUIDE = "https://www.arista.com/en/um-eos/eos-switch-administration-commands"
 
 
@@ -862,6 +863,46 @@ class PluginAristaChecks(BasePlugin):
                     evidence=evidence,
                     references=(ARISTA_CONTROL_PLANE_GUIDE,),
                 ))
+    def check_bpdu_guard(self, parser: BaseDeviceParser) -> None:
+        """Explicitly ineffective BPDU guard on assessed EOS access-edge ports."""
+
+        for port in self._eos(parser).get_bpdu_guard_policies():
+            if (not port.active or port.role != "access-edge" or port.lag_member
+                    or port.mode != "access"):
+                continue
+            evidence = tuple(port.evidence) + (f"assessment policy: {port.interface} role access-edge",)
+            if port.guard_enabled is False:
+                cause = {
+                    "local-disabled": "'spanning-tree bpduguard disable' overrides any edge-port default",
+                    "global-disabled": "the global edge-port BPDU-guard default is explicitly disabled",
+                    "portfast-disabled": "the port is explicitly not a portfast port, so the portfast-only guard default does not apply",
+                }.get(port.guard_state, "BPDU guard is explicitly ineffective")
+                self.add_issue(Finding(
+                    rule_id="arista.eos.layer2.access_edge.bpdu_guard_ineffective",
+                    device=parser.device_type,
+                    title="Access-edge port has ineffective BPDU guard",
+                    observation=f"Interface {port.interface} is an assessed access edge, but {cause}.",
+                    impact="A connected device can send BPDUs without the port being disabled, potentially affecting spanning-tree topology.",
+                    exploitability="A user or attacker on the access port can connect a bridge or send crafted BPDUs.",
+                    recommendation="Enable BPDU guard on this access port ('spanning-tree bpduguard enable'), or make it a portfast port covered by 'spanning-tree edge-port bpduguard default'.",
+                    severity=Severity.MEDIUM,
+                    evidence=evidence,
+                    references=(ARISTA_STP_GUIDE,),
+                ))
+            elif port.guard_enabled is True and port.filter_enabled is True:
+                self.add_issue(Finding(
+                    rule_id="arista.eos.layer2.access_edge.bpdu_filter_bypass",
+                    device=parser.device_type,
+                    title="Access-edge BPDU filtering can bypass guard",
+                    observation=f"Interface {port.interface} has BPDU guard but also 'spanning-tree bpdufilter enable'.",
+                    impact="BPDU filtering stops the port from receiving BPDUs, so the guard may never see the BPDU that should disable the port.",
+                    exploitability="A bridge connected to the access port may go undetected.",
+                    recommendation="Remove BPDU filtering from the assessed access edge and keep BPDU guard.",
+                    severity=Severity.MEDIUM,
+                    evidence=evidence,
+                    references=(ARISTA_STP_GUIDE,),
+                ))
+
     def analyze(self, parser: BaseDeviceParser) -> None:
         self.check_management_api(parser)
         self.check_authentication(parser)
@@ -871,3 +912,4 @@ class PluginAristaChecks(BasePlugin):
         self.check_snmp(parser)
         self.check_operations(parser)
         self.check_control_plane(parser)
+        self.check_bpdu_guard(parser)

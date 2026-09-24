@@ -51,6 +51,10 @@ CISCO_ASA_IKE_POLICY_REFERENCE = (
     "https://www.cisco.com/c/en/us/td/docs/security/asa/"
     "asa-cli-reference/A-H/asa-command-ref-A-H/crypto-a-to-crypto-ir-commands.html"
 )
+CISCO_ASA_CRYPTO_MAP_REFERENCE = (
+    "https://www.cisco.com/c/en/us/td/docs/security/asa/asa-cli-reference/A-H/"
+    "asa-command-ref-A-H/crypto-is-cz-commands.html"
+)
 CISCO_ASA_WEBVPN_AUTH_REFERENCE = (
     "https://www.cisco.com/c/en/us/td/docs/security/asa/asa916/"
     "configuration/vpn/asa-916-vpn-config/vpn-groups.html"
@@ -536,6 +540,17 @@ class PluginASABaseline(BasePlugin):
                     "Replace legacy transforms with AES and SHA-256 or authenticated encryption.",
                     Severity.HIGH, (binding.declaration, binding.map_binding, binding.map_attachment),
                 ))
+
+        for pfs in self._asa(parser).get_active_pfs_bindings():
+            if pfs.group not in {"1", "2", "5", "14"}:
+                continue
+            self.add_issue(self._finding(
+                parser, "cisco.asa.crypto.legacy_pfs", "IPsec PFS uses a legacy Diffie-Hellman group",
+                f"A crypto map attached to interface '{pfs.interface}' sets PFS to DH group {pfs.group}, which is in this project's legacy set (groups 1, 2, 5 and 14; groups 1, 2 and 5 were removed from ASA IKE in 9.15).",
+                "New IPsec keys are derived with a weak key exchange, reducing forward secrecy for protected traffic.",
+                "Set PFS to an approved modern group such as 19, 20 or 21, supported by the peer.",
+                Severity.HIGH, tuple(pfs.evidence), (CISCO_ASA_CRYPTO_MAP_REFERENCE,),
+            ))
 
     def check_remote_access_authentication(self, parser: BaseDeviceParser) -> None:
         if not parser.assessment_context.asa_ra_require_client_certificate:

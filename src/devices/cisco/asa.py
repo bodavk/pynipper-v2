@@ -234,6 +234,15 @@ class ASAIPsecTransformBinding:
 
 
 @dataclass(frozen=True)
+class ASAPFSBinding:
+    """Explicit PFS group of a crypto-map entry attached to an interface."""
+
+    group: str
+    interface: str
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
 class ASASSLServicePolicy:
     active_interfaces: tuple[str, ...]
     server_minimum: str | None
@@ -583,6 +592,67 @@ class CiscoASAParser(BaseDeviceParser):
                         results.append(ASAIPsecTransformBinding(
                             name, declaration, f"{parent_binding}; {binding}", attachment, interface,
                         ))
+        return tuple(results)
+
+    def get_active_pfs_bindings(self) -> tuple[ASAPFSBinding, ...]:
+        """Resolve explicit ``set pfs groupN`` on crypto-map entries attached to interfaces.
+
+        Static entries apply through ``crypto map NAME interface IF``; dynamic-map
+        entries apply through a static ``ipsec-isakmp dynamic`` reference. A
+        ``set pfs`` without a group uses a release-dependent default and is not
+        returned. Removal of the entry or of ``set pfs`` is honored in order.
+        """
+        static_pfs: dict[tuple[str, str], tuple[str, ConfigEvidence]] = {}
+        dynamic_pfs: dict[tuple[str, str], tuple[str, ConfigEvidence]] = {}
+        dynamic_refs: dict[tuple[str, str], tuple[str, ConfigEvidence]] = {}
+        attachments: dict[tuple[str, str], ConfigEvidence] = {}
+        for number, source_line in enumerate(self._source_lines, start=1):
+            line = source_line.strip()
+            words = line.split()
+            if not words:
+                continue
+            removal = words[0].casefold() == "no"
+            body = words[1:] if removal else words
+            lower = [word.casefold() for word in body]
+            if len(body) < 4 or lower[0] != "crypto" or lower[1] not in {"map", "dynamic-map"}:
+                continue
+            evidence = ConfigEvidence(line, self.config_filepath, number)
+            name = lower[2]
+            if lower[1] == "map" and lower[3] == "interface" and len(body) >= 5:
+                key = (name, lower[4])
+                if removal:
+                    attachments.pop(key, None)
+                else:
+                    attachments[key] = evidence
+                continue
+            sequence = body[3]
+            target = static_pfs if lower[1] == "map" else dynamic_pfs
+            if removal and len(body) == 4:
+                target.pop((name, sequence), None)
+                dynamic_refs.pop((name, sequence), None)
+            elif lower[4:6] == ["set", "pfs"]:
+                if removal:
+                    target.pop((name, sequence), None)
+                elif len(body) >= 7 and re.fullmatch(r"group\d+", lower[6]):
+                    target[(name, sequence)] = (lower[6][5:], evidence)
+                else:
+                    target.pop((name, sequence), None)
+            elif lower[1] == "map" and lower[4:6] == ["ipsec-isakmp", "dynamic"] and len(body) >= 7:
+                if removal:
+                    dynamic_refs.pop((name, sequence), None)
+                else:
+                    dynamic_refs[(name, sequence)] = (lower[6], evidence)
+        results: list[ASAPFSBinding] = []
+        for (map_name, interface), attachment in attachments.items():
+            for (candidate, _), (group, evidence) in static_pfs.items():
+                if candidate == map_name:
+                    results.append(ASAPFSBinding(group, interface, (evidence, attachment)))
+            for (candidate, _), (dynamic_name, reference) in dynamic_refs.items():
+                if candidate != map_name:
+                    continue
+                for (dynamic_candidate, _), (group, evidence) in dynamic_pfs.items():
+                    if dynamic_candidate == dynamic_name:
+                        results.append(ASAPFSBinding(group, interface, (evidence, reference, attachment)))
         return tuple(results)
 
     def _global_lines(self) -> list[str]:
