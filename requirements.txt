@@ -1,5 +1,7 @@
 tqdm==4.56.2
 requests==2.31.0
+# Lets the optional NVD lookup trust the OS certificate store (HTTPS inspection proxies).
+truststore>=0.10,<1
 Jinja2==2.11.3
 # Jinja2 2.11 imports markupsafe.soft_unicode, removed in MarkupSafe 2.1 (see PT-001/PT-008).
 MarkupSafe>=2.0,<2.1

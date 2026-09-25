@@ -27,13 +27,53 @@ class NVDError(RuntimeError):
     """A request to NVD failed or returned an unexpected document."""
 
 
+_TLS_HINT = (
+    "The HTTPS certificate of NVD could not be verified. This usually means a proxy, firewall "
+    "or antivirus inspects HTTPS with its own certificate authority. Install the requirements "
+    "again (pynipper uses the 'truststore' package to trust the operating-system certificate "
+    "store), or set REQUESTS_CA_BUNDLE to your organization's CA file. Alternatively, save a "
+    "bundle on a machine that can reach NVD and use --cve-data."
+)
+
+
+def _tls_reason(error: BaseException) -> str:
+    """A short, secret-free reason such as CERTIFICATE_VERIFY_FAILED."""
+
+    text = str(error)
+    for marker in ("CERTIFICATE_VERIFY_FAILED", "WRONG_VERSION_NUMBER", "UNEXPECTED_EOF",
+                   "TLSV1_ALERT", "hostname mismatch", "self-signed certificate",
+                   "unable to get local issuer certificate", "certificate has expired"):
+        if marker.casefold() in text.casefold():
+            return marker
+    return type(error).__name__
+
+
 def _requests_get(url: str, headers: dict, timeout: int) -> dict:
     import requests  # imported lazily: offline runs never need it
 
+    # Verify NVD's certificate against the operating-system trust store when the
+    # optional 'truststore' package is present, so HTTPS inspection CAs that the
+    # organization installed in Windows/macOS are honored. The injection is undone
+    # after the request.
+    try:
+        import truststore
+    except ImportError:
+        truststore = None
+    if truststore is not None:
+        truststore.inject_into_ssl()
     try:
         response = requests.get(url, headers=headers, timeout=timeout)
+    except requests.exceptions.SSLError as error:
+        raise NVDError(f"NVD request failed: TLS verification error ({_tls_reason(error)}). {_TLS_HINT}") from None
+    except requests.exceptions.ProxyError:
+        raise NVDError("NVD request failed: the configured HTTP(S) proxy refused or could not reach NVD") from None
+    except requests.exceptions.Timeout:
+        raise NVDError("NVD request failed: the request timed out") from None
     except requests.RequestException as error:
         raise NVDError(f"NVD request failed: {type(error).__name__}") from None
+    finally:
+        if truststore is not None:
+            truststore.extract_from_ssl()
     if response.status_code != 200:
         raise NVDError(f"NVD returned HTTP {response.status_code}")
     try:

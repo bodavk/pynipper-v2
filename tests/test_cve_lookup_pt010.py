@@ -262,3 +262,43 @@ def test_cli_refuses_to_overwrite_a_bundle(tmp_path, capsys):
         main(["-d", "fortios", "-i", str(FORTIOS), "-f", str(tmp_path / "r.html"),
               "--cve-lookup", "--cve-save", str(existing)])
     assert "new file" in capsys.readouterr().err
+
+
+def test_tls_failure_explains_the_likely_cause(monkeypatch):
+    import sys
+    import types
+
+    import requests
+
+    calls = []
+    fake_truststore = types.SimpleNamespace(
+        inject_into_ssl=lambda: calls.append("inject"),
+        extract_from_ssl=lambda: calls.append("extract"),
+    )
+    monkeypatch.setitem(sys.modules, "truststore", fake_truststore)
+
+    def failing_get(*_, **__):
+        calls.append("get")
+        raise requests.exceptions.SSLError(
+            "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate"
+        )
+
+    monkeypatch.setattr(requests, "get", failing_get)
+    with pytest.raises(NVDError) as error:
+        nvd._requests_get("https://services.nvd.nist.gov/rest/json/cpes/2.0?x=1", {}, 5)
+    message = str(error.value)
+    assert "CERTIFICATE_VERIFY_FAILED" in message and "REQUESTS_CA_BUNDLE" in message
+    assert "--cve-data" in message
+    # The OS trust store is used for the request and removed again afterwards.
+    assert calls == ["inject", "get", "extract"]
+
+
+def test_request_works_without_truststore(monkeypatch):
+    import sys
+
+    import requests
+
+    monkeypatch.setitem(sys.modules, "truststore", None)  # import fails
+    response = type("R", (), {"status_code": 200, "json": lambda self: {"totalResults": 0}})()
+    monkeypatch.setattr(requests, "get", lambda *_, **__: response)
+    assert nvd._requests_get("https://example.invalid", {}, 5) == {"totalResults": 0}

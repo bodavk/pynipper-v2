@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Opt-in CVE lookup for the configured software release (PT-010): `--cve-lookup` queries the free NVD CVE/CPE APIs, `--software-version` supplies an exact release when the export only states a train, and `--cve-save`/`--cve-data` store and replay the responses offline. Reports list the matching CVEs with CVSS and CISA KEV status, mark CVEs that also need a platform condition, and state when a release cannot be looked up. Default runs make no request. JSON adds `software-advisory-lookup` and fuller `vulnerabilities` records; Cisco openVuln rows now serialize to JSON.
+- Opt-in CVE lookup for the configured software release (PT-010): `--cve-lookup` queries the free NVD CVE/CPE APIs, `--software-version` supplies an exact release when the export only states a train, and `--cve-save`/`--cve-data` store and replay the responses offline. Reports list the matching CVEs with CVSS and CISA KEV status, mark CVEs that also need a platform condition, and state when a release cannot be looked up. Default runs make no request. JSON adds `software-advisory-lookup` and fuller `vulnerabilities` records; Cisco openVuln rows now serialize to JSON. NVD requests trust the operating-system certificate store (`truststore`), and TLS, proxy and timeout failures are reported with their cause and a fix.
 
 ### Changed
 
