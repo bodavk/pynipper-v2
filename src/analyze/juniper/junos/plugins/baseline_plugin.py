@@ -5,11 +5,23 @@ from dataclasses import replace
 
 from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.credentials import credential_policy_from_context, evaluate_credential
-from src.analyze.common.issue import Finding, Severity
+from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.juniper.junos import JunOSParser, JunosStatement
 
 
+JUNIPER_BPDU_BLOCK_REFERENCE = (
+    "https://www.juniper.net/documentation/us/en/software/junos/cli-reference/topics/ref/"
+    "statement/bpdu-block-edit-protocols-layer2-control.html"
+)
+JUNIPER_BPDU_ON_EDGE_REFERENCE = (
+    "https://www.juniper.net/documentation/us/en/software/junos/cli-reference/topics/ref/"
+    "statement/bpdu-block-on-edge-edit-protocols-stp.html"
+)
+JUNIPER_DOT1X_SUPPLICANT_GUIDE = (
+    "https://www.juniper.net/documentation/us/en/software/junos/user-access/topics/example/"
+    "802-1x-pnac-single-supplicant-multiple-supplicant-configuring.html"
+)
 JUNIPER_ACCESS_GUIDE = (
     "https://www.juniper.net/documentation/us/en/software/junos/"
     "user-access/topics/topic-map/junos-software-remote-access-overview.html"
@@ -740,6 +752,7 @@ class PluginJunOSBaseline(BasePlugin):
                     Severity.MEDIUM,
                     ("system ntp server/peer absent",),
                     (JUNIPER_NTP_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
             return
@@ -1082,6 +1095,43 @@ class PluginJunOSBaseline(BasePlugin):
                 (JUNIPER_IDP_ACTION_REFERENCE, JUNIPER_IDP_RULEBASE_REFERENCE),
             ))
 
+    def check_access_edge(self, parser: BaseDeviceParser) -> None:
+        """BPDU protection and 802.1X supplicant mode on declared access edges (SC-003/SC-004)."""
+
+        for port in self._junos(parser).get_access_edge_ports():
+            if not port.active or port.access_mode is not True:
+                continue
+            evidence = port.evidence + (f"assessment policy: {port.interface} role access-edge",)
+            if port.bpdu_protection == "none":
+                self.add_issue(self._finding(
+                    parser,
+                    "juniper.junos.layer2.access_edge.bpdu_protection_missing",
+                    "Access-edge port has no BPDU protection",
+                    f"Interface {port.interface} is an assessed access edge, but no bpdu-block statement covers it "
+                    "and it is not an edge port under bpdu-block-on-edge. Juniper documents BPDU protection as not enabled by default.",
+                    "A connected bridge or crafted BPDU can influence the spanning-tree topology.",
+                    "Add 'set protocols layer2-control bpdu-block interface <port>', or mark the port 'edge' "
+                    "and enable 'bpdu-block-on-edge' for the spanning-tree protocol in use.",
+                    Severity.MEDIUM,
+                    evidence,
+                    (JUNIPER_BPDU_BLOCK_REFERENCE, JUNIPER_BPDU_ON_EDGE_REFERENCE),
+                    basis=FindingBasis.DOCUMENTED_DEFAULT,
+                ))
+            if port.supplicant_mode == "single":
+                self.add_issue(self._finding(
+                    parser,
+                    "juniper.junos.layer2.access_edge.dot1x_single_supplicant",
+                    "Access-edge 802.1X admits unauthenticated devices after the first",
+                    f"Interface {port.interface} uses 'supplicant single': after the first device authenticates, "
+                    "all later devices are admitted without authentication.",
+                    "A device placed behind an authenticated endpoint (for example through a hub) gets network access without credentials.",
+                    "Use 'supplicant single-secure' or 'supplicant multiple' on assessed access edges.",
+                    Severity.MEDIUM,
+                    evidence,
+                    (JUNIPER_DOT1X_SUPPLICANT_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
+                ))
+
     def analyze(self, parser: BaseDeviceParser) -> None:
         self.check_ssh_algorithms(parser)
         self.check_additional_services(parser)
@@ -1099,5 +1149,6 @@ class PluginJunOSBaseline(BasePlugin):
         self.check_redirects(parser)
         self.check_routing(parser)
         self.check_discovery(parser)
+        self.check_access_edge(parser)
         self.check_zone_screens(parser)
         self.check_idp_actions(parser)

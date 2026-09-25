@@ -19,6 +19,7 @@ ARISTA_TLS_GUIDE = "https://www.arista.com/en/um-eos/eos-control-plane-security"
 ARISTA_CONTROL_PLANE_GUIDE = "https://www.arista.com/en/um-eos/eos-traffic-management"
 ARISTA_CONTROL_PLANE_ACL_GUIDE = "https://www.arista.com/en/um-eos/eos-data-transfer"
 ARISTA_STP_GUIDE = "https://www.arista.com/en/um-eos/eos-spanning-tree-protocol"
+ARISTA_DOT1X_GUIDE = "https://www.arista.com/en/um-eos/eos-control-plane-security"
 ARISTA_LOGGING_GUIDE = "https://www.arista.com/en/um-eos/eos-switch-administration-commands"
 
 
@@ -729,6 +730,7 @@ class PluginAristaChecks(BasePlugin):
                     severity=Severity.LOW,
                     evidence=("NTP server absent",),
                     references=(ARISTA_TIME_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
         else:
@@ -910,6 +912,42 @@ class PluginAristaChecks(BasePlugin):
                     references=(ARISTA_STP_GUIDE,),
                 ))
 
+    def check_access_admission(self, parser: BaseDeviceParser) -> None:
+        """Explicit 802.1X bypasses on assessed EOS access-edge ports (SC-003)."""
+
+        for port in self._eos(parser).get_access_admission_interfaces():
+            if not port.active or port.role != "access-edge" or port.mode != "access":
+                continue
+            evidence = tuple(port.evidence) + (f"assessment policy: {port.interface} role access-edge",)
+            if port.port_control == "force-authorized":
+                self.add_issue(Finding(
+                    rule_id="arista.eos.layer2.access_edge.dot1x_force_authorized",
+                    device=parser.device_type,
+                    title="Access-edge port bypasses 802.1X authentication",
+                    observation=f"Interface {port.interface} is explicitly 'dot1x port-control force-authorized', which disables 802.1X and authorizes the port.",
+                    impact="An endpoint gets network access without port-based authentication; other independent restrictions are not assessed by this finding.",
+                    exploitability="Anyone who can plug into the port gets access without credentials.",
+                    recommendation="Use 'dot1x port-control auto' with 'dot1x pae authenticator' and global 'dot1x system-auth-control', or document an approved exception.",
+                    severity=Severity.HIGH,
+                    evidence=evidence,
+                    references=(ARISTA_DOT1X_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
+                ))
+            elif port.port_control == "auto" and port.global_dot1x is False:
+                self.add_issue(Finding(
+                    rule_id="arista.eos.layer2.access_edge.dot1x_global_disabled",
+                    device=parser.device_type,
+                    title="Access-edge 802.1X is globally disabled",
+                    observation=f"Interface {port.interface} selects 'dot1x port-control auto', but 'no dot1x system-auth-control' disables 802.1X on the switch.",
+                    impact="The port authenticator cannot enforce admission while system authentication is disabled.",
+                    exploitability="Anyone who can plug into the port may get access without credentials.",
+                    recommendation="Enable 'dot1x system-auth-control' and verify the RADIUS configuration before relying on port authentication.",
+                    severity=Severity.HIGH,
+                    evidence=evidence,
+                    references=(ARISTA_DOT1X_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
+                ))
+
     def analyze(self, parser: BaseDeviceParser) -> None:
         self.check_management_api(parser)
         self.check_authentication(parser)
@@ -920,3 +958,4 @@ class PluginAristaChecks(BasePlugin):
         self.check_operations(parser)
         self.check_control_plane(parser)
         self.check_bpdu_guard(parser)
+        self.check_access_admission(parser)

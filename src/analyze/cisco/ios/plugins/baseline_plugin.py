@@ -841,6 +841,7 @@ class PluginIOSBaseline(BasePlugin):
                     "Configure one or more protected remote logging hosts.",
                     Severity.MEDIUM,
                     ("No logging host command",),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
             return
@@ -965,6 +966,7 @@ class PluginIOSBaseline(BasePlugin):
                     "Configure multiple trusted NTP servers.",
                     Severity.MEDIUM,
                     ("No ntp server or peer command",),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
             return
@@ -1002,6 +1004,7 @@ class PluginIOSBaseline(BasePlugin):
                     "Configure an approved legal warning with 'banner login'.",
                     Severity.LOW,
                     ("No banner login or banner motd command",),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
 
@@ -1436,6 +1439,8 @@ class PluginIOSBaseline(BasePlugin):
             if state in {"configured-md5", "unknown"}:
                 continue
             scope = f"RIPv2 network {interface.network} on {interface.interface}"
+            if interface.vrf != "default":
+                scope += f" in VRF {interface.vrf}"
             if interface.passive:
                 scope += " (passive for outbound updates, still receiving)"
             if state == "version1-accepted":

@@ -17,10 +17,10 @@ from typing import Callable, Optional
 
 from .model import SoftwareAdvisory
 from .nvd import NVD_CVE_URL, NVDClient, NVDError
-from .versions import ProductVersion, VersionUnavailable, product_version, split_cpe
+from .versions import ProductVersion, VersionUnavailable, product_versions, split_cpe
 
 BUNDLE_FORMAT = "pynipper-nvd-bundle"
-BUNDLE_VERSION = 1
+BUNDLE_VERSION = 2  # 2: several products (BIG-IP modules); 1 is still read
 
 LIMITATIONS = (
     "Matches come from NVD applicability data for the exact release. NVD may not yet have "
@@ -103,14 +103,18 @@ def _metric(metrics: dict) -> tuple[Optional[float], str, str]:
     return None, "", "Unknown"
 
 
-def _conditional(cve: dict, target: ProductVersion) -> bool:
-    """True when every applicability statement naming this product combines it (AND) with another condition."""
+def _targets(targets) -> list[ProductVersion]:
+    return [targets] if isinstance(targets, ProductVersion) else list(targets)
 
+
+def _conditional(cve: dict, targets) -> bool:
+    """True when every applicability statement naming these products combines them (AND) with another condition."""
+
+    products = {(t.part, t.vendor, t.product) for t in _targets(targets)}
     relevant = []
     for configuration in cve.get("configurations", ()):
         names_product = any(
-            match.get("vulnerable") and split_cpe(match.get("criteria", ""))[2:5]
-            == [target.part, target.vendor, target.product]
+            match.get("vulnerable") and tuple(split_cpe(match.get("criteria", ""))[2:5]) in products
             for node in configuration.get("nodes", ())
             for match in node.get("cpeMatch", ())
         )
@@ -124,7 +128,7 @@ def _conditional(cve: dict, target: ProductVersion) -> bool:
     )
 
 
-def advisories_from_pages(target: ProductVersion, cve_pages: dict[str, list[dict]]) -> list[SoftwareAdvisory]:
+def advisories_from_pages(targets, cve_pages: dict[str, list[dict]]) -> list[SoftwareAdvisory]:
     found: dict[str, SoftwareAdvisory] = {}
     matched: dict[str, list[str]] = {}
     for cpe_name, pages in cve_pages.items():
@@ -155,7 +159,7 @@ def advisories_from_pages(target: ProductVersion, cve_pages: dict[str, list[dict
                     nvd_status=str(cve.get("vulnStatus", "")),
                     kev_date=str(cve.get("cisaExploitAdd") or ""),
                     kev_name=str(cve.get("cisaVulnerabilityName") or ""),
-                    conditional=_conditional(cve, target),
+                    conditional=_conditional(cve, targets),
                 )
     result = [
         SoftwareAdvisory(**{**advisory.__dict__, "matched_cpe": tuple(matched[advisory.cve_id])})
@@ -164,19 +168,23 @@ def advisories_from_pages(target: ProductVersion, cve_pages: dict[str, list[dict
     return sorted(result, key=SoftwareAdvisory.sort_key)
 
 
-def _load_bundle(path: str, target: ProductVersion) -> dict:
+def _load_bundle(path: str, targets: list[ProductVersion]) -> dict:
     with open(path, encoding="utf-8") as handle:
         bundle = json.load(handle)
     if not isinstance(bundle, dict) or bundle.get("format") != BUNDLE_FORMAT:
         raise ValueError("The file is not a pynipper NVD bundle.")
-    if bundle.get("format-version") != BUNDLE_VERSION:
+    if bundle.get("format-version") == 1:
+        bundle = {**bundle, "products": [bundle.get("product") or {}]}
+    elif bundle.get("format-version") != BUNDLE_VERSION:
         raise ValueError("The bundle format version is not supported.")
-    if bundle.get("product") != target.to_dict():
-        stored = bundle.get("product") or {}
-        raise LookupError(
-            f"The bundle is for {stored.get('product', '?')} {stored.get('version', '?')}"
-            f"{' ' + stored['update'] if stored.get('update') else ''}, not {target.product} {target.display}."
-        )
+    stored = bundle.get("products") or []
+    if stored != [target.to_dict() for target in targets]:
+        described = ", ".join(
+            f"{item.get('product', '?')} {item.get('version', '?')}"
+            f"{' ' + item['update'] if item.get('update') else ''}" for item in stored
+        ) or "?"
+        wanted = ", ".join(f"{target.product} {target.display}" for target in targets)
+        raise LookupError(f"The bundle is for {described}, not {wanted}.")
     return bundle
 
 
@@ -191,6 +199,7 @@ def lookup_software_advisories(
     configured_version: str,
     request: Optional[AdvisoryRequest],
     client_factory: Callable[..., NVDClient] = NVDClient,
+    modules: Optional[dict[str, str]] = None,
 ) -> tuple[list[SoftwareAdvisory], dict]:
     if request is None or not request.requested:
         return [], not_requested_status()
@@ -199,22 +208,29 @@ def lookup_software_advisories(
     base = {"device": str(device), "configured-version": configured_version or None,
             "version-origin": origin}
     try:
-        target = product_version(device, version)
+        targets = product_versions(device, version, modules)
     except VersionUnavailable as error:
         return [], _status("unavailable", reason=str(error), **{"reason-code": error.reason}, **base)
-    base.update({"product": target.product_prefix, "version": target.display, "note": target.note or None})
+    target = targets[0]
+    base.update({
+        "product": ", ".join(item.product_prefix for item in targets),
+        "version": target.display, "note": target.note or None,
+    })
     try:
         if request.bundle_path:
-            bundle = _load_bundle(request.bundle_path, target)
+            bundle = _load_bundle(request.bundle_path, targets)
             source = f"Saved NVD bundle ({Path(request.bundle_path).name})"
         else:
             client = client_factory(api_key=request.api_key)
-            cpe_pages = client.cpe_pages(target.match_string())
-            names = select_cpe_names(target, cpe_pages)
+            cpe_pages: dict[str, list[dict]] = {}
+            names: list[str] = []
+            for item in targets:
+                cpe_pages[item.product_prefix] = client.cpe_pages(item.match_string())
+                names.extend(select_cpe_names(item, cpe_pages[item.product_prefix]))
             bundle = {
                 "format": BUNDLE_FORMAT, "format-version": BUNDLE_VERSION,
                 "retrieved-at": _now(), "source": NVD_CVE_URL,
-                "product": target.to_dict(), "cpe-names": names,
+                "products": [item.to_dict() for item in targets], "cpe-names": names,
                 "cpe-pages": cpe_pages,
                 "cve-pages": {name: client.cve_pages(name) for name in names},
             }
@@ -232,6 +248,10 @@ def lookup_software_advisories(
             base["save-error"] = f"The NVD bundle was not saved: {error.strerror or error}"
     names = bundle.get("cpe-names") or []
     base.update({"source": source, "retrieved-at": bundle.get("retrieved-at"), "cpe-names": names})
+    missing = [item.product for item in targets
+               if not any(name.startswith(item.product_prefix + ":") for name in names)]
+    if names and missing:
+        base["not-in-cpe-dictionary"] = missing
     if not names:
         return [], _status(
             "unavailable", reason=(
@@ -239,7 +259,7 @@ def lookup_software_advisories(
                 "match CVEs to it. This is not evidence that the release has no CVEs."
             ), **{"reason-code": "not-in-cpe-dictionary"}, **base,
         )
-    advisories = advisories_from_pages(target, bundle.get("cve-pages") or {})
+    advisories = advisories_from_pages(targets, bundle.get("cve-pages") or {})
     return advisories, _status(
         "completed", count=len(advisories),
         **{"known-exploited": sum(item.known_exploited for item in advisories),

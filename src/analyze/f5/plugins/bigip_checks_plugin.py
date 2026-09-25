@@ -25,6 +25,8 @@ RFC_8996 = "https://www.rfc-editor.org/rfc/rfc8996"
 NIST_TLS = "https://csrc.nist.gov/pubs/sp/800/52/r2/final"
 SNMP = "https://clouddocs.f5.com/cli/tmsh-reference/v16/modules/sys/sys_snmp.html"
 RFC_3414 = "https://www.rfc-editor.org/rfc/rfc3414"
+NTP = "https://clouddocs.f5.com/cli/tmsh-reference/v16/modules/sys/sys_ntp.html"
+NTP_AUTH = "https://my.f5.com/manage/s/article/K14120"
 
 
 class PluginF5BIGIPChecks(BasePlugin):
@@ -80,6 +82,7 @@ class PluginF5BIGIPChecks(BasePlugin):
         if not (http_allow and http_allow.value == "none"):
             self._check_management_tls(parser)
         self._check_snmp(parser)
+        self._check_ntp(parser)
         console = setting("sys global-settings", "console-inactivity-timeout")
         if console and console.value == 0:
             self._emit(parser, console, rule_id="f5.bigip.console.idle_timeout_disabled",
@@ -357,3 +360,36 @@ class PluginF5BIGIPChecks(BasePlugin):
                     references=(SNMP, RFC_3414),
                     basis=FindingBasis.EXPLICIT_VALUE,
                 ))
+
+    def _check_ntp(self, parser: F5BIGIPParser) -> None:
+        """SC-016 time stage (F5 K14120: tmsh servers are unauthenticated NTP)."""
+
+        # A missing NTP configuration is not graded: whether an SCF export always
+        # carries sys ntp is not qualified. Only documented unauthenticated
+        # associations are reported.
+        servers = parser.get_ntp_servers()
+        for server in servers:
+            if server.source == "include" and server.key_trusted:
+                continue  # key material is outside the export; its presence stays unknown
+            if server.source == "tmsh":
+                detail = "is configured through tmsh/GUI, which F5 documents as unauthenticated NTP"
+            elif server.key_id:
+                detail = f"references key {server.key_id}, which no trustedkey statement trusts"
+            else:
+                detail = "has no key in the include statement"
+            self.add_issue(Finding(
+                rule_id="f5.bigip.ntp.unauthenticated_server",
+                device=parser.device_type,
+                title="NTP server is used without authentication",
+                observation=f"NTP server {server.address} {detail}.",
+                impact="A spoofed or manipulated time source can shift the clock, disrupting logs, certificates and time-based controls.",
+                exploitability="An on-path attacker can forge NTP responses for an unauthenticated association.",
+                recommendation=(
+                    "Remove the server from sys ntp servers and configure it in sys ntp include as "
+                    "'server <address> key <n>' with 'trustedkey <n>' and a key in /etc/ntp/keys (F5 K14120)."
+                ),
+                severity=Severity.MEDIUM,
+                evidence=(server.evidence,),
+                references=(NTP_AUTH, NTP),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))

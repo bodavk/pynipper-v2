@@ -34,6 +34,8 @@ CPE = "cpe:2.3:o:fortinet:fortios:7.4.6:*:*:*:*:*:*:*"
     ("SONICOS", "7.1.2-7019", ("sonicos", "7.1.2-7019", "")),
     ("F5_BIGIP", "16.1.5", ("big-ip_local_traffic_manager", "16.1.5", "")),
     ("SCREENOS", "6.3.0r27.0", ("screenos", "6.3.0", "r27")),
+    ("HP_PROCURVE", "YA.16.10.0023", ("arubaos-switch", "16.10.0023", "")),
+    ("HP_PROCURVE", "16.11.0005", ("arubaos-switch", "16.11.0005", "")),
 ])
 def test_version_mapping(device, version, expected):
     target = product_version(device, version)
@@ -51,7 +53,7 @@ def test_cpe_escaping_round_trips():
     ("IOS_ROUTER", "15.2", "imprecise-version"),
     ("FORTIOS", "?", "no-version"),
     ("CHECKPOINT_FW1", "unknown", "unsupported-family"),
-    ("HP_PROCURVE", "YA.16.10.0023", "unsupported-family"),
+    ("HP_PROCURVE", "K.15.18.0013", "unsupported-family"),
 ])
 def test_imprecise_or_unsupported_versions_are_not_looked_up(device, version, reason):
     with pytest.raises(VersionUnavailable) as error:
@@ -349,3 +351,65 @@ def test_empty_page_with_results_is_an_error_not_zero_cves():
     )
     assert advisories == [] and status["status"] == "error"
     assert "reported 134 results but returned none" in status["reason"]
+
+
+
+def test_aos_s_uses_the_hpe_vendor_name():
+    assert product_version("HP_PROCURVE", "WC.16.10.0025").match_string() == "cpe:2.3:o:hpe:arubaos-switch:16.10.0025"
+
+
+def test_f5_queries_every_provisioned_module():
+    from src.advisories.versions import product_versions
+
+    targets = product_versions("F5_BIGIP", "16.1.5", {"ltm": "nominal", "asm": "nominal", "afm": "none", "ilx": "nominal"})
+    assert [t.product for t in targets] == [
+        "big-ip_local_traffic_manager", "big-ip_application_security_manager"]
+    assert "application_security_manager" in targets[0].note and "ilx" in targets[0].note
+    only_ltm = product_versions("F5_BIGIP", "16.1.5", None)
+    assert [t.product for t in only_ltm] == ["big-ip_local_traffic_manager"]
+    assert "no sys provision data" in only_ltm[0].note
+
+
+def test_f5_module_lookup_merges_and_deduplicates(tmp_path):
+    ltm = "cpe:2.3:a:f5:big-ip_local_traffic_manager:16.1.5:*:*:*:*:*:*:*"
+    asm = "cpe:2.3:a:f5:big-ip_application_security_manager:16.1.5:*:*:*:*:*:*:*"
+    record = {"cve": {"id": "CVE-2023-46747", "descriptions": [{"lang": "en", "value": "x"}], "metrics": {},
+                      "configurations": []}}
+    only_asm = {"cve": {"id": "CVE-2024-0001", "descriptions": [{"lang": "en", "value": "y"}], "metrics": {},
+                        "configurations": []}}
+
+    def get(url, headers, timeout):
+        query = parse_qs(urlsplit(url).query, keep_blank_values=True)
+        if "/cpes/" in url:
+            name = ltm if "local_traffic" in query["cpeMatchString"][0] else asm
+            return {"resultsPerPage": 1, "startIndex": 0, "totalResults": 1, "products": [{"cpe": {"cpeName": name}}]}
+        items = [record] if query["cpeName"] == [ltm] else [record, only_asm]
+        return {"resultsPerPage": len(items), "startIndex": 0, "totalResults": len(items), "vulnerabilities": items}
+
+    bundle = tmp_path / "f5.nvd.json"
+    advisories, status = lookup_software_advisories(
+        "F5_BIGIP", "16.1.5", AdvisoryRequest(online=True, save_path=str(bundle)),
+        client_factory=lambda api_key=None: NVDClient(http_get=get, sleep=lambda _: None),
+        modules={"ltm": "nominal", "asm": "nominal"},
+    )
+    assert status["status"] == "completed" and status["count"] == 2
+    shared = next(item for item in advisories if item.cve_id == "CVE-2023-46747")
+    assert shared.matched_cpe == (ltm, asm)
+    # Replaying needs the same module set.
+    replay, replay_status = lookup_software_advisories(
+        "F5_BIGIP", "16.1.5", AdvisoryRequest(bundle_path=str(bundle)), modules={"ltm": "nominal", "asm": "nominal"})
+    assert [item.cve_id for item in replay] == [item.cve_id for item in advisories]
+    _, mismatch = lookup_software_advisories(
+        "F5_BIGIP", "16.1.5", AdvisoryRequest(bundle_path=str(bundle)), modules={"ltm": "nominal"})
+    assert mismatch["reason-code"] == "bundle-mismatch"
+
+
+def test_version_1_bundles_are_still_read(tmp_path):
+    bundle = tmp_path / "old.nvd.json"
+    bundle.write_text(json.dumps({
+        "format": "pynipper-nvd-bundle", "format-version": 1, "retrieved-at": "2026-09-25T00:00:00+00:00",
+        "product": product_version("FORTIOS", "6.4.2").to_dict(), "cpe-names": [REAL_CPE],
+        "cve-pages": {REAL_CPE: [json.loads(REAL.read_text(encoding="utf-8"))]},
+    }), encoding="utf-8")
+    advisories, status = lookup_software_advisories("FORTIOS", "6.4.2", AdvisoryRequest(bundle_path=str(bundle)))
+    assert status["status"] == "completed" and [a.cve_id for a in advisories] == ["CVE-2024-21762"]

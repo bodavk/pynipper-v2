@@ -73,9 +73,10 @@ def collect_secret_evidence(parser: BaseDeviceParser) -> dict:
         return {
             "status": "unmasked-credential-lines",
             "scope-note": (
-                "Only explicit password lines for the built-in administrator and currently "
-                "resolved local administrators in SonicOS 7 E-CLI exports are shown. "
-                "Other users, secrets, and hidden values are not included. "
+                "Password lines for the built-in administrator and currently resolved local "
+                "administrators, plus RADIUS/TACACS+/LDAP secrets, SNMP communities and VPN "
+                "shared secrets in SonicOS 7 E-CLI exports, are shown. Ordinary local users "
+                "and hidden values are not included. "
                 "These excerpts are sensitive and should be handled as credentials."
             ),
             "entries": parser.get_report_secret_lines(),

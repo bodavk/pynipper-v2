@@ -8,7 +8,7 @@ from src.analyze.common.credentials import (
     credential_policy_from_context,
     evaluate_credential,
 )
-from src.analyze.common.issue import Finding, Severity
+from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.models import CredentialStorageAssessment
 from src.devices.juniper.screenos import JuniperScreenOSParser, ScreenOSCommand
@@ -425,6 +425,7 @@ class PluginScreenOSBaseline(BasePlugin):
                 Severity.MEDIUM,
                 ("ntp server absent",),
                 (SCREENOS_DOCUMENTATION,),
+                basis=FindingBasis.REQUIRED_SETTING_MISSING,
             )
         )
 

@@ -150,6 +150,22 @@ class F5SNMPUser:
 
 
 @dataclass(frozen=True)
+class F5NTPServer:
+    """One NTP association. ``source`` is ``tmsh`` (the ``servers`` list) or ``include``.
+
+    F5 K14120: tmsh/GUI server entries are for unauthenticated NTP; authentication is
+    only configurable through ``include`` (``server <ip> key <n>`` plus ``trustedkey <n>``).
+    Key material lives in /etc/ntp/keys, outside the export.
+    """
+
+    address: str
+    source: str
+    key_id: str | None
+    key_trusted: bool
+    evidence: ConfigEvidence
+
+
+@dataclass(frozen=True)
 class F5ClientSSLProfile:
     name: str
     mode_enabled: bool | None
@@ -243,6 +259,8 @@ class F5BIGIPParser(BaseDeviceParser):
         self._snmp_agent: F5SNMPAgent | None = None
         self._snmp_communities: dict[str, F5SNMPCommunity] = {}
         self._snmp_users: dict[str, F5SNMPUser] = {}
+        self._provision: dict[str, tuple[str, int]] = {}
+        self._ntp_servers: tuple[F5NTPServer, ...] | None = None
         self._parse(_tokens(content))
         self._native = (
             *self._settings.values(), *self._remote_auth_profiles.values(),
@@ -286,6 +304,12 @@ class F5BIGIPParser(BaseDeviceParser):
             elif len(header) == 3 and header[:2] == ["ltm", "virtual"]:
                 recognized = True
                 self._read_virtual(header[2], header_line, tokens[body_start:cursor - 1])
+            elif len(header) == 3 and header[:2] == ["sys", "provision"]:
+                body = tokens[body_start:cursor - 1]
+                level = next((body[i + 1].text for i in range(len(body) - 1) if body[i].text == "level"), "unknown")
+                self._provision[header[2].casefold()] = (level.casefold(), header_line)
+            elif scope == "sys ntp":
+                self._read_ntp(header_line, tokens[body_start:cursor - 1])
             elif len(header) == 3 and header[:2] == ["auth", "user"]:
                 recognized = True
                 self._read_user_credential(header[2], tokens[body_start:cursor - 1])
@@ -648,6 +672,59 @@ class F5BIGIPParser(BaseDeviceParser):
                             self.config_filepath, member_line,
                         ),
                     )
+
+    def _read_ntp(self, line_number: int, body: list[_TokenValue]) -> None:
+        servers: list[F5NTPServer] = []
+        depth = 0
+        for index, token in enumerate(body):
+            if token.text == "{":
+                depth += 1
+                continue
+            if token.text == "}":
+                depth -= 1
+                continue
+            if depth != 0:
+                continue
+            next_index = index + 1
+            if next_index < len(body) and body[next_index].text in {"replace-all-with", "add"}:
+                next_index += 1
+            candidate = body[next_index].text if next_index < len(body) else ""
+            if token.text == "servers":
+                entries = _group_values(body, next_index) if candidate == "{" else [candidate]
+                for entry in entries or ():
+                    if entry and entry != "none":
+                        servers.append(F5NTPServer(entry, "tmsh", None, False, ConfigEvidence(
+                            f"sys ntp servers {entry}", self.config_filepath, token.line)))
+            elif token.text == "include" and candidate not in {"", "none"}:
+                statements = [line.strip() for line in candidate.replace("\\n", "\n").splitlines()]
+                trusted = {
+                    key for line in statements if line.startswith("trustedkey ")
+                    for key in line.split()[1:]
+                }
+                for offset, line in enumerate(statements):
+                    tokens = line.split()
+                    if len(tokens) < 2 or tokens[0] not in {"server", "peer", "pool"}:
+                        continue
+                    key_id = tokens[tokens.index("key") + 1] if "key" in tokens[:-1] else None
+                    servers.append(F5NTPServer(
+                        tokens[1], "include", key_id, bool(key_id and key_id in trusted),
+                        ConfigEvidence(
+                            f"sys ntp include: {tokens[0]} {tokens[1]}"
+                            + (f" key {key_id}" if key_id else ""),
+                            self.config_filepath, body[next_index].line + offset,
+                        ),
+                    ))
+        self._ntp_servers = tuple(servers)
+
+    def get_ntp_servers(self) -> tuple[F5NTPServer, ...]:
+        """NTP associations from ``sys ntp`` (empty when none are configured)."""
+
+        return self._ntp_servers or ()
+
+    def get_provisioned_modules(self) -> dict[str, str]:
+        """``sys provision`` module levels, for example ``{"ltm": "nominal"}``."""
+
+        return {module: level for module, (level, _) in self._provision.items()}
 
     def get_snmp_agent(self) -> F5SNMPAgent | None:
         return self._snmp_agent

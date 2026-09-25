@@ -162,3 +162,38 @@ def test_public_cli_and_redaction(tmp_path, output_type):
     if output_type == "JSON":
         data = json.loads(rendered)
         assert any(item["rule_id"] == TEXT for item in data["security-audit"].values())
+
+
+VRF_PORT = ("interface GigabitEthernet0/1\n vrf forwarding CUST\n"
+            " ip address 198.51.100.1 255.255.255.0\n ip rip receive version 2\n")
+
+
+def _vrf_rip(af_body):
+    return ("router rip\n version 2\n network 192.0.2.0\n !\n address-family ipv4 vrf CUST\n"
+            + af_body + " exit-address-family\n")
+
+
+def test_vrf_address_family_with_its_own_version_2_is_assessed(tmp_path):
+    parser, findings = _scan(tmp_path, _vrf_rip("  version 2\n  network 198.51.100.0\n") + PORT + VRF_PORT)
+    records = {record.interface: record for record in parser.get_rip_interfaces()}
+    assert records["GigabitEthernet0/1"].vrf == "cust"
+    assert records["GigabitEthernet0/1"].authentication_state == "unauthenticated"
+    assert records["GigabitEthernet0/0"].vrf == "default"
+    vrf_findings = [f for f in process_cisco_ios_conf(parser).values()
+                    if f.rule_id == NO_AUTH and "GigabitEthernet0/1" in f.observation]
+    assert vrf_findings and "in VRF cust" in vrf_findings[0].observation
+
+
+@pytest.mark.parametrize("af_body", [
+    "  network 198.51.100.0\n",  # version not set inside the address family: inheritance unknown
+    "  version 1\n  network 198.51.100.0\n",
+    "  version 2\n",  # no network
+])
+def test_vrf_address_family_without_own_version_2_is_not_assessed(tmp_path, af_body):
+    parser, _ = _scan(tmp_path, _vrf_rip(af_body) + PORT + VRF_PORT)
+    assert [record.interface for record in parser.get_rip_interfaces()] == ["GigabitEthernet0/0"]
+
+
+def test_default_vrf_is_still_assessed_next_to_a_vrf_family(tmp_path):
+    parser, findings = _scan(tmp_path, _vrf_rip("  version 2\n  network 198.51.100.0\n") + PORT)
+    assert [record.interface for record in parser.get_rip_interfaces()] == ["GigabitEthernet0/0"]

@@ -7,7 +7,9 @@ import re
 import shlex
 from typing import Any
 
-from src.devices.cisco.ios import CiscoIOSParser, IOSBpduGuardPolicy
+from dataclasses import replace
+
+from src.devices.cisco.ios import CiscoIOSParser, IOSAccessAdmission, IOSBpduGuardPolicy
 from src.devices.common.models import (
     BlocklistCredentialAssessment,
     ConfigEvidence,
@@ -267,6 +269,22 @@ class AristaEOSParser(CiscoIOSParser):
                 masked[number] = ""
             index = closing + 1
         return masked
+
+    def get_access_admission_interfaces(self) -> list[IOSAccessAdmission]:
+        """802.1X admission on EOS ports (SC-003).
+
+        Uses the shared IOS-family grammar (``dot1x system-auth-control``,
+        ``dot1x port-control auto|force-authorized|force-unauthorized``). EOS
+        differs in one point: an Ethernet interface is an access switchport
+        unless ``no switchport`` or another switchport mode is configured.
+        The EOS manual documents ``force-authorized`` as the per-port default.
+        """
+        records = []
+        for record in super().get_access_admission_interfaces():
+            if record.mode in {"unknown", "switchport"} and record.interface.casefold().startswith("ethernet"):
+                record = replace(record, mode="access")
+            records.append(record)
+        return records
 
     def get_bpdu_guard_policies(self) -> list[IOSBpduGuardPolicy]:
         """Resolve EOS edge-port BPDU guard: global portfast default and per-port overrides.

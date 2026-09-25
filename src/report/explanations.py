@@ -43,6 +43,11 @@ BASIS_TEXT = {
         "safe. Setting it explicitly, as the fix describes, removes the doubt and keeps "
         "the device safe across upgrades.",
     ),
+    FindingBasis.REQUIRED_SETTING_MISSING: (
+        "Required setting not configured",
+        "A control this baseline requires is not configured, and the device does not "
+        "provide it by default, so the protection is absent until it is added.",
+    ),
 }
 
 

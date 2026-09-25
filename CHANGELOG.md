@@ -21,6 +21,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- New checks from vendor documentation read on 2026-09-25:
+  - Arista EOS: explicit 802.1X bypasses on assessed access edges (`dot1x port-control force-authorized`, or `auto` with `no dot1x system-auth-control`).
+  - Junos EX: access-edge ports without BPDU protection (`bpdu-block` or `bpdu-block-on-edge` plus `edge`), and 802.1X `supplicant single`.
+  - BIG-IP: NTP servers configured through tmsh/GUI, or through `include` without a trusted key, are reported as unauthenticated (F5 K14120).
+  - IOS/IOS-XE: RIP in `address-family ipv4 vrf` blocks with their own `version 2`.
+  - SonicOS: explicitly disabled IPS, anti-virus or anti-spyware on a zone in use. Global services also read the documented `intrusion-prevention` / `gateway-antivirus` / `anti-spyware` / `capture-atp` blocks.
+- `--show-secrets` now also covers SonicOS RADIUS/TACACS+/LDAP secrets, SNMP communities and VPN shared secrets.
+- CVE lookup: ArubaOS-Switch 16.x releases are looked up as `hpe:arubaos-switch`; BIG-IP queries each provisioned module. The saved-bundle format is now version 2, and version 1 bundles are still read.
+- PT-009: a fourth basis, "Required setting not configured", for absent controls that devices do not provide by default (missing NTP server, remote syslog destination or login banner).
 - Cisco IOS/IOS-XE (SC-005 named-mode EIGRP stage): default-VRF IPv4 `router eigrp <name>` address families are now assessed for interface authentication, following `af-interface default` inheritance and specific `af-interface` overrides, passive and shut-down af-interfaces. Existing rule IDs `cisco.ios.routing.eigrp.authentication` and `key_resolution` are reused; HMAC-SHA-256 keys are redacted in evidence.
 - `--show-secrets` now also covers AOS-S (SNMP communities, SNMPv3 user keys, SNTP keys, RADIUS/TACACS+ keys) and ScreenOS (SNMP communities, auth-server secrets, IKE gateway pre-shared keys, NTP keys). ScreenOS evidence now also redacts an IKE gateway `preshare` value; the p1-proposal authentication method stays visible.
 - Findings can now say what they are based on (PT-009): an explicit configured value, a documented vendor default, or a recommended setting that is not explicitly configured (the effective value may already be safe on some releases). The report shows this as a note on the finding and JSON adds `basis` and `basis-note`. Declared so far for configured default/write SNMP communities, SNMPv3 users without authPriv or with MD5/DES (IOS, ASA, EOS, AOS-S, F5), Junos insecure management services, IOS VTY Telnet (per branch), IOS source routing, IOS SSH version/retries/timeout, ASA HTTPS trustpoint, FortiOS password policy and management protocols, EOS lockout and Junos root login; other rules show no note until they declare one.

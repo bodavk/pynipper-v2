@@ -66,7 +66,6 @@ def split_cpe(name: str) -> list[str]:
 _IOS_FAMILIES = {"IOS_SWITCH", "IOS_ROUTER", "IOS_CATALYST", "IOS_XE"}
 _UNSUPPORTED = {
     "CHECKPOINT_FW1": "A Check Point policy export does not contain the gateway software version.",
-    "HP_PROCURVE": "The NVD naming of AOS-S releases is not qualified yet.",
     "PIX": "PIX release naming is not qualified (see SC-020).",
 }
 
@@ -141,11 +140,60 @@ def product_version(device: str, version: str) -> ProductVersion:
     if device == "F5_BIGIP":
         if not re.fullmatch(r"\d+\.\d+\.\d+(?:\.\d+)?", version):
             raise _imprecise(version, "16.1.5")
-        return ProductVersion(
-            "a", "f5", "big-ip_local_traffic_manager", version,
-            note="BIG-IP CVEs are recorded per module; only the LTM module was queried.",
-        )
+        return ProductVersion("a", "f5", "big-ip_local_traffic_manager", version)
+    if device == "HP_PROCURVE":
+        # NVD names AOS-S releases hpe:arubaos-switch without the platform prefix
+        # (YA.16.10.0023 -> 16.10.0023); pre-16.x ProCurve naming is not qualified.
+        match = re.fullmatch(r"(?:[A-Z]{1,3}\.)?(1[6-9]\.\d{2}\.\d{4})", version, re.IGNORECASE)
+        if not match:
+            raise VersionUnavailable(
+                "unsupported-family",
+                f"Only ArubaOS-Switch 16.x releases are mapped to NVD names; '{version}' is not.",
+            )
+        return ProductVersion("o", "hpe", "arubaos-switch", match.group(1))
     raise VersionUnavailable("unsupported-family", f"CVE lookup is not qualified for {device}.")
 
 
-__all__ = ["ProductVersion", "VersionUnavailable", "escape_cpe", "product_version", "split_cpe"]
+# tmsh `sys provision` module -> NVD CPE product (verified in the NVD CPE dictionary
+# 2026-09-25). Modules without an NVD product (ilx, swg, urldb, vcmp) are not queried.
+F5_MODULE_PRODUCTS = {
+    "ltm": "big-ip_local_traffic_manager",
+    "afm": "big-ip_advanced_firewall_manager",
+    "apm": "big-ip_access_policy_manager",
+    "asm": "big-ip_application_security_manager",
+    "avr": "big-ip_application_visibility_and_reporting",
+    "am": "big-ip_application_acceleration_manager",
+    "cgnat": "big-ip_carrier-grade_nat",
+    "fps": "big-ip_fraud_protection_service",
+    "gtm": "big-ip_global_traffic_manager",
+    "lc": "big-ip_link_controller",
+    "pem": "big-ip_policy_enforcement_manager",
+    "sslo": "big-ip_ssl_orchestrator",
+}
+
+
+def product_versions(device: str, version: str, modules: dict[str, str] | None = None) -> list[ProductVersion]:
+    """All CPE products to query. BIG-IP adds each provisioned module (level other than none)."""
+
+    base = product_version(device, version)
+    if str(device).upper() != "F5_BIGIP":
+        return [base]
+    active = sorted(module for module, level in (modules or {}).items() if level != "none")
+    unmapped = [module for module in active if module not in F5_MODULE_PRODUCTS]
+    targets = [base]
+    for module in active:
+        product = F5_MODULE_PRODUCTS.get(module)
+        if product and product != base.product:
+            targets.append(ProductVersion(base.part, base.vendor, product, base.version))
+    if not modules:
+        note = ("BIG-IP CVEs are recorded per module. The export has no sys provision data, "
+                "so only the LTM module was queried.")
+    else:
+        note = "Queried modules: " + ", ".join(t.product.removeprefix("big-ip_") for t in targets) + "."
+        if unmapped:
+            note += " Not queried (no NVD product): " + ", ".join(unmapped) + "."
+    targets[0] = ProductVersion(base.part, base.vendor, base.product, base.version, base.update, note)
+    return targets
+
+
+__all__ = ["F5_MODULE_PRODUCTS", "product_versions", "ProductVersion", "VersionUnavailable", "escape_cpe", "product_version", "split_cpe"]

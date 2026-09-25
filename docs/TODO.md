@@ -14,7 +14,7 @@ An item is not permission to turn absent or incomplete configuration evidence in
 
 ## Priority: report secret visibility (maintainer priority)
 
-- [ ] Complete opt-in report-secret visibility across supported families. The CLI now provides `--show-secrets` for parser-qualified credential lines on IOS/IOS-XE/ASA, FortiOS, Junos, ScreenOS, SonicOS 7, AOS-S, EOS, and F5 TMOS; default findings remain masked, unsupported families fail explicitly, and sensitive output requires a new path. SonicOS coverage is limited to explicit built-in/local administrator passwords. Extend parser-owned mappings to remaining families and additional secret types only with precise effective-state and redaction tests. Do not imply hashes can be reversed or hidden values recovered. **Progress 2026-09-24:** added PAN-OS (element-only excerpts), IOS/IOS-XE/ASA/EOS SNMP and NTP keys, IOS/IOS-XE/EOS routing keys, and fail-closed Windows ACL restriction (`icacls`). IOS TACACS+/IKE keys, ASA tunnel-group/AAA keys and Junos RADIUS/TACACS+/NTP/SNMP/IKE/routing keys were added the same day. AOS-S and ScreenOS non-administrator secrets were added on 2026-09-25. Remaining: SonicOS non-administrator secrets (E-CLI syntax not qualified), a real Windows run of the ACL path, and deciding whether Check Point needs anything.
+- [ ] Complete opt-in report-secret visibility across supported families. The CLI now provides `--show-secrets` for parser-qualified credential lines on IOS/IOS-XE/ASA, FortiOS, Junos, ScreenOS, SonicOS 7, AOS-S, EOS, and F5 TMOS; default findings remain masked, unsupported families fail explicitly, and sensitive output requires a new path. SonicOS coverage is limited to explicit built-in/local administrator passwords. Extend parser-owned mappings to remaining families and additional secret types only with precise effective-state and redaction tests. Do not imply hashes can be reversed or hidden values recovered. **Progress 2026-09-24:** added PAN-OS (element-only excerpts), IOS/IOS-XE/ASA/EOS SNMP and NTP keys, IOS/IOS-XE/EOS routing keys, and fail-closed Windows ACL restriction (`icacls`). IOS TACACS+/IKE keys, ASA tunnel-group/AAA keys and Junos RADIUS/TACACS+/NTP/SNMP/IKE/routing keys were added the same day. AOS-S and ScreenOS non-administrator secrets were added on 2026-09-25. SonicOS non-administrator secrets (RADIUS/TACACS+/LDAP, SNMP communities, VPN shared secrets) were added on 2026-09-25 from the SonicOS/X 7 E-CLI reference. Remaining: a real Windows run of the ACL path, and Check Point (see the maintainer decision below).
 
 ## Detection and parser coverage
 
@@ -23,6 +23,25 @@ An item is not permission to turn absent or incomplete configuration evidence in
 ## Inputs and assessment scope
 
 - [x] Improve `-d` usability: present one recommended name per configuration family, preserve existing IDs as compatibility aliases, and allow conservative automatic identification of recognizable exports. Ambiguous or unsupported inputs request an explicit family rather than silently choosing a parser; device role stays separate from configuration format. CLI, fixture, help-text, and report-device-type tests cover the behavior.
+
+## Maintainer decisions (2026-09-25)
+
+- SC-011: do **not** grade FortiOS log-administrator rights against an organization role list. Keep only the existing bound write-capable role checks.
+- SC-022: an end-of-support warning is wanted **only** if a freely accessible, externally maintained version/lifecycle source can be used through an API, so the project does not maintain its own list. This needs an analysis of candidate sources first (for example endoflife.date and vendor lifecycle feeds). Scheduled after the quick wins.
+- PT-009: add a fourth basis, "required setting not configured", for absence rules such as a missing NTP server or remote syslog destination.
+- Check Point `--show-secrets` (checked 2026-09-25): locally managed users and their passwords live in the separate user database `fwauth.NDB`, not in `objects.C`/`rules.C` ([CheckMates](https://community.checkpoint.com/t5/Management/Working-with-Checkpoint-files/td-p/33712)). Whether `objects.C` carries RADIUS/TACACS+ or VPN shared secrets (possibly encrypted) could not be confirmed without a sample. The family therefore stays *unsupported* (explicitly rejected), not "not applicable"; revisit with a sanitized `objects.C` (nice to have, below).
+
+## Nice to have (distant future, needs sample exports the maintainer does not have)
+
+Kept open on purpose; do not close or delete. Each needs a real sanitized export before implementation.
+
+- [ ] SC-017 Check Point anti-spoofing and implied rules (matched `objects.C` + `rules.C` needed).
+- [ ] SC-024 F5 module-specific protection (SCF from a unit with AFM, APM or ASM provisioned).
+- [ ] SC-018 remainder: zone defaults, protocol direction and exclusion lists (a real `show current-config` export). The explicit zone stage is done.
+- [ ] SC-019 ScreenOS screens and authenticated time, and RV-008 VPN anti-replay (ScreenOS 6.3 export).
+- [ ] SC-020 Cisco PIX qualification (PIX 6.x export).
+- [ ] SC-023 Check Point Gaia OS posture input (Gaia `show configuration` export).
+- [ ] Check Point `--show-secrets`: qualify secret fields in a sanitized `objects.C`.
 
 ## Low priority (maintainer decision, 2026-09-24)
 

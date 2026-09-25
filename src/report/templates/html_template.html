@@ -271,6 +271,7 @@
                         <p><strong>CVE lookup {{ 'failed' if lookup.status == 'error' else 'not possible' }}:</strong> {{ lookup.reason }}</p>
                     {% endif %}
                     {% if lookup.note %}<p class="note">{{ lookup.note }}</p>{% endif %}
+                    {% if lookup['not-in-cpe-dictionary'] %}<p class="note">Not in NVD's product dictionary for this release, so not looked up: {{ lookup['not-in-cpe-dictionary']|join(', ') }}.</p>{% endif %}
                     {% if lookup['save-error'] %}<p class="note">{{ lookup['save-error'] }}</p>{% endif %}
                     {% if lookup.limitations and lookup.status != 'not-requested' %}
                         <details><summary>What this lookup can and cannot tell you</summary>

@@ -395,6 +395,7 @@ class PluginASABaseline(BasePlugin):
                 "Configure multiple trusted NTP servers.", Severity.MEDIUM,
                 ("No ntp server command",),
                 CISCO_ASA_NTP_REFERENCE,
+                basis=FindingBasis.REQUIRED_SETTING_MISSING,
             ))
             return
         release = asa._release_tuple(asa.get_version())

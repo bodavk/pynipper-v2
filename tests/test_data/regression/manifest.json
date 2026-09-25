@@ -16,6 +16,7 @@
         "f5.bigip.http.weak_cipher_suite",
         "f5.bigip.logging.syslog_remote_none",
         "f5.bigip.ltm.clientssl_cleartext_enabled",
+        "f5.bigip.ntp.unauthenticated_server",
         "f5.bigip.password_policy.enforcement_disabled",
         "f5.bigip.password_policy.login_lockout_disabled",
         "f5.bigip.snmp.community_access",
@@ -25,7 +26,7 @@
         "f5.bigip.ssh.idle_timeout_disabled",
         "f5.bigip.ssh.unrestricted_sources"
       ],
-      "expected_finding_count": 19
+      "expected_finding_count": 20
     },
     {
       "name": "f5-bigip-secure",

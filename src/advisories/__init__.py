@@ -11,7 +11,9 @@ def software_advisories(device, parser, request):
         version = parser.get_version()
     except Exception:  # a parser without a readable version still gets a status
         version = ""
-    advisories, status = lookup_software_advisories(str(device), version, request)
+    modules_of = getattr(parser, "get_provisioned_modules", None)
+    modules = modules_of() if callable(modules_of) else None
+    advisories, status = lookup_software_advisories(str(device), version, request, modules=modules)
     if status["status"] in {"completed", "unavailable", "error"}:
         print(f"CVE lookup: {status['status']}"
               + (f" ({status['count']} CVEs)" if status["status"] == "completed" else f": {status.get('reason', '')}"))

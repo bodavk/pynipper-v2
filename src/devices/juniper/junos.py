@@ -191,6 +191,19 @@ class JunosOSPFInterface:
 
 
 @dataclass(frozen=True)
+class JunosAccessEdgePort:
+    """BPDU protection and 802.1X supplicant mode for one declared access-edge port (SC-003/SC-004)."""
+
+    interface: str
+    role: str
+    active: bool
+    access_mode: bool | None  # True: ethernet-switching access; False: trunk/not switching; None: unknown
+    bpdu_protection: str  # port | all | edge | none | unknown
+    supplicant_mode: str | None  # single | single-secure | multiple | None (not an authenticator port)
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
 class JunosDiscoveryInterface:
     interface: str
     protocol: str
@@ -2674,6 +2687,91 @@ class JunOSParser(BaseDeviceParser):
                 evidence=tuple(dict.fromkeys(evidence)),
             ))
         return output
+
+    def get_access_edge_ports(self) -> list[JunosAccessEdgePort]:
+        """Resolve BPDU protection and 802.1X supplicant mode for declared access-edge ports.
+
+        Juniper CLI reference: ``bpdu-block { interface (name | all) }`` under
+        ``[edit protocols layer2-control]`` (ELS) or ``[edit ethernet-switching-options]``
+        (legacy); ``bpdu-block-on-edge`` under ``[edit protocols (mstp|rstp|vstp)]``
+        protects ports configured as ``edge``. The default is not enabled.
+        ``protocols dot1x authenticator interface <name> supplicant single`` admits
+        every later device without authentication. Interface ranges are not
+        expanded, so their members stay unknown.
+        """
+        uses_ranges = bool(self.get_active_statements(("interfaces", "interface-range")))
+        bpdu_statements = [
+            statement for prefix in (("protocols", "layer2-control", "bpdu-block"),
+                                     ("ethernet-switching-options", "bpdu-block"))
+            for statement in self.get_active_statements(prefix)
+        ]
+        stp_edge: dict[str, list[JunosStatement]] = {}
+        on_edge_protocols = set()
+        for protocol in ("rstp", "mstp", "vstp"):
+            statements = self.get_active_statements(("protocols", protocol))
+            if any(statement.path[2:3] == ("bpdu-block-on-edge",) for statement in statements):
+                on_edge_protocols.add(protocol)
+            for statement in statements:
+                path = statement.path
+                if "interface" in path and path[-1] == "edge":
+                    stp_edge.setdefault(protocol, []).append(statement)
+        dot1x = self.get_active_statements(("protocols", "dot1x", "authenticator", "interface"))
+        records = []
+        for interface, role in self.assessment_context.interface_roles:
+            if role != "access-edge":
+                continue
+            name = interface.split(".", 1)[0]
+            interface_statements = self.get_active_statements(("interfaces", name))
+            active = not any(statement.path[2:3] == ("disable",) for statement in interface_statements)
+            switching = [statement for statement in interface_statements
+                         if "ethernet-switching" in statement.path]
+            modes = {
+                statement.path[statement.path.index(key) + 1]
+                for statement in switching for key in ("interface-mode", "port-mode")
+                if key in statement.path[:-1]
+            }
+            access_mode = (True if modes == {"access"} or (switching and not modes)
+                           else False if modes or not interface_statements else None)
+            evidence = [statement.evidence for statement in switching]
+            protection = "none"
+            for statement in bpdu_statements:
+                path = statement.path
+                if "interface" not in path[:-1]:
+                    continue
+                target = path[path.index("interface") + 1]
+                if "disable" in path[path.index("interface") + 2:]:
+                    continue
+                if target in {name, interface}:
+                    protection = "port"
+                    evidence.append(statement.evidence)
+                elif target == "all" and protection == "none":
+                    protection = "all"
+                    evidence.append(statement.evidence)
+            if protection == "none":
+                for protocol in on_edge_protocols:
+                    for statement in stp_edge.get(protocol, ()):
+                        path = statement.path
+                        if path[path.index("interface") + 1] in {name, interface}:
+                            protection = "edge"
+                            evidence.append(statement.evidence)
+            if protection == "none" and uses_ranges:
+                protection = "unknown"
+            supplicant = None
+            for statement in dot1x:
+                path = statement.path
+                target = path[4] if len(path) > 4 else ""
+                if target not in {name, interface, f"{name}.0", "all"} or "supplicant" not in path[5:-1]:
+                    continue
+                mode = path[path.index("supplicant") + 1]
+                if target != "all" or supplicant is None:
+                    supplicant = mode
+                    evidence.append(statement.evidence)
+            records.append(JunosAccessEdgePort(
+                interface=interface, role=role, active=active, access_mode=access_mode,
+                bpdu_protection=protection, supplicant_mode=supplicant,
+                evidence=tuple(dict.fromkeys(evidence)),
+            ))
+        return records
 
     def get_discovery_interfaces(self) -> list[JunosDiscoveryInterface]:
         """Resolve Junos LLDP all-interface inheritance and local overrides."""

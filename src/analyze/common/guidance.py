@@ -131,7 +131,7 @@ _CATALOGUE = (
         "hit counters on the device before deleting anything.",
     )),
     # Threat inspection -----------------------------------------------------------
-    (r"^(policy\.(security_profile\w*|ips_selector_\w+|threat_selector_nonblocking|idp_\w+)|security_services\.\w+|capture_atp\.\w+|updates\.\w+|fortiguard\.\w+|firmware\.automatic_updates|threat_detection\.\w+)$", _G(
+    (r"^(policy\.(security_profile\w*|ips_selector_\w+|threat_selector_nonblocking|idp_\w+)|security_services\.\w+|zone\.security_service_disabled|capture_atp\.\w+|updates\.\w+|fortiguard\.\w+|firmware\.automatic_updates|threat_detection\.\w+)$", _G(
         "threat-inspection", "threat-inspection",
         "Traffic that the firewall allows is not fully checked for known attacks or malware, or "
         "the signatures used for that check are not kept up to date.",
@@ -372,7 +372,7 @@ _CATALOGUE = (
         "Check what the monitoring platform supports and restrict SNMP to its addresses.",
     )),
     # Time ----------------------------------------------------------------------------------
-    (r"^ntp\.(authentication\w*|key_resolution|weak_algorithm|associations)$", _G(
+    (r"^ntp\.(authentication\w*|key_resolution|weak_algorithm|associations|unauthenticated_server)$", _G(
         "ntp-authentication", "time",
         "The device synchronizes its clock with time servers without verifying that the replies "
         "really come from those servers.",

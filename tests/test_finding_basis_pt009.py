@@ -121,3 +121,11 @@ def test_html_shows_the_note_only_when_declared(tmp_path):
 def test_configured_default_communities_are_explicit_values(tmp_path, device, relative, rule):
     bases = {record["basis"] for record in _audit(tmp_path, device, relative) if record["rule_id"] == rule}
     assert bases == {"explicit-value"}
+
+
+def test_absent_required_controls_use_the_required_setting_basis(tmp_path):
+    findings = _ios_vty(tmp_path, " login local\n transport input ssh\n")
+    for rule in ("cisco.ios.ntp.servers", "cisco.ios.logging.remote_destination", "cisco.ios.banner.login"):
+        assert findings[rule].basis is FindingBasis.REQUIRED_SETTING_MISSING
+    label, note = BASIS_TEXT[FindingBasis.REQUIRED_SETTING_MISSING]
+    assert label == "Required setting not configured" and "not provide it by default" in note

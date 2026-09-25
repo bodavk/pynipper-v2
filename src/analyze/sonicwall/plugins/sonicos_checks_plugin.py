@@ -1,7 +1,7 @@
 """SonicOS 7 E-CLI management, policy, VPN, and operations checks."""
 
 from src.analyze.common.base_plugin import BasePlugin
-from src.analyze.common.issue import Finding, Severity
+from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.policy_semantics import (
     ProofState,
@@ -611,6 +611,29 @@ class PluginSonicOSChecks(BasePlugin):
                     references=(SONICOS_SYSTEM_GUIDE,),
                 )
             )
+        labels = {"intrusion-prevention": "intrusion prevention", "gateway-anti-virus": "gateway anti-virus",
+                  "anti-spyware": "anti-spyware"}
+        for zone in sonic.get_zone_security_services():
+            off = [name for name, enabled in zone.services.items()
+                   if enabled is False and services.get(name) is not False]
+            if not off or not zone.active_interfaces:
+                continue
+            self.add_issue(Finding(
+                rule_id="sonicwall.sonicos.zone.security_service_disabled",
+                device=parser.device_type,
+                title="Security services are disabled for a zone in use",
+                observation=(
+                    f"Zone '{zone.name}' (active interfaces: {', '.join(zone.active_interfaces)}) explicitly disables "
+                    + ", ".join(labels[name] for name in off) + "."
+                ),
+                impact="Traffic in this zone is not inspected by the disabled services, even where they are enabled globally.",
+                exploitability="Threats that the disabled service would detect can pass through interfaces in this zone.",
+                recommendation="Enable the services in the zone ('intrusion-prevention', 'gateway-anti-virus', 'anti-spyware') unless an approved exception applies.",
+                severity=Severity.HIGH,
+                evidence=zone.evidence,
+                references=(SONICOS_CLI_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
         if services["capture-atp"] is True and (
             services["gateway-anti-virus"] is False
             or services["cloud-gateway-anti-virus"] is False

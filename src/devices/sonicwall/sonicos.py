@@ -55,6 +55,14 @@ class SonicInterface:
 
 
 @dataclass(frozen=True)
+class SonicZoneServices:
+    name: str
+    services: dict[str, bool]
+    active_interfaces: tuple[str, ...]
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
 class SonicAccessRule:
     name: str
     position: int
@@ -806,11 +814,61 @@ class SonicOSParser(BaseDeviceParser):
             "anti-spyware": None,
             "capture-atp": None,
         }
-        for command in self.commands:
+        # Documented E-CLI form (SonicOS/X 7 E-CLI Reference Guide): a Config-mode block
+        # `intrusion-prevention` / `gateway-antivirus` / `anti-spyware` / `capture-atp`
+        # with a child `enable` or `no enable`. The older one-line
+        # `<service> enable` form is still accepted.
+        blocks = {"intrusion-prevention": "intrusion-prevention", "gateway-antivirus": "gateway-anti-virus",
+                  "anti-spyware": "anti-spyware", "capture-atp": "capture-atp"}
+        for index, command in enumerate(self.commands):
             match = re.fullmatch(r"(?P<no>no\s+)?(?P<name>gateway-anti-virus|cloud-gateway-anti-virus|intrusion-prevention|anti-spyware|capture-atp)\s+enable", command.text, re.IGNORECASE)
             if match:
                 states[match.group("name").casefold()] = not bool(match.group("no"))
+                continue
+            name = blocks.get(command.text.casefold())
+            if name is None or command.indent != 0:
+                continue
+            for child in self._record_commands(index)[1:]:
+                text = child.text.casefold()
+                if text == "enable":
+                    states[name] = True
+                elif text == "no enable":
+                    states[name] = False
         return states
+
+    def get_zone_security_services(self) -> list[SonicZoneServices]:
+        """Per-zone security-service switches (SC-018).
+
+        E-CLI Zone mode: `gateway-anti-virus`, `intrusion-prevention`, `anti-spyware`
+        and their `no` forms. Only exported switches are recorded; a zone default is
+        not assumed.
+        """
+        interfaces = self.get_interfaces()
+        zones = []
+        for index, command in enumerate(self.commands):
+            if command.indent != 0:
+                continue
+            tokens = self._tokens(command.text)
+            if len(tokens) < 2 or tokens[0].casefold() != "zone":
+                continue
+            name = tokens[-1]
+            services: dict[str, bool] = {}
+            evidence = [self._evidence(command)]
+            for child in self._record_commands(index)[1:]:
+                text = child.text.casefold()
+                negated = text.startswith("no ")
+                service = text[3:] if negated else text
+                if service in {"gateway-anti-virus", "intrusion-prevention", "anti-spyware"}:
+                    services[service] = not negated
+                    evidence.append(self._evidence(child))
+            members = [item for item in interfaces if item.zone.casefold() == name.casefold()]
+            zones.append(SonicZoneServices(
+                name=name,
+                services=services,
+                active_interfaces=tuple(item.name for item in members if item.enabled),
+                evidence=tuple(evidence),
+            ))
+        return zones
 
     def has_secure_snmpv3_user(self) -> bool:
         return any(
@@ -1265,7 +1323,7 @@ class SonicOSParser(BaseDeviceParser):
         return self.get_administrators()
 
     def get_report_secret_lines(self) -> list[dict]:
-        """Return only current administrator password commands for explicit opt-in."""
+        """Current administrator passwords plus other secret-bearing lines, for explicit opt-in."""
         source_bytes = Path(self.config_filepath).read_bytes()
         if hashlib.sha256(source_bytes).digest() != self._source_digest:
             raise ValueError("configuration changed after SonicOS parsing; refusing secret report")
@@ -1325,6 +1383,10 @@ class SonicOSParser(BaseDeviceParser):
             for name, command in local_users.items()
             if name in administrator_names and command is not None
         )
+        taken = {command.line_number for command, _ in candidates}
+        candidates.extend(
+            item for item in self._other_secret_commands() if item[0].line_number not in taken
+        )
         entries = []
         for command, context in sorted(candidates, key=lambda item: item[0].line_number):
             number = command.line_number
@@ -1335,6 +1397,47 @@ class SonicOSParser(BaseDeviceParser):
                     "source-line": source_lines[number - 1].strip(),
                 })
         return entries
+
+    # E-CLI value keywords that carry a secret (SonicOS/X 7 E-CLI Reference Guide:
+    # `password <ENC_PASSWORD>`, `shared-secret <ENC_PASSWORD>`, `secret <ENC_PASSWORD>`,
+    # `user-password`, SNMP community names).
+    _SECRET_KEYWORDS = {"password", "shared-secret", "secret", "user-password", "bind-password", "community"}
+    # `password ...` policy settings that are not secrets.
+    _PASSWORD_POLICY_WORDS = {
+        "uniqueness", "minimum-length", "last-changed", "constraints-apply-to", "complexity",
+        "aging", "protected-zip", "password-protected-zip", "auth",
+    }
+    _SECRET_CONTEXTS = (
+        ("radius", "radius_secret"), ("tacacs", "tacacs_secret"), ("ldap", "ldap_bind_password"),
+        ("snmp", "snmp_community"), ("vpn", "ike_pre_shared_key"),
+    )
+
+    def _other_secret_commands(self) -> list[tuple[SonicCommand, str]]:
+        """Secret-bearing E-CLI lines beyond administrator passwords (``--show-secrets`` only).
+
+        Administrator and local-user sections are left to the administrator logic
+        above (ordinary local users stay out of the appendix). Within other
+        top-level blocks, a later line with the same setting replaces an earlier one.
+        """
+        selected: dict[tuple[str, tuple[str, ...]], tuple[SonicCommand, str]] = {}
+        root = ""
+        for command in self.commands:
+            if command.indent == 0:
+                root = command.text.casefold()
+            if root.startswith(("administration", "user local-users")):
+                continue
+            words = [word.casefold() for word in self._tokens(command.text)]
+            if not words or words[0] == "no":
+                continue
+            for index, word in enumerate(words[:-1]):
+                if word not in self._SECRET_KEYWORDS:
+                    continue
+                if word == "password" and words[index + 1] in self._PASSWORD_POLICY_WORDS:
+                    continue
+                context = next((label for prefix, label in self._SECRET_CONTEXTS if root.startswith(prefix)), "secret")
+                selected[(root, tuple(words[:index + 1]))] = (command, context)
+                break
+        return list(selected.values())
 
     def get_services(self) -> dict[str, bool]:
         interfaces = self.get_interfaces()

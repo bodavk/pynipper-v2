@@ -137,6 +137,7 @@ table { border-collapse: collapse; width: 100%; }
 .advisory-status.status-error, .advisory-status.status-unavailable { border-left: 4px solid var(--medium); padding-left: 10px; }
 .basis { margin: 10px 0 4px; padding: 6px 10px; border-radius: 6px; background: var(--code-bg); font-size: 0.9em; }
 .basis-missing-explicit-setting { border-left: 4px solid var(--medium); }
+.basis-required-setting-missing { border-left: 4px solid var(--high); }
 .explain-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 4px 24px; }
 .explain-grid p { margin: 0 0 8px; }
 .plain, .example { color: var(--text); }

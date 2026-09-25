@@ -224,6 +224,7 @@ class IOSRIPInterface:
     authentication_mode: str
     key_reference: str
     evidence: tuple[ConfigEvidence, ...]
+    vrf: str = "default"
 
 
 @dataclass(frozen=True)
@@ -2611,7 +2612,7 @@ class CiscoIOSParser(BaseDeviceParser):
         return results
 
     def get_rip_interfaces(self) -> list[IOSRIPInterface]:
-        """Resolve bounded default-VRF, classic IPv4 RIP network attachments."""
+        """Resolve bounded classic IPv4 RIP network attachments (default VRF and, SC-005, VRF address families with their own ``version 2``)."""
         def classful_network(value: str) -> ipaddress.IPv4Network | None:
             try:
                 address = ipaddress.IPv4Address(value)
@@ -2633,42 +2634,57 @@ class CiscoIOSParser(BaseDeviceParser):
         if not selected:
             return []
         children = [item for _, _, block_children in selected for item in block_children]
-        if any(command.casefold().startswith("address-family ") for _, _, command in children):
-            return []  # Named/VRF RIP scope needs a separate qualified adapter.
-        version = "unknown"
-        networks: dict[str, ipaddress.IPv4Network] = {}
-        passive_default = False
-        passive_overrides: dict[str, bool] = {}
+        # scope -> [version, networks, passive_default, passive_overrides, evidence]
         process_evidence = [self._routing_evidence(header, header_line) for header, header_line, _ in selected]
-        for line_number, _, command in children:
+        scopes: dict[str, list] = {"default": ["unknown", {}, False, {}, list(process_evidence)]}
+        current = "default"
+        af_indent = None
+        for line_number, indent, command in children:
             text = command.casefold()
+            if af_indent is not None and indent <= af_indent:
+                current, af_indent = "default", None
+            if text.startswith("address-family "):
+                # SC-005 VRF stage: `address-family ipv4 vrf <name>` is assessed only when it
+                # sets its own `version 2` (Cisco's example does; inheritance is not documented).
+                match = re.fullmatch(r"address-family ipv4 vrf (\S+)", text)
+                current = f"vrf:{match.group(1)}" if match else "unsupported"
+                af_indent = indent
+                scopes.setdefault(current, ["unknown", {}, False, {}, list(process_evidence)])
+                scopes[current][4].append(self._routing_evidence(command, line_number))
+                continue
+            if text == "exit-address-family":
+                current, af_indent = "default", None
+                continue
+            scope = scopes[current]
             if text in {"version 1", "version 2"}:
-                version = text[-1]
+                scope[0] = text[-1]
             elif text == "no version":
-                version = "unknown"
+                scope[0] = "unknown"
             elif text == "passive-interface default":
-                passive_default = True
-                passive_overrides.clear()
+                scope[2] = True
+                scope[3].clear()
             elif text == "no passive-interface default":
-                passive_default = False
-                passive_overrides.clear()
+                scope[2] = False
+                scope[3].clear()
             elif text.startswith("passive-interface "):
-                passive_overrides[text.split(maxsplit=1)[1]] = True
+                scope[3][text.split(maxsplit=1)[1]] = True
             elif text.startswith("no passive-interface "):
-                passive_overrides[text.split(maxsplit=2)[2]] = False
+                scope[3][text.split(maxsplit=2)[2]] = False
             else:
                 match = re.fullmatch(r"(no )?network (\S+)", text)
                 if match:
                     network = classful_network(match.group(2))
                     if network is not None:
                         if match.group(1):
-                            networks.pop(str(network), None)
+                            scope[1].pop(str(network), None)
                         else:
-                            networks[str(network)] = network
+                            scope[1][str(network)] = network
                 else:
                     continue
-            process_evidence.append(self._routing_evidence(command, line_number))
-        if version != "2" or not networks:
+            scope[4].append(self._routing_evidence(command, line_number))
+        scopes.pop("unsupported", None)
+        scopes = {name: scope for name, scope in scopes.items() if scope[0] == "2" and scope[1]}
+        if not scopes:
             return []
 
         chains = self._routing_key_chains()
@@ -2726,8 +2742,10 @@ class CiscoIOSParser(BaseDeviceParser):
                 else:
                     continue
                 evidence.append(self._routing_evidence(command, line_number))
-            if not active or vrf != "default" or not addresses:
+            scope_name = "default" if vrf == "default" else f"vrf:{vrf}"
+            if not active or not addresses or scope_name not in scopes:
                 continue
+            _, networks, passive_default, passive_overrides, process_evidence = scopes[scope_name]
             matched = [network for network in networks.values() if any(address in network for address in addresses)]
             if not matched:
                 continue
@@ -2759,6 +2777,7 @@ class CiscoIOSParser(BaseDeviceParser):
                 authentication_mode=mode,
                 key_reference=key_reference,
                 evidence=tuple(dict.fromkeys(all_evidence)),
+                vrf=vrf,
             ))
         return records
 

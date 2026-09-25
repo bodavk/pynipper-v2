@@ -50,3 +50,11 @@ ltm virtual /Common/application {
     destination /Common/192.0.2.101:443
     profiles { /Common/protected_ssl { context clientside } }
 }
+sys ntp {
+    include "server 192.0.2.123 key 1 iburst
+trustedkey 1"
+    timezone UTC
+}
+sys provision ltm {
+    level nominal
+}

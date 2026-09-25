@@ -1,7 +1,7 @@
 """Attachment- and scope-aware PAN-OS management and policy checks."""
 
 from src.analyze.common.base_plugin import BasePlugin
-from src.analyze.common.issue import Finding, Severity
+from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.devices.common.policy_semantics import (
     ProofState,
     network_covers,
@@ -434,6 +434,7 @@ class PluginPANOSChecks(BasePlugin):
                     severity=Severity.LOW,
                     evidence=("deviceconfig system ntp-servers absent",),
                     references=(PANOS_NTP_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
         else:

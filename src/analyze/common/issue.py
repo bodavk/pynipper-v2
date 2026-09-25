@@ -37,11 +37,15 @@ class FindingBasis(str, Enum):
     ``MISSING_EXPLICIT_SETTING``: a recommended hardening setting is not
     explicitly configured; the release default was not assessed, so the effective
     value may already be safe.
+    ``REQUIRED_SETTING_MISSING``: a control the baseline requires is absent and
+    the device does not provide it by default (for example, no NTP server or
+    remote log destination exists unless one is configured).
     """
 
     EXPLICIT_VALUE = "explicit-value"
     DOCUMENTED_DEFAULT = "documented-default"
     MISSING_EXPLICIT_SETTING = "missing-explicit-setting"
+    REQUIRED_SETTING_MISSING = "required-setting-missing"
 
 
 @dataclass(frozen=True)
