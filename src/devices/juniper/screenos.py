@@ -180,6 +180,14 @@ class JuniperScreenOSParser(BaseDeviceParser):
                 r"\1 <redacted>",
                 evidence_text,
             )
+            if re.match(r"(?i)\s*(?:un)?set\s+ike\s+gateway\b", evidence_text):
+                # In a gateway, "preshare" is followed by the key itself (in a
+                # p1-proposal it only names the authentication method).
+                evidence_text = re.sub(
+                    r'''(?i)\b(preshare)\s+(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\S+)''',
+                    r"\1 <redacted>",
+                    evidence_text,
+                )
         evidence_text = single_line_evidence(
             evidence_text, self._statement_end_lines.get(line_number)
         )
@@ -1141,6 +1149,29 @@ class JuniperScreenOSParser(BaseDeviceParser):
             "http": "http" in enabled,
             "https": "https" in enabled and ssl_enabled,
         }
+
+    def get_report_secret_evidence(self) -> list[tuple[str, ConfigEvidence]]:
+        """Effective secret-bearing ``set`` commands (``--show-secrets`` appendix only).
+
+        Uses the effective command list, so ``unset`` removals are honored:
+        SNMP communities, RADIUS/TACACS+ auth-server secrets, IKE gateway
+        pre-shared keys and NTP server keys.
+        """
+        items: list[tuple[str, ConfigEvidence]] = []
+        for command in self.effective_commands:
+            tokens = command.tokens
+            context = None
+            if tokens[:2] == ("snmp", "community") and len(tokens) > 2:
+                context = "snmp_community"
+            elif tokens[:1] == ("auth-server",) and "secret" in tokens[2:-1]:
+                context = "tacacs_secret" if "tacacs" in tokens else "radius_secret"
+            elif tokens[:2] == ("ike", "gateway") and "preshare" in tokens[3:-1]:
+                context = "ike_pre_shared_key"
+            elif tokens[:2] == ("ntp", "server") and "preshare-key" in tokens[2:-1]:
+                context = "ntp_key"
+            if context:
+                items.append((context, command.evidence))
+        return items
 
     def get_native_config(self) -> list[str]:
         return self.config

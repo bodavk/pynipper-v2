@@ -1,7 +1,7 @@
 """Explicit BIG-IP TMOS management and audit controls."""
 
 from src.analyze.common.base_plugin import BasePlugin
-from src.analyze.common.issue import Finding, Severity
+from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.f5.bigip import (
     F5BIGIPParser, F5Setting, resolve_ssl_protocols, weak_literal_cipher_suites,
@@ -310,6 +310,7 @@ class PluginF5BIGIPChecks(BasePlugin):
                     severity=Severity.HIGH,
                     evidence=(agent.evidence, community.evidence),
                     references=(SNMP,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             if community.access == "rw":
                 self.add_issue(Finding(
@@ -323,6 +324,7 @@ class PluginF5BIGIPChecks(BasePlugin):
                     severity=Severity.HIGH,
                     evidence=(agent.evidence, community.evidence),
                     references=(SNMP,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
         for user in parser.get_snmp_users():
             if user.security_level in {"no-auth-no-privacy", "auth-no-privacy"}:
@@ -353,4 +355,5 @@ class PluginF5BIGIPChecks(BasePlugin):
                     severity=Severity.MEDIUM,
                     evidence=(agent.evidence, user.evidence),
                     references=(SNMP, RFC_3414),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))

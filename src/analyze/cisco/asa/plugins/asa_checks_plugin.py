@@ -1,6 +1,6 @@
 from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.credentials import credential_policy_from_context, evaluate_credential
-from src.analyze.common.issue import Finding, Severity
+from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.policy_semantics import ProofState, network_covers, service_covers
 from src.devices.cisco.asa import CiscoASAParser
@@ -108,6 +108,7 @@ class PluginASAChecks(BasePlugin):
                         recommendation="Remove SNMPv1/v2c defaults and prefer SNMPv3 with authentication and privacy.",
                         evidence=(community.raw_line_redacted,),
                         references=(CISCO_ASA_SNMP_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
             if community.access == "rw":
@@ -123,6 +124,7 @@ class PluginASAChecks(BasePlugin):
                         recommendation="Remove write communities and use a least-privileged SNMPv3 user.",
                         evidence=(community.raw_line_redacted,),
                         references=(CISCO_ASA_SNMP_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
 
@@ -185,6 +187,7 @@ class PluginASAChecks(BasePlugin):
                         recommendation="Use a v3 priv group and configure both authentication and AES privacy.",
                         evidence=evidence,
                         references=(CISCO_ASA_SNMP_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
 
@@ -208,6 +211,7 @@ class PluginASAChecks(BasePlugin):
                         recommendation="Use SHA-256 or a stronger release-supported authentication algorithm and AES privacy.",
                         evidence=evidence,
                         references=(CISCO_ASA_SNMP_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
 

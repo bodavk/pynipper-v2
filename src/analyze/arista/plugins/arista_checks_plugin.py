@@ -489,6 +489,7 @@ class PluginAristaChecks(BasePlugin):
                         severity=Severity.HIGH,
                         evidence=(evidence,),
                         references=(ARISTA_SNMP_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
         if communities and not eos.has_secure_snmpv3_user():
@@ -549,6 +550,7 @@ class PluginAristaChecks(BasePlugin):
                         severity=Severity.HIGH,
                         evidence=evidence,
                         references=(ARISTA_SNMP_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
             weak = []
@@ -569,6 +571,7 @@ class PluginAristaChecks(BasePlugin):
                         severity=Severity.MEDIUM,
                         evidence=evidence,
                         references=(ARISTA_SNMP_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
             group = group_map.get(user.group.casefold())

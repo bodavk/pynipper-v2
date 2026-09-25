@@ -243,3 +243,66 @@ system {
 }
 """)
     assert [(item["line-number"], item["context"]) for item in entries] == [(6, "radius_secret")]
+
+
+AOS_S = """; J9772A Configuration Editor; Created on release #YA.16.10.0023
+hostname "sw1"
+password manager user-name admin plaintext AdminSecret1
+snmp-server community "CommSecret1" operator
+snmp-server community "RemovedComm" unrestricted
+no snmp-server community "RemovedComm"
+snmpv3 user "u1" auth sha AuthSecret1 priv aes PrivSecret1
+sntp authentication key-id 1 authentication-mode md5 key-value NtpSecret1 trusted
+radius-server key RadiusGlobalSecret
+radius-server host 192.0.2.5 key RadiusHostSecret
+radius-server host 192.0.2.6 key RemovedHostSecret
+no radius-server host 192.0.2.6
+tacacs-server key TacacsSecret
+no tacacs-server key
+"""
+
+
+def test_aos_s_includes_effective_non_administrator_secrets(tmp_path):
+    entries = _entries(tmp_path, "HP_PROCURVE", AOS_S)
+    assert [(item["line-number"], item["context"]) for item in entries] == [
+        (3, "manager"), (4, "snmp_community"), (7, "snmpv3_user_key"), (8, "ntp_key"),
+        (9, "radius_secret"), (10, "radius_secret"),
+    ]
+    rendered = json.dumps(entries)
+    for removed in ("RemovedComm", "RemovedHostSecret", "TacacsSecret"):
+        assert removed not in rendered
+    assert "RadiusHostSecret" in rendered
+
+
+SCREENOS = """set version "6.3.0r27.0"
+set hostname "legacy-edge"
+set admin name "admin"
+set admin password "nKVUM2rwMUzPcrkG5sWIHdCtqkAibn"
+set snmp community "CommSecret1" read-only version v2c
+set snmp community "RemovedComm" read-write version any
+unset snmp community "RemovedComm"
+set auth-server "rad1" server-name 192.0.2.5
+set auth-server "rad1" radius secret "RadiusSecret1"
+set ike p1-proposal "P1" preshare pre-g14 aes256 sha-256 second 28800
+set ike gateway "gw1" address 198.51.100.1 main outgoing-interface "ethernet0/0" preshare "IkeSecret1" proposal "P1"
+"""
+
+
+def test_screenos_includes_effective_non_administrator_secrets(tmp_path):
+    entries = _entries(tmp_path, "SCREENOS", SCREENOS)
+    contexts = [(item["line-number"], item["context"]) for item in entries]
+    assert (5, "snmp_community") in contexts and (9, "radius_secret") in contexts
+    assert (11, "ike_pre_shared_key") in contexts
+    assert all(number not in {6, 10} for number, _ in contexts)  # removed community, proposal method
+    assert "IkeSecret1" in json.dumps(entries)
+
+
+def test_screenos_gateway_preshare_is_redacted_in_normal_evidence(tmp_path):
+    path = tmp_path / "ns.conf"
+    path.write_text(SCREENOS, encoding="utf-8")
+    parser = get_parser("SCREENOS", str(path))
+    texts = [command.evidence.text for command in parser.effective_commands]
+    assert not any("IkeSecret1" in text or "RadiusSecret1" in text for text in texts)
+    assert any("preshare <redacted>" in text for text in texts)
+    # The proposal keeps its authentication method visible.
+    assert any('preshare pre-g14' in text for text in texts)

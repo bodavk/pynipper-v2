@@ -1148,6 +1148,49 @@ class HPProCurveParser(BaseDeviceParser):
     def get_ntp_servers(self) -> tuple[str, ...]:
         return tuple(item.address for item in self.get_sntp_associations())
 
+    def _server_key_evidence(self, protocol: str) -> list[ConfigEvidence]:
+        """Effective RADIUS/TACACS+ global and per-host keys (``--show-secrets`` only).
+
+        AOS-S Access Security Guide 16.10: ``<protocol>-server key <k>`` sets the global
+        key and ``<protocol>-server host <ip> key <k>`` a server-specific one;
+        ``no <protocol>-server host <ip> [key]`` removes it.
+        """
+        global_key: ConfigEvidence | None = None
+        host_keys: dict[str, ConfigEvidence] = {}
+        for command in self.commands:
+            text = command.text
+            if re.fullmatch(rf"no\s+{protocol}-server(?:\s+(?:encrypted-)?key)?", text, re.IGNORECASE):
+                global_key = None
+                continue
+            removed = re.fullmatch(rf"no\s+{protocol}-server\s+host\s+(\S+)(?:\s+(?:encrypted-)?key)?.*", text, re.IGNORECASE)
+            if removed:
+                host_keys.pop(removed.group(1).casefold(), None)
+                continue
+            if re.fullmatch(rf"{protocol}-server\s+(?:encrypted-)?key\s+\S.*", text, re.IGNORECASE):
+                global_key = self._evidence(command, redact=True)
+                continue
+            host = re.fullmatch(rf"{protocol}-server\s+host\s+(\S+)\s+.*\b(?:encrypted-)?key\s+\S.*", text, re.IGNORECASE)
+            if host:
+                host_keys[host.group(1).casefold()] = self._evidence(command, redact=True)
+        return ([global_key] if global_key else []) + list(host_keys.values())
+
+    def get_report_secret_evidence(self) -> list[tuple[str, ConfigEvidence]]:
+        """Effective secret-bearing directives beyond administrator passwords (appendix only)."""
+
+        items: list[tuple[str, ConfigEvidence]] = []
+        items.extend(("snmp_community", item) for community in self.get_snmp_communities()
+                     for item in community.evidence)
+        items.extend(
+            ("snmpv3_user_key", item) for user in self.get_snmpv3_users()
+            if "present" in {user.authentication_key_state, user.privacy_key_state}
+            for item in user.evidence
+        )
+        items.extend(("ntp_key", item) for key in self.get_sntp_keys().values()
+                     if key.material_present for item in key.evidence)
+        items.extend(("radius_secret", item) for item in self._server_key_evidence("radius"))
+        items.extend(("tacacs_secret", item) for item in self._server_key_evidence("tacacs"))
+        return sorted(items, key=lambda entry: entry[1].line_number or 0)
+
     def get_native_config(self) -> Any:
         return self.commands
 

@@ -1,7 +1,7 @@
 """Effective-state ArubaOS-Switch/HP ProCurve hardening checks."""
 
 from src.analyze.common.base_plugin import BasePlugin
-from src.analyze.common.issue import Finding, Severity
+from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.models import ConfigurationState
 from src.devices.hp.procurve import HPFeature, HPProCurveParser
@@ -146,6 +146,7 @@ class PluginHPChecks(BasePlugin):
                         severity=Severity.HIGH,
                         evidence=evidence,
                         references=(AOS_SWITCH_SECURITY_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
             if community.access == "manager" or not community.restricted:
@@ -209,6 +210,7 @@ class PluginHPChecks(BasePlugin):
                         severity=Severity.HIGH,
                         evidence=evidence,
                         references=(AOS_SWITCH_SNMPV3_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
             weak = []
@@ -229,6 +231,7 @@ class PluginHPChecks(BasePlugin):
                         severity=Severity.MEDIUM,
                         evidence=evidence,
                         references=(AOS_SWITCH_SNMPV3_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
             if not hp.has_authorized_managers():

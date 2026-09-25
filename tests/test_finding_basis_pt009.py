@@ -110,3 +110,14 @@ def test_html_shows_the_note_only_when_declared(tmp_path):
     assert f"<strong>{label}:</strong>" in html and "may already be" in note
     views = build_finding_views(issues)
     assert [view["basis"] for view in views] == ["missing-explicit-setting", None]
+
+
+@pytest.mark.parametrize("device,relative,rule", [
+    ("F5_BIGIP", "f5_bigip/vulnerable.scf", "f5.bigip.snmp.default_community"),
+    ("ARISTA_EOS", "arista_eos/vulnerable.conf", "arista.eos.snmp.default_community"),
+    ("HP_PROCURVE", "hp_procurve/vulnerable.conf", "hp.procurve.snmp.default_community"),
+    ("cisco-ios", "cisco_ios/vulnerable.conf", "cisco.ios.snmp.default_community"),
+])
+def test_configured_default_communities_are_explicit_values(tmp_path, device, relative, rule):
+    bases = {record["basis"] for record in _audit(tmp_path, device, relative) if record["rule_id"] == rule}
+    assert bases == {"explicit-value"}

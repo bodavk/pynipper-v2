@@ -71,6 +71,7 @@ class PluginJunOSChecks(BasePlugin):
                         if statement.active and protocol in statement.path
                     ),
                     references=(JUNIPER_REMOTE_ACCESS_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 )
             )
 

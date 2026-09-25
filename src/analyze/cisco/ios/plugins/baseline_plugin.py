@@ -703,6 +703,7 @@ class PluginIOSBaseline(BasePlugin):
                     "Replace the community with a unique value, restrict managers, and migrate to SNMPv3 authPriv.",
                     Severity.HIGH,
                     (evidence,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             if access == "rw":
                 problems.append("read-write access")
@@ -766,6 +767,7 @@ class PluginIOSBaseline(BasePlugin):
                         Severity.HIGH,
                         evidence,
                         (CISCO_IOS_SNMPV3_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
 
@@ -786,6 +788,7 @@ class PluginIOSBaseline(BasePlugin):
                         Severity.MEDIUM,
                         evidence,
                         (CISCO_IOS_SNMPV3_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
 
