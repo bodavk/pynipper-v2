@@ -112,6 +112,7 @@ class FakeNVD:
         else:
             assert query["cpeName"] == [CPE] and "isVulnerable" in parts.query.split("&")
             items, key = self.cves, "vulnerabilities"
+        assert query["resultsPerPage"] == ["1000"]
         chunk = items[start:start + self.page]
         return {"resultsPerPage": len(chunk), "startIndex": start, "totalResults": len(items), key: chunk}
 
@@ -302,3 +303,49 @@ def test_request_works_without_truststore(monkeypatch):
     response = type("R", (), {"status_code": 200, "json": lambda self: {"totalResults": 0}})()
     monkeypatch.setattr(requests, "get", lambda *_, **__: response)
     assert nvd._requests_get("https://example.invalid", {}, 5) == {"totalResults": 0}
+
+
+REAL = CORPUS.parent / "advisories" / "nvd_cve_2024_21762.json"
+REAL_CPE = "cpe:2.3:o:fortinet:fortios:6.4.2:*:*:*:*:*:*:*"
+
+
+def _real_nvd(empty_first=False):
+    """Serves the recorded NVD shapes for FortiOS 6.4.2 (retrieved 2026-09-25)."""
+    calls = []
+
+    def get(url, headers, timeout):
+        calls.append(url)
+        query = parse_qs(urlsplit(url).query, keep_blank_values=True)
+        assert query["resultsPerPage"] == ["1000"]
+        if "/cpes/" in url:
+            return {"resultsPerPage": 1, "startIndex": 0, "totalResults": 1, "format": "NVD_CPE",
+                    "products": [{"cpe": {"deprecated": False, "cpeName": REAL_CPE}}]}
+        if empty_first:
+            # What NVD returned for resultsPerPage=2000 or the default page size.
+            return {"resultsPerPage": 0, "startIndex": 0, "totalResults": 134, "vulnerabilities": []}
+        return json.loads(REAL.read_text(encoding="utf-8"))
+
+    return get, calls
+
+
+def test_recorded_nvd_record_for_fortios_642():
+    get, calls = _real_nvd()
+    advisories, status = lookup_software_advisories(
+        "FORTIOS", "6.4.2", AdvisoryRequest(online=True),
+        client_factory=lambda api_key=None: NVDClient(http_get=get, sleep=lambda _: None),
+    )
+    assert status["status"] == "completed" and status["cpe-names"] == [REAL_CPE]
+    advisory, = advisories
+    assert (advisory.cve_id, advisory.cvss, advisory.severity, advisory.kev_date) == (
+        "CVE-2024-21762", 9.8, "Critical", "2024-02-09")
+    assert not advisory.conditional  # a plain OR node with version ranges
+
+
+def test_empty_page_with_results_is_an_error_not_zero_cves():
+    get, _ = _real_nvd(empty_first=True)
+    advisories, status = lookup_software_advisories(
+        "FORTIOS", "6.4.2", AdvisoryRequest(online=True),
+        client_factory=lambda api_key=None: NVDClient(http_get=get, sleep=lambda _: None),
+    )
+    assert advisories == [] and status["status"] == "error"
+    assert "reported 134 results but returned none" in status["reason"]

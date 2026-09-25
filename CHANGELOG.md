@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- CVE lookup (PT-010) reported zero CVEs for affected releases (for example 134 for FortiOS 6.4.2): NVD currently returns an empty page when 2000 results per page are requested. Pages now hold 1000 results, and an empty page with a non-zero total is reported as an error instead of "no CVEs".
+
 - FortiOS exports with quoted values that span several lines (PEM private keys, certificates, comments, replacement messages) no longer fail with "Invalid quoting". The parser joins the lines into one statement, redacts secrets, evaluates multi-line public certificates, and keeps later line numbers exact. An unclosed value is still a controlled parse error reported at its first line (PT-002).
 - Checked the other families for the same class of defect (PT-003). Junos display-set exports with a multi-line quoted value were misdetected as hierarchical and silently produced no findings; ScreenOS, AOS-S and SonicOS read quoted banner text as commands; IOS/IOS-XE delimited banners and EOS `banner ... EOF` bodies were scanned as commands and could create false findings. All now group or mask these values. ASA, F5 TMOS, PAN-OS XML and Check Point were unaffected. A shared `src/devices/common/source_lines.py` helper provides the grouping.
 - Cisco IOS/IOS-XE/EOS and ASA evidence line numbers no longer shift after blank lines, which CiscoConfParse used to drop.

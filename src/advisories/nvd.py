@@ -15,7 +15,10 @@ from urllib.parse import urlencode
 
 NVD_CVE_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 NVD_CPE_URL = "https://services.nvd.nist.gov/rest/json/cpes/2.0"
-PAGE_SIZE = 2000
+# NVD documents a maximum of 2000, but on 2026-09-25 a request for exactly 2000
+# (and the default, which is 2000) returned an empty page with a non-zero
+# totalResults. 1000 returned the full result set.
+PAGE_SIZE = 1000
 TIMEOUT_SECONDS = 30
 MAX_PAGES = 20
 
@@ -119,8 +122,16 @@ class NVDClient:
         start = 0
         while True:
             page = self._get(base, {**params, "resultsPerPage": PAGE_SIZE, "startIndex": start}, flags)
+            returned = int(page.get("resultsPerPage") or 0)
+            total = int(page.get("totalResults") or 0)
+            if returned == 0 and total > start:
+                # Never turn an empty page into "no CVEs".
+                raise NVDError(
+                    f"NVD reported {total} results but returned none (startIndex {start}); "
+                    "the lookup is incomplete, try again later"
+                )
             pages.append(page)
-            start += int(page.get("resultsPerPage") or 0)
+            start += returned
             if start >= int(page.get("totalResults") or 0) or not page.get("resultsPerPage"):
                 return pages
             if len(pages) >= MAX_PAGES:
