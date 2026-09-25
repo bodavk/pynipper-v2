@@ -4,7 +4,7 @@ Reviewed **2026-09-22** against the current source, after the recent parser and 
 
 ## Scope and execution contract
 
-There are **15 registered IDs and 12 parser/analyzer pipelines**, including F5 BIG-IP. IOS aliases share one implementation; PIX shares ASA code but does not thereby have independently verified dialect coverage. Source authority is [registry](../../src/devices/registry.py), not historical roadmap claims.
+There are **16 registered IDs and 13 parser/analyzer pipelines**, including F5 BIG-IP and Check Point Gaia OS (added 2026-09-25). IOS aliases share one implementation; PIX shares ASA code but does not thereby have independently verified dialect coverage. Source authority is [registry](../../src/devices/registry.py), not historical roadmap claims.
 
 Priorities are implementation priorities: **P1** closes a high-impact exposure or an important prerequisite; **P2** covers selected medium risks or evidence qualification. DISA High/CAT I and Medium/CAT II are source severities, not this project's priority scale. CIS Level 1/2 describes profiles, not vulnerability severity. Do not manufacture a Critical rating because a source has no such rating. Final finding severity depends on the proven unsafe state and exposure.
 
@@ -70,22 +70,22 @@ This table describes **implemented subsets**, not complete coverage of a categor
 
 | Registered device ID | Source-verified coverage to retain | Remaining prioritized tasks |
 |---|---|---|
-| IOS_SWITCH | Management-line authentication/authorization/timeouts, effective VTY AAA binding/bypass/accounting and empty-group checks, HTTP/SSH, credentials, SNMP, logging/config archive, NTP, interface/CoPP, BGP/OSPF, ACL effectiveness, selected DHCP/ARP/access-edge checks | [SC-001](#sc-001) member/release qualification only, [SC-003](#sc-003), [SC-004](#sc-004), [SC-005](#sc-005), [SC-006](#sc-006), [SC-021](#sc-021), [SC-022](#sc-022) |
-| IOS_ROUTER | Same pipeline; role-appropriate routing/interface/management checks, not evidence of L2 endpoint role | [SC-001](#sc-001) member/release qualification only, [SC-005](#sc-005), [SC-006](#sc-006), [SC-021](#sc-021), [SC-022](#sc-022) |
-| IOS_CATALYST | Same IOS pipeline; alias does not add independent checks | [SC-001](#sc-001), [SC-003](#sc-003), [SC-004](#sc-004), [SC-005](#sc-005), [SC-006](#sc-006), [SC-021](#sc-021), [SC-022](#sc-022) |
-| IOS_XE | IOS baseline plus XE/MACsec/crypto additions | [SC-001](#sc-001), switch-role [SC-003](#sc-003)/[SC-004](#sc-004), [SC-005](#sc-005), [SC-006](#sc-006), [SC-021](#sc-021), [SC-022](#sc-022) |
-| ASA | AAA, SSH/HTTP source restrictions, credentials, SNMP/log/NTP, MPF/uRPF, active SSL and bound IPsec transforms, ACL effectiveness, failover authentication | [SC-002](#sc-002), [SC-013](#sc-013), [SC-021](#sc-021), [SC-022](#sc-022) |
-| PIX | Registry alias to ASA; independent old-dialect parsing remains uncertain, including externally observed bound ACL misses | [SC-020](#sc-020) first; do not blindly inherit modern ASA task applicability |
-| FORTIOS | Management/administrator/session/password/crypto/cert checks, including bound custom write-capable profile trusted-host/MFA coverage; SNMP/NTP, logging destinations/events, profile attachment/content summaries, DoS, local-in, VPN, backup/update configuration | [SC-009](#sc-009), [SC-011](#sc-011) authorized log-role policy only, [SC-012](#sc-012), [SC-013](#sc-013), [SC-022](#sc-022) |
-| JUNOS | SRX policy/default deny/IPsec; administrative classes/AAA/SSH/SNMP/log/NTP, lo0 protection, BGP/OSPF and discovery | EX-only [SC-003](#sc-003)/[SC-004](#sc-004), [SC-005](#sc-005), SRX-only [SC-010](#sc-010), [SC-021](#sc-021), [SC-022](#sc-022); stateless-filter research remains in TODO |
+| IOS_SWITCH | Management-line authentication/authorization/timeouts, effective VTY AAA binding/bypass/accounting and empty-group checks, HTTP/SSH, credentials, SNMP, logging/config archive, NTP, interface/CoPP, BGP/OSPF, ACL effectiveness, selected DHCP/ARP/access-edge checks | [SC-001](#sc-001) member/release qualification only, [SC-003](#sc-003), [SC-004](#sc-004), [SC-005](#sc-005), [SC-006](#sc-006), [SC-021](#sc-021), [SC-022](#sc-022); Wave 4: [SC-025](#sc-025), [SC-026](#sc-026), [SC-027](#sc-027), [SC-028](#sc-028), [SC-029](#sc-029), [SC-031](#sc-031), [SC-033](#sc-033), [SC-034](#sc-034), [SC-035](#sc-035), [SC-036](#sc-036), [SC-037](#sc-037), [SC-044](#sc-044) |
+| IOS_ROUTER | Same pipeline; role-appropriate routing/interface/management checks, not evidence of L2 endpoint role | [SC-001](#sc-001) member/release qualification only, [SC-005](#sc-005), [SC-006](#sc-006), [SC-021](#sc-021), [SC-022](#sc-022); Wave 4: [SC-026](#sc-026), [SC-027](#sc-027), [SC-028](#sc-028), [SC-031](#sc-031), [SC-033](#sc-033), [SC-034](#sc-034), [SC-035](#sc-035), [SC-036](#sc-036), [SC-037](#sc-037), [SC-044](#sc-044) |
+| IOS_CATALYST | Same IOS pipeline; alias does not add independent checks | [SC-001](#sc-001), [SC-003](#sc-003), [SC-004](#sc-004), [SC-005](#sc-005), [SC-006](#sc-006), [SC-021](#sc-021), [SC-022](#sc-022); Wave 4: [SC-025](#sc-025), [SC-026](#sc-026), [SC-027](#sc-027), [SC-028](#sc-028), [SC-029](#sc-029), [SC-031](#sc-031), [SC-033](#sc-033), [SC-034](#sc-034), [SC-035](#sc-035), [SC-036](#sc-036), [SC-037](#sc-037), [SC-044](#sc-044) |
+| IOS_XE | IOS baseline plus XE/MACsec/crypto additions | [SC-001](#sc-001), switch-role [SC-003](#sc-003)/[SC-004](#sc-004), [SC-005](#sc-005), [SC-006](#sc-006), [SC-021](#sc-021), [SC-022](#sc-022); Wave 4: [SC-025](#sc-025), [SC-026](#sc-026), [SC-027](#sc-027), [SC-028](#sc-028), [SC-029](#sc-029), [SC-031](#sc-031), [SC-032](#sc-032), [SC-033](#sc-033), [SC-034](#sc-034), [SC-035](#sc-035), [SC-036](#sc-036), [SC-037](#sc-037), [SC-044](#sc-044) |
+| ASA | AAA, SSH/HTTP source restrictions, credentials, SNMP/log/NTP, MPF/uRPF, active SSL and bound IPsec transforms, ACL effectiveness, failover authentication | [SC-002](#sc-002), [SC-013](#sc-013), [SC-021](#sc-021), [SC-022](#sc-022); Wave 4: [SC-031](#sc-031), [SC-032](#sc-032), [SC-034](#sc-034), [SC-035](#sc-035), [SC-036](#sc-036), [SC-037](#sc-037), [SC-043](#sc-043), [SC-044](#sc-044) |
+| PIX | Registry alias to ASA; independent old-dialect parsing remains uncertain, including externally observed bound ACL misses | [SC-020](#sc-020) first; do not blindly inherit modern ASA task applicability; Wave 4: [SC-044](#sc-044) |
+| FORTIOS | Management/administrator/session/password/crypto/cert checks, including bound custom write-capable profile trusted-host/MFA coverage; SNMP/NTP, logging destinations/events, profile attachment/content summaries, DoS, local-in, VPN, backup/update configuration | [SC-009](#sc-009), [SC-011](#sc-011) authorized log-role policy only, [SC-012](#sc-012), [SC-013](#sc-013), [SC-022](#sc-022); Wave 4: [SC-031](#sc-031), [SC-032](#sc-032), [SC-033](#sc-033), [SC-034](#sc-034), [SC-035](#sc-035), [SC-037](#sc-037), [SC-038](#sc-038), [SC-039](#sc-039), [SC-040](#sc-040), [SC-043](#sc-043), [SC-044](#sc-044) |
+| JUNOS | SRX policy/default deny/IPsec; administrative classes/AAA/SSH/SNMP/log/NTP, lo0 protection, BGP/OSPF and discovery | EX-only [SC-003](#sc-003)/[SC-004](#sc-004), [SC-005](#sc-005), SRX-only [SC-010](#sc-010), [SC-021](#sc-021), [SC-022](#sc-022); stateless-filter research remains in TODO; Wave 4: later stages of [SC-028](#sc-028), [SC-033](#sc-033) |
 | SCREENOS | Legacy admin/password/logging/SNMP, NTP-server presence, policy/session/default-policy subset, VPN proposals and lifecycle warning | [SC-019](#sc-019), plus existing [RV-008](REALWORLD_VALIDATION_TASKS.md#rv-008); no duplicate lifecycle task |
-| CHECKPOINT_FW1 | Policy objects, broad rules, cleanup/stealth, tracking/install scope and bounded static rule analysis | [SC-017](#sc-017); OS posture is the separate `CHECKPOINT_GAIA` family ([SC-023](#sc-023)) |
-| CHECKPOINT_GAIA | Telnet, SNMP communities/version/v3 level, password policy (lockout, history, complexity, length), Clish idle timeout, login banner | [SC-023](#sc-023) remainder: remote AAA, NTP, syslog, web UI |
+| CHECKPOINT_FW1 | Policy objects, broad rules, cleanup/stealth, tracking/install scope and bounded static rule analysis | [SC-017](#sc-017); OS posture is the separate `CHECKPOINT_GAIA` family ([SC-023](#sc-023)); Wave 4: [SC-034](#sc-034), [SC-043](#sc-043), [SC-044](#sc-044) |
+| CHECKPOINT_GAIA | Telnet, SNMP communities/version/v3 level, password policy (lockout, history, complexity, length), Clish idle timeout, login banner | [SC-023](#sc-023) remainder: remote AAA, NTP, syslog, web UI; Wave 4: [SC-030](#sc-030), [SC-038](#sc-038) |
 | PAN_OS | Management/admin/password/lockout/AAA/SSH/TLS/certs/SNMP/NTP, update/log forwarding, rule hygiene/effectiveness, explicit interzone-default allow overrides and inspection attachment summaries | [SC-008](#sc-008), [SC-009](#sc-009), [SC-013](#sc-013), [SC-022](#sc-022) |
 | HP_PROCURVE | AOS-S management/AAA/manager-operator/password/SSH/SNMP, logging/NTP and DHCP/DAI/source-lockdown/port-security subset | [SC-003](#sc-003), [SC-004](#sc-004), routing-role [SC-005](#sc-005), [SC-012](#sc-012), [SC-021](#sc-021), [SC-022](#sc-022) |
 | SONICOS | E-CLI management/admin, access rules/effectiveness, VPN algorithms, logging/NTP/SNMP, global security services and Capture ATP dependencies | [SC-013](#sc-013), [SC-018](#sc-018), [SC-021](#sc-021), [SC-022](#sc-022) |
-| ARISTA_EOS | eAPI/TLS-profile/SSH, admin roles/AAA/authz/accounting/session/lockout/banner, SNMP/credentials/authenticated NTP/CoPP | [SC-002](#sc-002), [SC-003](#sc-003), [SC-004](#sc-004), [SC-005](#sc-005), [SC-012](#sc-012), [SC-021](#sc-021), [SC-022](#sc-022) |
-| F5_BIGIP | Explicit management source/redirect/idle settings, tmsh audit, password-enforcement and zero-lockout/minimum-length checks, plaintext local-user password storage, active remote-auth empty-server and LDAP SSL/peer-check disablement, remote-syslog-none, bound ClientSSL allow-non-SSL, AFM default-accept, bound inactive/transparent ASM policies | [SC-014](#sc-014), [SC-015](#sc-015), [SC-016](#sc-016), [SC-022](#sc-022), conditional-module [SC-024](#sc-024) |
+| ARISTA_EOS | eAPI/TLS-profile/SSH, admin roles/AAA/authz/accounting/session/lockout/banner, SNMP/credentials/authenticated NTP/CoPP | [SC-002](#sc-002), [SC-003](#sc-003), [SC-004](#sc-004), [SC-005](#sc-005), [SC-012](#sc-012), [SC-021](#sc-021), [SC-022](#sc-022); Wave 4: later stages of [SC-028](#sc-028), [SC-030](#sc-030), [SC-033](#sc-033) |
+| F5_BIGIP | Explicit management source/redirect/idle settings, tmsh audit, password-enforcement and zero-lockout/minimum-length checks, plaintext local-user password storage, active remote-auth empty-server and LDAP SSL/peer-check disablement, remote-syslog-none, bound ClientSSL allow-non-SSL, AFM default-accept, bound inactive/transparent ASM policies | [SC-014](#sc-014), [SC-015](#sc-015), [SC-016](#sc-016), [SC-022](#sc-022), conditional-module [SC-024](#sc-024); Wave 4: [SC-030](#sc-030), [SC-031](#sc-031), [SC-032](#sc-032), [SC-033](#sc-033), [SC-034](#sc-034), [SC-036](#sc-036), [SC-037](#sc-037), [SC-041](#sc-041), [SC-042](#sc-042), [SC-043](#sc-043), [SC-044](#sc-044) |
 
 Administrative access, AAA, credentials, SNMP, logging, time, services, routing, filtering, crypto, certificates, discovery and control-plane protection were considered. Banners already have checks on several families and are not a priority expansion here. Missing routing/L2 functions on appliances that do not use those roles are not automatically applicable. Certificate selection is not equivalent to certificate validation; algorithm blacklists are not credential-value checks; configured backup/update schedules are not proof of successful operation. No missing checks are inferred simply from an absent category name in a plugin.
 
@@ -608,7 +608,7 @@ These are smaller-demand or evidence-limited tracks. Do not hold ready current-p
 
 **Priority:** P2 prerequisite to high-risk management checks.
 
-**Status:** First stage implemented 2026-09-25 as a separate family, `CHECKPOINT_GAIA` (`-d checkpoint-gaia`), for the Gaia Clish `show configuration` output. Checks come from the R81 Gaia Administration Guide (Network-Access, SNMP, Password Policy, Session, Messages pages): Telnet on, SNMP default/read-write communities and `agent-version any`, SNMPv3 below authPriv, deny-on-fail off (documented default), history checking off, complexity 1, minimum length below 8, idle timeout above 10 minutes, banner off. A companion-file design was dropped because the Gaia export is self-contained and needs no policy provenance. Remaining: validation against a real export; remote AAA (RADIUS/TACACS+), NTP, syslog and web-UI settings.
+**Status:** First stage implemented 2026-09-25 as a separate family, `CHECKPOINT_GAIA` (`-d checkpoint-gaia`), for the Gaia Clish `show configuration` output. Checks come from the R81 Gaia Administration Guide (Network-Access, SNMP, Password Policy, Session, Messages pages): Telnet on, SNMP default/read-write communities and `agent-version any`, SNMPv3 below authPriv, deny-on-fail off (documented default), history checking off, complexity 1, minimum length below 8, idle timeout above 10 minutes, banner off. A companion-file design was dropped because the Gaia export is self-contained and needs no policy provenance. Remaining (maintainer-approved 2026-09-25): validation against a real export; management source restriction (`add allowed-client`); web UI TLS and port; SSH server ciphers; RADIUS/TACACS+ servers and their keys; NTP authentication; remote syslog destinations and transport; and the Gaia items of [SC-030](#sc-030) (bash shells, expert password) and [SC-038](#sc-038) (ClusterXL CCP encryption).
 
 **Source of Truth:** Check Point benchmark applicability table; FW1 parser accepts policy export, not a Gaia operating-system configuration. No source supports grading OS AAA/SNMP/time/TLS from that input.
 
@@ -646,6 +646,497 @@ These are smaller-demand or evidence-limited tracks. Do not hold ready current-p
 **Test Requirements:** Positive bound bypass, secure enforcement, inactive policy, absent module, incomplete export and redaction fixtures for each qualified candidate, then mandatory suite.
 
 **Acceptance Criteria:** Research establishes which controls can actually be evaluated; no generic WAF/AFM/APM absence finding ships without role and evidence.
+
+## Wave 4 — cleartext protocols, credential protection and attack-simplifying settings
+
+Added **2026-09-25** at the maintainer's request. Scope: services and settings that send secrets or management traffic in clear text, store credentials so they can be recovered, or otherwise make an attacker's job easier. **Cisco (IOS, IOS-XE, ASA, PIX), FortiGate, Check Point (FW1 and Gaia) and F5 BIG-IP come first**, for current and legacy releases; other families are listed as later stages only where the same state exists.
+
+Every task below is an **evidence gate**: the sources named are *candidate* sources recorded when the task was written and must be read and cited (URL, release, default) before code is written. Syntax, defaults and release applicability are `NEEDS_RESEARCH` until then. The mandatory implementation rules at the top of this file apply unchanged. Absent settings produce findings only where a vendor documents an insecure default for the exported release (`DOCUMENTED_DEFAULT`), or where the task says a required setting is missing (`REQUIRED_SETTING_MISSING`).
+
+Not scheduled (maintainer decision, 2026-09-25): SNMPv1/v2c community checks for PAN-OS and SonicOS, and SonicOS Telnet management. Gaia OS remote AAA, NTP, syslog, web UI and allowed clients are owned by [SC-023](#sc-023); F5 APM by [SC-024](#sc-024).
+
+| Task | Priority | Title | First families |
+|---|---|---|---|
+| [SC-025](#sc-025) | P1 | Smart Install (`vstack`) exposure | IOS, IOS-XE switches |
+| [SC-026](#sc-026) | P2 | IOS legacy and cleartext services, IOS-XE insecure gNMI | IOS, IOS-XE |
+| [SC-027](#sc-027) | P2 | IOS HTTPS server TLS version and ciphers | IOS, IOS-XE |
+| [SC-028](#sc-028) | P2 | First-hop redundancy (HSRP/VRRP/GLBP) authentication | IOS, IOS-XE; later EOS, Junos |
+| [SC-029](#sc-029) | P2 | VTP domain protection | IOS, IOS-XE switches |
+| [SC-030](#sc-030) | P2 | Root login and privileged shell exposure | F5, Check Point Gaia; later EOS |
+| [SC-031](#sc-031) | P1 | Cleartext or weakly protected AAA transport | IOS, ASA, FortiOS, F5 |
+| [SC-032](#sc-032) | P2 | Cleartext log transport | IOS-XE, ASA, FortiOS, F5 |
+| [SC-033](#sc-033) | P2 | NTP service exposure (serving and control queries) | IOS, FortiOS, F5; later EOS, Junos |
+| [SC-034](#sc-034) | P1 | IKEv1 aggressive mode with pre-shared keys | IOS, ASA, FortiOS, F5; Check Point sample-gated |
+| [SC-035](#sc-035) | P1 | Recoverable stored secrets | IOS, ASA, FortiOS |
+| [SC-036](#sc-036) | P2 | Credentials embedded outside credential stores | IOS, ASA, F5 |
+| [SC-037](#sc-037) | P2 | SNMP notification communities | IOS, ASA, FortiOS, F5 |
+| [SC-038](#sc-038) | P2 | FortiGate HA heartbeat authentication and encryption | FortiOS; Check Point ClusterXL research |
+| [SC-039](#sc-039) | P1 | FortiGate SSL-VPN exposure and hardening | FortiOS |
+| [SC-040](#sc-040) | P2 | FortiGate physical and boot-time recovery paths | FortiOS |
+| [SC-041](#sc-041) | P1 | F5 self-IP port lockdown | F5 |
+| [SC-042](#sc-042) | P2 | F5 data-plane TLS and persistence information leaks | F5 |
+| [SC-043](#sc-043) | P2 | Risky cleartext services allowed by firewall policy | Check Point FW1, ASA, FortiOS, F5 virtuals |
+| [SC-044](#sc-044) | P2 | Release-gated insecure defaults on legacy releases | IOS 12.x, ASA 8.x, PIX, FortiOS 5.x/6.0, BIG-IP 11.x/12.x, FW1 R6x/R7x |
+
+<a id="sc-025"></a>
+### SC-025 — Smart Install (`vstack`) exposure
+
+**Task ID and Title:** SC-025 — Report an enabled Cisco Smart Install client/director.
+
+**Priority:** P1. Smart Install accepts unauthenticated commands on TCP 4786 that can replace the configuration or image; it has been used in mass exploitation.
+
+**Status:** Evidence gate.
+
+**Source of Truth:** Candidates: Cisco advisories on Smart Install protocol misuse (cisco-sa-20170214-smi) and CVE-2018-0171 (cisco-sa-20180328-smi2); Cisco IOS hardening guidance; IOS-XE switch NDM STIG entries for Smart Install, if present.
+
+**Linked Findings:** None existing; `cisco.ios.services.unnecessary` does not cover `vstack`.
+
+**Dependencies:** Per-release default (enabled by default on many older switch releases, disabled in later ones; `no vstack` appears in exports where it was turned off). Which platforms support the feature at all (switches, not routers).
+
+**Architecture/Convention Notes:** IOS parser exposes the effective `vstack` state and release; plugin in the IOS baseline. Routers and unknown platforms stay unknown, never "secure".
+
+**Concrete Requirements:** IOS_SWITCH, IOS_CATALYST, IOS_XE. Explicit `vstack` → finding (`EXPLICIT_VALUE`). No `vstack`/`no vstack` line → `DOCUMENTED_DEFAULT` finding only on a release the vendor documents as enabled by default; otherwise unknown. `vstack director` also reported.
+
+**Test Requirements:** Mandatory suite, including explicit on, explicit off, absent on a default-on release, absent on a default-off release and a router export.
+
+**Acceptance Criteria:** No finding from absence unless a cited source documents the default for the exported release.
+
+<a id="sc-026"></a>
+### SC-026 — IOS legacy and cleartext services, IOS-XE insecure gNMI
+
+**Task ID and Title:** SC-026 — Extend `cisco.ios.services.unnecessary` and add insecure model-driven management.
+
+**Priority:** P2.
+
+**Status:** Evidence gate.
+
+**Source of Truth:** Candidates: Cisco Guide to Harden Cisco IOS Devices; IOS command references for each command; IOS-XE programmability guide (gNMI `gnxi server` vs `gnxi secure-server`); IOS/IOS-XE NDM STIGs.
+
+**Linked Findings:** Current list covers only `service finger`, `service tcp-small-servers`, `service udp-small-servers`, `ip bootp server`.
+
+**Dependencies:** Release defaults for `service pad`, `ip bootp server`, `mop enabled` (interface), `ip finger` (newer syntax of `service finger`). Which of these the exported release still supports.
+
+**Architecture/Convention Notes:** Keep one aggregated rule for classic small services; give distinct IDs only for distinct risks (a cleartext file server and a DNS resolver are different from finger).
+
+**Concrete Requirements:** IOS IDs and IOS_XE. Candidates: `service pad`, `ip finger`, `ip identd`, `mop enabled` on an active interface, `ip rcmd rsh-enable` / `ip rcmd rcp-enable` (cleartext remote shell and copy), `tftp-server` (cleartext file server), `ip dns server` (open resolver), IOS-XE `gnxi server` / insecure gNMI listener. Release-gated `DOCUMENTED_DEFAULT` only where sourced (see also [SC-044](#sc-044)).
+
+**Test Requirements:** Mandatory suite per command, including `no` removal and interface scope for `mop`.
+
+**Acceptance Criteria:** Each new command cites a vendor source; no default assumed across release trains.
+
+<a id="sc-027"></a>
+### SC-027 — IOS HTTPS server TLS version and ciphers
+
+**Task ID and Title:** SC-027 — Weak TLS on the IOS/IOS-XE HTTPS management server.
+
+**Priority:** P2.
+
+**Status:** Evidence gate.
+
+**Source of Truth:** Candidates: IOS-XE HTTP server configuration guide (`ip http tls-version`, `ip http secure-ciphersuite`); IOS-XE NDM STIG TLS entries.
+
+**Linked Findings:** IOS already checks the HTTPS certificate (`cisco.ios.management.https_*`) but not protocol version or cipher suites. ASA, FortiOS, PAN-OS, F5 and EOS already have equivalent checks.
+
+**Dependencies:** Per-release default TLS versions and cipher lists; only when `ip http secure-server` is effective.
+
+**Architecture/Convention Notes:** Reuse the existing HTTPS binding resolution; follow the rule-ID pattern of other families (`tls.minimum_version`, `tls.weak_cipher`).
+
+**Concrete Requirements:** IOS IDs and IOS_XE. Explicit TLS 1.0/1.1 or legacy/export/RC4/3DES cipher suites → finding. Absent settings → documented default only where sourced.
+
+**Test Requirements:** Mandatory suite; secure-server disabled suppresses the finding.
+
+**Acceptance Criteria:** Same severity model as the ASA `tls.*` rules.
+
+<a id="sc-028"></a>
+### SC-028 — First-hop redundancy authentication
+
+**Task ID and Title:** SC-028 — HSRP, VRRP and GLBP groups without authentication or with plain-text authentication.
+
+**Priority:** P2. A host on the segment can take over the default gateway and intercept traffic.
+
+**Status:** Evidence gate.
+
+**Source of Truth:** Candidates: IOS First Hop Redundancy Protocols configuration guides (`standby authentication md5`, `vrrp authentication`, `glbp authentication`); router STIG entries on FHRP authentication; later Arista EOS VRRP and Junos VRRP references.
+
+**Linked Findings:** None.
+
+**Dependencies:** VRRPv3 (RFC 5798) removed authentication, so a v3 group cannot be reported for missing authentication. Plain-text (`authentication text`) is weaker than MD5 key chains.
+
+**Architecture/Convention Notes:** Parser returns typed FHRP groups per interface with protocol, version and auth mode; key strings redacted. Only groups on enabled interfaces are assessed.
+
+**Concrete Requirements:** First IOS IDs and IOS_XE; later ARISTA_EOS and JUNOS. Plain-text auth → finding (`EXPLICIT_VALUE`). No auth on HSRP/GLBP/VRRPv2 → finding with the documented no-authentication default. VRRPv3 → not applicable.
+
+**Test Requirements:** Mandatory suite, including VRRPv3, shutdown interface, key-chain reference that does not resolve.
+
+**Acceptance Criteria:** Role-neutral: the finding states that the segment must be trusted for the risk to be low.
+
+<a id="sc-029"></a>
+### SC-029 — VTP domain protection
+
+**Task ID and Title:** SC-029 — VTP server/client mode without a domain password.
+
+**Priority:** P2. A rogue switch with a higher revision can overwrite or delete the VLAN database.
+
+**Status:** Evidence gate.
+
+**Source of Truth:** Candidates: Catalyst VTP configuration guides (VTP v1/v2 `vtp password`, VTP v3 primary server and hidden password); switch L2 STIG entries.
+
+**Linked Findings:** None.
+
+**Dependencies:** Whether exports record VTP mode and password (VTP settings are partly stored in `vlan.dat`, not always in the running configuration); per-release default mode (server).
+
+**Architecture/Convention Notes:** If the export does not show VTP state, report unknown, never a finding.
+
+**Concrete Requirements:** IOS_SWITCH, IOS_CATALYST, IOS_XE switches. Explicit `vtp mode server|client` without `vtp password` → finding. `transparent` or `off` → no finding. VTP v3 handled per its own model.
+
+**Test Requirements:** Mandatory suite including a router export and an export with no VTP lines.
+
+**Acceptance Criteria:** No finding from VTP absence alone.
+
+<a id="sc-030"></a>
+### SC-030 — Root login and privileged shell exposure
+
+**Task ID and Title:** SC-030 — Direct root access and general-purpose shells for administrators.
+
+**Priority:** P2.
+
+**Status:** Evidence gate. Junos already has `juniper.junos.ssh.root_login`.
+
+**Source of Truth:** Candidates: F5 articles on disabling root login (`sys db systemauth.disablerootlogin`), user terminal access (`shell bash` vs `tmsh`) and remote-user default role/console access (`auth remote-user`); F5 NDM STIG; Check Point Gaia Administration Guide (users, shell, expert password).
+
+**Linked Findings:** `juniper.junos.ssh.root_login`.
+
+**Dependencies:** Documented defaults per release (F5 allows root login by default on many releases; verify).
+
+**Architecture/Convention Notes:** F5 and Gaia parsers already model users; extend records with shell and role, no secret values.
+
+**Concrete Requirements:** F5_BIGIP: root SSH login allowed (explicit `false` or documented default); local users with `shell bash`; `auth remote-user` with `default-role admin` or `remote-console-access` bash; password history disabled (`auth password-policy password-memory 0`). CHECKPOINT_GAIA: non-admin users with `/bin/bash`, no expert password where the export shows it. Later ARISTA_EOS if a root/bash equivalent is sourced. IOS/ASA/FortiOS have no root account and are not applicable.
+
+**Test Requirements:** Mandatory suite.
+
+**Acceptance Criteria:** Each state cites its vendor source; administrators who need bash for operational reasons are covered by the recommendation text, not suppressed.
+
+<a id="sc-031"></a>
+### SC-031 — Cleartext or weakly protected AAA transport
+
+**Task ID and Title:** SC-031 — TACACS+/RADIUS without keys, LDAP without TLS, RADIUS without Message-Authenticator.
+
+**Priority:** P1. Administrator passwords travel in these exchanges.
+
+**Status:** Evidence gate.
+
+**Source of Truth:** Candidates: IOS AAA configuration guides (`tacacs server` / `radius server` `key`, `ldap server` secure mode); ASA CLI book 1 AAA chapter (`ldap-over-ssl enable`, `key`); FortiOS `config user ldap` (`set secure disable|starttls|ldaps`, `server-identity-check`); CVE-2024-3596 (BlastRADIUS) vendor advisories for Cisco, F5 and Fortinet; F5 remote-auth RADIUS/TACACS+ references.
+
+**Linked Findings:** FortiOS and Junos already check RADIUS Message-Authenticator and RadSec; F5 already checks LDAP `ssl disabled` and peer checks. Keep those IDs.
+
+**Dependencies:** Only servers bound to an active administrative or user-authentication method are assessed. Key presence is visible even when the value is masked.
+
+**Architecture/Convention Notes:** Server records carry `key_present`, transport and binding; values stay redacted. Reuse existing AAA binding resolution.
+
+**Concrete Requirements:** IOS IDs, IOS_XE, ASA: bound TACACS+/RADIUS server without a key; LDAP server bound without TLS; RADIUS without Message-Authenticator where the release supports it. FORTIOS: `config user ldap` `secure disable` on a server used by an admin or user group, and `server-identity-check disable`. F5_BIGIP: RADIUS Message-Authenticator stage if sourced. Check Point Gaia AAA belongs to [SC-023](#sc-023).
+
+**Test Requirements:** Mandatory suite, including unbound servers and masked keys.
+
+**Acceptance Criteria:** Unbound or unresolved servers never produce findings.
+
+<a id="sc-032"></a>
+### SC-032 — Cleartext log transport
+
+**Task ID and Title:** SC-032 — Remote logging without transport protection where the platform offers it.
+
+**Priority:** P2. Logs reveal usernames, addresses and events and can be forged or suppressed in transit.
+
+**Status:** Evidence gate. FortiOS syslogd transport is already covered (`fortinet.fortios.logging.remote_cleartext`, `remote_weak_tls`).
+
+**Source of Truth:** Candidates: IOS-XE `logging host ... transport tls`; ASA `logging host ... tcp/port secure`; FortiOS `config log fortianalyzer setting` (`enc-algorithm`, `reliable`); F5 remote syslog over TLS (syslog-ng include) articles; FortiGate FW STIG V-234141 (S10).
+
+**Linked Findings:** S10.
+
+**Dependencies:** Whether the exported release supports protected transport; do not report platforms that have no option.
+
+**Architecture/Convention Notes:** Extend existing logging destination records with transport and protection state.
+
+**Concrete Requirements:** IOS_XE (IOS only where supported), ASA, FORTIOS (FortiAnalyzer/FortiCloud destinations), F5_BIGIP (if the include-based TLS path can be parsed reliably, otherwise unknown).
+
+**Test Requirements:** Mandatory suite.
+
+**Acceptance Criteria:** Plain UDP syslog on platforms without a TLS option is informational at most, not a finding.
+
+<a id="sc-033"></a>
+### SC-033 — NTP service exposure
+
+**Task ID and Title:** SC-033 — Device serves NTP or answers NTP control queries without restriction.
+
+**Priority:** P2. Unrestricted mode 6/7 queries enable amplification attacks and information disclosure.
+
+**Status:** Evidence gate.
+
+**Source of Truth:** Candidates: IOS NTP configuration guide (`ntp access-group peer|serve|serve-only|query-only`, `ntp allow mode control`, default behaviour when a server is configured); FortiOS `config system ntp` (`set server-mode enable`, `set interface`); F5 NTP `restrict` via include; later EOS `ntp serve`, Junos NTP.
+
+**Linked Findings:** Existing NTP checks cover authentication and server presence, not serving.
+
+**Dependencies:** Release defaults for serving (IOS answers once it is synchronised; verify).
+
+**Architecture/Convention Notes:** Separate "serves time" from "authenticated upstream".
+
+**Concrete Requirements:** IOS IDs, IOS_XE: serving/control without `ntp access-group`. FORTIOS: `server-mode enable` on an assessed external interface. F5_BIGIP: only if restrict lines are parsed reliably. Later ARISTA_EOS, JUNOS.
+
+**Test Requirements:** Mandatory suite, including interface role context.
+
+**Acceptance Criteria:** Internal-only serving is not reported without an assessed external role.
+
+<a id="sc-034"></a>
+### SC-034 — IKEv1 aggressive mode with pre-shared keys
+
+**Task ID and Title:** SC-034 — Aggressive mode exposes a hash of the pre-shared key to offline cracking.
+
+**Priority:** P1 for gateways with pre-shared-key peers.
+
+**Status:** Evidence gate. Check Point stage is sample-gated (VPN communities live in `objects.C`).
+
+**Source of Truth:** Candidates: IOS `crypto isakmp aggressive-mode disable`; ASA `crypto ikev1 am-disable` (default behaviour per release); FortiOS phase1 `set mode aggressive`; F5 `net ipsec ike-peer` `mode aggressive`; Check Point VPN community "aggressive mode" setting; NIST SP 800-77r1.
+
+**Linked Findings:** Existing weak-proposal checks cover algorithms, not the exchange mode.
+
+**Dependencies:** Only IKEv1 with pre-shared-key authentication; certificate-authenticated peers are not affected in the same way.
+
+**Architecture/Convention Notes:** Reuse existing IKE/tunnel resolution per family.
+
+**Concrete Requirements:** IOS IDs, IOS_XE, ASA, FORTIOS, F5_BIGIP; CHECKPOINT_FW1 once a sanitized sample is available.
+
+**Test Requirements:** Mandatory suite, including IKEv2-only and certificate-authenticated peers.
+
+**Acceptance Criteria:** Only active tunnels/peers are assessed.
+
+<a id="sc-035"></a>
+### SC-035 — Recoverable stored secrets
+
+**Task ID and Title:** SC-035 — Secrets stored so that anyone with the configuration file can recover them.
+
+**Priority:** P1. Configuration backups are commonly shared; recoverable keys turn a leaked file into working credentials.
+
+**Status:** Evidence gate. Local-user password storage is already covered for IOS, ASA and F5; this task covers service keys and platform-wide encryption.
+
+**Source of Truth:** Candidates: IOS `key config-key password-encrypt` + `password encryption aes` (type 6); ASA `key config-key password-encryption` + `password encryption aes`; FortiOS `config system global set private-data-encryption` and Fortinet PSIRT FG-IR-19-007 (CVE-2019-6693, static key for backup secrets); FortiOS admin password hash formats (legacy `AK1` vs `SH2`).
+
+**Linked Findings:** `cisco.ios.credentials.*`, `cisco.asa.credentials.*`, `f5.bigip.credentials.local_plaintext`.
+
+**Dependencies:** Which secret types each mechanism protects on the exported release; the master key itself is never in the export.
+
+**Architecture/Convention Notes:** Parser reports storage type per secret without values (type 0/7/6, `ENC`, hash prefix).
+
+**Concrete Requirements:** IOS IDs, IOS_XE: type 0 or 7 pre-shared, TACACS+/RADIUS or routing keys while type 6 is available → finding. ASA: equivalent. FORTIOS: `private-data-encryption` disabled while secrets are present; legacy `AK1` administrator hashes. ASA empty or default enable password on releases where that is the default (see [SC-044](#sc-044)).
+
+**Test Requirements:** Mandatory suite; evidence must never contain the stored value.
+
+**Acceptance Criteria:** Reversible storage is never described as a plaintext password unless it is one.
+
+<a id="sc-036"></a>
+### SC-036 — Credentials embedded outside credential stores
+
+**Task ID and Title:** SC-036 — Passwords in URLs, file-transfer settings and health monitors.
+
+**Priority:** P2.
+
+**Status:** Evidence gate.
+
+**Source of Truth:** Candidates: IOS `ip ftp username/password`, `ip http client username/password`, `archive path` and `boot system` URL syntax; ASA `boot config`/URL-based settings; F5 `ltm monitor http/https` `send` strings with `Authorization: Basic` and monitor `username`/`password` properties.
+
+**Linked Findings:** `cisco.ios.configuration.archive_transport` (cleartext transport, not embedded credentials).
+
+**Dependencies:** How each platform masks these values in exports.
+
+**Architecture/Convention Notes:** Redact the credential part of URLs and headers in evidence and inventory; expose them in `--show-secrets` only through parser-owned secret lines.
+
+**Concrete Requirements:** IOS IDs, IOS_XE, ASA: `user:password@` in any file-transfer URL; `ip ftp password`; `ip http client password`. F5_BIGIP: monitors sending basic-auth headers or storing monitor passwords in clear.
+
+**Test Requirements:** Mandatory suite with redaction tests for every new pattern.
+
+**Acceptance Criteria:** No credential text reaches normal report evidence.
+
+<a id="sc-037"></a>
+### SC-037 — SNMP notification communities
+
+**Task ID and Title:** SC-037 — SNMPv1/v2c traps and informs send the community string in clear text.
+
+**Priority:** P2.
+
+**Status:** Evidence gate.
+
+**Source of Truth:** Candidates: IOS `snmp-server host ... version 1|2c <community>`; ASA `snmp-server host ... community`; FortiOS `config system snmp community` `config hosts` with `ha-direct`/trap settings; F5 `sys snmp traps`.
+
+**Linked Findings:** Existing SNMP checks cover polling communities and v3 users.
+
+**Dependencies:** None beyond syntax per release.
+
+**Architecture/Convention Notes:** Separate notification targets from agent access.
+
+**Concrete Requirements:** IOS IDs, IOS_XE, ASA, FORTIOS, F5_BIGIP: notification target using v1/v2c → finding; v3 with authPriv → none.
+
+**Test Requirements:** Mandatory suite.
+
+**Acceptance Criteria:** A device that only sends v3 notifications produces no finding.
+
+<a id="sc-038"></a>
+### SC-038 — FortiGate HA heartbeat authentication and encryption
+
+**Task ID and Title:** SC-038 — HA cluster traffic, including configuration synchronisation, without authentication or encryption.
+
+**Priority:** P2.
+
+**Status:** Evidence gate. ASA failover is already covered (`cisco.asa.failover.authentication`).
+
+**Source of Truth:** Candidates: FortiOS `config system ha` (`set authentication`, `set encryption`, `set password`); FortiGate NDM STIG; Check Point ClusterXL CCP encryption (research; may not be visible in Gaia exports).
+
+**Linked Findings:** `cisco.asa.failover.authentication`.
+
+**Dependencies:** Only when HA mode is active (`set mode a-p|a-a`).
+
+**Architecture/Convention Notes:** FortiOS parser record for HA.
+
+**Concrete Requirements:** FORTIOS: HA active with `authentication disable` or `encryption disable` (explicit or documented default). CHECKPOINT_GAIA: only if the export shows CCP encryption state.
+
+**Test Requirements:** Mandatory suite including standalone mode.
+
+**Acceptance Criteria:** Standalone units produce no finding.
+
+<a id="sc-039"></a>
+### SC-039 — FortiGate SSL-VPN exposure and hardening
+
+**Task ID and Title:** SC-039 — Weak or broadly exposed SSL-VPN portal.
+
+**Priority:** P1. The SSL-VPN portal is internet-facing and has a long history of pre-authentication vulnerabilities.
+
+**Status:** Evidence gate.
+
+**Source of Truth:** Candidates: FortiOS `config vpn ssl settings` reference (`ssl-min-proto-ver`, `servercert`, `source-interface`, `source-address`, `login-attempt-limit`, `login-block-time`, `reqclientcert`, `algorithm`, `banned-cipher`); CIS FortiOS 7.x benchmark SSL-VPN items; FortiOS release notes on SSL-VPN tunnel-mode removal (release gating).
+
+**Linked Findings:** `fortinet.fortios.tls.minimum_version` covers administrative HTTPS only.
+
+**Dependencies:** SSL-VPN active only when `source-interface` is set and a policy references the `ssl.root` interface.
+
+**Architecture/Convention Notes:** Typed SSL-VPN settings record; reuse certificate resolution for `servercert`.
+
+**Concrete Requirements:** FORTIOS: TLS below 1.2; factory self-signed certificate (`Fortinet_Factory`); `source-address all` on an external interface; login-attempt limit disabled; `algorithm low`.
+
+**Test Requirements:** Mandatory suite including inactive SSL-VPN settings.
+
+**Acceptance Criteria:** Inactive SSL-VPN settings produce no finding.
+
+<a id="sc-040"></a>
+### SC-040 — FortiGate physical and boot-time recovery paths
+
+**Task ID and Title:** SC-040 — Maintainer account and USB auto-install.
+
+**Priority:** P2. Needs physical access, but removes the need for any credential.
+
+**Status:** Evidence gate.
+
+**Source of Truth:** Candidates: FortiOS `config system global set admin-maintainer`; `config system auto-install` (`auto-install-config`, `auto-install-image`); CIS FortiOS benchmark items for both; documented defaults per release.
+
+**Linked Findings:** None.
+
+**Dependencies:** Documented defaults (both reportedly enabled by default; verify).
+
+**Architecture/Convention Notes:** Low severity; recommendation mentions physical security.
+
+**Concrete Requirements:** FORTIOS only. IOS `service config` is already covered by `cisco.ios.services.tftp_boot_config`.
+
+**Test Requirements:** Mandatory suite.
+
+**Acceptance Criteria:** Severity stays low; findings state the physical-access precondition.
+
+<a id="sc-041"></a>
+### SC-041 — F5 self-IP port lockdown
+
+**Task ID and Title:** SC-041 — Management services reachable on data-plane self IPs.
+
+**Priority:** P1. Exploitation of the configuration utility and iControl REST (for example CVE-2020-5902, CVE-2022-1388, CVE-2023-46747) relies on reaching them; self IPs with `allow-service all` or `default` expose them on traffic VLANs.
+
+**Status:** Evidence gate.
+
+**Source of Truth:** Candidates: F5 article on port lockdown behaviour (default service list per release); F5 security advisories for the CVEs above (mitigation: set self-IP port lockdown to none); F5 NDM STIG.
+
+**Linked Findings:** `f5.bigip.http.unrestricted_sources` covers the management port, not self IPs.
+
+**Dependencies:** Default `allow-service` value and the "default" service list per release; floating vs non-floating self IPs.
+
+**Architecture/Convention Notes:** New parser record for `net self` with address, VLAN, floating flag and allow-service list.
+
+**Concrete Requirements:** F5_BIGIP: `allow-service all` → finding; `default` or an explicit list containing TCP 22/443 (or the configuration utility port) → finding; absent → documented default per release.
+
+**Test Requirements:** Mandatory suite including a list with only non-management services.
+
+**Acceptance Criteria:** HA-required services in a custom list are not reported.
+
+<a id="sc-042"></a>
+### SC-042 — F5 data-plane TLS and persistence information leaks
+
+**Task ID and Title:** SC-042 — Weak client-side TLS, unvalidated server-side TLS and unencrypted persistence cookies on active virtual servers.
+
+**Priority:** P2.
+
+**Status:** Evidence gate.
+
+**Source of Truth:** Candidates: F5 client SSL profile reference (`options`, `ciphers`), server SSL profile reference (`peer-cert-mode`, `authenticate-name`, `ca-file`), cookie persistence profile (`cookie-encryption`) and F5 articles on cookie persistence revealing pool member addresses; F5 ALG STIG (S13).
+
+**Linked Findings:** `f5.bigip.ltm.clientssl_cleartext_enabled`; SC-024 module checks.
+
+**Dependencies:** Only profiles bound to enabled virtual servers; release defaults for ciphers and protocol options.
+
+**Architecture/Convention Notes:** Extend the existing virtual-to-profile resolution.
+
+**Concrete Requirements:** F5_BIGIP: bound client SSL allowing SSLv3/TLS 1.0/1.1 or weak ciphers; bound server SSL with `peer-cert-mode ignore` (policy-gated, since backends are often trusted); insert-mode cookie persistence without encryption.
+
+**Test Requirements:** Mandatory suite including unbound profiles.
+
+**Acceptance Criteria:** Server-side validation is only reported when the assessment policy asks for it.
+
+<a id="sc-043"></a>
+### SC-043 — Risky cleartext services allowed by firewall policy
+
+**Task ID and Title:** SC-043 — Shared catalogue of risky services and consistent detection across firewalls.
+
+**Priority:** P2.
+
+**Status:** Evidence gate. Check Point FW1 already has `checkpoint.fw1.policy.risky_service_exposure` with FTP, Telnet, TFTP, NetBIOS/SMB, RDP, rlogin/rsh and VNC.
+
+**Source of Truth:** Candidates: IANA service registry; CISA and vendor guidance on exposed SMB, RDP, Telnet, FTP, SNMP and database ports; Firewall SRG (S07).
+
+**Linked Findings:** `checkpoint.fw1.policy.risky_service_exposure`, `*.policy.broad_service` (these only catch "any service").
+
+**Dependencies:** Only active accept rules from broad or assessed-external sources; service object resolution already exists per family.
+
+**Architecture/Convention Notes:** Move the catalogue to `src/analyze/common` so every firewall uses the same list; keep the Check Point rule ID.
+
+**Concrete Requirements:** Extend the catalogue (SNMP 161/162, LDAP 389, POP3 110, IMAP 143, X11 6000+, MSSQL 1433, MySQL 3306, PostgreSQL 5432, Oracle 1521, Redis 6379, MongoDB 27017, Docker 2375, Telnet 23, FTP 21, TFTP 69). Apply to CHECKPOINT_FW1, ASA/PIX ACLs bound to interfaces, FORTIOS policies, and F5 virtual servers listening on cleartext administrative ports.
+
+**Test Requirements:** Mandatory suite, including named service objects and port ranges.
+
+**Acceptance Criteria:** Existing Check Point snapshots change only by intentional catalogue additions.
+
+<a id="sc-044"></a>
+### SC-044 — Release-gated insecure defaults on legacy releases
+
+**Task ID and Title:** SC-044 — Documented insecure defaults for old releases still found in production.
+
+**Priority:** P2.
+
+**Status:** Evidence gate; each release family needs its own sourced default table and a sanitized export.
+
+**Source of Truth:** Candidates: IOS 12.x configuration guides (`ip http server`, `service pad`, `ip bootp server`, `mop enabled`, `vstack` defaults); ASA 8.x/9.x (`ssl server-version`, `ssh version`, `crypto ikev1 am-disable`, blank enable password); PIX 6.x (see [SC-020](#sc-020)); FortiOS 5.x/6.0 (`strong-crypto`, `admin-https-ssl-versions`, `AK1` hashes); BIG-IP 11.x/12.x (client SSL `DEFAULT` cipher string including SSLv3, self-IP lockdown default); Check Point FW1 R6x/R7x policy defaults (see [SC-017](#sc-017)).
+
+**Linked Findings:** Release gating already used for FortiOS 7.x defaults and AOS-S 16.10/16.11.
+
+**Dependencies:** Reliable release extraction from each export.
+
+**Architecture/Convention Notes:** Keep default tables next to the parser that uses them, with the source URL and release range for each entry.
+
+**Concrete Requirements:** Feed the tasks above ([SC-025](#sc-025)–[SC-043](#sc-043)) with per-release defaults; this task does not add rule IDs of its own.
+
+**Test Requirements:** One fixture per release family and default boundary.
+
+**Acceptance Criteria:** An unknown release never inherits a default from another release train.
 
 ## Separate opt-in data track
 
