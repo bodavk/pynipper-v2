@@ -133,6 +133,9 @@ table { border-collapse: collapse; width: 100%; }
 .finding-head h3 { flex: 1 1 320px; }
 .finding-meta { margin: 0; width: 100%; font-size: 0.85rem; }
 .nowrap { white-space: nowrap; }
+.lifecycle { padding: 6px 10px; border-radius: 6px; background: var(--code-bg); }
+.lifecycle-end-of-life { border-left: 4px solid var(--critical); }
+.lifecycle-limited-support { border-left: 4px solid var(--medium); }
 .advisory-status { margin-bottom: 12px; }
 .advisory-status.status-error, .advisory-status.status-unavailable { border-left: 4px solid var(--medium); padding-left: 10px; }
 .basis { margin: 10px 0 4px; padding: 6px 10px; border-radius: 6px; background: var(--code-bg); font-size: 0.9em; }

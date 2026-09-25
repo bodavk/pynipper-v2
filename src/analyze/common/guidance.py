@@ -444,7 +444,7 @@ _CATALOGUE = (
         "Check whether the routing links are point-to-point or otherwise isolated, and whether "
         "neighbors are restricted by ACLs.",
     )),
-    (r"^routing\.bgp\.(inbound_policy|outbound_policy|prefix_limit|missing_\w+|permit_all_\w+)$", _G(
+    (r"^routing\.bgp\.(inbound_policy|outbound_policy|prefix_limit\w*|missing_\w+|permit_all_\w+)$", _G(
         "bgp-policy", "routing",
         "An external BGP neighbor has no effective route filter or prefix limit, so the device "
         "accepts or announces whatever routes are exchanged.",

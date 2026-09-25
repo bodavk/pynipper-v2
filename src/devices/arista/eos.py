@@ -270,6 +270,82 @@ class AristaEOSParser(CiscoIOSParser):
             index = closing + 1
         return masked
 
+    def _eos_bgp_blocks(self):
+        """`router bgp` blocks reduced to the default-VRF IPv4 unicast scope (SC-005).
+
+        EOS applies router-BGP-mode neighbor settings to IPv4 unicast and also accepts
+        them in `address-family ipv4`; those lines are merged into the global scope.
+        `vrf <name>` sub-blocks and other address families are left out of this stage.
+        """
+        blocks = []
+        for header, header_line, children in self._indented_blocks("router bgp "):
+            default_off = any(
+                indent == min(item[1] for item in children) and command.casefold() == "no bgp default ipv4-unicast"
+                for _, indent, command in children
+            )
+            kept = []
+            af_header: tuple[int, int, str] | None = None
+            skip_indent = None
+            af_indent = None
+            for line_number, indent, command in children:
+                if skip_indent is not None:
+                    if indent > skip_indent:
+                        continue
+                    skip_indent = None
+                if af_indent is not None and indent <= af_indent:
+                    af_indent = None
+                text = command.casefold()
+                if text.startswith("vrf ") or (
+                    text.startswith("address-family ") and text not in {"address-family ipv4", "address-family ipv4 unicast"}
+                ):
+                    skip_indent = indent
+                    continue
+                if text in {"address-family ipv4", "address-family ipv4 unicast"}:
+                    af_indent = indent
+                    if default_off:
+                        # Neighbors need `activate` here; keep it as an IOS-style AF context.
+                        af_header = (line_number, 3, "address-family ipv4 unicast")
+                        kept.append(af_header)
+                    continue
+                if text == "exit":
+                    continue
+                inside = af_indent is not None and default_off
+                kept.append((line_number, 6 if inside else 3, command))
+            blocks.append((header, header_line, kept))
+        return blocks
+
+    def get_bgp_neighbors(self):
+        """Default-VRF IPv4 unicast BGP neighbors with EOS grammar (SC-005).
+
+        Arista EOS BGP chapter: IPv4 unicast is active for every neighbor unless
+        `no bgp default ipv4-unicast`; `neighbor <x> peer group <g>` assigns a peer
+        group; `neighbor <x> password [0|7] <key>`; `maximum-routes 0` removes the
+        route limit (the system default is 256000).
+        """
+        return self._bgp_neighbors(self._eos_bgp_blocks())
+
+    def get_bgp_missing_policy(self) -> dict[str, str]:
+        """`bgp missing-policy ... direction in|out action permit|deny|deny-in-out`.
+
+        The documented default is permit: a misconfigured (for example undefined)
+        route map lets all routes through in that direction.
+        """
+        actions = {"in": "permit", "out": "permit"}
+        for _, _, children in self._eos_bgp_blocks():
+            for _, _, command in children:
+                match = re.fullmatch(
+                    r"(no |default )?bgp missing-policy(?: include \S+)? direction (in|out) action (permit|deny|deny-in-out)",
+                    command.strip(), re.IGNORECASE,
+                )
+                if not match:
+                    continue
+                action = "permit" if match.group(1) else match.group(3).casefold()
+                if action == "deny-in-out":
+                    actions = {"in": "deny", "out": "deny"}
+                else:
+                    actions[match.group(2).casefold()] = action
+        return actions
+
     def get_access_admission_interfaces(self) -> list[IOSAccessAdmission]:
         """802.1X admission on EOS ports (SC-003).
 

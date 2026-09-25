@@ -31,7 +31,7 @@ class NVDError(RuntimeError):
 
 
 _TLS_HINT = (
-    "The HTTPS certificate of NVD could not be verified. This usually means a proxy, firewall "
+    "The server's HTTPS certificate could not be verified. This usually means a proxy, firewall "
     "or antivirus inspects HTTPS with its own certificate authority. Install the requirements "
     "again (pynipper uses the 'truststore' package to trust the operating-system certificate "
     "store), or set REQUESTS_CA_BUNDLE to your organization's CA file. Alternatively, save a "
@@ -51,7 +51,7 @@ def _tls_reason(error: BaseException) -> str:
     return type(error).__name__
 
 
-def _requests_get(url: str, headers: dict, timeout: int) -> dict:
+def _requests_get(url: str, headers: dict, timeout: int, source: str = "NVD") -> dict:
     import requests  # imported lazily: offline runs never need it
 
     # Verify NVD's certificate against the operating-system trust store when the
@@ -67,22 +67,22 @@ def _requests_get(url: str, headers: dict, timeout: int) -> dict:
     try:
         response = requests.get(url, headers=headers, timeout=timeout)
     except requests.exceptions.SSLError as error:
-        raise NVDError(f"NVD request failed: TLS verification error ({_tls_reason(error)}). {_TLS_HINT}") from None
+        raise NVDError(f"{source} request failed: TLS verification error ({_tls_reason(error)}). {_TLS_HINT}") from None
     except requests.exceptions.ProxyError:
-        raise NVDError("NVD request failed: the configured HTTP(S) proxy refused or could not reach NVD") from None
+        raise NVDError(f"{source} request failed: the configured HTTP(S) proxy refused or could not reach {source}") from None
     except requests.exceptions.Timeout:
-        raise NVDError("NVD request failed: the request timed out") from None
+        raise NVDError(f"{source} request failed: the request timed out") from None
     except requests.RequestException as error:
-        raise NVDError(f"NVD request failed: {type(error).__name__}") from None
+        raise NVDError(f"{source} request failed: {type(error).__name__}") from None
     finally:
         if truststore is not None:
             truststore.extract_from_ssl()
     if response.status_code != 200:
-        raise NVDError(f"NVD returned HTTP {response.status_code}")
+        raise NVDError(f"{source} returned HTTP {response.status_code}")
     try:
         return response.json()
     except ValueError:
-        raise NVDError("NVD returned a response that is not JSON") from None
+        raise NVDError(f"{source} returned a response that is not JSON") from None
 
 
 class NVDClient:

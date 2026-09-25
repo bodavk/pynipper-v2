@@ -8,7 +8,7 @@ Configuration findings produced by the tool are not vulnerabilities in pynipper-
 
 Normal reports keep credential evidence redacted. The explicit `--show-secrets` option creates a sensitive report with a separate appendix of selected unmasked source lines; it does not recover hashed or unexported values and is not a complete inventory of every possible secret. Supply `-f` with a new output path in an access-controlled directory, review local ACLs before sharing (on Windows the tool replaces inherited ACLs with full control for the current user via `icacls` before writing, and refuses to write the report if that fails), and never upload such a report to an issue or public artifact store. The CLI refuses to overwrite an existing report in this mode.
 
-The opt-in `--cve-lookup` option sends the device product and software release (a CPE name) to the NIST NVD API. No other configuration content leaves the machine, and default runs make no outbound request. An NVD API key given through `NVD_API_KEY` or the configuration file is sent only as an NVD request header and is never written to reports or saved bundles.
+The opt-in `--cve-lookup` option sends the device product and software release (a CPE name) to the NIST NVD API, and requests the product's lifecycle page from endoflife.date (product name only). No other configuration content leaves the machine, and default runs make no outbound request. An NVD API key given through `NVD_API_KEY` or the configuration file is sent only as an NVD request header and is never written to reports or saved bundles.
 
 ## Supported versions
 

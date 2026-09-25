@@ -20,6 +20,7 @@ ARISTA_CONTROL_PLANE_GUIDE = "https://www.arista.com/en/um-eos/eos-traffic-manag
 ARISTA_CONTROL_PLANE_ACL_GUIDE = "https://www.arista.com/en/um-eos/eos-data-transfer"
 ARISTA_STP_GUIDE = "https://www.arista.com/en/um-eos/eos-spanning-tree-protocol"
 ARISTA_DOT1X_GUIDE = "https://www.arista.com/en/um-eos/eos-control-plane-security"
+ARISTA_BGP_GUIDE = "https://www.arista.com/en/um-eos/eos-border-gateway-protocol-bgp"
 ARISTA_LOGGING_GUIDE = "https://www.arista.com/en/um-eos/eos-switch-administration-commands"
 
 
@@ -948,6 +949,67 @@ class PluginAristaChecks(BasePlugin):
                     basis=FindingBasis.EXPLICIT_VALUE,
                 ))
 
+    def check_bgp(self, parser: BaseDeviceParser) -> None:
+        """Default-VRF IPv4 unicast BGP neighbors (SC-005 EOS stage, Arista BGP chapter)."""
+
+        eos = self._eos(parser)
+        route_maps = eos.get_bgp_route_map_effects()
+        missing_policy = eos.get_bgp_missing_policy()
+
+        def emit(rule, title, observation, impact, recommendation, severity, evidence, basis):
+            self.add_issue(Finding(
+                rule_id=f"arista.eos.routing.bgp.{rule}", device=parser.device_type, title=title,
+                observation=observation, impact=impact,
+                exploitability="A reachable or compromised BGP peer can exploit the weaker routing boundary.",
+                recommendation=recommendation, severity=severity, evidence=evidence,
+                references=(ARISTA_BGP_GUIDE,), basis=basis,
+            ))
+
+        for peer in eos.get_bgp_neighbors():
+            if not peer.active or peer.inheritance_unknown:
+                continue
+            scope = f"BGP neighbor {peer.address} (AS {peer.remote_as or '?'})"
+            evidence = tuple(peer.evidence)
+            if peer.authentication_state == "unauthenticated":
+                emit("authentication", "BGP neighbor authentication is not configured",
+                     f"{scope} has no 'neighbor password'.",
+                     "An unauthenticated session can be spoofed or reset, and routes can be injected by a reachable attacker.",
+                     "Configure 'neighbor <peer> password' (TCP MD5) with the peer, or another supported session protection.",
+                     Severity.HIGH, evidence, FindingBasis.REQUIRED_SETTING_MISSING)
+            if peer.peer_role != "external":
+                continue
+            for direction in ("in", "out"):
+                label = "inbound" if direction == "in" else "outbound"
+                maps = [name for bound, kind, name in peer.policy_references if bound == direction and kind == "route-map"]
+                for name in maps:
+                    effect = route_maps.get(name.casefold())
+                    if effect is None and missing_policy[direction] == "permit":
+                        emit("missing_route_map", "BGP neighbor references an undefined route map",
+                             f"External {scope} uses {label} route map '{name}', which is not defined. EOS permits all routes "
+                             f"in this direction when the route map is misconfigured (default 'bgp missing-policy' action permit).",
+                             "Every route is accepted or advertised in this direction despite the intended filter.",
+                             f"Define route map '{name}', or set 'bgp missing-policy direction {direction} action deny'.",
+                             Severity.HIGH, evidence, FindingBasis.DOCUMENTED_DEFAULT)
+                    elif effect is not None and effect[0] == "permit-all" and len(maps) == 1:
+                        emit("permit_all_route_map", "BGP neighbor route map permits every route",
+                             f"External {scope} uses {label} route map '{name}' whose sole permit clause has no match condition.",
+                             "The attached route map does not restrict route exchange in this direction.",
+                             "Replace the permit-all clause with approved prefix or AS-path boundaries.",
+                             Severity.HIGH, evidence + tuple(effect[1]), FindingBasis.EXPLICIT_VALUE)
+                present = peer.inbound_policy if direction == "in" else peer.outbound_policy
+                if not present:
+                    emit(f"{label}_policy", f"External BGP neighbor has no {label} route policy",
+                         f"External {scope} has no {label} route map or prefix list.",
+                         "Unfiltered route exchange can admit or advertise unintended prefixes across the routing boundary.",
+                         f"Apply an explicit least-privilege {label} route map or prefix list to this peer.",
+                         Severity.HIGH, evidence, FindingBasis.MISSING_EXPLICIT_SETTING)
+            if peer.maximum_routes == "0":
+                emit("prefix_limit_disabled", "External BGP neighbor has no route limit",
+                     f"External {scope} sets 'maximum-routes 0', which removes the route limit (the EOS default is 256000).",
+                     "An unexpectedly large advertisement can exhaust routing resources.",
+                     "Set a peer-specific 'maximum-routes' value based on the expected route volume.",
+                     Severity.MEDIUM, evidence, FindingBasis.EXPLICIT_VALUE)
+
     def analyze(self, parser: BaseDeviceParser) -> None:
         self.check_management_api(parser)
         self.check_authentication(parser)
@@ -959,3 +1021,4 @@ class PluginAristaChecks(BasePlugin):
         self.check_control_plane(parser)
         self.check_bpdu_guard(parser)
         self.check_access_admission(parser)
+        self.check_bgp(parser)

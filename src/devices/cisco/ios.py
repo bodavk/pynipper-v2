@@ -195,6 +195,8 @@ class IOSBGPNeighbor:
     prefix_limit: bool
     inheritance_unknown: bool
     evidence: tuple[ConfigEvidence, ...]
+    # EOS `maximum-routes`: "0" means no limit; "" when not explicitly configured.
+    maximum_routes: str = ""
 
 
 @dataclass(frozen=True)
@@ -2060,9 +2062,12 @@ class CiscoIOSParser(BaseDeviceParser):
     def get_bgp_neighbors(self) -> list[IOSBGPNeighbor]:
         """Resolve IOS BGP peer-group inheritance and per-AF protection state."""
 
+        return self._bgp_neighbors(self._indented_blocks("router bgp "))
+
+    def _bgp_neighbors(self, blocks) -> list[IOSBGPNeighbor]:
         results: list[IOSBGPNeighbor] = []
         policy_commands = {"route-map", "prefix-list", "filter-list", "distribute-list"}
-        for header, header_line, children in self._indented_blocks("router bgp "):
+        for header, header_line, children in blocks:
             local_as = header.split(maxsplit=2)[-1]
             global_lines: list[tuple[int, str]] = []
             af_lines: dict[tuple[str, str], list[tuple[int, str]]] = {}
@@ -2100,6 +2105,8 @@ class CiscoIOSParser(BaseDeviceParser):
                 if not match:
                     return
                 removal, name, tail = bool(match.group(1)), match.group(2), match.group(3)
+                # EOS spells peer groups "peer group" (two words).
+                tail = re.sub(r"^peer group\b", "peer-group", tail, flags=re.IGNORECASE)
                 tokens = tail.split()
                 folded = [token.casefold() for token in tokens]
                 data = target_props.setdefault(name, {})
@@ -2132,6 +2139,9 @@ class CiscoIOSParser(BaseDeviceParser):
                     data["activate"] = not removal
                 elif folded[:1] == ["maximum-prefix"]:
                     data["limit"] = not removal
+                elif folded[:1] == ["maximum-routes"]:
+                    data["limit"] = not removal and folded[1:2] != ["0"]
+                    data["maximum_routes"] = "" if removal else (tokens[1] if len(tokens) > 1 else "")
                 elif folded and folded[0] in policy_commands and folded[-1:] in (["in"], ["out"]):
                     data[folded[-1]] = not removal
                     if len(tokens) >= 3:
@@ -2209,6 +2219,7 @@ class CiscoIOSParser(BaseDeviceParser):
                         prefix_limit=bool(effective("limit")),
                         inheritance_unknown=any("inherit peer" in command.casefold() or "template peer" in command.casefold() for _, command in global_lines),
                         evidence=tuple(dict.fromkeys(all_evidence)),
+                        maximum_routes=str(effective("maximum_routes", "")),
                     ))
         return results
 

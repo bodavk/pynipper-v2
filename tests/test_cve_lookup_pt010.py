@@ -15,6 +15,21 @@ from src.main import main
 from tests.test_report_readability_pt005_007 import CORPUS
 
 FORTIOS = CORPUS / "fortios" / "vulnerable.conf"  # FortiOS 7.4.6
+ENDOFLIFE = CORPUS.parent / "advisories" / "endoflife_fortios.json"
+
+
+@pytest.fixture(autouse=True)
+def _no_lifecycle_network(monkeypatch):
+    """Serve the recorded endoflife.date FortiOS document; never touch the network."""
+
+    import src.advisories.service as service
+
+    def fake(url, headers, timeout):
+        if url.endswith("/fortios"):
+            return json.loads(ENDOFLIFE.read_text(encoding="utf-8"))
+        raise NVDError("endoflife.date returned HTTP 404")
+
+    monkeypatch.setattr(service, "_lifecycle_http_get", fake)
 CPE = "cpe:2.3:o:fortinet:fortios:7.4.6:*:*:*:*:*:*:*"
 
 
@@ -413,3 +428,75 @@ def test_version_1_bundles_are_still_read(tmp_path):
     }), encoding="utf-8")
     advisories, status = lookup_software_advisories("FORTIOS", "6.4.2", AdvisoryRequest(bundle_path=str(bundle)))
     assert status["status"] == "completed" and [a.cve_id for a in advisories] == ["CVE-2024-21762"]
+
+
+# --- SC-022: lifecycle status from endoflife.date -------------------------------------------
+
+import datetime  # noqa: E402
+
+from src.advisories.lifecycle import assess, release_cycle  # noqa: E402
+
+
+@pytest.mark.parametrize("device,version,expected", [
+    ("FORTIOS", "6.4.2", ("fortios", "6.4")),
+    ("PAN_OS", "11.2.3-h1", ("panos", "11.2")),
+    ("IOS_XE", "17.9", ("cisco-ios-xe", "17.9")),       # a train is enough for lifecycle
+    ("IOS_XE", "17.09.04a", ("cisco-ios-xe", "17.9")),
+    ("IOS_SWITCH", "16.12.4", ("cisco-ios-xe", "16.12")),
+    ("IOS_ROUTER", "15.2(4)M7", None),                   # classic IOS not covered
+    ("F5_BIGIP", "16.1.5", ("big-ip", "16.1")),
+    ("JUNOS", "22.4R1.10", None),
+])
+def test_release_cycle_mapping(device, version, expected):
+    assert release_cycle(device, version) == expected
+
+
+def _doc():
+    return json.loads(ENDOFLIFE.read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("cycle,today,status", [
+    ("6.4", "2026-09-25", "end-of-life"),        # eol 2024-09-30
+    ("7.2", "2026-09-25", "limited-support"),    # eoas 2025-03-31, eol 2026-09-30
+    ("7.2", "2026-10-01", "end-of-life"),
+    ("7.4", "2026-09-25", "supported"),
+    ("5.6", "2026-09-25", "unlisted"),
+])
+def test_assessment_uses_dates_not_the_stored_flag(cycle, today, status):
+    result = assess(_doc(), "fortios", cycle, datetime.date.fromisoformat(today))
+    assert result["status"] == status
+    if status != "unlisted":
+        assert result["source-url"] == "https://endoflife.date/fortios"
+
+
+def test_lifecycle_is_reported_even_when_cve_mapping_fails(tmp_path):
+    _, status = lookup_software_advisories("IOS_XE", "17.9", AdvisoryRequest(online=True),
+                                           client_factory=_forbidden_client)
+    assert status["reason-code"] == "imprecise-version"
+    assert status["lifecycle"]["status"] == "error" and "404" in status["lifecycle"]["reason"]
+
+
+def test_lifecycle_saved_and_replayed_with_the_bundle(tmp_path):
+    bundle = tmp_path / "f.nvd.json"
+    fake = FakeNVD()
+    today = datetime.date(2026, 9, 25)
+    _, online = lookup_software_advisories("FORTIOS", "7.4.6", AdvisoryRequest(online=True, save_path=str(bundle)),
+                                           client_factory=_client(fake), today=today)
+    assert online["lifecycle"]["status"] == "supported"
+    _, replay = lookup_software_advisories("FORTIOS", "7.4.6", AdvisoryRequest(bundle_path=str(bundle)), today=today)
+    assert replay["lifecycle"] == online["lifecycle"]
+    _, other = lookup_software_advisories("PAN_OS", "11.2.3", AdvisoryRequest(bundle_path=str(bundle)))
+    assert other["lifecycle"]["status"] == "unavailable"
+
+
+def test_cli_reports_end_of_life(tmp_path, monkeypatch):
+    monkeypatch.setattr(nvd, "_requests_get", lambda url, headers, timeout: {
+        "resultsPerPage": 0, "startIndex": 0, "totalResults": 0, "products": []})
+    monkeypatch.setattr(nvd, "_sleep", lambda _: None)
+    source = tmp_path / "fgt.conf"
+    source.write_text("#config-version=FGT60E-6.4.2-FW-build1723-200730:opmode=0:vdom=0:user=admin\n"
+                      "config system global\nset hostname fgt\nend\n", encoding="utf-8")
+    html = tmp_path / "r.html"
+    assert main(["-d", "fortios", "-i", str(source), "-o", "HTML", "-f", str(html), "--cve-lookup"]) == 0
+    text = html.read_text(encoding="utf-8")
+    assert "End of Support" in text and "2024-09-30" in text and "endoflife.date" in text

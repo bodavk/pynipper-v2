@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
+from . import lifecycle
+from . import nvd as _nvd
 from .model import SoftwareAdvisory
 from .nvd import NVD_CVE_URL, NVDClient, NVDError
 from .versions import ProductVersion, VersionUnavailable, product_versions, split_cpe
@@ -194,15 +196,55 @@ def _save_bundle(path: str, bundle: dict) -> None:
         json.dump(bundle, handle, indent=1, sort_keys=True)
 
 
+def _lifecycle_http_get(url: str, headers: dict, timeout: int) -> dict:
+    return _nvd._requests_get(url, headers, timeout, "endoflife.date")
+
+
+def _lifecycle_status(device: str, version: str, request: AdvisoryRequest,
+                      today: datetime.date) -> tuple[dict, Optional[dict]]:
+    """SC-022: end-of-support state from endoflife.date, and the document to save in a bundle."""
+
+    covered = lifecycle.release_cycle(device, version)
+    if covered is None:
+        return {"status": "not-covered", "reason": (
+            "endoflife.date has no lifecycle data for this product or release format "
+            "(covered: FortiOS, PAN-OS, Cisco IOS XE, F5 BIG-IP)."
+        )}, None
+    product, cycle = covered
+    try:
+        if request.bundle_path:
+            with open(request.bundle_path, encoding="utf-8") as handle:
+                stored = (json.load(handle) or {}).get("lifecycle") or {}
+            if stored.get("product") != product:
+                return {"status": "unavailable", "cycle": cycle,
+                        "reason": "The saved bundle has no endoflife.date data for this product."}, None
+            document = stored["document"]
+        else:
+            document = lifecycle.fetch(product, _lifecycle_http_get)
+        return lifecycle.assess(document, product, cycle, today), {"product": product, "document": document}
+    except (NVDError, OSError, ValueError, KeyError, TypeError) as error:
+        return {"status": "error", "cycle": cycle, "reason": f"Lifecycle lookup failed: {error}"}, None
+
+
 def lookup_software_advisories(
     device: str,
     configured_version: str,
     request: Optional[AdvisoryRequest],
     client_factory: Callable[..., NVDClient] = NVDClient,
     modules: Optional[dict[str, str]] = None,
+    today: Optional[datetime.date] = None,
 ) -> tuple[list[SoftwareAdvisory], dict]:
     if request is None or not request.requested:
         return [], not_requested_status()
+    version = request.software_version or configured_version
+    life, life_bundle = _lifecycle_status(
+        device, version, request, today or datetime.datetime.now(datetime.timezone.utc).date())
+    advisories, status = _lookup_cves(device, configured_version, request, client_factory, modules, life_bundle)
+    status["lifecycle"] = life
+    return advisories, status
+
+
+def _lookup_cves(device, configured_version, request, client_factory, modules, life_bundle):
     origin = "operator" if request.software_version else "configuration"
     version = request.software_version or configured_version
     base = {"device": str(device), "configured-version": configured_version or None,
@@ -234,6 +276,8 @@ def lookup_software_advisories(
                 "cpe-pages": cpe_pages,
                 "cve-pages": {name: client.cve_pages(name) for name in names},
             }
+            if life_bundle:
+                bundle["lifecycle"] = life_bundle
             source = "NVD CVE API 2.0"
     except LookupError as error:
         return [], _status("unavailable", reason=str(error), **{"reason-code": "bundle-mismatch"}, **base)

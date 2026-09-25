@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Software end-of-support status (SC-022) from the free endoflife.date API during `--cve-lookup`, for FortiOS, PAN-OS, Cisco IOS XE and F5 BIG-IP. The report shows the end-of-support date, compared with the assessment date, and the data is saved in the `--cve-save` bundle.
+
 - Opt-in CVE lookup for the configured software release (PT-010): `--cve-lookup` queries the free NVD CVE/CPE APIs, `--software-version` supplies an exact release when the export only states a train, and `--cve-save`/`--cve-data` store and replay the responses offline. Reports list the matching CVEs with CVSS and CISA KEV status, mark CVEs that also need a platform condition, and state when a release cannot be looked up. Default runs make no request. JSON adds `software-advisory-lookup` and fuller `vulnerabilities` records; Cisco openVuln rows now serialize to JSON. NVD requests trust the operating-system certificate store (`truststore`), and TLS, proxy and timeout failures are reported with their cause and a fix.
 
 ### Changed
@@ -26,6 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Junos EX: access-edge ports without BPDU protection (`bpdu-block` or `bpdu-block-on-edge` plus `edge`), and 802.1X `supplicant single`.
   - BIG-IP: NTP servers configured through tmsh/GUI, or through `include` without a trusted key, are reported as unauthenticated (F5 K14120).
   - IOS/IOS-XE: RIP in `address-family ipv4 vrf` blocks with their own `version 2`.
+  - Arista EOS BGP (default VRF, IPv4 unicast), covering:
+    - peers without `neighbor password`;
+    - external peers without inbound or outbound route policy;
+    - undefined route maps, which EOS treats as permit-all by default;
+    - permit-all route maps;
+    - explicit `maximum-routes 0`.
   - SonicOS: explicitly disabled IPS, anti-virus or anti-spyware on a zone in use. Global services also read the documented `intrusion-prevention` / `gateway-antivirus` / `anti-spyware` / `capture-atp` blocks.
 - `--show-secrets` now also covers SonicOS RADIUS/TACACS+/LDAP secrets, SNMP communities and VPN shared secrets.
 - CVE lookup: ArubaOS-Switch 16.x releases are looked up as `hpe:arubaos-switch`; BIG-IP queries each provisioned module. The saved-bundle format is now version 2, and version 1 bundles are still read.

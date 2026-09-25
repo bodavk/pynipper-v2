@@ -270,6 +270,18 @@
                     {% else %}
                         <p><strong>CVE lookup {{ 'failed' if lookup.status == 'error' else 'not possible' }}:</strong> {{ lookup.reason }}</p>
                     {% endif %}
+                    {% set life = lookup.lifecycle %}
+                    {% if life and life.status in ['end-of-life', 'limited-support', 'supported'] %}
+                        <p class="lifecycle lifecycle-{{ life.status }}"><strong>Software lifecycle:</strong>
+                            {{ life.product }} {{ life.release }}
+                            {% if life.status == 'end-of-life' %}reached <strong>{{ life['eol-label'] }}</strong> on {{ life['eol-from'] }}; it no longer receives security fixes.
+                            {% elif life.status == 'limited-support' %}passed {{ life['eoas-label'] or 'the end of full support' }} on {{ life['eoas-from'] }}; {{ life['eol-label'] }} is {{ life['eol-from'] }}.
+                            {% else %}is supported; {{ life['eol-label'] }} is {{ life['eol-from'] }}.{% endif %}
+                            {% if life['latest-in-cycle'] %}Latest release in this cycle: {{ life['latest-in-cycle'] }}.{% endif %}
+                            <span class="small muted">Source: <a href="{{ life['source-url'] }}">endoflife.date</a>, assessed {{ life['assessment-date'] }}.</span></p>
+                    {% elif life and life.status in ['unlisted', 'error', 'unavailable'] %}
+                        <p class="note">Software lifecycle: {{ life.reason }}</p>
+                    {% endif %}
                     {% if lookup.note %}<p class="note">{{ lookup.note }}</p>{% endif %}
                     {% if lookup['not-in-cpe-dictionary'] %}<p class="note">Not in NVD's product dictionary for this release, so not looked up: {{ lookup['not-in-cpe-dictionary']|join(', ') }}.</p>{% endif %}
                     {% if lookup['save-error'] %}<p class="note">{{ lookup['save-error'] }}</p>{% endif %}
