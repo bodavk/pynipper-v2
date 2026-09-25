@@ -1287,6 +1287,40 @@ class JunOSParser(BaseDeviceParser):
             return DefaultCredentialAssessment.NO_MATCH
         return DefaultCredentialAssessment.NOT_EVALUATED
 
+    _SECRET_LEAF_TOKENS = frozenset({
+        "secret", "authentication-key", "authentication-password", "privacy-password",
+        "pre-shared-key", "simple-password",
+    })
+
+    def get_report_secret_evidence(self) -> list[tuple[str, ConfigEvidence]]:
+        """Active secret-bearing statements for the opt-in ``--show-secrets`` appendix.
+
+        Uses the effective statement list, so deleted and deactivated
+        statements are excluded. SNMP community names are secrets in Junos
+        (``snmp community NAME``); other secrets are the values that follow
+        a secret keyword, including OSPF ``md5 N key VALUE``.
+        """
+        selected: dict[int, tuple[str, ConfigEvidence]] = {}
+        for statement in self.statements:
+            if not statement.active or statement.evidence.line_number is None:
+                continue
+            path = statement.path
+            context = None
+            if path[:2] == ("snmp", "community") and len(path) > 2:
+                context = "snmp_community"
+            elif any(token in self._SECRET_LEAF_TOKENS for token in path[:-1]) or (
+                "md5" in path and "key" in path[path.index("md5"):-1]
+            ):
+                head = path[1] if path[:1] == ("system",) and len(path) > 1 else path[0]
+                context = {
+                    "radius-server": "radius_secret", "tacplus-server": "tacacs_secret",
+                    "ntp": "ntp_key", "snmp": "snmpv3_user_key", "security": "ike_pre_shared_key",
+                    "protocols": "routing_key", "login": "local_user",
+                }.get(head, "secret")
+            if context:
+                selected.setdefault(statement.evidence.line_number, (context, statement.evidence))
+        return [selected[number] for number in sorted(selected)]
+
     def get_credential_metadata(self) -> list[CredentialMetadata]:
         """Expose secret-free properties for effective local and root credentials."""
 

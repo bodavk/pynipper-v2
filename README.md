@@ -42,9 +42,24 @@ pynipper-ng -d cisco-ios -i tests\test_data\cisco_ios_example.conf -o HTML -f re
 
 `-d` selects the configuration family; it defaults to `auto` when omitted. Auto-detection works only for distinctive exports and stops with guidance when, for example, IOS and IOS-XE cannot be distinguished. Use `-d cisco-ios` or `-d cisco-ios-xe` explicitly in that case. Older device IDs still work, but the short names shown by `pynipper-ng --help` are recommended. Device role (such as switch or access edge) is separate from the configuration family.
 
-`-i` supplies the export, `-o` selects `HTML` or `JSON`, and `-f` names the report. `-x` keeps the run offline by disabling optional Cisco advisory lookup.
+`-i` supplies the export, `-o` selects `HTML` or `JSON`, and `-f` names the report. `-x` keeps the run offline by disabling the optional Cisco openVuln advisory lookup (IOS, only when API credentials are configured).
 
-Reports mask credential values by default. `--show-secrets` adds a separate, unmasked source-line appendix for parser-qualified credentials on Cisco IOS/IOS-XE/ASA, FortiOS, Junos, ScreenOS, SonicOS 7, HP ProCurve/ArubaOS-Switch, Arista EOS, and F5 BIG-IP TMOS; it does **not** unmask normal finding evidence or guarantee that every secret in an export was found. The option requires an explicit `-f` pointing to a new file and is rejected for other families. Treat the resulting HTML/JSON file as sensitive, especially on shared systems; see [Security](SECURITY.md).
+### Known CVEs for the configured release (opt-in)
+
+`--cve-lookup` asks the free [NVD CVE API](https://nvd.nist.gov/developers/vulnerabilities) which CVEs affect the software release recorded in the export. The report then lists them with their CVSS score and flags any in the CISA Known Exploited Vulnerabilities catalog:
+
+```
+pynipper-ng -d fortios -i fortigate.conf -o HTML -f report.html --cve-lookup
+```
+
+- The lookup sends only the product and release (a CPE name such as `cpe:2.3:o:fortinet:fortios:7.4.6`) to NVD, never configuration content. Default runs make no request.
+- Without an API key NVD allows about one request every six seconds, so a lookup takes a few requests and some seconds. A free key from NVD raises the limit: set `NVD_API_KEY` or add `API_KEY` under `[NVD]` in the `-c` configuration file. The key is never written to a report.
+- Some exports only state a release train (IOS-XE `version 17.9`). Supply the exact running release with `--software-version 17.9.4a`.
+- `--cve-save FILE` stores the NVD responses; `--cve-data FILE` replays them later without network access (for example together with `-x`).
+- Qualified families: IOS, IOS-XE, ASA, FortiOS, Junos, ScreenOS, PAN-OS, Arista EOS, SonicOS and F5 BIG-IP (LTM module only). AOS-S, PIX and Check Point policy exports are reported as not supported.
+- A listed CVE means NVD records the release as affected. It does not show that the vulnerable feature is enabled, and NVD may lack product data for very recent CVEs. If a release is missing from NVD's CPE dictionary, the report says so instead of claiming there are no CVEs.
+
+Reports mask credential values by default. `--show-secrets` adds a separate, unmasked source-line appendix for parser-qualified credentials on Cisco IOS/IOS-XE/ASA, FortiOS, Junos, ScreenOS, SonicOS 7, HP ProCurve/ArubaOS-Switch, Arista EOS, F5 BIG-IP TMOS and PAN-OS (secret XML elements only). On Cisco IOS/IOS-XE/ASA and Arista EOS it also covers effective SNMP communities/v3 keys and NTP keys; on IOS/IOS-XE/EOS it adds bound BGP/OSPF/RIP/EIGRP keys, TACACS+ keys and IKE pre-shared keys, on ASA tunnel-group pre-shared keys and AAA server keys, and on Junos active RADIUS/TACACS+ secrets, NTP keys, SNMP communities and v3 keys, IKE pre-shared keys and routing authentication keys; it does **not** unmask normal finding evidence or guarantee that every secret in an export was found. The option requires an explicit `-f` pointing to a new file and is rejected for other families. Treat the resulting HTML/JSON file as sensitive, especially on shared systems; see [Security](SECURITY.md).
 
 Check Point Firewall-1 expects a directory with matching export files, such as `rules.C` and `objects.C`. F5 BIG-IP expects a saved tmsh/SCF text file. The [supported-device guide](docs/SUPPORTED_DEVICES.md) describes other input formats.
 

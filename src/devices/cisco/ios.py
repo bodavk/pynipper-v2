@@ -235,6 +235,7 @@ class IOSEIGRPInterface:
     authentication_state: str
     key_reference: str
     evidence: tuple[ConfigEvidence, ...]
+    named_instance: str = ""
 
 
 @dataclass(frozen=True)
@@ -576,6 +577,8 @@ class CiscoIOSParser(BaseDeviceParser):
             r"\1<redacted>",
             text.strip(),
         )
+        # EIGRP named mode carries the key inline: authentication mode hmac-sha-256 [0|7] <key>.
+        redacted = re.sub(r"(?i)(\bhmac-sha-256\s+)(?:[07]\s+)?\S+", r"\1<redacted>", redacted)
         return ConfigEvidence(redacted, self.config_filepath, line_number)
 
     def _indented_blocks(self, prefix: str) -> list[tuple[str, int, list[tuple[int, int, str]]]]:
@@ -834,6 +837,96 @@ class CiscoIOSParser(BaseDeviceParser):
                 record(account.casefold(), "radius_key", account, "key", marker,
                        tokens[value_index] if len(tokens) > value_index else "", line_number)
         return list(credentials.values())
+
+    _SECRET_EVIDENCE_MARKER = re.compile(r"<(?:key |credential )?redacted>|<key present>")
+
+    def get_report_secret_evidence(self) -> list[tuple[str, ConfigEvidence]]:
+        """Effective secret-bearing directives beyond credential metadata.
+
+        Only for the opt-in ``--show-secrets`` appendix. Each item comes from a
+        typed parser record that already resolved ordering, removal and binding,
+        so removed or unbound secrets are not returned. The evidence text is
+        sanitized; the report adapter reads the original line separately.
+        """
+        sources: tuple[tuple[str, list[ConfigEvidence]], ...] = (
+            ("snmp_community", [item for _, _, item in self.get_snmp_community_metadata()]),
+            ("snmpv3_user_key", [item for user in self.get_snmpv3_relationships()[2] for item in user.evidence]),
+            ("ntp_key", [item for association in self.get_ntp_associations() for item in association.evidence]),
+            ("bgp_password", [item for peer in self.get_bgp_neighbors() for item in peer.evidence]),
+            ("ospf_key", [item for record in self.get_ospf_interfaces() for item in record.evidence]),
+            ("rip_key", [item for record in self.get_rip_interfaces() for item in record.evidence]),
+            ("eigrp_key", [item for record in self.get_eigrp_interfaces() for item in record.evidence]),
+        )
+        selected: dict[int, tuple[str, ConfigEvidence]] = {}
+        for context, evidence in sources:
+            for item in evidence:
+                if (item.line_number is not None and item.source == self.config_filepath
+                        and self._SECRET_EVIDENCE_MARKER.search(item.text)):
+                    selected.setdefault(item.line_number, (context, item))
+        for context, item in self._key_directive_evidence():
+            selected.setdefault(item.line_number, (context, item))
+        return [selected[number] for number in sorted(selected)]
+
+    def _key_directive_evidence(self) -> list[tuple[str, ConfigEvidence]]:
+        """Effective TACACS+ and IKE pre-shared key directives (appendix only).
+
+        Global ``tacacs-server key`` and ``crypto isakmp key ... address``
+        follow last-value and ``no`` removal; ``tacacs server`` and
+        ``crypto keyring`` child keys disappear with their removed parent.
+        """
+        global_keys: dict[str, tuple[str, int]] = {}
+        block_keys: dict[str, dict[str, tuple[str, int]]] = {}
+        parent: str | None = None
+        for number, raw in enumerate(self._source_lines, start=1):
+            line = raw.strip()
+            if not line or line == "!":
+                continue
+            folded = line.casefold()
+            if not raw[:1].isspace():
+                parent = None
+                removal = re.fullmatch(r"(?:no|default) (tacacs server \S+|crypto keyring \S+)", folded)
+                if removal:
+                    block_keys.pop(removal.group(1), None)
+                    continue
+                if re.fullmatch(r"(tacacs server|crypto keyring) \S+(?: .*)?", folded):
+                    parent = " ".join(folded.split()[:3])
+                    block_keys[parent] = {}
+                    continue
+                if re.fullmatch(r"(?:no|default) tacacs-server key(?: .*)?", folded):
+                    global_keys.pop("tacacs-server key", None)
+                elif folded.startswith("tacacs-server key "):
+                    global_keys["tacacs-server key"] = ("tacacs_key", number)
+                else:
+                    isakmp = re.fullmatch(r"(no )?crypto isakmp key (?:\d+ )?\S+ (address|hostname) (\S+)(?: .*)?", folded)
+                    if isakmp:
+                        identity = f"isakmp {isakmp.group(2)} {isakmp.group(3)}"
+                        if isakmp.group(1):
+                            global_keys.pop(identity, None)
+                        else:
+                            global_keys[identity] = ("isakmp_pre_shared_key", number)
+                continue
+            if parent is None:
+                continue
+            if parent.startswith("tacacs server"):
+                if re.fullmatch(r"(?:no|default) key(?: .*)?", folded):
+                    block_keys[parent].pop("key", None)
+                elif folded.startswith("key "):
+                    block_keys[parent]["key"] = ("tacacs_key", number)
+            else:
+                psk = re.fullmatch(r"(no )?pre-shared-key (address|hostname) (\S+)(?: \S+)?(?: key .*)?", folded)
+                if psk:
+                    identity = f"{psk.group(2)} {psk.group(3)}"
+                    if psk.group(1):
+                        block_keys[parent].pop(identity, None)
+                    elif " key " in f" {folded} ":
+                        block_keys[parent][identity] = ("keyring_pre_shared_key", number)
+        found = list(global_keys.values()) + [
+            item for keys in block_keys.values() for item in keys.values()
+        ]
+        return [
+            (context, ConfigEvidence(f"{context.replace('_', ' ')} <redacted>", self.config_filepath, number))
+            for context, number in found
+        ]
 
     def get_snmp_community_metadata(self) -> list[tuple[str, str, ConfigEvidence]]:
         """Effective v1/v2c communities; names stay inside this parser boundary."""
@@ -2669,8 +2762,115 @@ class CiscoIOSParser(BaseDeviceParser):
             ))
         return records
 
+    def _named_eigrp_processes(self) -> dict[tuple[str, str], dict]:
+        """Default-VRF IPv4 EIGRP named-mode address families (SC-005).
+
+        ``router eigrp <name>`` / ``address-family ipv4 [unicast] autonomous-system <n>``.
+        Per Cisco's EIGRP command reference, ``af-interface default`` applies to every
+        interface of the address family and a specific ``af-interface`` overrides it.
+        VRF, multicast and IPv6 address families are out of scope.
+        """
+        processes: dict[tuple[str, str], dict] = {}
+        for header, header_line, children in self._indented_blocks("router eigrp "):
+            match = re.fullmatch(r"router eigrp (\S+)", header, re.IGNORECASE)
+            if not match:
+                continue
+            instance = match.group(1)
+            last_removal = max((
+                number for number, line in enumerate(self.parser.ioscfg, 1)
+                if not line[:1].isspace()
+                and line.strip().casefold() == f"no router eigrp {instance.casefold()}"
+            ), default=0)
+            if header_line <= last_removal:
+                continue
+            process = None
+            af_indent = None
+            sub_indent = None
+            settings = None
+            for line_number, indent, command in children:
+                text = command.casefold()
+                if af_indent is not None and indent <= af_indent:
+                    process, af_indent, sub_indent, settings = None, None, None, None
+                if sub_indent is not None and indent <= sub_indent:
+                    sub_indent, settings = None, None
+                if text.startswith("address-family "):
+                    af = re.fullmatch(r"address-family ipv4(?: unicast)? autonomous-system (\d+)", text)
+                    af_indent = indent
+                    if af:
+                        process = processes.setdefault((instance, af.group(1)), {
+                            "networks": [], "default": {}, "interfaces": {},
+                            "evidence": [self._routing_evidence(header, header_line)],
+                        })
+                        process["evidence"].append(self._routing_evidence(command, line_number))
+                    continue
+                if process is None:
+                    continue
+                if text == "exit-address-family":
+                    process, af_indent, sub_indent, settings = None, None, None, None
+                    continue
+                if sub_indent is None:
+                    target = re.fullmatch(r"af-interface (.+)", command.strip(), re.IGNORECASE)
+                    if target:
+                        name = re.sub(r"\s+", "", target.group(1)).casefold()
+                        settings = (
+                            process["default"] if name == "default"
+                            else process["interfaces"].setdefault(name, {})
+                        )
+                        sub_indent = indent
+                        settings.setdefault("_evidence", []).append(self._routing_evidence(command, line_number))
+                        continue
+                    network = re.fullmatch(r"(no )?network (\S+)(?: (\S+))?", text)
+                    if network:
+                        try:
+                            selector = (
+                                ipaddress.IPv4Address(network.group(2)),
+                                ipaddress.IPv4Address(network.group(3)) if network.group(3) else None,
+                            )
+                        except ipaddress.AddressValueError:
+                            continue
+                        if network.group(1):
+                            process["networks"] = [item for item in process["networks"] if item != selector]
+                        elif selector not in process["networks"]:
+                            process["networks"].append(selector)
+                        process["evidence"].append(self._routing_evidence(command, line_number))
+                    elif not text.startswith("exit-"):
+                        sub_indent = indent  # topology or other sub-mode: not interpreted
+                    continue
+                if settings is None or text == "exit-af-interface":
+                    continue
+                negated = text.startswith("no ")
+                body = text[3:] if negated else text
+                key = None
+                if body == "shutdown":
+                    key, value = "shutdown", not negated
+                elif body == "passive-interface":
+                    key, value = "passive", not negated
+                elif body.startswith("authentication mode"):
+                    key = "mode"
+                    tokens = body.split()
+                    if negated:
+                        value = "no"
+                    elif tokens[2:3] == ["md5"] and len(tokens) == 3:
+                        value = "md5"
+                    elif tokens[2:3] == ["hmac-sha-256"] and len(tokens) in {4, 5}:
+                        value = "hmac-sha-256"
+                    else:
+                        value = "unknown"
+                elif body.startswith("authentication key-chain"):
+                    key = "chain"
+                    tokens = command.strip().split()
+                    value = "no" if negated else tokens[2] if len(tokens) == 3 else "unknown"
+                if key is None:
+                    continue
+                if negated and key in {"mode", "chain"} and settings is process["default"]:
+                    settings.pop(key, None)
+                else:
+                    settings[key] = value
+                settings["_evidence"].append(self._routing_evidence(command, line_number))
+        return {key: value for key, value in processes.items() if value["networks"]}
+
     def get_eigrp_interfaces(self) -> list[IOSEIGRPInterface]:
-        """Resolve classic default-VRF IPv4 EIGRP interface authentication."""
+        """Resolve default-VRF IPv4 EIGRP interface authentication (classic and named mode)."""
         processes: dict[str, tuple[list[tuple[ipaddress.IPv4Address, ipaddress.IPv4Address | None]], bool, dict[str, bool], list[ConfigEvidence]]] = {}
         blocks = self._indented_blocks("router eigrp ")
         for header, header_line, children in blocks:
@@ -2720,7 +2920,8 @@ class CiscoIOSParser(BaseDeviceParser):
                         networks.append(selector)
                 evidence.append(self._routing_evidence(command, line_number))
             processes[as_number] = (networks, passive_default, overrides, evidence)
-        if not processes:
+        named = self._named_eigrp_processes()
+        if not processes and not named:
             return []
 
         def matches(address: ipaddress.IPv4Address, selector: tuple[ipaddress.IPv4Address, ipaddress.IPv4Address | None]) -> bool:
@@ -2813,6 +3014,50 @@ class CiscoIOSParser(BaseDeviceParser):
                     authentication_state=state,
                     key_reference=key_reference,
                     evidence=tuple(dict.fromkeys(all_evidence)),
+                ))
+            for (instance, as_number), process in named.items():
+                if not any(matches(address, selector) for address in addresses for selector in process["networks"]):
+                    continue
+                default = process["default"]
+                specific = process["interfaces"].get(re.sub(r"\s+", "", interface).casefold(), {})
+
+                def resolved(key):
+                    return specific[key] if key in specific else default.get(key)
+
+                if resolved("shutdown") or resolved("passive"):
+                    continue
+                mode, key_reference = resolved("mode"), resolved("chain")
+                # A specific "no authentication ..." against an inherited default is not
+                # documented precisely enough to decide; keep it unknown.
+                if (mode == "no" and "mode" in default) or (key_reference == "no" and "chain" in default):
+                    mode = "unknown"
+                key_reference = "" if key_reference in {None, "no", "unknown"} else key_reference
+                chain = chains.get(key_reference.casefold()) if key_reference else None
+                if mode in {None, "no"}:
+                    state = "unauthenticated"
+                elif mode == "unknown" or resolved("chain") == "unknown":
+                    state = "unknown"
+                elif mode == "hmac-sha-256":
+                    state = "configured-hmac-sha-256"
+                elif not key_reference or chain is None or not any(chain[0].values()):
+                    state = "unresolved"
+                else:
+                    state = "configured-md5"
+                all_evidence = (
+                    evidence + process["evidence"] + default.get("_evidence", [])
+                    + specific.get("_evidence", [])
+                )
+                if chain and state == "configured-md5":
+                    all_evidence.extend(chain[1])
+                records.append(IOSEIGRPInterface(
+                    interface=interface,
+                    autonomous_system=as_number,
+                    active=True,
+                    passive=False,
+                    authentication_state=state,
+                    key_reference=key_reference if state != "configured-hmac-sha-256" else "",
+                    evidence=tuple(dict.fromkeys(all_evidence)),
+                    named_instance=instance,
                 ))
         return records
 

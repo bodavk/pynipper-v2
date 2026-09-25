@@ -12,6 +12,8 @@ Recorded **2026-09-24** from hands-on use of the tool. These are defects and usa
 | PT-006 | P2 | Layered, user-friendly finding explanations (**done**) |
 | PT-007 | P2 | Point to related findings and compensating controls (**done**) |
 | PT-008 | P3 | Modernise the dependency stack (long-term fix for PT-001) |
+| PT-009 | P3 | Say whether a finding is an insecure value or a missing explicit hardening setting |
+| PT-010 | P1 | Look up known CVEs for the software version found in the configuration (opt-in) (**first stage done**) |
 
 <a id="pt-001"></a>
 ### PT-001: Pin MarkupSafe
@@ -141,3 +143,76 @@ Recorded **2026-09-24** from hands-on use of the tool. These are defects and usa
 - Use a lock or constraints file.
 - Add a CI job that does a fresh install.
 **Priority:** Lower than current work, so do this after the PT-00x bugfixes.
+
+<a id="pt-009"></a>
+### PT-009: Explicit insecure value versus missing explicit hardening (low priority)
+**Problem:** Some findings fire because a recommended hardening setting is not explicitly configured, rather than because an insecure value is set. For example, a VTY line without `transport input ssh` is reported whatever the release default is. Rule text often says "not explicitly…", but the report does not show this basis consistently, so a reader may think the device is proven insecure.
+**Fix:**
+- Give each finding a basis: explicit insecure value, documented release default, or missing explicit hardening setting (default not assessed).
+- The rule sets the basis where the finding is created; plugins set it explicitly, and the tool never infers it from the wording.
+- Show it as a short note on the finding card and in JSON (additive).
+- Missing-explicit-setting findings should say that the effective value may already be safe on some releases, and should name the recommended explicit setting.
+**Tests:** Basis is set for representative rules of each kind; HTML/JSON rendering; no change to rule IDs or snapshots.
+**Status:** In progress (2026-09-25). `FindingBasis` (`explicit-value`, `documented-default`, `missing-explicit-setting`) is an optional `Finding` argument, also accepted by the vendor `_finding` helpers. `to_dict()` adds `basis`; the HTML card shows a labelled note and JSON adds `basis-note` (`src/report/explanations.py`, `BASIS_TEXT`). Declared for: IOS `vty.telnet` (missing `transport input` vs. explicit telnet/all), `vty.insecure_output_transport`, `ip.source_route`, SSH version/retries/timeout (explicit vs. documented default); ASA `management.certificate`; FortiOS `password_policy.disabled` (absent on 7.x = documented default, explicit disable) and `management.insecure_protocol`; EOS `authentication.lockout_disabled`; Junos `ssh.root_login`. Tests: `tests/test_finding_basis_pt009.py`. Remaining: declare the basis in the other rules, one rule at a time, from the code branch that raises the finding.
+
+<a id="pt-010"></a>
+### PT-010: CVE lookup for the configured software version (high priority, maintainer request 2026-09-25)
+
+#### Analysis
+
+**What already exists.** Every parser has `get_version()`. Only the Cisco IOS analyzer queries advisories: the Cisco PSIRT openVuln API, which needs a registered client ID and secret in `default.conf`. Every other analyzer passes an empty advisory list. The report already has a "Software advisories" section and a JSON `vulnerabilities` list. The existing `CiscoVuln` has no `to_dict()`, so a JSON report with openVuln results would fail to serialize.
+
+**Version quality in exports** (checked on the regression corpus):
+
+| Family | Example | Precise enough? |
+|---|---|---|
+| FortiOS | `7.4.6` (from the `#config-version` header) | yes |
+| Junos | `22.4R1.10` | yes: release `22.4`, update `R1`; the trailing `.10` build is not used in CPE names |
+| PAN-OS | `11.2.3` (`detail-version`) | yes; a hotfix `-h1` goes in the CPE update field |
+| EOS | `4.29.2F` | yes |
+| ASA | `9.18(4)` | yes, maps to `9.18.4` |
+| IOS | `15.2(4)M7` (when the `show version` banner is present) | yes |
+| IOS-XE | `17.9` (the `version` line holds only the train) | **no**: a train cannot be matched to affected releases, so the operator must supply the release (`--software-version 17.9.4a`) |
+| SonicOS | `7.1.2-7019` | yes |
+| F5 TMOS | `16.1.5` | partly: CVEs are recorded per module; the first stage queries LTM only |
+| ScreenOS | `6.3.0r27.0` | yes: `6.3.0` plus update `r27` |
+| AOS-S | `YA.16.10.0023` | CPE naming not qualified: unsupported for now |
+| Check Point FW1 | policy export has no gateway version | no |
+
+**Free data sources considered.**
+- **NVD CVE API 2.0** (NIST): free; an API key is optional but raises the rate limit (without a key, about one request per 6 seconds). It supports `cpeName` + `isVulnerable`, which returns CVEs whose applicability statements (including version ranges) match a CPE name from the official dictionary. Each CVE record also carries CISA KEV fields (`cisaExploitAdd`, `cisaVulnerabilityName`), so known-exploited status needs no second download. **Chosen.**
+- **NVD CPE API 2.0**: `cpeMatchString` confirms that the exact product/version exists in the CPE dictionary. This matters because a `cpeName` query for a name that is not in the dictionary returns no CVEs, and "not in the dictionary" must not be reported as "no CVEs".
+- **CISA KEV JSON feed**: free, but it has no version data, and NVD already includes the KEV fields. Not needed.
+- **Vendor APIs**: Cisco openVuln is free but needs registration (kept as is). Fortinet, Juniper, Arista, SonicWall and F5 have no free version-query API. Palo Alto publishes JSON/CSAF, which is a possible later stage.
+- **OSV.dev**: covers open-source ecosystems, not network operating systems.
+
+**Limits that must be visible in the report.**
+- NVD enrichment lags: recent CVEs may have no CPE data yet, so they are missed. The result is "known to NVD", not "complete".
+- A version match is not exploitability. Most network-OS CVEs need a specific feature (SSL VPN, GlobalProtect, web UI and so on) or a hardware platform. This stage does not correlate CVEs with the configuration. When the applicability statement combines the OS with a platform condition (`AND`), the entry is marked as conditional.
+- The configuration shows the version it was saved with, which may differ from the running version.
+- Privacy: the lookup sends only the product CPE and version to NVD, never configuration content. It is still an outbound request, so it is **opt-in**. Default runs stay offline and deterministic, as the architecture requires (see also SC-022: never silently query vendors).
+- CVEs are shown as software advisories, not as configuration `Finding`s. No rule IDs are added and no snapshots change.
+
+#### Task
+
+- New CLI options:
+  - `--cve-lookup`: query NVD online. Rejected together with `-x`.
+  - `--software-version VALUE`: operator-supplied release, recorded as `version-origin: operator`.
+  - `--cve-save FILE`: save the raw NVD responses as a replayable bundle.
+  - `--cve-data FILE`: replay a bundle offline. It must match the device's product and version.
+  - An NVD API key may be given in the configuration file (`[NVD] API_KEY`) or in the `NVD_API_KEY` environment variable. It is never written to the report.
+- New package `src/advisories/`:
+  - version-to-CPE mapping per family, with a precision gate;
+  - an NVD client with pagination, rate limiting, timeouts and an injectable HTTP function for tests;
+  - a neutral `SoftwareAdvisory` model (CVE, description, CVSS score/version/severity, KEV date, conditional flag, NVD status, URL);
+  - a lookup status record.
+- Analyzers call one shared helper and add `software-advisories` status to the report data. The Cisco openVuln path stays. `CiscoVuln` gains `to_dict()`.
+- Report: status line (source, CPE name, version and its origin, retrieval time, counts), the limitations, and a table sorted KEV first and then by CVSS. JSON adds `software-advisories` and fuller `vulnerabilities` records.
+- Statuses: `not-requested`, `completed`, `unavailable` (with a reason: unsupported family, imprecise version, not in the CPE dictionary, bundle mismatch) and `error` (network or HTTP failure). A report is always produced.
+
+**Tests (no network):** version mapping and the precision gate per family; CPE selection (exact version/update, deprecated names skipped); pagination; KEV and conditional marking; sorting; error and unavailable statuses; bundle save and replay; the conflict with `-x`; the API key is never serialized; HTML/JSON rendering; default runs make no request.
+
+**Status:** First stage done (2026-09-25): `src/advisories/` (versions, nvd, model, service), CLI options, all 12 analyzers, HTML/JSON rendering and `tests/test_cve_lookup_pt010.py` (36 tests, no network). The NVD API could not be reached from the development sandbox (egress policy), so the request format follows the NVD API 2.0 documentation and schema (`cpeMatchString`, `cpeName` + `isVulnerable`, `resultsPerPage`/`startIndex`/`totalResults`, `apiKey` header, `cisaExploitAdd`). **Validate one real `--cve-lookup --cve-save` run** (for example FortiOS 7.4.6 and a Junos release) before relying on it, and keep the saved bundle out of the repository (`*.nvd.json` is ignored).
+
+**Later stages:** Palo Alto and Cisco vendor feeds as cross-checks; F5 per provisioned module; AOS-S CPE qualification; correlating CVEs with the features the configuration enables (for example SSL VPN or GlobalProtect).
+

@@ -15,7 +15,7 @@ from src.devices.common.base_parser import BaseDeviceParser
 SUPPORTED_SECRET_REPORT_DEVICES = frozenset({
     "IOS_SWITCH", "IOS_ROUTER", "IOS_CATALYST", "IOS_XE",
     "ASA", "PIX", "JUNOS", "SCREENOS", "ARISTA_EOS", "FORTIOS",
-    "HP_PROCURVE", "F5_BIGIP", "SONICOS",
+    "HP_PROCURVE", "F5_BIGIP", "SONICOS", "PAN_OS",
 })
 
 
@@ -58,6 +58,17 @@ def collect_secret_evidence(parser: BaseDeviceParser) -> dict:
             ),
             "entries": parser.get_report_secret_lines(),
         }
+    if parser.device_type == "PAN_OS":
+        return {
+            "status": "unmasked-credential-lines",
+            "scope-note": (
+                "PAN-OS secret elements (local administrator hashes, SNMP communities and v3 "
+                "keys, NTP keys, RADIUS/TACACS+/LDAP server secrets and IKE pre-shared keys) "
+                "are shown as the element only, with its starting line. Values are usually "
+                "device-encrypted but remain sensitive; other secrets may not be included."
+            ),
+            "entries": parser.get_report_secret_lines(),
+        }
     if parser.device_type == "SONICOS":
         return {
             "status": "unmasked-credential-lines",
@@ -96,12 +107,33 @@ def collect_secret_evidence(parser: BaseDeviceParser) -> dict:
                     "context": getattr(record, "context", getattr(record, "role", "local_credential")),
                     "source-line": original,
                 }
+    # Other effective secret directives (SNMP communities and v3 keys, NTP keys,
+    # routing authentication) resolved by the parser's typed records.
+    extra = getattr(parser, "get_report_secret_evidence", None)
+    if callable(extra):
+        for context, evidence in extra():
+            number = evidence.line_number
+            if (
+                number is None or number < 1 or number > len(lines)
+                or Path(evidence.source).resolve() != source_path
+                or number in entries
+            ):
+                continue
+            original = lines[number - 1].strip()
+            if original:
+                entries[number] = {
+                    "line-number": number,
+                    "context": context,
+                    "source-line": original,
+                }
     return {
         "status": "unmasked-credential-lines",
         "scope-note": (
-            "Only effective credential directives with parser-qualified source lines are shown. "
-            "Other secrets and hidden/unexported values may remain unavailable or masked. "
-            "These excerpts are sensitive and should be handled as credentials."
+            "Only effective secret directives with parser-qualified source lines are shown: "
+            "credentials and, where the parser resolves them, SNMP communities/keys, NTP keys "
+            "and bound routing-authentication keys. Other secrets and hidden/unexported values "
+            "may remain unavailable or masked. These excerpts are sensitive and should be "
+            "handled as credentials."
         ),
         "entries": [entries[number] for number in sorted(entries)],
     }

@@ -386,6 +386,57 @@ class PaloAltoPANOSParser(BaseDeviceParser):
             raise ET.ParseError(str(error)) from error
         return ET.ElementTree(builder.close()), lines
 
+    # Secret-bearing leaf elements, identified by their tag and parent chain.
+    # The last tuple item is the element tag; earlier items must appear, in
+    # order, among its ancestors.
+    _SECRET_PATHS: tuple[tuple[str, tuple[str, ...]], ...] = (
+        ("local_user", ("mgt-config", "users", "entry", "phash")),
+        ("local_user", ("mgt-config", "users", "entry", "password")),
+        ("snmp_community", ("snmp-setting", "snmp-community-string")),
+        ("snmpv3_user_key", ("snmp-setting", "users", "entry", "authpwd")),
+        ("snmpv3_user_key", ("snmp-setting", "users", "entry", "privpwd")),
+        ("ntp_key", ("ntp-servers", "authentication-key")),
+        ("aaa_secret", ("server-profile", "radius", "entry", "server", "entry", "secret")),
+        ("aaa_secret", ("server-profile", "tacplus", "entry", "server", "entry", "secret")),
+        ("aaa_secret", ("server-profile", "ldap", "entry", "bind-password")),
+        ("ike_pre_shared_key", ("ike", "gateway", "entry", "pre-shared-key", "key")),
+    )
+
+    def get_report_secret_lines(self) -> list[dict]:
+        """Secret-bearing XML elements for the explicit ``--show-secrets`` appendix.
+
+        PAN-OS exports often hold the whole configuration on a few long lines,
+        so each entry shows only the matching element, never the full source
+        line. Values are usually device-encrypted blobs but remain sensitive.
+        """
+        parents = {child: parent for parent in self.root.iter() for child in parent}
+        entries: list[dict] = []
+        for element in self.root.iter():
+            value = (element.text or "").strip()
+            if not value or len(element):
+                continue
+            ancestry = []
+            node = element
+            while node is not None:
+                ancestry.append(node.tag)
+                node = parents.get(node)
+            ancestry.reverse()
+            for context, path in self._SECRET_PATHS:
+                if ancestry[-1] != path[-1]:
+                    continue
+                position = 0
+                for tag in ancestry[:-1]:
+                    if position < len(path) - 1 and tag == path[position]:
+                        position += 1
+                if position == len(path) - 1:
+                    entries.append({
+                        "line-number": self._element_lines.get(element),
+                        "context": context,
+                        "source-line": f"<{element.tag}>{value}</{element.tag}>",
+                    })
+                    break
+        return sorted(entries, key=lambda item: (item["line-number"] or 0, item["context"]))
+
     def _evidence(self, text: str, node: ET.Element | None = None) -> ConfigEvidence:
         """Evidence for ``text``, citing the start line of ``node`` when given."""
 

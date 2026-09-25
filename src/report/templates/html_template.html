@@ -99,6 +99,7 @@
                                 <h3>{{ view.number }}. {{ finding.title }}</h3>
                                 <p class="finding-meta"><span class="chip">{{ view['area-title'] }}</span> <code>{{ finding.rule_id }}</code></p>
                             </header>
+                            {% if view['basis-note'] %}<p class="basis basis-{{ view['basis'] }}"><strong>{{ view['basis-label'] }}:</strong> {{ view['basis-note'] }}</p>{% endif %}
                             <div class="explain-grid">
                                 <div class="block">
                                     <h4>What was found</h4>
@@ -257,31 +258,51 @@
 
             <section id="security-vulns" class="panel">
                 <h2>Software advisories</h2>
+                {% set lookup = advisory_lookup %}
+                <div class="advisory-status status-{{ lookup.status }}">
+                    {% if lookup.status == 'completed' %}
+                        <p><strong>CVE lookup:</strong> {{ lookup.count }} CVE{{ '' if lookup.count == 1 else 's' }} listed by {{ lookup.source }} for
+                            <code>{{ lookup.product }}</code> release <code>{{ lookup.version }}</code>
+                            (version from the {{ lookup['version-origin'] }}{% if lookup['retrieved-at'] %}, retrieved {{ lookup['retrieved-at'] }}{% endif %}).
+                            {% if lookup['known-exploited'] %}<strong>{{ lookup['known-exploited'] }} {{ 'is' if lookup['known-exploited'] == 1 else 'are' }} in the CISA Known Exploited Vulnerabilities catalog.</strong>{% endif %}</p>
+                    {% elif lookup.status == 'not-requested' %}
+                        <p class="muted">{{ lookup.reason }}</p>
+                    {% else %}
+                        <p><strong>CVE lookup {{ 'failed' if lookup.status == 'error' else 'not possible' }}:</strong> {{ lookup.reason }}</p>
+                    {% endif %}
+                    {% if lookup.note %}<p class="note">{{ lookup.note }}</p>{% endif %}
+                    {% if lookup['save-error'] %}<p class="note">{{ lookup['save-error'] }}</p>{% endif %}
+                    {% if lookup.limitations and lookup.status != 'not-requested' %}
+                        <details><summary>What this lookup can and cannot tell you</summary>
+                            <ul>{% for item in lookup.limitations %}<li>{{ item }}</li>{% endfor %}</ul>
+                        </details>
+                    {% endif %}
+                </div>
                 {% if vulns %}
                     <table class="table" id="vulnTable">
-                        <caption>Advisories returned by the supported external integration</caption>
+                        <caption>Advisories for the assessed software release</caption>
                         <thead>
                             <tr>
-                                <th scope="col">Title</th>
-                                <th scope="col">Summary</th>
-                                <th scope="col">CVEs</th>
+                                <th scope="col">Advisory</th>
                                 <th scope="col">CVSS</th>
+                                <th scope="col">Known exploited</th>
+                                <th scope="col">Summary</th>
                                 <th scope="col">Source</th>
                             </tr>
                         </thead>
                         <tbody>
                             {% for vuln in vulns %}
                                 <tr>
-                                    <td><strong>{{ vuln.title }}</strong></td>
-                                    <td>{{ vuln.summary }}</td>
-                                    <td>{{ vuln.cves|join(', ') }}</td>
-                                    <td class="cvssValue">{{ vuln.cvss }}</td>
-                                    <td><a href="{{ vuln.url }}">{{ vuln.url }}</a></td>
+                                    <td class="nowrap"><strong>{{ vuln.title }}</strong>{% if vuln.cves and vuln.cves|join(', ') != vuln.title %}<br><span class="small">{{ vuln.cves|join(', ') }}</span>{% endif %}</td>
+                                    <td class="nowrap">{% if vuln.cvss is not none %}{% if vuln.severity %}<span class="badge small sev-{{ vuln.severity_class if vuln.severity_class is defined else 'unknown' }}">{{ vuln.severity }}</span> {% endif %}<strong>{{ vuln.cvss }}</strong>{% if vuln.cvss_version %} <span class="small muted">v{{ vuln.cvss_version }}</span>{% endif %}{% else %}<span class="muted">not scored</span>{% endif %}</td>
+                                    <td>{% if vuln.kev_date %}<span class="badge sev-critical small">KEV</span> added {{ vuln.kev_date }}{% else %}<span class="muted">no</span>{% endif %}</td>
+                                    <td>{{ vuln.summary }}{% if vuln.conditional %}<br><span class="note">Applies only together with another platform or component condition that was not checked.</span>{% endif %}</td>
+                                    <td><a href="{{ vuln.url }}">{{ vuln.source if vuln.source is defined else 'Advisory' }}</a></td>
                                 </tr>
                             {% endfor %}
                         </tbody>
                     </table>
-                {% else %}
+                {% elif lookup.status != 'completed' %}
                     <p>No software advisories were included in this report.</p>
                 {% endif %}
             </section>

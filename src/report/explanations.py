@@ -12,7 +12,7 @@ from collections import defaultdict
 from typing import Dict, List, Optional
 
 from src.analyze.common.guidance import AREAS, Guidance, guidance_for
-from src.analyze.common.issue import Finding
+from src.analyze.common.issue import Finding, FindingBasis
 
 
 SEVERITY_ORDER = ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL", "UNKNOWN")
@@ -22,6 +22,28 @@ NO_RELATED_FINDING = (
     "No finding in this area was reported. That is not proof the control is in place: "
     "check the assessment coverage and verify it on the device."
 )
+
+
+# PT-009: what the finding is based on. Rules declare the basis; it is never
+# inferred from the finding text.
+BASIS_TEXT = {
+    FindingBasis.EXPLICIT_VALUE: (
+        "Configured value",
+        "The configuration explicitly sets the value described in the evidence.",
+    ),
+    FindingBasis.DOCUMENTED_DEFAULT: (
+        "Vendor default",
+        "Nothing is set explicitly, and the vendor documents the reported value as the "
+        "default for this platform or release.",
+    ),
+    FindingBasis.MISSING_EXPLICIT_SETTING: (
+        "Setting not explicitly configured",
+        "The recommended hardening setting is not in the configuration. The default was "
+        "not assessed, so on some software releases the effective value may already be "
+        "safe. Setting it explicitly, as the fix describes, removes the doubt and keeps "
+        "the device safe across upgrades.",
+    ),
+}
 
 
 def ordered_findings(issues: Dict[str, Finding]) -> List[tuple]:
@@ -82,6 +104,9 @@ def build_finding_views(issues: Dict[str, Finding]) -> List[dict]:
             "guidance": entry,
             "area-title": AREAS[entry.area].title if entry is not None else "General",
             "related": related,
+            "basis": finding.basis.value if finding.basis else None,
+            "basis-label": BASIS_TEXT[finding.basis][0] if finding.basis else None,
+            "basis-note": BASIS_TEXT[finding.basis][1] if finding.basis else None,
         })
     return views
 
@@ -95,6 +120,7 @@ def json_security_audit(issues: Dict[str, Finding]) -> Dict[str, dict]:
         view = views[key]
         record = finding.to_dict()
         record["guidance"] = view["guidance"].to_dict() if view["guidance"] else None
+        record["basis-note"] = view["basis-note"]
         record["related-areas"] = [
             {
                 "area": item["area"],
@@ -141,6 +167,7 @@ def coverage_counts(coverage: dict) -> Dict[str, int]:
 
 
 __all__ = [
+    "BASIS_TEXT",
     "NO_RELATED_FINDING",
     "SEVERITY_ORDER",
     "build_finding_views",

@@ -158,6 +158,7 @@ class ASASNMPCommunity:
     name: str
     access: str
     raw_line_redacted: str
+    line_number: int | None = None
 
     @property
     def is_default(self) -> bool:
@@ -172,6 +173,7 @@ class ASASNMPHost:
     community_configured: bool
     principal: str
     raw_line_redacted: str
+    line_number: int | None = None
 
 
 @dataclass(frozen=True)
@@ -1378,6 +1380,83 @@ class CiscoASAParser(BaseDeviceParser):
         enable = self.get_enable_credential()
         return [*self.get_local_credentials(), *([enable] if enable else [])]
 
+    def get_report_secret_evidence(self) -> list[tuple[str, ConfigEvidence]]:
+        """Effective SNMP community/v3 and NTP key directives for the opt-in appendix."""
+        communities, hosts, users = self.get_snmp_configuration()
+        items: list[tuple[str, ConfigEvidence]] = []
+        for community in communities:
+            if community.line_number:
+                items.append(("snmp_community", ConfigEvidence(
+                    community.raw_line_redacted, self.config_filepath, community.line_number)))
+        for host in hosts:
+            if host.community_configured and host.line_number:
+                items.append(("snmp_host_community", ConfigEvidence(
+                    host.raw_line_redacted, self.config_filepath, host.line_number)))
+        for user in users:
+            items.extend(("snmpv3_user_key", item) for item in user.evidence if "<key present>" in item.text)
+        for association in self.get_ntp_associations():
+            items.extend(("ntp_key", item) for item in association.evidence if "<key redacted>" in item.text)
+        items.extend(self._key_directive_evidence())
+        selected: dict[int, tuple[str, ConfigEvidence]] = {}
+        for context, item in items:
+            if item.line_number:
+                selected.setdefault(item.line_number, (context, item))
+        return [selected[number] for number in sorted(selected)]
+
+    def _key_directive_evidence(self) -> list[tuple[str, ConfigEvidence]]:
+        """Effective tunnel-group pre-shared keys and AAA server keys (appendix only).
+
+        Child keys under ``tunnel-group NAME ipsec-attributes`` and
+        ``aaa-server GROUP (IF) host ADDRESS`` follow last-value and ``no``
+        removal, and disappear when the tunnel group or server is removed.
+        """
+        blocks: dict[str, dict[str, tuple[str, int]]] = {}
+        parent: str | None = None
+        for number, raw in enumerate(self._source_lines, start=1):
+            line = raw.strip()
+            if not line or line == "!":
+                continue
+            folded = line.casefold()
+            if not raw[:1].isspace():
+                parent = None
+                removed_group = re.fullmatch(r"(?:no|clear configure) tunnel-group (\S+)(?: .*)?", folded)
+                removed_server = re.fullmatch(r"no aaa-server (\S+ .*host \S+)", folded)
+                if removed_group:
+                    for key in [key for key in blocks if key.startswith(f"tunnel-group {removed_group.group(1)} ")]:
+                        blocks.pop(key)
+                elif removed_server:
+                    blocks.pop(f"aaa-server {removed_server.group(1)}", None)
+                elif re.fullmatch(r"tunnel-group \S+ ipsec-attributes", folded):
+                    parent = folded
+                    blocks.setdefault(parent, {})
+                elif re.fullmatch(r"aaa-server \S+ .*host \S+(?: .*)?", folded):
+                    parent = "aaa-server " + re.sub(r" (?:timeout|key) .*$", "", folded[len("aaa-server "):])
+                    blocks.setdefault(parent, {})
+                continue
+            if parent is None:
+                continue
+            if parent.startswith("tunnel-group"):
+                psk = re.fullmatch(
+                    r"(no )?(ikev1 pre-shared-key|ikev2 (?:remote|local)-authentication pre-shared-key)(?: .*)?",
+                    folded,
+                )
+                if psk:
+                    if psk.group(1):
+                        blocks[parent].pop(psk.group(2), None)
+                    else:
+                        blocks[parent][psk.group(2)] = ("tunnel_group_pre_shared_key", number)
+            else:
+                key = re.fullmatch(r"(no )?key(?: .*)?", folded)
+                if key:
+                    if key.group(1):
+                        blocks[parent].pop("key", None)
+                    else:
+                        blocks[parent]["key"] = ("aaa_server_key", number)
+        return [
+            (context, ConfigEvidence(f"{context.replace('_', ' ')} <redacted>", self.config_filepath, number))
+            for keys in blocks.values() for context, number in keys.values()
+        ]
+
     def get_snmp_communities(self) -> list[str]:
         return [community.name for community in self.get_snmp_configuration()[0]]
 
@@ -1424,6 +1503,7 @@ class CiscoASAParser(BaseDeviceParser):
                         name=key,
                         access=access,
                         raw_line_redacted=f"snmp-server community <redacted> {access}",
+                        line_number=line_number,
                     )
                 continue
 
@@ -1458,6 +1538,7 @@ class CiscoASAParser(BaseDeviceParser):
                         else ""
                     ),
                     raw_line_redacted=f"snmp-server host {host.group(2)} {host.group(3)} <credentials redacted>",
+                    line_number=line_number,
                 )
                 continue
 

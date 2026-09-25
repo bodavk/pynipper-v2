@@ -2,7 +2,7 @@ import re
 
 from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.credentials import credential_policy_from_context, evaluate_credential
-from src.analyze.common.issue import Finding, Severity
+from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.policy_semantics import ProofState, network_covers, service_covers
 from src.devices.cisco.ios import CiscoIOSParser
@@ -123,6 +123,7 @@ class PluginIOSBaseline(BasePlugin):
         severity: Severity,
         evidence: tuple[str, ...],
         references: tuple[str, ...] = (CISCO_IOS_HARDENING_GUIDE,),
+        basis=None,
     ) -> Finding:
         return Finding(
             rule_id=rule_id,
@@ -135,6 +136,7 @@ class PluginIOSBaseline(BasePlugin):
             severity=severity,
             evidence=evidence,
             references=references,
+            basis=basis,
         )
 
     def _global_lines(self, parser: BaseDeviceParser) -> list[str]:
@@ -284,6 +286,11 @@ class PluginIOSBaseline(BasePlugin):
                         "Configure 'transport input ssh' on every VTY range.",
                         Severity.HIGH,
                         evidence or (line.line,),
+                        basis=(
+                            FindingBasis.MISSING_EXPLICIT_SETTING
+                            if line.transports is None
+                            else FindingBasis.EXPLICIT_VALUE
+                        ),
                     )
                 )
             if line.output_transports and any(
@@ -299,6 +306,7 @@ class PluginIOSBaseline(BasePlugin):
                         "Set 'transport output ssh' or 'transport output none'.",
                         Severity.MEDIUM,
                         evidence or (line.line,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
 
@@ -1113,6 +1121,7 @@ class PluginIOSBaseline(BasePlugin):
                     "Configure 'no ip source-route'.",
                     Severity.MEDIUM,
                     ("no ip source-route absent",),
+                    basis=FindingBasis.MISSING_EXPLICIT_SETTING,
                 )
             )
         for interface in parser.get_native_config().find_objects(r"^interface\s+"):
@@ -1462,19 +1471,29 @@ class PluginIOSBaseline(BasePlugin):
             if not interface.active or interface.passive:
                 continue
             state = interface.authentication_state
+            named = interface.named_instance
+            scope = (
+                f"EIGRP AS {interface.autonomous_system} (named instance {named}) on {interface.interface}"
+                if named else f"EIGRP AS {interface.autonomous_system} on {interface.interface}"
+            )
             if state == "configured-md5":
                 report_unusable_key_lifetime(
-                    f"EIGRP AS {interface.autonomous_system} on {interface.interface}",
-                    interface.key_reference, tuple(item for item in interface.evidence),
+                    scope, interface.key_reference, tuple(item for item in interface.evidence),
                 )
             if state not in {"unauthenticated", "unresolved"}:
                 continue
-            scope = f"EIGRP AS {interface.autonomous_system} on {interface.interface}"
             if state == "unauthenticated":
                 rule_id = "cisco.ios.routing.eigrp.authentication"
                 title = "Active EIGRP interface lacks authentication"
-                observation = f"{scope} has no effective EIGRP MD5 authentication mode."
-                recommendation = "Configure EIGRP authentication mode and a populated key chain for this AS on the interface."
+                if named:
+                    observation = f"{scope} has no effective EIGRP authentication mode for this interface or af-interface default."
+                    recommendation = (
+                        "Configure 'authentication mode hmac-sha-256' or 'authentication mode md5' with a "
+                        "populated 'authentication key-chain' under the af-interface (or af-interface default)."
+                    )
+                else:
+                    observation = f"{scope} has no effective EIGRP MD5 authentication mode."
+                    recommendation = "Configure EIGRP authentication mode and a populated key chain for this AS on the interface."
                 severity = Severity.HIGH
             else:
                 rule_id = "cisco.ios.routing.eigrp.key_resolution"

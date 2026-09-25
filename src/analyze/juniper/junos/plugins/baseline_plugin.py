@@ -163,6 +163,7 @@ class PluginJunOSBaseline(BasePlugin):
         severity: Severity,
         evidence: tuple[str, ...],
         references: tuple[str, ...],
+        basis=None,
     ) -> Finding:
         return Finding(
             rule_id=rule_id,
@@ -178,6 +179,7 @@ class PluginJunOSBaseline(BasePlugin):
             severity=severity,
             evidence=evidence,
             references=references,
+            basis=basis,
         )
 
     @staticmethod

@@ -1,5 +1,5 @@
 from src.analyze.common.base_plugin import BasePlugin
-from src.analyze.common.issue import Finding, Severity
+from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.models import ConfigurationState
 from src.devices.fortinet.fortios import FortiOSParser
@@ -82,6 +82,7 @@ class PluginFortiOSChecks(BasePlugin):
                         f"{service.scope}:{service.interface}:allowaccess {protocol}",
                     ),
                     references=(FORTINET_MANAGEMENT_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 )
             )
 

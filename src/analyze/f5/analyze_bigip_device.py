@@ -2,6 +2,7 @@
 
 import os
 
+from src.advisories import software_advisories
 from src.common.assessment import AssessmentContext
 from src.devices import get_parser
 from src.devices.f5.bigip import F5ParseError
@@ -12,7 +13,7 @@ from .core.process_bigip_conf import process_bigip_conf
 
 
 def analyze_bigip_device(device, input_filename, output_filename, output_type,
-                         configuration, online, assessment_context=None) -> int:
+                         configuration, online, assessment_context=None, advisory_request=None) -> int:
     try:
         parser = get_parser(device, input_filename)
     except F5ParseError as error:
@@ -31,12 +32,14 @@ def analyze_bigip_device(device, input_filename, output_filename, output_type,
         parser.set_assessment_context(assessment_context)
     if not os.path.isfile(configuration):
         raise PynipperConfigurationFileNotFound("ERROR: Pynipper configuration file doesn't exist")
+    vulns, advisory_status = software_advisories(device, parser, advisory_request)
     findings = process_bigip_conf(parser)
     data = {
         "hostname": parser.get_hostname(),
         "device-type": str(device),
         "assessment-policy": parser.assessment_context.to_dict(),
         **build_report_context(parser),
+        "software-advisories": advisory_status,
     }
-    generate_report(output_type, output_filename, findings, [], data)
+    generate_report(output_type, output_filename, findings, vulns, data)
     return 0

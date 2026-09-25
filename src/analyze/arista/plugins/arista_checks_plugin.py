@@ -2,7 +2,7 @@
 
 from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.credentials import credential_policy_from_context, evaluate_credential
-from src.analyze.common.issue import Finding, Severity
+from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.devices.arista.eos import AristaEOSParser
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.models import CredentialStorageAssessment
@@ -236,6 +236,10 @@ class PluginAristaChecks(BasePlugin):
                     "identified EOS release default: AAA time-based lockout disabled",
                 ),
                 references=(ARISTA_USER_SECURITY_GUIDE,),
+                basis=(
+                    FindingBasis.EXPLICIT_VALUE if lockout.evidence
+                    else FindingBasis.DOCUMENTED_DEFAULT
+                ),
             ))
         elif remote_active and lockout.enabled is True:
             weak = []

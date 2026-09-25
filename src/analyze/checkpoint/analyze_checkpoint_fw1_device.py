@@ -1,4 +1,5 @@
 import os
+from src.advisories import software_advisories
 from src.devices import get_parser
 from .core.process_checkpoint_fw1_conf import process_checkpoint_fw1_conf
 from src.report.report import generate_report
@@ -6,7 +7,7 @@ from src.report.coverage import build_report_context
 from src.error.files_errors import PynipperConfigurationFileNotFound
 
 
-def analyze_checkpoint_fw1_device(device, input_filename, output_filename, output_type, configuration, online, assessment_context=None):
+def analyze_checkpoint_fw1_device(device, input_filename, output_filename, output_type, configuration, online, assessment_context=None, advisory_request=None):
 
     print("[1/4] Initializing pynipper-ng (CheckPoint FW1)")
     
@@ -22,7 +23,7 @@ def analyze_checkpoint_fw1_device(device, input_filename, output_filename, outpu
 
     # CheckPoint vulnerabilities scan is done offline/mocked unless API keys are present
     print("[2/4] Fetching CheckPoint API information")
-    vulns = []  # Empty for CheckPoint by default
+    vulns, advisory_status = software_advisories(device, parser, advisory_request)
 
     # Get CheckPoint report misconfigurations
     print("[3/4] Checking misconfiguration vulnerabilities")
@@ -34,6 +35,7 @@ def analyze_checkpoint_fw1_device(device, input_filename, output_filename, outpu
     data['device-type'] = str(device)
     data['assessment-policy'] = parser.assessment_context.to_dict()
     data.update(build_report_context(parser))
+    data['software-advisories'] = advisory_status
 
     # Generate report
     print("[4/4] Generating report")

@@ -137,7 +137,7 @@ def test_report_cannot_overwrite_input_config(tmp_path, capsys, show_secrets):
 def test_secret_report_refuses_unsupported_family(tmp_path, capsys):
     with pytest.raises(SystemExit) as error:
         main([
-            "-d", "panos", "-i", str(CORPUS / "panos/vulnerable.xml"),
+            "-d", "checkpoint-fw1", "-i", str(CORPUS / "checkpoint_fw1/vulnerable"),
             "-f", str(tmp_path / "report.html"), "-x", "--show-secrets",
         ])
     assert error.value.code == 2

@@ -1,5 +1,6 @@
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 import os
+import subprocess
 import datetime
 import array
 import json
@@ -8,14 +9,47 @@ from .common.types import ReportType
 from .explanations import (
     build_finding_views, coverage_counts, json_security_audit, severity_tiles,
 )
+from src.advisories.service import not_requested_status
 from src.common.assessment import AssessmentContext
 
 TEMPLATE_FILE = "html_template.html"
+_IS_WINDOWS = os.name == "nt"
+
+
+def _restrict_windows_acl(filename: str) -> bool:
+    """Replace inherited Windows ACLs with full control for the current user only.
+
+    POSIX mode bits passed to ``os.open`` are ignored on Windows, where a new
+    file inherits the directory ACL. ``icacls /inheritance:r`` removes the
+    inherited entries and ``/grant:r`` leaves only the current account.
+    """
+    user = os.environ.get("USERNAME")
+    domain = os.environ.get("USERDOMAIN")
+    if not user:
+        return False
+    principal = f"{domain}\\{user}" if domain else user
+    try:
+        result = subprocess.run(
+            ["icacls", filename, "/inheritance:r", "/grant:r", f"{principal}:F"],
+            capture_output=True, text=True, check=False,
+        )
+    except OSError:
+        return False
+    return result.returncode == 0
 
 
 def _write_report_file(filename: str, content: str, *, sensitive: bool) -> None:
     if sensitive:
         descriptor = os.open(filename, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        if _IS_WINDOWS and not _restrict_windows_acl(filename):
+            # Fail closed: never write unmasked secrets into a file other
+            # accounts may read through inherited ACLs.
+            os.close(descriptor)
+            os.remove(filename)
+            raise PermissionError(
+                "Could not restrict the Windows ACL of the sensitive report; nothing was written. "
+                "Choose a directory where icacls can be applied, or run without --show-secrets."
+            )
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as report_file:
             report_file.write(content)
     else:
@@ -105,6 +139,7 @@ def _generate_html_report(filename: str, issues: dict, vulns: array, data: dict)
         severity_tiles=severity_tiles(issues),
         coverage_counts=coverage_counts(coverage),
         vulns=vulns,
+        advisory_lookup=data.get("software-advisories") or not_requested_status(),
         assessment_policy=assessment_policy,
         coverage=coverage,
         configuration_inventory=inventory,
@@ -133,6 +168,7 @@ def _generate_json_report(filename: str, issues: dict, vulns: array, data: dict)
     vulns_dict = {}
     vulns_dict["data"] = report_data
     vulns_dict["vulnerabilities"] = vulns
+    vulns_dict["software-advisory-lookup"] = data.get("software-advisories") or not_requested_status()
     vulns_dict["security-audit"] = json_security_audit(issues)
     vulns_dict["coverage"] = coverage
     vulns_dict["configuration-inventory"] = inventory

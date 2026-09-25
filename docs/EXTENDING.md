@@ -36,6 +36,8 @@ If the shared normalized model lacks a concept, add the smallest generally meani
 
 Extend `BasePlugin`, accept `BaseDeviceParser`, narrow to the required parser type when using vendor-specific APIs, and emit `Finding` with keyword arguments. Pass the parser's `ConfigEvidence` objects as `evidence` (not their `.text`) so the report can cite the source line; if a plugin must rewrite evidence text, use `dataclasses.replace` to keep the line number. Plain strings remain valid for absence or derived statements, which have no source line.
 
+Declare the finding `basis` (`FindingBasis`) where the rule creates the finding: `EXPLICIT_VALUE` when the configuration sets the insecure value, `DOCUMENTED_DEFAULT` when nothing is set and a vendor source documents the insecure default for the identified release, and `MISSING_EXPLICIT_SETTING` when a recommended hardening setting is absent and the default was not assessed. A rule with several branches sets the basis per branch. Never infer it from the finding text. A finding without a declared basis shows no note.
+
 ```python
 from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.issue import Finding, Severity
@@ -188,3 +190,7 @@ For a deliberate snapshot change, inspect current output with `--observe`, revie
 - [ ] Public plugin registration is explicit.
 - [ ] Documentation describes only verified maturity.
 - [ ] Full regression passes.
+
+## Software advisory (CVE) mapping
+
+To make a family available to `--cve-lookup`, add its release pattern to `product_version()` in `src/advisories/versions.py`. Map only exact releases to the vendor's NVD CPE product (and the update field where NVD uses one, such as Junos `r3-s2` or PAN-OS `h1`). Raise `VersionUnavailable("imprecise-version", ...)` for trains or other ambiguous strings. Confirm the CPE vendor/product naming in the NVD CPE dictionary first, and add a mapping test to `tests/test_cve_lookup_pt010.py`. Advisories are never turned into findings.

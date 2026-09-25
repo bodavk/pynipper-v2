@@ -1,0 +1,264 @@
+"""PT-010: opt-in CVE lookup for the configured release (NVD API 2.0), no network."""
+
+import json
+from urllib.parse import parse_qs, urlsplit
+
+import pytest
+
+import src.advisories.nvd as nvd
+from src.advisories.nvd import NVDClient, NVDError
+from src.advisories.service import (
+    AdvisoryRequest, lookup_software_advisories, select_cpe_names,
+)
+from src.advisories.versions import VersionUnavailable, product_version, split_cpe
+from src.main import main
+from tests.test_report_readability_pt005_007 import CORPUS
+
+FORTIOS = CORPUS / "fortios" / "vulnerable.conf"  # FortiOS 7.4.6
+CPE = "cpe:2.3:o:fortinet:fortios:7.4.6:*:*:*:*:*:*:*"
+
+
+@pytest.mark.parametrize("device,version,expected", [
+    ("FORTIOS", "7.4.6", ("fortios", "7.4.6", "")),
+    ("JUNOS", "22.4R1.10", ("junos", "22.4", "r1")),
+    ("JUNOS", "21.4R3-S2.3", ("junos", "21.4", "r3-s2")),
+    ("JUNOS", "15.1X49-D200.5", ("junos", "15.1x49", "d200")),
+    ("PAN_OS", "11.2.3", ("pan-os", "11.2.3", "")),
+    ("PAN_OS", "10.2.9-h1", ("pan-os", "10.2.9", "h1")),
+    ("ARISTA_EOS", "4.29.2F", ("eos", "4.29.2f", "")),
+    ("ASA", "9.18(4)", ("adaptive_security_appliance_software", "9.18.4", "")),
+    ("ASA", "9.18(4)22", ("adaptive_security_appliance_software", "9.18.4.22", "")),
+    ("IOS_ROUTER", "15.2(4)M7", ("ios", "15.2(4)m7", "")),
+    ("IOS_XE", "17.09.04a", ("ios_xe", "17.9.4a", "")),
+    ("IOS_SWITCH", "16.12.4", ("ios_xe", "16.12.4", "")),
+    ("SONICOS", "7.1.2-7019", ("sonicos", "7.1.2-7019", "")),
+    ("F5_BIGIP", "16.1.5", ("big-ip_local_traffic_manager", "16.1.5", "")),
+    ("SCREENOS", "6.3.0r27.0", ("screenos", "6.3.0", "r27")),
+])
+def test_version_mapping(device, version, expected):
+    target = product_version(device, version)
+    assert (target.product, target.version, target.update) == expected
+
+
+def test_cpe_escaping_round_trips():
+    target = product_version("IOS_ROUTER", "15.2(4)M7")
+    assert target.match_string() == "cpe:2.3:o:cisco:ios:15.2\\(4\\)m7"
+    assert split_cpe(target.match_string())[5] == "15.2(4)m7"
+
+
+@pytest.mark.parametrize("device,version,reason", [
+    ("IOS_XE", "17.9", "imprecise-version"),
+    ("IOS_ROUTER", "15.2", "imprecise-version"),
+    ("FORTIOS", "?", "no-version"),
+    ("CHECKPOINT_FW1", "unknown", "unsupported-family"),
+    ("HP_PROCURVE", "YA.16.10.0023", "unsupported-family"),
+])
+def test_imprecise_or_unsupported_versions_are_not_looked_up(device, version, reason):
+    with pytest.raises(VersionUnavailable) as error:
+        product_version(device, version)
+    assert error.value.reason == reason
+    advisories, status = lookup_software_advisories(device, version, AdvisoryRequest(online=True),
+                                                    client_factory=_forbidden_client)
+    assert advisories == [] and status["status"] == "unavailable"
+    assert status["reason-code"] == reason
+
+
+def _forbidden_client(**_):
+    raise AssertionError("no request expected")
+
+
+def _cve(cve_id, metrics, configurations, **extra):
+    return {"cve": {"id": cve_id, "published": "2024-02-08T12:00:00.000", "vulnStatus": "Analyzed",
+                    "descriptions": [{"lang": "es", "value": "x"}, {"lang": "en", "value": f"Issue {cve_id}."}],
+                    "metrics": metrics, "configurations": configurations, **extra}}
+
+
+OR_CONFIG = [{"nodes": [{"operator": "OR", "cpeMatch": [
+    {"vulnerable": True, "criteria": "cpe:2.3:o:fortinet:fortios:*:*:*:*:*:*:*:*",
+     "versionStartIncluding": "7.4.0", "versionEndExcluding": "7.4.7"}]}]}]
+AND_CONFIG = [{"operator": "AND", "nodes": [
+    {"operator": "OR", "cpeMatch": [{"vulnerable": True, "criteria": "cpe:2.3:o:fortinet:fortios:7.4.6:*:*:*:*:*:*:*"}]},
+    {"operator": "OR", "cpeMatch": [{"vulnerable": False, "criteria": "cpe:2.3:h:fortinet:fortigate-60f:-:*:*:*:*:*:*:*"}]},
+]}]
+CVES = [
+    _cve("CVE-2024-0002", {"cvssMetricV31": [{"type": "Primary", "cvssData": {"baseScore": 5.3, "baseSeverity": "MEDIUM"}}]}, AND_CONFIG),
+    _cve("CVE-2024-0003", {"cvssMetricV2": [{"type": "Primary", "baseSeverity": "HIGH", "cvssData": {"baseScore": 7.5}}]}, OR_CONFIG),
+    _cve("CVE-2024-0001", {"cvssMetricV31": [{"type": "Secondary", "cvssData": {"baseScore": 9.1, "baseSeverity": "CRITICAL"}},
+                                             {"type": "Primary", "cvssData": {"baseScore": 9.8, "baseSeverity": "CRITICAL"}}]},
+         OR_CONFIG, cisaExploitAdd="2024-02-09", cisaVulnerabilityName="FortiOS Out-of-Bound Write"),
+]
+CPE_PRODUCTS = [
+    {"cpe": {"cpeName": CPE, "deprecated": False}},
+    {"cpe": {"cpeName": "cpe:2.3:o:fortinet:fortios:7.4.6:beta1:*:*:*:*:*:*", "deprecated": False}},
+    {"cpe": {"cpeName": "cpe:2.3:o:fortinet:fortios:7.4.6:-:*:*:*:*:*:*", "deprecated": True}},
+]
+
+
+class FakeNVD:
+    def __init__(self, products=CPE_PRODUCTS, cves=CVES, page=2, fail=None):
+        self.products, self.cves, self.page, self.fail = products, cves, page, fail
+        self.calls = []
+
+    def __call__(self, url, headers, timeout):
+        self.calls.append((url, headers, timeout))
+        if self.fail:
+            raise NVDError(self.fail)
+        parts = urlsplit(url)
+        query = parse_qs(parts.query, keep_blank_values=True)
+        start = int(query["startIndex"][0])
+        if parts.path.endswith("/cpes/2.0"):
+            assert query["cpeMatchString"] == ["cpe:2.3:o:fortinet:fortios:7.4.6"]
+            items, key = self.products, "products"
+        else:
+            assert query["cpeName"] == [CPE] and "isVulnerable" in parts.query.split("&")
+            items, key = self.cves, "vulnerabilities"
+        chunk = items[start:start + self.page]
+        return {"resultsPerPage": len(chunk), "startIndex": start, "totalResults": len(items), key: chunk}
+
+
+def _client(fake, sleeps=None):
+    return lambda api_key=None: NVDClient(api_key=api_key, http_get=fake,
+                                          sleep=(sleeps.append if sleeps is not None else lambda _: None),
+                                          clock=lambda: 0.0)
+
+
+def test_select_cpe_names_requires_exact_release_and_skips_deprecated():
+    target = product_version("FORTIOS", "7.4.6")
+    assert select_cpe_names(target, [{"products": CPE_PRODUCTS}]) == [CPE]
+    junos = product_version("JUNOS", "22.4R1.10")
+    pages = [{"products": [{"cpe": {"cpeName": "cpe:2.3:o:juniper:junos:22.4:r1:*:*:*:*:*:*"}},
+                           {"cpe": {"cpeName": "cpe:2.3:o:juniper:junos:22.4:r1-s1:*:*:*:*:*:*"}},
+                           {"cpe": {"cpeName": "cpe:2.3:o:juniper:junos:22.4:-:*:*:*:*:*:*"}}]}]
+    assert select_cpe_names(junos, pages) == ["cpe:2.3:o:juniper:junos:22.4:r1:*:*:*:*:*:*"]
+
+
+def test_online_lookup_pages_rate_limits_and_orders_results():
+    fake, sleeps = FakeNVD(), []
+    advisories, status = lookup_software_advisories(
+        "FORTIOS", "7.4.6", AdvisoryRequest(online=True, api_key="secret-key"), client_factory=_client(fake, sleeps))
+    assert [item.cve_id for item in advisories] == ["CVE-2024-0001", "CVE-2024-0003", "CVE-2024-0002"]
+    kev, v2, conditional = advisories
+    assert (kev.cvss, kev.severity, kev.cvss_version, kev.kev_date) == (9.8, "Critical", "3.1", "2024-02-09")
+    assert (v2.cvss, v2.severity, v2.cvss_version, v2.known_exploited) == (7.5, "High", "2.0", False)
+    assert conditional.conditional and not kev.conditional
+    assert kev.summary == "Issue CVE-2024-0001." and kev.url.endswith("/CVE-2024-0001")
+    assert status["status"] == "completed" and status["count"] == 3
+    assert (status["known-exploited"], status["conditional"]) == (1, 1)
+    assert status["cpe-names"] == [CPE] and status["version-origin"] == "configuration"
+    # CPE: 2 pages of 2 items; CVE: 2 pages. The key goes in the header only.
+    assert len(fake.calls) == 4
+    assert all(headers == {"apiKey": "secret-key"} and "secret-key" not in url for url, headers, _ in fake.calls)
+    assert sleeps == [0.7, 0.7, 0.7]
+    assert "secret-key" not in json.dumps(status)
+
+
+def test_release_missing_from_cpe_dictionary_is_not_reported_as_clean():
+    advisories, status = lookup_software_advisories(
+        "FORTIOS", "7.4.6", AdvisoryRequest(online=True), client_factory=_client(FakeNVD(products=[])))
+    assert advisories == [] and status["status"] == "unavailable"
+    assert status["reason-code"] == "not-in-cpe-dictionary"
+    assert "not evidence" in status["reason"]
+
+
+def test_network_failure_yields_error_status():
+    advisories, status = lookup_software_advisories(
+        "FORTIOS", "7.4.6", AdvisoryRequest(online=True), client_factory=_client(FakeNVD(fail="NVD returned HTTP 503")))
+    assert advisories == [] and status["status"] == "error" and "503" in status["reason"]
+
+
+def test_unexpected_document_is_an_error():
+    client = NVDClient(http_get=lambda *_: {"message": "rate limited"}, sleep=lambda _: None)
+    with pytest.raises(NVDError):
+        client.cve_pages(CPE)
+
+
+def _report(tmp_path, *extra, name="r.json"):
+    output = tmp_path / name
+    code = main(["-d", "fortios", "-i", str(FORTIOS), "-o", "JSON", "-f", str(output), *extra])
+    return code, json.loads(output.read_text(encoding="utf-8")) if output.exists() else None
+
+
+@pytest.fixture
+def fake_network(monkeypatch):
+    fake = FakeNVD()
+    monkeypatch.setattr(nvd, "_requests_get", fake)
+    monkeypatch.setattr(nvd, "_sleep", lambda _: None)
+    return fake
+
+
+def test_default_runs_make_no_request(tmp_path, fake_network):
+    code, report = _report(tmp_path)
+    assert code == 0 and fake_network.calls == []
+    assert report["software-advisory-lookup"]["status"] == "not-requested"
+    assert report["vulnerabilities"] == []
+
+
+def test_cli_lookup_save_and_offline_replay(tmp_path, fake_network, monkeypatch):
+    monkeypatch.setenv("NVD_API_KEY", "env-secret-key")
+    bundle = tmp_path / "fortios-7.4.6.nvd.json"
+    code, report = _report(tmp_path, "--cve-lookup", "--cve-save", str(bundle))
+    assert code == 0 and len(fake_network.calls) == 4
+    lookup = report["software-advisory-lookup"]
+    assert lookup["status"] == "completed" and lookup["saved-bundle"] == bundle.name
+    assert [item["cve"] for item in report["vulnerabilities"]] == ["CVE-2024-0001", "CVE-2024-0003", "CVE-2024-0002"]
+    assert report["vulnerabilities"][0]["known-exploited"] is True
+    assert "env-secret-key" not in json.dumps(report) + bundle.read_text(encoding="utf-8")
+
+    calls = len(fake_network.calls)
+    code, replay = _report(tmp_path, "-x", "--cve-data", str(bundle), name="replay.json")
+    assert code == 0 and len(fake_network.calls) == calls
+    assert replay["vulnerabilities"] == report["vulnerabilities"]
+    assert replay["software-advisory-lookup"]["source"].startswith("Saved NVD bundle")
+
+    code, other = _report(tmp_path, "-x", "--cve-data", str(bundle), "--software-version", "7.4.5", name="o.json")
+    assert other["software-advisory-lookup"]["reason-code"] == "bundle-mismatch"
+    assert other["vulnerabilities"] == []
+
+
+def test_html_shows_status_kev_and_limitations(tmp_path, fake_network):
+    output = tmp_path / "r.html"
+    assert main(["-d", "fortios", "-i", str(FORTIOS), "-o", "HTML", "-f", str(output), "--cve-lookup"]) == 0
+    html = output.read_text(encoding="utf-8")
+    section = html.split('id="security-vulns"')[1].split("</section>")[0]
+    assert "3 CVEs listed by NVD CVE API 2.0" in section
+    assert "1 is in the CISA Known Exploited Vulnerabilities catalog" in section
+    assert section.index("CVE-2024-0001") < section.index("CVE-2024-0003") < section.index("CVE-2024-0002")
+    assert "KEV</span> added 2024-02-09" in section
+    assert "another platform or component condition" in section
+    assert "does not prove exploitability" in section
+
+
+def test_html_default_explains_how_to_request(tmp_path):
+    output = tmp_path / "r.html"
+    assert main(["-d", "fortios", "-i", str(FORTIOS), "-o", "HTML", "-f", str(output), "-x"]) == 0
+    assert "CVE lookup was not requested" in output.read_text(encoding="utf-8")
+
+
+def test_train_only_version_needs_operator_release(tmp_path, fake_network):
+    source = CORPUS / "cisco_iosxe" / "vulnerable.conf"
+    output = tmp_path / "xe.json"
+    assert main(["-d", "IOS_XE", "-i", str(source), "-o", "JSON", "-f", str(output), "--cve-lookup"]) == 0
+    lookup = json.loads(output.read_text(encoding="utf-8"))["software-advisory-lookup"]
+    assert lookup["reason-code"] == "imprecise-version" and "--software-version" in lookup["reason"]
+    assert fake_network.calls == []
+
+
+@pytest.mark.parametrize("args,message", [
+    (["--cve-lookup", "-x"], "cannot be combined"),
+    (["--cve-save", "x.json"], "requires --cve-lookup"),
+    (["--software-version", "7.4.6"], "only used with"),
+    (["--cve-data", "missing.json"], "does not exist"),
+])
+def test_cli_rejects_inconsistent_options(tmp_path, capsys, args, message):
+    with pytest.raises(SystemExit):
+        main(["-d", "fortios", "-i", str(FORTIOS), "-f", str(tmp_path / "r.html"), *args])
+    assert message in capsys.readouterr().err
+
+
+def test_cli_refuses_to_overwrite_a_bundle(tmp_path, capsys):
+    existing = tmp_path / "b.json"
+    existing.write_text("{}", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        main(["-d", "fortios", "-i", str(FORTIOS), "-f", str(tmp_path / "r.html"),
+              "--cve-lookup", "--cve-save", str(existing)])
+    assert "new file" in capsys.readouterr().err

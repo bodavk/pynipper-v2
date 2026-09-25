@@ -17,6 +17,7 @@ from .report.secret_evidence import SUPPORTED_SECRET_REPORT_DEVICES
 from .report.common.types import ReportType
 from .analyze.analyze_device import analyze_device
 from .common.assessment import AssessmentContext
+from .advisories.service import AdvisoryRequest, api_key_from
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -59,9 +60,19 @@ def main(argv: Optional[List[str]] = None) -> int:
                         default=os.path.dirname(os.path.abspath(__file__)) + "/common/default.conf"
                         )
     parser.add_argument('--offline', '-x',
-                        help="Disable external software-advisory lookups",
+                        help="Disable the Cisco openVuln advisory lookup (NVD lookups are opt-in via --cve-lookup)",
                         dest="offline", action='store_true'
                         )
+    parser.add_argument('--cve-lookup', action='store_true',
+                        help="Opt in: look up CVEs for the configured software release in the NVD API "
+                             "(sends only the product and version to NVD)")
+    parser.add_argument('--cve-data', dest="cve_data", metavar="FILE",
+                        help="Use a saved NVD bundle (from --cve-save) instead of querying NVD")
+    parser.add_argument('--cve-save', dest="cve_save", metavar="FILE",
+                        help="With --cve-lookup, save the NVD responses to a new file for offline replay")
+    parser.add_argument('--software-version', dest="software_version", metavar="RELEASE",
+                        help="Exact running release for the CVE lookup when the export only states a train "
+                             "(for example 17.9.4a)")
     parser.add_argument('--assessment-policy',
                         help="Optional JSON assessment policy with explicit roles and exclusions",
                         dest="assessment_policy", action="store", type=str
@@ -107,6 +118,26 @@ def main(argv: Optional[List[str]] = None) -> int:
             file=sys.stderr,
         )
 
+    if args_dict["cve_lookup"] and args_dict["offline"]:
+        parser.error("--cve-lookup queries NVD and cannot be combined with -x/--offline")
+    if args_dict["cve_lookup"] and args_dict["cve_data"]:
+        parser.error("use either --cve-lookup or --cve-data, not both")
+    if args_dict["cve_save"] and not args_dict["cve_lookup"]:
+        parser.error("--cve-save requires --cve-lookup")
+    if args_dict["cve_save"] and Path(args_dict["cve_save"]).exists():
+        parser.error("--cve-save requires a new file and does not overwrite an existing one")
+    if args_dict["cve_data"] and not Path(args_dict["cve_data"]).is_file():
+        parser.error("--cve-data file does not exist")
+    if args_dict["software_version"] and not (args_dict["cve_lookup"] or args_dict["cve_data"]):
+        parser.error("--software-version is only used with --cve-lookup or --cve-data")
+    advisory_request = AdvisoryRequest(
+        online=args_dict["cve_lookup"],
+        bundle_path=args_dict["cve_data"],
+        save_path=args_dict["cve_save"],
+        software_version=(args_dict["software_version"] or "").strip() or None,
+        api_key=api_key_from(args_dict["conf_file"]) if args_dict["cve_lookup"] else None,
+    )
+
     assessment_context = (
         AssessmentContext.from_file(args_dict["assessment_policy"])
         if args_dict["assessment_policy"]
@@ -116,7 +147,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         assessment_context = replace(assessment_context, report_secret_evidence=True)
     result = analyze_device(args_dict["device_type"], args_dict["input_file"], args_dict["output_file"],
                    args_dict["output_type"], args_dict["conf_file"], not args_dict["offline"],
-                   assessment_context
+                   assessment_context,
+                   # Only passed when requested, so default runs keep the original call.
+                   **({"advisory_request": advisory_request} if advisory_request.requested else {})
                    )
 
     return result or 0

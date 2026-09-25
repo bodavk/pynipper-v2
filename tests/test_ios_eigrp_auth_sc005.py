@@ -69,7 +69,7 @@ def test_key_chain_without_mode_is_not_effective(tmp_path):
     EIGRP + PORT + " ip vrf forwarding CUSTOMER\n",
     EIGRP + "interface GigabitEthernet0/0\n ip address 198.51.100.1 255.255.255.0\n",
     EIGRP + "no router eigrp 10\n" + PORT,
-    "router eigrp CAMPUS\n address-family ipv4 unicast autonomous-system 10\n  network 192.0.2.0 0.0.0.255\n" + PORT,
+    "router eigrp CAMPUS\n address-family ipv4 unicast vrf CUST autonomous-system 10\n  network 192.0.2.0 0.0.0.255\n" + PORT,
     "router eigrp 10\n network 192.0.2.0 0.0.0.255\n no network 192.0.2.0 0.0.0.255\n" + PORT,
     "router eigrp 10\n network 192.0.2.0 0.0.0.255\n passive-interface default\n" + PORT,
     "router eigrp 10\n network 192.0.2.0 0.0.0.255\n passive-interface GigabitEthernet0/0\n" + PORT,

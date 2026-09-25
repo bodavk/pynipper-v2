@@ -135,3 +135,14 @@ dmypy.json
 reference/
 
 Claude outputs/
+
+# Agent scratch output, proofs of work and locally generated reports.
+# Keep docs/agent_notes and task lists tracked so forks can continue the work.
+_to_delete/
+tmp/
+/report.html
+/report.json
+/*-audit.html
+/*-audit.json
+# Saved NVD CVE bundles (--cve-save) record a device's software release.
+*.nvd.json

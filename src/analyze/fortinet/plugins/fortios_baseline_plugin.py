@@ -5,7 +5,7 @@ from dataclasses import replace
 import re
 
 from src.analyze.common.base_plugin import BasePlugin
-from src.analyze.common.issue import Finding, Severity
+from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.policy_semantics import (
     ProofState,
@@ -217,6 +217,7 @@ class PluginFortiOSBaseline(BasePlugin):
         severity: Severity,
         evidence: tuple[str, ...],
         references: tuple[str, ...],
+        basis=None,
     ) -> Finding:
         return Finding(
             rule_id=rule_id,
@@ -232,6 +233,7 @@ class PluginFortiOSBaseline(BasePlugin):
             severity=severity,
             evidence=evidence,
             references=references,
+            basis=basis,
         )
 
     @staticmethod
@@ -362,6 +364,7 @@ class PluginFortiOSBaseline(BasePlugin):
                     Severity.HIGH,
                     ("system password-policy absent",),
                     (FORTINET_PASSWORD_REFERENCE,),
+                    basis=FindingBasis.DOCUMENTED_DEFAULT,
                 )
             )
         for scope, settings, path in policies:
@@ -377,6 +380,7 @@ class PluginFortiOSBaseline(BasePlugin):
                         Severity.HIGH,
                         self._evidence(fortios, path + ("status",), "set status disable"),
                         (FORTINET_PASSWORD_REFERENCE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
                 continue

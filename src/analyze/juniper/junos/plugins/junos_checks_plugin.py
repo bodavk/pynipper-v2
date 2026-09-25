@@ -1,7 +1,7 @@
 from collections import defaultdict
 
 from src.analyze.common.base_plugin import BasePlugin
-from src.analyze.common.issue import Finding, Severity
+from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.policy_semantics import ProofState, network_covers, service_covers
 from src.devices.juniper.junos import JunOSParser, JunosFirewallTerm
@@ -145,6 +145,7 @@ class PluginJunOSChecks(BasePlugin):
                 recommendation="Configure 'set system services ssh root-login deny' and use named administrative accounts.",
                 evidence=tuple(item for item in evidence) or (f"root-login {value}",),
                 references=(JUNIPER_SSH_REFERENCE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
             )
         )
 

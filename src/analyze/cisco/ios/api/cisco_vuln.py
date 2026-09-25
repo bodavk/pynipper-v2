@@ -19,6 +19,11 @@ class CiscoVuln:
         print("\n---------------------------------------------------------------------------------------------------")  # noqa: E501
         return("")
 
+    def to_dict(self):
+        # JSON reports serialize advisories through to_dict().
+        return {"title": self.title, "summary": self.summary, "cves": list(self.cves),
+                "cvss": self.cvss, "url": self.url, "source": "Cisco openVuln"}
+
     def __eq__(self, other):
         return self.title == other.title
 

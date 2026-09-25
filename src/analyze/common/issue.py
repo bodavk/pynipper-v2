@@ -28,6 +28,22 @@ class Severity(str, Enum):
         raise ValueError(f"Invalid severity {value!r}. Expected one of: {allowed}")
 
 
+class FindingBasis(str, Enum):
+    """Why a finding was raised (PT-009). Set by the rule where it creates the finding.
+
+    ``EXPLICIT_VALUE``: the configuration explicitly sets an insecure value.
+    ``DOCUMENTED_DEFAULT``: nothing is set, and the vendor documents an insecure
+    default for the assessed release.
+    ``MISSING_EXPLICIT_SETTING``: a recommended hardening setting is not
+    explicitly configured; the release default was not assessed, so the effective
+    value may already be safe.
+    """
+
+    EXPLICIT_VALUE = "explicit-value"
+    DOCUMENTED_DEFAULT = "documented-default"
+    MISSING_EXPLICIT_SETTING = "missing-explicit-setting"
+
+
 @dataclass(frozen=True)
 class EvidenceLocation:
     """Sanitized evidence text with its source position when the parser knows it.
@@ -81,6 +97,7 @@ class Finding:
         exploitability: str = "",
         evidence: Iterable[Union[str, ConfigEvidence]] = (),
         references: Iterable[str] = (),
+        basis: Optional[Union[FindingBasis, str]] = None,
     ):
         required = {
             "rule_id": rule_id,
@@ -122,6 +139,8 @@ class Finding:
         self.evidence: Tuple[str, ...] = tuple(location.text for location in locations)
         self.evidence_locations: Tuple[EvidenceLocation, ...] = tuple(locations)
         self.references: Tuple[str, ...] = normalized_references
+        # None means the rule has not declared a basis yet; the report then shows no note.
+        self.basis: Optional[FindingBasis] = None if basis is None else FindingBasis(basis)
 
     def locate_evidence(self, locate_line, source_name: Optional[str]) -> None:
         """Fill missing line numbers using a conservative exact-line lookup."""
@@ -175,10 +194,13 @@ class Finding:
             # Additive: the same evidence with source line/file where known.
             "evidence_locations": [location.to_dict() for location in self.evidence_locations],
             "references": list(self.references),
+            # Additive (PT-009): explicit-value, documented-default,
+            # missing-explicit-setting, or null when the rule has not declared one.
+            "basis": self.basis.value if self.basis is not None else None,
         }
 
 
 # Compatibility name for callers that imported the old generic class.
 Issue = Finding
 
-__all__ = ["EvidenceLocation", "Finding", "Issue", "Severity"]
+__all__ = ["EvidenceLocation", "Finding", "FindingBasis", "Issue", "Severity"]

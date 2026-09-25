@@ -2,7 +2,7 @@ import re
 
 from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.credentials import credential_policy_from_context, evaluate_credential
-from src.analyze.common.issue import Finding, Severity
+from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.cisco.asa import CiscoASAParser
 
@@ -85,6 +85,7 @@ class PluginASABaseline(BasePlugin):
         severity,
         evidence,
         references=CISCO_ASA_CONFIGURATION_GUIDES,
+        basis=None,
     ):
         return Finding(
             rule_id=rule_id,
@@ -97,6 +98,7 @@ class PluginASABaseline(BasePlugin):
             severity=severity,
             evidence=evidence,
             references=references,
+            basis=basis,
         )
 
     def check_aaa(self, parser: BaseDeviceParser) -> None:
@@ -298,6 +300,7 @@ class PluginASABaseline(BasePlugin):
                 "Administrators may receive an untrusted or unintended device certificate.",
                 "Enroll a managed certificate and assign it with 'ssl trust-point'.",
                 Severity.MEDIUM, ("http server enable",),
+                basis=FindingBasis.MISSING_EXPLICIT_SETTING,
             ))
             return
         for binding in certificate_bindings:

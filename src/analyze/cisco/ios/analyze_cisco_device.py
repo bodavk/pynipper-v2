@@ -1,4 +1,5 @@
 
+from src.advisories import software_advisories
 import os
 
 from src.devices import get_parser
@@ -10,7 +11,7 @@ from src.report.coverage import build_report_context
 from ....error.files_errors import PynipperConfigurationFileNotFound
 
 
-def analyze_cisco_device(device, input_filename, output_filename, output_type, configuration, online, assessment_context=None):
+def analyze_cisco_device(device, input_filename, output_filename, output_type, configuration, online, assessment_context=None, advisory_request=None):
 
     print("[1/4] Initializing pynipper-ng")
     
@@ -28,6 +29,8 @@ def analyze_cisco_device(device, input_filename, output_filename, output_type, c
     # Get vulns by Cisco API
     print("[2/4] Fetching Cisco API information")
     vulns = get_api_vulnerabilities(configuration, version_cisco_device, online)
+    nvd_advisories, advisory_status = software_advisories(device, parser, advisory_request)
+    vulns = list(vulns) + nvd_advisories
 
     # Get Cisco report missconfigurations
     print("[3/4] Checking missconfiguration vulnerabilities")
@@ -39,6 +42,7 @@ def analyze_cisco_device(device, input_filename, output_filename, output_type, c
     data['device-type'] = str(device)
     data['assessment-policy'] = parser.assessment_context.to_dict()
     data.update(build_report_context(parser))
+    data['software-advisories'] = advisory_status
 
     # Generate report
     print("[4/4] Generating report")

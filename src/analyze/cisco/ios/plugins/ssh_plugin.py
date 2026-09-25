@@ -1,5 +1,5 @@
 from src.analyze.common.base_plugin import BasePlugin
-from src.analyze.common.issue import Finding, Severity
+from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.cisco.ios import CiscoIOSParser, ConfigurationState, NumericSetting
 
@@ -45,6 +45,7 @@ class PluginSSH(BasePlugin):
             severity=Severity.HIGH,
             evidence=evidence or ("SSH configuration present",),
             references=(CISCO_IOS_SSH_GUIDE,),
+            basis=FindingBasis.EXPLICIT_VALUE if version else FindingBasis.DOCUMENTED_DEFAULT,
         )
 
     @staticmethod
@@ -52,6 +53,10 @@ class PluginSSH(BasePlugin):
         if setting.raw_line:
             return (setting.raw_line,)
         return (f"effective documented default: {default}",)
+
+    @staticmethod
+    def _numeric_basis(setting: NumericSetting) -> FindingBasis:
+        return FindingBasis.EXPLICIT_VALUE if setting.raw_line else FindingBasis.DOCUMENTED_DEFAULT
 
     def get_cisco_ios_ssh_retries(self, parser: BaseDeviceParser):
         ios = self._ios_parser(parser)
@@ -77,6 +82,7 @@ class PluginSSH(BasePlugin):
             severity=Severity.MEDIUM,
             evidence=self._numeric_evidence(retries, 3),
             references=(CISCO_IOS_SSH_GUIDE,),
+            basis=self._numeric_basis(retries),
         )
 
     def get_cisco_ios_ssh_timeout(self, parser: BaseDeviceParser):
@@ -103,6 +109,7 @@ class PluginSSH(BasePlugin):
             severity=Severity.LOW,
             evidence=self._numeric_evidence(timeout, 120),
             references=(CISCO_IOS_SSH_GUIDE,),
+            basis=self._numeric_basis(timeout),
         )
 
     def get_cisco_ios_vty_access_restriction(self, parser: BaseDeviceParser):
