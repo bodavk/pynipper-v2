@@ -568,6 +568,39 @@
       "input": "sonicos/disabled_objects.txt",
       "expected_rule_ids": [],
       "expected_finding_count": 0
+    },
+    {
+      "name": "checkpoint-gaia-vulnerable",
+      "device": "CHECKPOINT_GAIA",
+      "input": "checkpoint_gaia/vulnerable.conf",
+      "expected_rule_ids": [
+        "checkpoint.gaia.banner.login_disabled",
+        "checkpoint.gaia.cli.idle_timeout_excessive",
+        "checkpoint.gaia.management.telnet",
+        "checkpoint.gaia.password_policy.complexity",
+        "checkpoint.gaia.password_policy.history_disabled",
+        "checkpoint.gaia.password_policy.lockout_disabled",
+        "checkpoint.gaia.password_policy.minimum_length",
+        "checkpoint.gaia.snmp.default_community",
+        "checkpoint.gaia.snmp.legacy_version",
+        "checkpoint.gaia.snmp.v3_security",
+        "checkpoint.gaia.snmp.write_community"
+      ],
+      "expected_finding_count": 11
+    },
+    {
+      "name": "checkpoint-gaia-secure",
+      "device": "CHECKPOINT_GAIA",
+      "input": "checkpoint_gaia/secure.conf",
+      "expected_rule_ids": [],
+      "expected_finding_count": 0
+    },
+    {
+      "name": "checkpoint-gaia-syntax-variants",
+      "device": "CHECKPOINT_GAIA",
+      "input": "checkpoint_gaia/syntax_variants.conf",
+      "expected_rule_ids": [],
+      "expected_finding_count": 0
     }
   ]
 }

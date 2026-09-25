@@ -79,12 +79,13 @@ This table describes **implemented subsets**, not complete coverage of a categor
 | FORTIOS | Management/administrator/session/password/crypto/cert checks, including bound custom write-capable profile trusted-host/MFA coverage; SNMP/NTP, logging destinations/events, profile attachment/content summaries, DoS, local-in, VPN, backup/update configuration | [SC-009](#sc-009), [SC-011](#sc-011) authorized log-role policy only, [SC-012](#sc-012), [SC-013](#sc-013), [SC-022](#sc-022) |
 | JUNOS | SRX policy/default deny/IPsec; administrative classes/AAA/SSH/SNMP/log/NTP, lo0 protection, BGP/OSPF and discovery | EX-only [SC-003](#sc-003)/[SC-004](#sc-004), [SC-005](#sc-005), SRX-only [SC-010](#sc-010), [SC-021](#sc-021), [SC-022](#sc-022); stateless-filter research remains in TODO |
 | SCREENOS | Legacy admin/password/logging/SNMP, NTP-server presence, policy/session/default-policy subset, VPN proposals and lifecycle warning | [SC-019](#sc-019), plus existing [RV-008](REALWORLD_VALIDATION_TASKS.md#rv-008); no duplicate lifecycle task |
-| CHECKPOINT_FW1 | Policy objects, broad rules, cleanup/stealth, tracking/install scope and bounded static rule analysis | [SC-017](#sc-017), [SC-023](#sc-023); OS AAA/credentials/SNMP/time/cert state unavailable in policy-only input |
+| CHECKPOINT_FW1 | Policy objects, broad rules, cleanup/stealth, tracking/install scope and bounded static rule analysis | [SC-017](#sc-017); OS posture is the separate `CHECKPOINT_GAIA` family ([SC-023](#sc-023)) |
+| CHECKPOINT_GAIA | Telnet, SNMP communities/version/v3 level, password policy (lockout, history, complexity, length), Clish idle timeout, login banner | [SC-023](#sc-023) remainder: remote AAA, NTP, syslog, web UI |
 | PAN_OS | Management/admin/password/lockout/AAA/SSH/TLS/certs/SNMP/NTP, update/log forwarding, rule hygiene/effectiveness, explicit interzone-default allow overrides and inspection attachment summaries | [SC-008](#sc-008), [SC-009](#sc-009), [SC-013](#sc-013), [SC-022](#sc-022) |
 | HP_PROCURVE | AOS-S management/AAA/manager-operator/password/SSH/SNMP, logging/NTP and DHCP/DAI/source-lockdown/port-security subset | [SC-003](#sc-003), [SC-004](#sc-004), routing-role [SC-005](#sc-005), [SC-012](#sc-012), [SC-021](#sc-021), [SC-022](#sc-022) |
 | SONICOS | E-CLI management/admin, access rules/effectiveness, VPN algorithms, logging/NTP/SNMP, global security services and Capture ATP dependencies | [SC-013](#sc-013), [SC-018](#sc-018), [SC-021](#sc-021), [SC-022](#sc-022) |
 | ARISTA_EOS | eAPI/TLS-profile/SSH, admin roles/AAA/authz/accounting/session/lockout/banner, SNMP/credentials/authenticated NTP/CoPP | [SC-002](#sc-002), [SC-003](#sc-003), [SC-004](#sc-004), [SC-005](#sc-005), [SC-012](#sc-012), [SC-021](#sc-021), [SC-022](#sc-022) |
-| F5_BIGIP | Explicit management source/redirect/idle settings, tmsh audit, password-enforcement and zero-lockout/minimum-length checks, plaintext local-user password storage, active remote-auth empty-server and LDAP SSL/peer-check disablement, remote-syslog-none, bound ClientSSL allow-non-SSL | [SC-014](#sc-014), [SC-015](#sc-015), [SC-016](#sc-016), [SC-022](#sc-022), conditional-module [SC-024](#sc-024) |
+| F5_BIGIP | Explicit management source/redirect/idle settings, tmsh audit, password-enforcement and zero-lockout/minimum-length checks, plaintext local-user password storage, active remote-auth empty-server and LDAP SSL/peer-check disablement, remote-syslog-none, bound ClientSSL allow-non-SSL, AFM default-accept, bound inactive/transparent ASM policies | [SC-014](#sc-014), [SC-015](#sc-015), [SC-016](#sc-016), [SC-022](#sc-022), conditional-module [SC-024](#sc-024) |
 
 Administrative access, AAA, credentials, SNMP, logging, time, services, routing, filtering, crypto, certificates, discovery and control-plane protection were considered. Banners already have checks on several families and are not a priority expansion here. Missing routing/L2 functions on appliances that do not use those roles are not automatically applicable. Certificate selection is not equivalent to certificate validation; algorithm blacklists are not credential-value checks; configured backup/update schedules are not proof of successful operation. No missing checks are inferred simply from an absent category name in a plugin.
 
@@ -607,7 +608,7 @@ These are smaller-demand or evidence-limited tracks. Do not hold ready current-p
 
 **Priority:** P2 prerequisite to high-risk management checks.
 
-**Status:** Research/design only until sources and fixtures are available.
+**Status:** First stage implemented 2026-09-25 as a separate family, `CHECKPOINT_GAIA` (`-d checkpoint-gaia`), for the Gaia Clish `show configuration` output. Checks come from the R81 Gaia Administration Guide (Network-Access, SNMP, Password Policy, Session, Messages pages): Telnet on, SNMP default/read-write communities and `agent-version any`, SNMPv3 below authPriv, deny-on-fail off (documented default), history checking off, complexity 1, minimum length below 8, idle timeout above 10 minutes, banner off. A companion-file design was dropped because the Gaia export is self-contained and needs no policy provenance. Remaining: validation against a real export; remote AAA (RADIUS/TACACS+), NTP, syslog and web-UI settings.
 
 **Source of Truth:** Check Point benchmark applicability table; FW1 parser accepts policy export, not a Gaia operating-system configuration. No source supports grading OS AAA/SNMP/time/TLS from that input.
 
@@ -630,7 +631,7 @@ These are smaller-demand or evidence-limited tracks. Do not hold ready current-p
 
 **Priority:** P2 prerequisite; proven bypasses may warrant P1 implementation later.
 
-**Status:** Research/design only.
+**Status:** First stage implemented 2026-09-25 from F5 documentation: `f5.bigip.afm.default_accept` (AFM provisioned and `tm.fw.defaultaction` accept, or absent: ADC mode is the default, F5 ID813165), `f5.bigip.asm.inactive_policy` and `f5.bigip.asm.transparent_policy` for ASM policies bound to an enabled virtual server through an `ltm policy` enable action. Remaining: validation against a real export; APM access-policy bypass; AFM rule contents.
 
 **Source of Truth:** S13 and F5 Firewall/VPN benchmarks in catalog; current adapter covers basic TMOS/LTM, not module-specific policy effectiveness.
 

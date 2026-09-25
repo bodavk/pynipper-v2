@@ -67,6 +67,10 @@ _IOS_FAMILIES = {"IOS_SWITCH", "IOS_ROUTER", "IOS_CATALYST", "IOS_XE"}
 _UNSUPPORTED = {
     "CHECKPOINT_FW1": "A Check Point policy export does not contain the gateway software version.",
     "PIX": "PIX release naming is not qualified (see SC-020).",
+    "CHECKPOINT_GAIA": (
+        "A Gaia export states only the Clish language version, not the Gaia release, "
+        "and Check Point NVD product naming is not qualified."
+    ),
 }
 
 

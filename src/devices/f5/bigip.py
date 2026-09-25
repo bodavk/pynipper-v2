@@ -179,6 +179,25 @@ class F5Virtual:
     enabled: bool | None
     client_profiles: tuple[str, ...]
     evidence: ConfigEvidence
+    policies: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class F5ASMPolicy:
+    """`asm policy`: tmsh reference — `[active | inactive]` (default inactive),
+    `blocking-mode [enabled | disabled]` (disabled = transparent, violations only logged)."""
+
+    name: str
+    active: bool
+    blocking_mode: str  # enabled | disabled | unknown
+    evidence: ConfigEvidence
+
+
+@dataclass(frozen=True)
+class F5LTMPolicy:
+    name: str
+    asm_policies: tuple[str, ...]  # `asm ... enable policy <name>` actions
+    evidence: ConfigEvidence
 
 
 def _tokens(content: str) -> list[_TokenValue]:
@@ -260,6 +279,9 @@ class F5BIGIPParser(BaseDeviceParser):
         self._snmp_communities: dict[str, F5SNMPCommunity] = {}
         self._snmp_users: dict[str, F5SNMPUser] = {}
         self._provision: dict[str, tuple[str, int]] = {}
+        self._db: dict[str, tuple[str, int]] = {}
+        self._asm_policies: dict[str, F5ASMPolicy] = {}
+        self._ltm_policies: dict[str, F5LTMPolicy] = {}
         self._ntp_servers: tuple[F5NTPServer, ...] | None = None
         self._parse(_tokens(content))
         self._native = (
@@ -308,6 +330,14 @@ class F5BIGIPParser(BaseDeviceParser):
                 body = tokens[body_start:cursor - 1]
                 level = next((body[i + 1].text for i in range(len(body) - 1) if body[i].text == "level"), "unknown")
                 self._provision[header[2].casefold()] = (level.casefold(), header_line)
+            elif len(header) == 3 and header[:2] == ["sys", "db"]:
+                body = tokens[body_start:cursor - 1]
+                value = next((body[i + 1].text for i in range(len(body) - 1) if body[i].text == "value"), "")
+                self._db[header[2].casefold()] = (value, header_line)
+            elif len(header) == 3 and header[:2] == ["asm", "policy"]:
+                self._read_asm_policy(header[2], header_line, tokens[body_start:cursor - 1])
+            elif len(header) == 3 and header[:2] == ["ltm", "policy"]:
+                self._read_ltm_policy(header[2], header_line, tokens[body_start:cursor - 1])
             elif scope == "sys ntp":
                 self._read_ntp(header_line, tokens[body_start:cursor - 1])
             elif len(header) == 3 and header[:2] == ["auth", "user"]:
@@ -513,6 +543,7 @@ class F5BIGIPParser(BaseDeviceParser):
         previous = self._virtuals.get(name)
         enabled = previous.enabled if previous else None
         profiles = previous.client_profiles if previous else ()
+        policies = previous.policies if previous else ()
         depth = 0
         for index, token in enumerate(body):
             if token.text == "{":
@@ -521,6 +552,22 @@ class F5BIGIPParser(BaseDeviceParser):
                 depth -= 1
             elif depth == 0 and token.text in {"enabled", "disabled"}:
                 enabled = token.text == "enabled"
+            elif depth == 0 and token.text == "policies":
+                next_index = index + 1
+                if next_index < len(body) and body[next_index].text in {"replace-all-with", "add"}:
+                    next_index += 1
+                members = _block_contents(body, next_index) or []
+                attached, member_depth = [], 0
+                for member in members:
+                    if member.text == "{":
+                        member_depth += 1
+                    elif member.text == "}":
+                        member_depth -= 1
+                    elif member_depth == 0 and member.text != "none":
+                        policy_name = _object_name(member.text, name)
+                        if policy_name:
+                            attached.append(policy_name)
+                policies = tuple(attached)
             elif depth == 0 and token.text == "profiles":
                 next_index = index + 1
                 if next_index < len(body) and body[next_index].text == "replace-all-with":
@@ -554,12 +601,76 @@ class F5BIGIPParser(BaseDeviceParser):
             name, enabled, profiles,
             ConfigEvidence(f"ltm virtual {name} {'enabled' if enabled else 'disabled' if enabled is False else '<unknown>'}",
                            self.config_filepath, line_number),
+            policies,
         )
+
+    def _read_asm_policy(self, raw_name: str, line_number: int, body: list[_TokenValue]) -> None:
+        name = _object_name(raw_name)
+        if name is None:
+            return
+        texts = [token.text for token in body]
+        top = []
+        depth = 0
+        for text in texts:
+            if text == "{":
+                depth += 1
+            elif text == "}":
+                depth -= 1
+            elif depth == 0:
+                top.append(text)
+        active = "active" in top and "inactive" not in top
+        blocking = top[top.index("blocking-mode") + 1] if "blocking-mode" in top[:-1] else "unknown"
+        self._asm_policies[name] = F5ASMPolicy(name, active, blocking, ConfigEvidence(
+            f"asm policy {name} {'active' if active else 'inactive'} blocking-mode {blocking}",
+            self.config_filepath, line_number))
+
+    def _read_ltm_policy(self, raw_name: str, line_number: int, body: list[_TokenValue]) -> None:
+        name = _object_name(raw_name)
+        if name is None:
+            return
+        texts = [token.text for token in body]
+        referenced = []
+        for index, text in enumerate(texts):
+            if text == "asm":
+                window = texts[index + 1:index + 6]
+                if "enable" in window and "policy" in window:
+                    position = window.index("policy")
+                    if position + 1 < len(window):
+                        target = _object_name(window[position + 1])
+                        if target and target not in referenced:
+                            referenced.append(target)
+        self._ltm_policies[name] = F5LTMPolicy(name, tuple(referenced), ConfigEvidence(
+            f"ltm policy {name} asm enable policy {', '.join(referenced) or '<none>'}",
+            self.config_filepath, line_number))
+
+    def get_asm_bindings(self) -> tuple[tuple[F5Virtual, F5LTMPolicy, F5ASMPolicy], ...]:
+        """Enabled virtual servers (documented default: enabled) whose attached LTM policy enables an ASM policy."""
+
+        result = []
+        for virtual in self._virtuals.values():
+            if virtual.enabled is False:
+                continue
+            for policy_name in virtual.policies:
+                ltm = self._ltm_policies.get(policy_name)
+                for asm_name in (ltm.asm_policies if ltm else ()):
+                    asm = self._asm_policies.get(asm_name)
+                    if asm:
+                        result.append((virtual, ltm, asm))
+        return tuple(result)
+
+    def get_firewall_default_action(self) -> tuple[str, ConfigEvidence | None]:
+        """`sys db tm.fw.defaultaction`; F5 documents the default as accept (ADC mode)."""
+
+        value, line = self._db.get("tm.fw.defaultaction", ("", 0))
+        if not value:
+            return "accept", None
+        return value.casefold(), ConfigEvidence(
+            f"sys db tm.fw.defaultaction value {value}", self.config_filepath, line)
 
     def get_bound_cleartext_client_ssl(self) -> tuple[tuple[F5Virtual, F5ClientSSLProfile], ...]:
         return tuple(
             (virtual, profile)
-            for virtual in self._virtuals.values() if virtual.enabled is True
+            for virtual in self._virtuals.values() if virtual.enabled is not False  # tmsh: default enabled
             for name in virtual.client_profiles
             if (profile := self._client_ssl.get(name)) is not None
             and profile.mode_enabled is True and profile.allow_non_ssl is True

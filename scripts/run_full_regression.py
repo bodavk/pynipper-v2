@@ -37,6 +37,9 @@ from src.analyze.paloalto.core.process_panos_conf import process_panos_conf  # n
 from src.analyze.arista.core.process_arista_conf import process_arista_conf  # noqa: E402
 from src.analyze.sonicwall.core.process_sonicos_conf import process_sonicos_conf  # noqa: E402
 from src.analyze.f5.core.process_bigip_conf import process_bigip_conf  # noqa: E402
+from src.analyze.checkpoint.core.process_checkpoint_gaia_conf import (  # noqa: E402
+    process_checkpoint_gaia_conf,
+)
 from src.devices import get_parser  # noqa: E402
 from src.devices.registry import validate_device_registry  # noqa: E402
 from src.common.assessment import AssessmentContext  # noqa: E402
@@ -59,6 +62,7 @@ PROCESSORS: dict[str, Callable] = {
     "ARISTA_EOS": process_arista_conf,
     "SONICOS": process_sonicos_conf,
     "F5_BIGIP": process_bigip_conf,
+    "CHECKPOINT_GAIA": process_checkpoint_gaia_conf,
 }
 
 def _load_cases() -> list[dict]:

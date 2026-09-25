@@ -31,6 +31,9 @@ def detect_device_type(input_path: str) -> str:
         sample = source.read(131072)
 
     matches: set[str] = set()
+    if (re.search(r"(?m)^#\s*Language version:\s*\S+", sample)
+            and re.search(r"(?m)^set (?:hostname|password-controls|net-access)\b", sample)):
+        matches.add("CHECKPOINT_GAIA")
     if re.search(r"(?m)^#TMSH-VERSION:\s*\S+", sample):
         matches.add("F5_BIGIP")
     if re.search(r"(?m)^#config-version=\S+", sample):

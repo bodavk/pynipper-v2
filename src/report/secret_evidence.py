@@ -15,7 +15,7 @@ from src.devices.common.base_parser import BaseDeviceParser
 SUPPORTED_SECRET_REPORT_DEVICES = frozenset({
     "IOS_SWITCH", "IOS_ROUTER", "IOS_CATALYST", "IOS_XE",
     "ASA", "PIX", "JUNOS", "SCREENOS", "ARISTA_EOS", "FORTIOS",
-    "HP_PROCURVE", "F5_BIGIP", "SONICOS", "PAN_OS",
+    "HP_PROCURVE", "F5_BIGIP", "SONICOS", "PAN_OS", "CHECKPOINT_GAIA",
 })
 
 
@@ -45,6 +45,17 @@ def collect_secret_evidence(parser: BaseDeviceParser) -> dict:
                 "Only explicit auth user password/encrypted-password source lines in the saved "
                 "TMOS export are shown. Other credentials and hidden values are not included. "
                 "These excerpts are sensitive and should be handled as credentials."
+            ),
+            "entries": parser.get_report_secret_lines(),
+        }
+    if parser.device_type == "CHECKPOINT_GAIA":
+        return {
+            "status": "unmasked-credential-lines",
+            "scope-note": (
+                "Only Gaia Clish user password-hash, SNMP community and SNMPv3 USM user lines in the "
+                "saved 'show configuration' output are shown. Security-policy secrets (objects, VPN "
+                "keys) are not part of Gaia OS configuration and are not included. These excerpts "
+                "are sensitive and should be handled as credentials."
             ),
             "entries": parser.get_report_secret_lines(),
         }

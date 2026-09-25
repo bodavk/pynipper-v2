@@ -27,6 +27,13 @@ SNMP = "https://clouddocs.f5.com/cli/tmsh-reference/v16/modules/sys/sys_snmp.htm
 RFC_3414 = "https://www.rfc-editor.org/rfc/rfc3414"
 NTP = "https://clouddocs.f5.com/cli/tmsh-reference/v16/modules/sys/sys_ntp.html"
 NTP_AUTH = "https://my.f5.com/manage/s/article/K14120"
+AFM_DEFAULT_PROCESSING = (
+    "https://techdocs.f5.com/en-us/bigip-15-1-0/big-ip-network-firewall-policies-and-implementations/"
+    "afm-firewall-default-traffic-processing.html"
+)
+AFM_DEFAULT_ACTION_DB = "https://cdn.f5.com/product/bugtracker/ID813165.html"
+ASM_POLICY = "https://clouddocs.f5.com/cli/tmsh-reference/v16/modules/asm/asm_policy.html"
+LTM_POLICY = "https://clouddocs.f5.com/cli/tmsh-reference/v16/modules/ltm/ltm_policy.html"
 
 
 class PluginF5BIGIPChecks(BasePlugin):
@@ -83,6 +90,7 @@ class PluginF5BIGIPChecks(BasePlugin):
             self._check_management_tls(parser)
         self._check_snmp(parser)
         self._check_ntp(parser)
+        self._check_modules(parser)
         console = setting("sys global-settings", "console-inactivity-timeout")
         if console and console.value == 0:
             self._emit(parser, console, rule_id="f5.bigip.console.idle_timeout_disabled",
@@ -393,3 +401,61 @@ class PluginF5BIGIPChecks(BasePlugin):
                 references=(NTP_AUTH, NTP),
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
+
+    def _check_modules(self, parser: F5BIGIPParser) -> None:
+        """SC-024 bounded stages: AFM default action and ASM enforcement on bound policies."""
+
+        modules = parser.get_provisioned_modules()
+        if modules.get("afm", "none") != "none":
+            action, evidence = parser.get_firewall_default_action()
+            if action in {"accept", "allow"}:
+                self.add_issue(Finding(
+                    rule_id="f5.bigip.afm.default_accept",
+                    device=parser.device_type,
+                    title="AFM network firewall allows unmatched traffic by default",
+                    observation=(
+                        "AFM is provisioned and the virtual server/self IP default action is accept "
+                        + ("(sys db tm.fw.defaultaction)." if evidence else "(ADC mode, the documented default).")
+                    ),
+                    impact="Traffic to virtual servers and self IPs that no firewall rule matches is allowed.",
+                    exploitability="Services reachable on the BIG-IP are exposed unless another rule blocks them.",
+                    recommendation="Switch AFM to firewall mode (default action drop or reject) and allow required traffic explicitly, or document the ADC-mode design.",
+                    severity=Severity.MEDIUM,
+                    evidence=((evidence,) if evidence else ()) + (
+                        f"sys provision afm level {modules['afm']}",
+                    ),
+                    references=(AFM_DEFAULT_PROCESSING, AFM_DEFAULT_ACTION_DB),
+                    basis=FindingBasis.EXPLICIT_VALUE if evidence else FindingBasis.DOCUMENTED_DEFAULT,
+                ))
+        if modules.get("asm", "none") == "none":
+            return
+        for virtual, ltm, asm in parser.get_asm_bindings():
+            evidence = (virtual.evidence, ltm.evidence, asm.evidence)
+            if not asm.active:
+                self.add_issue(Finding(
+                    rule_id="f5.bigip.asm.inactive_policy",
+                    device=parser.device_type,
+                    title="Web application firewall policy is not active",
+                    observation=f"Virtual server {virtual.name} enables ASM policy {asm.name} through LTM policy {ltm.name}, but the ASM policy is inactive (the documented default).",
+                    impact="Requests to this application are not inspected by the intended security policy.",
+                    exploitability="Web attacks that the policy would detect reach the application.",
+                    recommendation=f"Activate ASM policy {asm.name} ('modify asm policy {asm.name} active') and apply the changes.",
+                    severity=Severity.MEDIUM,
+                    evidence=evidence,
+                    references=(ASM_POLICY, LTM_POLICY),
+                    basis=FindingBasis.DOCUMENTED_DEFAULT,
+                ))
+            elif asm.blocking_mode == "disabled":
+                self.add_issue(Finding(
+                    rule_id="f5.bigip.asm.transparent_policy",
+                    device=parser.device_type,
+                    title="Web application firewall policy only logs violations",
+                    observation=f"Virtual server {virtual.name} uses ASM policy {asm.name} with blocking-mode disabled (transparent): violations are logged but not blocked.",
+                    impact="Detected web attacks still reach the application.",
+                    exploitability="An attacker's requests pass even when the policy recognizes them as violations.",
+                    recommendation=f"After tuning, enable blocking ('modify asm policy {asm.name} blocking-mode enabled').",
+                    severity=Severity.MEDIUM,
+                    evidence=evidence,
+                    references=(ASM_POLICY, LTM_POLICY),
+                    basis=FindingBasis.EXPLICIT_VALUE,
+                ))

@@ -13,6 +13,7 @@ from src.devices.hp.procurve import HPProCurveParser
 from src.devices.paloalto.panos import PaloAltoPANOSParser
 from src.devices.arista.eos import AristaEOSParser
 from src.devices.f5.bigip import F5BIGIPParser
+from src.devices.checkpoint.gaia import CheckPointGaiaParser
 from src.devices.common.base_parser import BaseDeviceParser
 from src import main as main_module
 from src.analyze.cisco.ios.core.process_cisco_ios_conf import IOS_PLUGINS
@@ -37,6 +38,7 @@ EXPECTED_PARSERS = {
     "JUNOS": JunOSParser,
     "ARISTA_EOS": AristaEOSParser,
     "F5_BIGIP": F5BIGIPParser,
+    "CHECKPOINT_GAIA": CheckPointGaiaParser,
 }
 
 
@@ -56,6 +58,7 @@ EXPECTED_ANALYZERS = {
     "JUNOS": "analyze_junos_device",
     "ARISTA_EOS": "analyze_arista_device",
     "F5_BIGIP": "analyze_bigip_device",
+    "CHECKPOINT_GAIA": "analyze_checkpoint_gaia_device",
 }
 
 

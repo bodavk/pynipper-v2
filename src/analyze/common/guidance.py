@@ -85,7 +85,7 @@ AREAS = {area.key: area for area in _AREA_LIST}
 _G = Guidance
 _CATALOGUE = (
     # Firewall and access policy -------------------------------------------------
-    (r"^(policy|filter|acl)\.(broad_\w+|overly_broad_accept|default_permit\w*|interzone_default_allow|negated_accept|risky_service_exposure)$", _G(
+    (r"^((policy|filter|acl)\.(broad_\w+|overly_broad_accept|default_permit\w*|interzone_default_allow|negated_accept|risky_service_exposure)|afm\.default_accept)$", _G(
         "policy-broad", "traffic-policy",
         "A traffic rule (or the default action for unmatched traffic) allows much more than a "
         "business need usually requires, such as any source to any destination on any service. "
@@ -131,7 +131,7 @@ _CATALOGUE = (
         "hit counters on the device before deleting anything.",
     )),
     # Threat inspection -----------------------------------------------------------
-    (r"^(policy\.(security_profile\w*|ips_selector_\w+|threat_selector_nonblocking|idp_\w+)|security_services\.\w+|zone\.security_service_disabled|capture_atp\.\w+|updates\.\w+|fortiguard\.\w+|firmware\.automatic_updates|threat_detection\.\w+)$", _G(
+    (r"^(policy\.(security_profile\w*|ips_selector_\w+|threat_selector_nonblocking|idp_\w+)|security_services\.\w+|zone\.security_service_disabled|asm\.\w+|capture_atp\.\w+|updates\.\w+|fortiguard\.\w+|firmware\.automatic_updates|threat_detection\.\w+)$", _G(
         "threat-inspection", "threat-inspection",
         "Traffic that the firewall allows is not fully checked for known attacks or malware, or "
         "the signatures used for that check are not kept up to date.",

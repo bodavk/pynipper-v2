@@ -134,6 +134,12 @@ _DEVICE_DEFINITIONS: Tuple[DeviceDefinition, ...] = (
         "src.analyze.f5.analyze_bigip_device:analyze_bigip_device",
         "F5 BIG-IP TMOS",
     ),
+    DeviceDefinition(
+        "CHECKPOINT_GAIA", 21, ("GAIA", "CHECK_POINT_GAIA"),
+        "src.devices.checkpoint.gaia:CheckPointGaiaParser",
+        "src.analyze.checkpoint.analyze_checkpoint_gaia_device:analyze_checkpoint_gaia_device",
+        "Check Point Gaia OS",
+    ),
 )
 
 
@@ -204,7 +210,7 @@ _RECOMMENDED_DEVICE_GROUPS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     ("Fortinet", ("fortios",)),
     ("Juniper", ("junos", "screenos")),
     ("Others", (
-        "checkpoint-fw1", "pan-os", "hp-procurve", "sonicos",
+        "checkpoint-fw1", "checkpoint-gaia", "pan-os", "hp-procurve", "sonicos",
         "arista-eos", "f5-bigip",
     )),
 )
