@@ -85,3 +85,7 @@ ltm persistence cookie /Common/app_cookie {
     cookie-encryption disabled
     method insert
 }
+ltm monitor http /Common/app_mon {
+    defaults-from /Common/http
+    send "GET / HTTP/1.1\r\nAuthorization: Basic dXNlcjpwYXNz\r\n\r\n"
+}

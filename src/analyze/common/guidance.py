@@ -85,7 +85,7 @@ AREAS = {area.key: area for area in _AREA_LIST}
 _G = Guidance
 _CATALOGUE = (
     # Firewall and access policy -------------------------------------------------
-    (r"^((policy|filter|acl)\.(broad_\w+|overly_broad_accept|default_permit\w*|interzone_default_allow|negated_accept|risky_service_exposure)|afm\.default_accept)$", _G(
+    (r"^((policy|filter|acl|ltm)\.(broad_\w+|overly_broad_accept|default_permit\w*|interzone_default_allow|negated_accept|risky_service_exposure)|afm\.default_accept)$", _G(
         "policy-broad", "traffic-policy",
         "A traffic rule (or the default action for unmatched traffic) allows much more than a "
         "business need usually requires, such as any source to any destination on any service. "
@@ -499,7 +499,7 @@ _CATALOGUE = (
         "Check for upstream DDoS protection and whether management and routing traffic are "
         "prioritized.",
     )),
-    (r"^(interface\.(ip_hardening|reverse_path|unused_enabled)|interfaces\.redirects|ip\.source_route|services\.(unnecessary|legacy|tftp_server)|ntp\.server_exposed|system\.usb_auto_install|ha\.heartbeat_protection)$", _G(
+    (r"^(interface\.(ip_hardening|reverse_path|unused_enabled)|interfaces\.redirects|ip\.source_route|services\.(unnecessary|legacy|legacy_default|tftp_server)|ntp\.server_exposed|system\.usb_auto_install|ha\.heartbeat_protection)$", _G(
         "service-hardening", "control-plane",
         "Legacy IP features or services that are rarely needed are still enabled (for example "
         "source routing, ICMP redirects, proxy ARP, small servers), or anti-spoofing is missing.",

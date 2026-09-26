@@ -134,6 +134,11 @@ JUNIPER_SCREEN_OPTION_REFERENCE = (
 )
 
 
+JUNIPER_VRRP_AUTH_REFERENCE = (
+    "https://www.juniper.net/documentation/us/en/software/junos/cli-reference/topics/ref/statement/"
+    "authentication-type-edit-interfaces.html"
+)
+
 class PluginJunOSBaseline(BasePlugin):
     """Evaluate explicit Junos security state without inventing release defaults."""
 
@@ -1132,6 +1137,27 @@ class PluginJunOSBaseline(BasePlugin):
                     basis=FindingBasis.EXPLICIT_VALUE,
                 ))
 
+    def check_vrrp_authentication(self, parser: BaseDeviceParser) -> None:
+        """SC-028: VRRPv2 groups without MD5 authentication (default none) or with simple passwords."""
+        for group in self._junos(parser).get_vrrp_groups():
+            if group["auth"] == "md5":
+                continue
+            explicit = group["auth"] == "simple"
+            self.add_issue(self._finding(
+                parser,
+                "juniper.junos.fhrp.authentication",
+                "VRRP group without MD5 authentication",
+                (f"VRRP group {group['group']} on {group['interface']} "
+                 + ("uses simple authentication; the password is sent in every advertisement."
+                    if explicit else "has no authentication-type (default none).")),
+                "Any host on the segment can send advertisements with a higher priority and become the master for the virtual gateway address.",
+                "Configure 'authentication-type md5' with an authentication-key on every group member, or use VRRPv3 on an isolated segment.",
+                Severity.MEDIUM,
+                (group["evidence"],),
+                (JUNIPER_VRRP_AUTH_REFERENCE,),
+                basis=FindingBasis.EXPLICIT_VALUE if explicit else FindingBasis.DOCUMENTED_DEFAULT,
+            ))
+
     def analyze(self, parser: BaseDeviceParser) -> None:
         self.check_ssh_algorithms(parser)
         self.check_additional_services(parser)
@@ -1147,6 +1173,7 @@ class PluginJunOSBaseline(BasePlugin):
         self.check_ntp(parser)
         self.check_routing_engine_filter(parser)
         self.check_redirects(parser)
+        self.check_vrrp_authentication(parser)
         self.check_routing(parser)
         self.check_discovery(parser)
         self.check_access_edge(parser)

@@ -33,18 +33,18 @@ P2:
 
 - [ ] [SC-026](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-026) More IOS legacy/cleartext services (`service pad`, `ip identd`, `mop`, rsh/rcp, `tftp-server`, `ip dns server`, `ip finger`) and IOS-XE insecure gNMI. **Done 2026-09-26** (explicit states; `ip dns server` remains).
 - [x] [SC-027](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-027) IOS HTTPS server TLS version and ciphers. **Done 2026-09-26.**
-- [ ] [SC-028](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-028) HSRP/VRRP/GLBP without authentication or with plain-text authentication (IOS first, then EOS/Junos). **IOS done 2026-09-26.**
+- [ ] [SC-028](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-028) HSRP/VRRP/GLBP without authentication or with plain-text authentication (IOS first, then EOS/Junos). **IOS and Junos done 2026-09-26** (EOS blocked: vendor page not readable).
 - [ ] [SC-029](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-029) VTP server/client without a password. **Blocked 2026-09-26:** the VTP password is not in running-config exports (VLAN database only).
 - [ ] [SC-030](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-030) Root SSH login and bash shells (F5, Gaia), F5 remote-user default admin role, F5 password history. **First stage done 2026-09-26.**
 - [ ] [SC-032](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-032) Cleartext log transport where TLS is available (IOS-XE, ASA, FortiAnalyzer, F5). **ASA and FortiAnalyzer done 2026-09-26.**
 - [ ] [SC-033](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-033) Device serving NTP or answering control queries without restriction (IOS, FortiOS, F5; then EOS/Junos). **IOS and FortiOS done 2026-09-26.**
-- [ ] [SC-036](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-036) Credentials in URLs, `ip ftp password`, HTTP client passwords, F5 monitors with basic-auth headers. **IOS done 2026-09-26.**
-- [ ] [SC-037](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-037) SNMPv1/v2c trap and inform communities. **IOS done 2026-09-26** (ASA already covered).
+- [ ] [SC-036](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-036) Credentials in URLs, `ip ftp password`, HTTP client passwords, F5 monitors with basic-auth headers. **IOS and F5 done 2026-09-26.**
+- [x] [SC-037](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-037) SNMPv1/v2c trap and inform communities. **Done 2026-09-26** (IOS, F5; ASA and FortiOS already covered).
 - [ ] [SC-038](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-038) FortiGate HA heartbeat without authentication/encryption (Check Point ClusterXL research). **FortiOS done 2026-09-26.**
 - [ ] [SC-040](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-040) FortiGate maintainer account and USB auto-install. **USB auto-install done 2026-09-26**; maintainer setting not in current CLI reference.
 - [ ] [SC-042](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-042) F5 weak client-side TLS, unvalidated server-side TLS, unencrypted persistence cookies. **Weak client ciphers and cookies done 2026-09-26.**
-- [x] [SC-043](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-043) Shared risky-service catalogue for firewall policies (Check Point, ASA, FortiOS, F5 virtuals). **Done 2026-09-26** except F5 virtuals.
-- [ ] [SC-044](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-044) Release-gated insecure defaults for IOS 12.x, ASA 8.x, PIX, FortiOS 5.x/6.0, BIG-IP 11.x/12.x and FW1 R6x/R7x.
+- [x] [SC-043](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-043) Shared risky-service catalogue for firewall policies (Check Point, ASA, FortiOS, F5 virtuals). **Done 2026-09-26** including F5 virtual servers.
+- [ ] [SC-044](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-044) Release-gated insecure defaults for IOS 12.x, ASA 8.x, PIX, FortiOS 5.x/6.0, BIG-IP 11.x/12.x and FW1 R6x/R7x. **IOS 11.x/12.0 finger and small-server defaults done 2026-09-26.**
 - [ ] Gaia OS items (allowed clients, web UI TLS, SSH ciphers, AAA, NTP, syslog) live in [SC-023](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-023); F5 APM in [SC-024](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-024).
 
 ## Detection and parser coverage

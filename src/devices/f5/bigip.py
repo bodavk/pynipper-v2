@@ -347,6 +347,9 @@ class F5BIGIPParser(BaseDeviceParser):
         self._ike_peers: dict[str, F5IKEPeer] = {}
         self._user_shells: dict[str, ConfigEvidence] = {}
         self._cookie_persistence: dict[str, dict] = {}
+        self._snmp_traps: list[tuple[str, str, ConfigEvidence]] = []
+        self._virtual_endpoints: dict[str, dict] = {}
+        self._monitor_basic_auth: list[ConfigEvidence] = []
         self._self_ips: dict[str, F5SelfIP] = {}
         self._parse(_tokens(content))
         self._native = (
@@ -405,6 +408,14 @@ class F5BIGIPParser(BaseDeviceParser):
                 self._read_ltm_policy(header[2], header_line, tokens[body_start:cursor - 1])
             elif len(header) == 4 and header[:3] == ["net", "ipsec", "ike-peer"]:
                 self._read_ike_peer(header[3], header_line, tokens[body_start:cursor - 1])
+            elif len(header) == 4 and header[:2] == ["ltm", "monitor"] and header[2] in {"http", "https"}:
+                for position, item in enumerate(tokens[body_start:cursor - 1]):
+                    if item.text == "send" and position + 1 < cursor - 1 - body_start:
+                        value = tokens[body_start + position + 1].text
+                        if re.search(r"(?i)authorization:\s*basic\s+\S+", value):
+                            self._monitor_basic_auth.append(ConfigEvidence(
+                                f"ltm monitor {header[2]} {header[3]} send <Authorization: Basic redacted>",
+                                self.config_filepath, item.line))
             elif len(header) == 4 and header[:3] == ["ltm", "persistence", "cookie"]:
                 name = _object_name(header[3])
                 if name:
@@ -707,12 +718,27 @@ class F5BIGIPParser(BaseDeviceParser):
                         ):
                             selected.append(profile_name)
                 profiles = tuple(selected)
+        self._record_virtual_endpoint(name, body)
         self._virtuals[name] = F5Virtual(
             name, enabled, profiles,
             ConfigEvidence(f"ltm virtual {name} {'enabled' if enabled else 'disabled' if enabled is False else '<unknown>'}",
                            self.config_filepath, line_number),
             policies, persist,
         )
+
+    def _record_virtual_endpoint(self, name: str, body: list[_TokenValue]) -> None:
+        items = _top_level(body)
+        destination, destination_line = items.get("destination", ([], 0))
+        if not destination:
+            return
+        target = destination[0]
+        address, _, port = target.rpartition(":") if target.count(":") == 1 else target.rpartition(".")
+        source = (items.get("source", (["0.0.0.0/0"], 0))[0] or ["0.0.0.0/0"])[0]
+        self._virtual_endpoints[name] = {
+            "port": port, "source": source,
+            "evidence": ConfigEvidence(f"ltm virtual {name} destination {target} source {source}",
+                                       self.config_filepath, destination_line),
+        }
 
     def _read_asm_policy(self, raw_name: str, line_number: int, body: list[_TokenValue]) -> None:
         name = _object_name(raw_name)
@@ -831,6 +857,24 @@ class F5BIGIPParser(BaseDeviceParser):
                     result.append((virtual, name, profile["evidence"]))
         return tuple(result)
 
+    def get_snmp_traps(self) -> tuple[tuple[str, str, ConfigEvidence], ...]:
+        """``sys snmp traps`` targets as (name, explicit version or '', evidence)."""
+        return tuple(self._snmp_traps)
+
+    def get_monitor_basic_auth(self) -> tuple[ConfigEvidence, ...]:
+        """HTTP/HTTPS monitors whose send string carries an ``Authorization: Basic`` header."""
+        return tuple(self._monitor_basic_auth)
+
+    def get_virtual_endpoints(self) -> tuple[tuple[F5Virtual, str, str, ConfigEvidence], ...]:
+        """Enabled virtual servers as (virtual, destination port, source, evidence)."""
+        result = []
+        for name, endpoint in self._virtual_endpoints.items():
+            virtual = self._virtuals.get(name)
+            if virtual is None or virtual.enabled is False:
+                continue
+            result.append((virtual, endpoint["port"], endpoint["source"], endpoint["evidence"]))
+        return tuple(result)
+
     def get_user_shells(self) -> dict[str, ConfigEvidence]:
         """Explicit ``auth user <name> shell`` values (bash | tmsh | none)."""
         return dict(self._user_shells)
@@ -947,6 +991,16 @@ class F5BIGIPParser(BaseDeviceParser):
                             self.config_filepath, member_line,
                         ),
                     )
+            elif token.text == "traps":
+                if candidate == "none":
+                    self._snmp_traps = []
+                    continue
+                self._snmp_traps = []
+                for raw_name, member_line, values in self._named_blocks(body, next_index):
+                    version = values.get("version", "")
+                    self._snmp_traps.append((raw_name, version, ConfigEvidence(
+                        f"sys snmp traps {raw_name} host {values.get('host', '<unknown>')} version "
+                        f"{version or '<absent>'} community <redacted>", self.config_filepath, member_line)))
             elif token.text == "users":
                 if candidate == "none":
                     self._snmp_users = {}

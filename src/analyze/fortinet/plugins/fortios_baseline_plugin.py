@@ -94,6 +94,10 @@ FORTINET_NTP_REFERENCE = (
 FORTINET_FAZ_REFERENCE = (
     "https://docs.fortinet.com/document/fortigate/7.4.0/cli-reference/443620/config-log-fortianalyzer-setting"
 )
+FORTINET_ADMIN_HASH_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.6.2/administration-guide/548023/"
+    "enhanced-administrator-password-security"
+)
 FORTINET_LDAP_REFERENCE = (
     "https://docs.fortinet.com/document/fortigate/7.4.4/cli-reference/590785459/config-user-ldap"
 )
@@ -1732,6 +1736,35 @@ class PluginFortiOSBaseline(BasePlugin):
         self.check_usb_auto_install(parser)
         self.check_ntp_server_mode(parser)
         self.check_fortianalyzer_transport(parser)
+        self.check_admin_password_hashes(parser)
+
+    def check_admin_password_hashes(self, parser: BaseDeviceParser) -> None:
+        """SC-035: on FortiOS 7.6.1+ administrator passwords should use PBKDF2 (``ENC PB2``).
+
+        Fortinet: earlier releases stored SHA256 (``SH2``); after upgrade a password is
+        converted only when that administrator logs in, so a remaining SH2 value marks a
+        fast, older hash. Older releases are not assessed.
+        """
+        fortios = self._fortios(parser)
+        numbers = [int(item) for item in re.findall(r"\d+", fortios.get_version())[:3]]
+        if len(numbers) < 3 or tuple(numbers) < (7, 6, 1):
+            return
+        for scope, username, settings, path in fortios.iter_administrators():
+            words = self._values(settings, "password")
+            if len(words) < 2 or words[0] != "ENC" or words[1].startswith("PB2"):
+                continue
+            self.add_issue(self._finding(
+                parser,
+                "fortinet.fortios.credentials.admin_hash_storage",
+                "Administrator password uses the older fast hash",
+                f"Administrator '{username}' in scope '{scope}' still has a password hash with prefix '{words[1][:3]}' instead of PBKDF2 ('PB2'); the value is redacted.",
+                "A fast, older hash is quicker to crack if a configuration backup leaks.",
+                "Have the administrator log in once (FortiOS converts the hash to PBKDF2) or reset the password, and consider 'login-lockout-upon-downgrade enable'.",
+                Severity.LOW,
+                self._evidence(fortios, path + ("password",), "set password ENC <redacted>"),
+                (FORTINET_ADMIN_HASH_REFERENCE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
 
     def check_fortianalyzer_transport(self, parser: BaseDeviceParser) -> None:
         """SC-032: FortiAnalyzer log transport with low encryption or no certificate verification."""

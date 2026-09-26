@@ -708,7 +708,7 @@ Not scheduled (maintainer decision, 2026-09-25): SNMPv1/v2c community checks for
 
 **Priority:** P2.
 
-**Status:** Implemented 2026-09-26 (explicit states only): `services.unnecessary` now resolves `no` removal and adds `service pad`, `ip finger`, `ip identd` and `mop enabled` on interfaces that are not shut down; new `cisco.ios.services.remote_shell` (`ip rcmd rsh-enable`/`rcp-enable`), `cisco.ios.services.tftp_server` (`tftp-server`) and `cisco.ios.management.insecure_protocol` for IOS-XE `gnxi server`. Sources: Cisco IOS hardening guide, IOS XE File Transfer Services guide, IOS XE Programmability gNMI guide, IOS XE Security Warnings Reference. Remaining: `ip dns server`, release-gated defaults ([SC-044](#sc-044)).
+**Status:** Implemented 2026-09-26 (explicit states only): `services.unnecessary` now resolves `no` removal and adds `service pad`, `ip finger`, `ip identd` and `mop enabled` on interfaces that are not shut down; new `cisco.ios.services.remote_shell` (`ip rcmd rsh-enable`/`rcp-enable`), `cisco.ios.services.tftp_server` (`tftp-server`) and `cisco.ios.management.insecure_protocol` for IOS-XE `gnxi server`. Sources: Cisco IOS hardening guide, IOS XE File Transfer Services guide, IOS XE Programmability gNMI guide, IOS XE Security Warnings Reference. Remaining: `ip dns server`, release-gated defaults ([SC-044](#sc-044)). Update 2026-09-26: `ip dns server` was not added — the IOS DNS configuration guide gives no security guidance or default for it, so no vendor-backed rule exists yet.
 
 **Source of Truth:** Candidates: Cisco Guide to Harden Cisco IOS Devices; IOS command references for each command; IOS-XE programmability guide (gNMI `gnxi server` vs `gnxi secure-server`); IOS/IOS-XE NDM STIGs.
 
@@ -754,7 +754,7 @@ Not scheduled (maintainer decision, 2026-09-25): SNMPv1/v2c community checks for
 
 **Priority:** P2. A host on the segment can take over the default gateway and intercept traffic.
 
-**Status:** First stage implemented 2026-09-26 for IOS/IOS-XE: `cisco.ios.fhrp.authentication` for HSRP, VRRPv2 and GLBP groups on interfaces that are not shut down, when no MD5 authentication is configured (missing setting) or plain-text authentication is explicit. VRRPv3 (`vrrp N address-family`) is not assessed. Sources: IOS FHRP command reference, Cisco HSRP guide. Remaining: EOS and Junos VRRP.
+**Status:** First stage implemented 2026-09-26 for IOS/IOS-XE: `cisco.ios.fhrp.authentication` for HSRP, VRRPv2 and GLBP groups on interfaces that are not shut down, when no MD5 authentication is configured (missing setting) or plain-text authentication is explicit. VRRPv3 (`vrrp N address-family`) is not assessed. Sources: IOS FHRP command reference, Cisco HSRP guide. Remaining: EOS and Junos VRRP. Update 2026-09-26: Junos `juniper.junos.fhrp.authentication` for VRRP groups on enabled interfaces without `authentication-type md5` (default none) or with `simple`; skipped when `protocols vrrp version-3` is set (Junos CLI reference). Arista EOS: the vendor VRRP page could not be read (access blocked), so EOS stays open.
 
 **Source of Truth:** Candidates: IOS First Hop Redundancy Protocols configuration guides (`standby authentication md5`, `vrrp authentication`, `glbp authentication`); router STIG entries on FHRP authentication; later Arista EOS VRRP and Junos VRRP references.
 
@@ -823,7 +823,7 @@ Not scheduled (maintainer decision, 2026-09-25): SNMPv1/v2c community checks for
 
 **Priority:** P1. Administrator passwords travel in these exchanges.
 
-**Status:** First stage implemented 2026-09-26: `cisco.ios.aaa.tacacs_key_missing` (TACACS+ server used by an AAA method list, no per-server or global key; RFC 8907 §4.5 forbids unobfuscated mode), `cisco.asa.aaa.tacacs_key_missing` and `cisco.asa.aaa.ldap_cleartext` (bound server groups; ASA command reference `ldap-over-ssl`), `fortinet.fortios.aaa.ldap_cleartext` (`secure` default disable per the 7.4 CLI reference) and `fortinet.fortios.aaa.ldap_server_identity`, for LDAP servers referenced by a user group. Remaining: IOS LDAP, RADIUS Message-Authenticator for IOS/ASA/F5.
+**Status:** First stage implemented 2026-09-26: `cisco.ios.aaa.tacacs_key_missing` (TACACS+ server used by an AAA method list, no per-server or global key; RFC 8907 §4.5 forbids unobfuscated mode), `cisco.asa.aaa.tacacs_key_missing` and `cisco.asa.aaa.ldap_cleartext` (bound server groups; ASA command reference `ldap-over-ssl`), `fortinet.fortios.aaa.ldap_cleartext` (`secure` default disable per the 7.4 CLI reference) and `fortinet.fortios.aaa.ldap_server_identity`, for LDAP servers referenced by a user group. Remaining: IOS LDAP, RADIUS Message-Authenticator for IOS/ASA/F5. Update 2026-09-26: RADIUS Message-Authenticator for IOS/ASA/F5 was researched; Cisco's Blast-RADIUS mitigation note gives no device-side CLI and points to RADIUS over (D)TLS, so no rule was added.
 
 **Source of Truth:** Candidates: IOS AAA configuration guides (`tacacs server` / `radius server` `key`, `ldap server` secure mode); ASA CLI book 1 AAA chapter (`ldap-over-ssl enable`, `key`); FortiOS `config user ldap` (`set secure disable|starttls|ldaps`, `server-identity-check`); CVE-2024-3596 (BlastRADIUS) vendor advisories for Cisco, F5 and Fortinet; F5 remote-auth RADIUS/TACACS+ references.
 
@@ -915,7 +915,7 @@ Not scheduled (maintainer decision, 2026-09-25): SNMPv1/v2c community checks for
 
 **Priority:** P1. Configuration backups are commonly shared; recoverable keys turn a leaked file into working credentials.
 
-**Status:** First stage implemented 2026-09-26: IOS `credentials.tacacs_key_storage`, `isakmp_pre_shared_key_storage` and `keyring_pre_shared_key_storage` (type 0/7; type 6 per the IOS XE Encrypted Preshared Key guide), ASA `credentials.tunnel_group_pre_shared_key_storage` and `aaa_server_key_storage` (clear-text value in a `more system:running-config` export; `*****` is masked/unknown, `8 ...` encrypted with the master passphrase), and FortiOS `credentials.private_data_storage` (non-administrator `ENC` secrets without `private-data-encryption`, FG-IR-19-007). Remaining: legacy FortiOS `AK1` administrator hashes (hash-format source not yet obtained), ASA empty enable default ([SC-044](#sc-044)).
+**Status:** First stage implemented 2026-09-26: IOS `credentials.tacacs_key_storage`, `isakmp_pre_shared_key_storage` and `keyring_pre_shared_key_storage` (type 0/7; type 6 per the IOS XE Encrypted Preshared Key guide), ASA `credentials.tunnel_group_pre_shared_key_storage` and `aaa_server_key_storage` (clear-text value in a `more system:running-config` export; `*****` is masked/unknown, `8 ...` encrypted with the master passphrase), and FortiOS `credentials.private_data_storage` (non-administrator `ENC` secrets without `private-data-encryption`, FG-IR-19-007). Remaining: legacy FortiOS `AK1` administrator hashes (hash-format source not yet obtained), ASA empty enable default ([SC-044](#sc-044)). Update 2026-09-26: `fortinet.fortios.credentials.admin_hash_storage` on FortiOS 7.6.1+ for administrator hashes other than PBKDF2 (`PB2`); Fortinet's Enhanced administrator password security page documents SH2 (SHA256) and conversion at next login. `AK1` on older releases remains unsourced.
 
 **Source of Truth:** Candidates: IOS `key config-key password-encrypt` + `password encryption aes` (type 6); ASA `key config-key password-encryption` + `password encryption aes`; FortiOS `config system global set private-data-encryption` and Fortinet PSIRT FG-IR-19-007 (CVE-2019-6693, static key for backup secrets); FortiOS admin password hash formats (legacy `AK1` vs `SH2`).
 
@@ -938,7 +938,7 @@ Not scheduled (maintainer decision, 2026-09-25): SNMPv1/v2c community checks for
 
 **Priority:** P2.
 
-**Status:** First stage implemented 2026-09-26 for IOS/IOS-XE: `credentials.ftp_client_storage` (`ip ftp password`), `credentials.http_client_storage` (`ip http client password`) and `credentials.url_storage` (`user:password@` in any URL); evidence is redacted. Source: Cisco IOS XE Security Warnings Reference. Remaining: ASA URLs, F5 monitors with basic-auth headers.
+**Status:** First stage implemented 2026-09-26 for IOS/IOS-XE: `credentials.ftp_client_storage` (`ip ftp password`), `credentials.http_client_storage` (`ip http client password`) and `credentials.url_storage` (`user:password@` in any URL); evidence is redacted. Source: Cisco IOS XE Security Warnings Reference. Remaining: ASA URLs, F5 monitors with basic-auth headers. Update 2026-09-26: F5 `credentials.monitor_storage` for HTTP/HTTPS monitors whose send string has an `Authorization: Basic` header (tmsh ltm monitor http reference); evidence is redacted.
 
 **Source of Truth:** Candidates: IOS `ip ftp username/password`, `ip http client username/password`, `archive path` and `boot system` URL syntax; ASA `boot config`/URL-based settings; F5 `ltm monitor http/https` `send` strings with `Authorization: Basic` and monitor `username`/`password` properties.
 
@@ -961,7 +961,7 @@ Not scheduled (maintainer decision, 2026-09-25): SNMPv1/v2c community checks for
 
 **Priority:** P2.
 
-**Status:** Implemented 2026-09-26 for IOS/IOS-XE as `cisco.ios.snmp.legacy_version` (v1/v2c notification targets; version 1 when unspecified). ASA was already covered by `cisco.asa.snmp.legacy_version`. Remaining: FortiOS and F5 trap targets.
+**Status:** Implemented 2026-09-26 for IOS/IOS-XE as `cisco.ios.snmp.legacy_version` (v1/v2c notification targets; version 1 when unspecified). ASA was already covered by `cisco.asa.snmp.legacy_version`. Remaining: FortiOS and F5 trap targets. Update 2026-09-26: F5 `snmp.legacy_version` for `sys snmp traps` targets with explicit version 1/2c. FortiOS SNMP communities (which also carry traps) are already reported by `snmp.legacy_community`.
 
 **Source of Truth:** Candidates: IOS `snmp-server host ... version 1|2c <community>`; ASA `snmp-server host ... community`; FortiOS `config system snmp community` `config hosts` with `ha-direct`/trap settings; F5 `sys snmp traps`.
 
@@ -1099,7 +1099,7 @@ Not scheduled (maintainer decision, 2026-09-25): SNMPv1/v2c community checks for
 
 **Priority:** P2.
 
-**Status:** Implemented 2026-09-26: shared catalogue `src/analyze/common/risky_services.py` (FTP, Telnet, TFTP, SMB/NetBIOS, RDP, VNC, X11, rlogin/rsh/rexec, SNMP, LDAP, POP3/IMAP, MS SQL, Oracle, MySQL, PostgreSQL, Redis, MongoDB, Docker API) used by Check Point FW1 (unchanged rule ID), new `cisco.asa.acl.risky_service_exposure` (bound active permit from any source with eq/range ports) and `fortinet.fortios.policy.risky_service_exposure` (accept policy from source all with resolved service ports). Ranges wider than 1024 ports are left to the broad-service rules. Remaining: F5 virtual servers on clear-text ports.
+**Status:** Implemented 2026-09-26: shared catalogue `src/analyze/common/risky_services.py` (FTP, Telnet, TFTP, SMB/NetBIOS, RDP, VNC, X11, rlogin/rsh/rexec, SNMP, LDAP, POP3/IMAP, MS SQL, Oracle, MySQL, PostgreSQL, Redis, MongoDB, Docker API) used by Check Point FW1 (unchanged rule ID), new `cisco.asa.acl.risky_service_exposure` (bound active permit from any source with eq/range ports) and `fortinet.fortios.policy.risky_service_exposure` (accept policy from source all with resolved service ports). Ranges wider than 1024 ports are left to the broad-service rules. Remaining: F5 virtual servers on clear-text ports. Update 2026-09-26: F5 `ltm.risky_service_exposure` for enabled virtual servers listening on a catalogued port with source 0.0.0.0/0 (the default).
 
 **Source of Truth:** Candidates: IANA service registry; CISA and vendor guidance on exposed SMB, RDP, Telnet, FTP, SNMP and database ports; Firewall SRG (S07).
 
@@ -1122,7 +1122,7 @@ Not scheduled (maintainer decision, 2026-09-25): SNMPv1/v2c community checks for
 
 **Priority:** P2.
 
-**Status:** Evidence gate; each release family needs its own sourced default table and a sanitized export.
+**Status:** First stage implemented 2026-09-26 for IOS: `cisco.ios.services.legacy_default` when the `version` train is older than 12.1 (finger on by default before 12.1(5)) or 11.x (TCP/UDP small servers on by default before 12.0) and the export does not disable them (Cisco IOS hardening guide). Remaining: ASA 8.x, PIX, FortiOS 5.x/6.0, BIG-IP 11.x/12.x and FW1 default tables.
 
 **Source of Truth:** Candidates: IOS 12.x configuration guides (`ip http server`, `service pad`, `ip bootp server`, `mop enabled`, `vstack` defaults); ASA 8.x/9.x (`ssl server-version`, `ssh version`, `crypto ikev1 am-disable`, blank enable password); PIX 6.x (see [SC-020](#sc-020)); FortiOS 5.x/6.0 (`strong-crypto`, `admin-https-ssl-versions`, `AK1` hashes); BIG-IP 11.x/12.x (client SSL `DEFAULT` cipher string including SSLv3, self-IP lockdown default); Check Point FW1 R6x/R7x policy defaults (see [SC-017](#sc-017)).
 

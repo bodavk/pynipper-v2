@@ -653,6 +653,40 @@ class JunOSParser(BaseDeviceParser):
             if statement.active and self._is_prefix(prefix, statement.path)
         ]
 
+    def get_vrrp_groups(self) -> list[dict]:
+        """VRRP groups on interfaces that are not disabled, with their authentication type.
+
+        Junos: ``authentication-type`` is md5 or simple, default none; with
+        ``protocols vrrp version-3`` authentication cannot be configured, so no groups are
+        returned then. Evidence never contains the authentication key.
+        """
+        active = [statement for statement in self.statements if statement.active]
+        if any(statement.path[:3] == ("protocols", "vrrp", "version-3") for statement in active):
+            return []
+        disabled = {
+            statement.path[1] for statement in active
+            if statement.path[:1] == ("interfaces",) and len(statement.path) == 3 and statement.path[2] == "disable"
+        }
+        groups: dict[tuple, dict] = {}
+        for statement in active:
+            path = statement.path
+            if path[:1] != ("interfaces",) or "vrrp-group" not in path:
+                continue
+            index = path.index("vrrp-group")
+            if index + 1 >= len(path) or path[1] in disabled:
+                continue
+            key = path[:index + 2]
+            data = groups.setdefault(key, {
+                "interface": path[1], "group": path[index + 1], "auth": "none",
+                "evidence": ConfigEvidence("set " + " ".join(key), statement.evidence.source,
+                                           statement.evidence.line_number),
+            })
+            tail = path[index + 2:]
+            if tail[:1] == ("authentication-type",) and len(tail) > 1:
+                data["auth"] = tail[1]
+                data["evidence"] = statement.evidence
+        return list(groups.values())
+
     def get_zone_screens(self) -> tuple[JunosZoneScreen, ...]:
         """Resolve active zone bindings and explicit SYN-flood screen state."""
         bindings: dict[str, JunosStatement] = {}

@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- More Wave 4 checks (2026-09-26): F5 health monitors sending Basic credentials, SNMPv1/v2c trap targets and virtual servers publishing risky services to any source; FortiOS 7.6.1+ administrator passwords still stored with the older SHA256 hash; IOS 11.x/12.0 releases where finger or the small servers are on by default; Junos VRRP groups without MD5 authentication.
 - Wave 4 priority 2 checks, from vendor documentation read on 2026-09-26:
   - Cisco IOS/IOS-XE: more legacy services (`service pad`, `ip finger`, `ip identd`, `mop enabled`) with `no` removal; rsh/rcp servers; TFTP server; IOS-XE gNMI without TLS (`gnxi server`); HTTPS server TLS below 1.2 or weak cipher suites; HSRP/VRRP/GLBP without MD5 authentication; NTP without any `ntp access-group`; FTP/HTTP client passwords and credentials in URLs; SNMPv1/v2c notification targets.
   - Cisco ASA: syslog hosts without TLS (`secure`); any-source permits for risky services (Telnet, FTP, SMB, RDP, databases and others).

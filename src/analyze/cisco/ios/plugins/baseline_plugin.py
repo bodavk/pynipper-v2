@@ -1081,6 +1081,22 @@ class PluginIOSBaseline(BasePlugin):
                     tuple(evidence for _, evidence in services),
                 )
             )
+        defaults = ios.get_legacy_default_services()
+        if defaults:
+            self.add_issue(Finding(
+                rule_id="cisco.ios.services.legacy_default",
+                device=parser.device_type,
+                title="Legacy services are on by default in this old release",
+                observation=("The export does not disable services that this IOS train enables by default: "
+                             + "; ".join(f"{name} ({reason})" for name, reason in defaults) + "."),
+                impact="Finger discloses logged-in users and the small servers (echo, chargen, discard, daytime) can be abused for reflection or denial of service.",
+                exploitability="Any host that can reach the device can query these services.",
+                recommendation="Add 'no service finger' and 'no service tcp-small-servers' / 'no service udp-small-servers', and plan an upgrade from this unsupported release.",
+                severity=Severity.MEDIUM,
+                evidence=(f"version {ios.get_version()}",),
+                references=(CISCO_IOS_HARDENING_GUIDE,),
+                basis=FindingBasis.DOCUMENTED_DEFAULT,
+            ))
         servers = ios.get_file_and_shell_servers()
         shells = [evidence for kind, evidence in servers if kind in {"rsh", "rcp"}]
         if shells:

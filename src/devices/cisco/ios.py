@@ -678,6 +678,34 @@ class CiscoIOSParser(BaseDeviceParser):
                 result.append(("mop", mop))
         return result
 
+    def get_legacy_default_services(self) -> list[tuple[str, str]]:
+        """Services enabled by default on old trains that the export does not disable (SC-044).
+
+        Cisco hardening guide: finger is disabled by default only in releases later than
+        12.1(5), and the TCP/UDP small servers only from 12.0. A ``version`` line states
+        just major.minor, so only trains that are entirely older qualify: finger for
+        11.x/12.0 and the small servers for 11.x. Returns (service, reason).
+        """
+        match = re.match(r"^(\d+)\.(\d+)", self.get_version())
+        if not match:
+            return []
+        train = (int(match.group(1)), int(match.group(2)))
+        disabled = set()
+        for line in self._global_lines():
+            folded = re.sub(r"\s+", " ", line.casefold())
+            if folded in {"no service finger", "no ip finger"}:
+                disabled.add("finger")
+            elif folded in {"no service tcp-small-servers", "no service udp-small-servers"}:
+                disabled.add(folded.split()[2])
+        explicit = {name for name, _ in self.get_legacy_services()}
+        result = []
+        if train < (12, 1) and "finger" not in disabled and "finger" not in explicit:
+            result.append(("finger", f"enabled by default before 12.1(5); train {train[0]}.{train[1]}"))
+        for service in ("tcp-small-servers", "udp-small-servers"):
+            if train < (12, 0) and service not in disabled and service not in explicit:
+                result.append((service, f"enabled by default before 12.0; train {train[0]}.{train[1]}"))
+        return result
+
     def get_file_and_shell_servers(self) -> list[tuple[str, ConfigEvidence]]:
         """Effective ``ip rcmd rsh-enable``/``rcp-enable`` and ``tftp-server`` lines.
 

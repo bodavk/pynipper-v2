@@ -1,7 +1,10 @@
 """Explicit BIG-IP TMOS management and audit controls."""
 
+import re
+
 from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.issue import Finding, FindingBasis, Severity
+from src.analyze.common.risky_services import CISCO_PORT_NAMES, risky_labels
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.f5.bigip import (
     F5BIGIPParser, F5Setting, resolve_ssl_protocols, weak_literal_cipher_suites,
@@ -46,6 +49,9 @@ USER_LATEST = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules/auth/a
 LOCKDOWN_SETTINGS = "https://community.f5.com/kb/technicalarticles/10-settings-to-lock-down-your-big-ip/274601"
 COOKIE_PERSISTENCE = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules/ltm/ltm_persistence_cookie.html"
 COOKIE_ENCODING = "https://my.f5.com/manage/s/article/K6917"
+MONITOR_HTTP = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules/ltm/ltm_monitor_http.html"
+SNMP_LATEST = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules/sys/sys_snmp.html"
+_ANY_SOURCE = re.compile(r"^(0\.0\.0\.0(%\d+)?/0|::(%\d+)?/0|any)$")
 
 
 class PluginF5BIGIPChecks(BasePlugin):
@@ -107,6 +113,7 @@ class PluginF5BIGIPChecks(BasePlugin):
         self._check_ike_peers(parser)
         self._check_admin_access(parser)
         self._check_data_plane(parser)
+        self._check_cleartext_extras(parser)
         console = setting("sys global-settings", "console-inactivity-timeout")
         if console and console.value == 0:
             self._emit(parser, console, rule_id="f5.bigip.console.idle_timeout_disabled",
@@ -623,5 +630,59 @@ class PluginF5BIGIPChecks(BasePlugin):
                 severity=Severity.LOW,
                 evidence=(virtual.evidence, evidence),
                 references=(COOKIE_ENCODING, COOKIE_PERSISTENCE),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+
+    def _check_cleartext_extras(self, parser: F5BIGIPParser) -> None:
+        """SC-036/037/043: basic-auth monitors, SNMPv1/v2c traps, risky services on any-source virtuals."""
+        for evidence in parser.get_monitor_basic_auth():
+            self.add_issue(Finding(
+                rule_id="f5.bigip.credentials.monitor_storage",
+                device=parser.device_type,
+                title="Health monitor sends a Basic authentication header",
+                observation="An HTTP/HTTPS monitor send string contains an 'Authorization: Basic' header; the value is redacted.",
+                impact="Basic credentials are only Base64-encoded: anyone with the configuration can decode them, and HTTP monitors send them in clear text.",
+                exploitability="An attacker who obtains a configuration backup, or captures monitor traffic, can reuse the monitoring account on the application.",
+                recommendation="Use a dedicated low-privilege monitoring account, prefer an HTTPS monitor, and rotate the exposed credential.",
+                severity=Severity.MEDIUM,
+                evidence=(evidence,),
+                references=(MONITOR_HTTP,),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+        legacy = [evidence for _, version, evidence in parser.get_snmp_traps() if version in {"1", "2c"}]
+        if legacy:
+            self.add_issue(Finding(
+                rule_id="f5.bigip.snmp.legacy_version",
+                device=parser.device_type,
+                title="SNMP traps use SNMPv1/v2c",
+                observation="One or more 'sys snmp traps' targets explicitly use version 1 or 2c.",
+                impact="Each trap carries the community string in clear text and has no integrity protection.",
+                exploitability="An attacker on the path can read the community and reuse it if it also grants SNMP access.",
+                recommendation="Send traps with version 3 and security-level auth-privacy.",
+                severity=Severity.MEDIUM,
+                evidence=tuple(legacy),
+                references=(SNMP_LATEST,),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+        for virtual, port, source, evidence in parser.get_virtual_endpoints():
+            if not _ANY_SOURCE.match(source.casefold()):
+                continue
+            number = int(port) if port.isdigit() else CISCO_PORT_NAMES.get(port.casefold())
+            if number is None:
+                continue
+            labels = sorted(risky_labels("tcp", number, number) | risky_labels("udp", number, number))
+            if not labels:
+                continue
+            self.add_issue(Finding(
+                rule_id="f5.bigip.ltm.risky_service_exposure",
+                device=parser.device_type,
+                title="Virtual server publishes a risky service to any source",
+                observation=f"Enabled virtual server {virtual.name} listens on port {port} ({', '.join(labels)}) for source {source}.",
+                impact="Clear-text logins, file sharing, remote administration or database services become reachable from any client network.",
+                exploitability="Any host that reaches the virtual address can attempt to log in or exploit the published service.",
+                recommendation="Restrict the virtual server's source addresses, or publish an encrypted alternative (SFTP, HTTPS, SSH) instead.",
+                severity=Severity.MEDIUM,
+                evidence=(evidence,),
+                references=(VIRTUAL,),
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
