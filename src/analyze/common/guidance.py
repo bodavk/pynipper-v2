@@ -162,6 +162,19 @@ _CATALOGUE = (
         "and whether the clear-text service is additionally restricted to specific source "
         "addresses. Those reduce, but do not remove, the exposure.",
     )),
+    (r"^services\.smart_install$", _G(
+        "unauthenticated-provisioning", "management-access",
+        "A zero-touch provisioning service that needs no password is listening on the device "
+        "(Cisco Smart Install).",
+        "An attacker who can reach TCP port 4786 tells the switch to download a new "
+        "configuration or software image from a server the attacker controls, taking over the "
+        "switch without ever logging in.",
+        "Smart Install was designed for first-time deployment and has no authentication. "
+        "Cisco recommends disabling it with 'no vstack' after deployment; exposed clients are "
+        "scanned for on the internet.",
+        "Check whether TCP 4786 is blocked towards this device and whether Smart Install is "
+        "still used for deployment.",
+    )),
     (r"^ltm\.clientssl_cleartext_enabled$", _G(
         "service-cleartext", "traffic-policy",
         "An application service that is meant to use TLS also accepts unencrypted connections, "
@@ -173,7 +186,7 @@ _CATALOGUE = (
         "cannot see iRules or client behaviour.",
         "Check whether an iRule or upstream component redirects or rejects clear-text requests.",
     )),
-    (r"^(management\.(unrestricted_\w+|source_restriction|external_interface|auxiliary_services|http_sources)|http\.(access_restriction|unrestricted_sources)|ssh\.(source_restriction|unrestricted_sources|vty_access_restriction)|eapi\.source_restriction|admin\.trusted_hosts|administration\.manager_sources|local_in\.unrestricted_management|layer\.stealth_rule_missing|auxiliary\.enabled)$", _G(
+    (r"^(management\.(unrestricted_\w+|source_restriction|external_interface|auxiliary_services|http_sources|self_ip_port_lockdown)|http\.(access_restriction|unrestricted_sources)|ssh\.(source_restriction|unrestricted_sources|vty_access_restriction)|eapi\.source_restriction|admin\.trusted_hosts|administration\.manager_sources|local_in\.unrestricted_management|layer\.stealth_rule_missing|auxiliary\.enabled)$", _G(
         "management-exposure", "management-access",
         "The device's management interfaces (SSH, web GUI, API) accept connections from any "
         "address, or from an untrusted/external network, instead of only from administrator "
@@ -189,7 +202,7 @@ _CATALOGUE = (
         "separate out-of-band network), and confirm that strong authentication, lockout and "
         "logging are in place for the exposed service.",
     )),
-    (r"^(ssh\.(weak_\w+|protocol_version)|tls\.\w+|management\.(legacy_tls|tls_\w+)|eapi\.(legacy_tls|tls_profile\w*)|admin\.ssh_profile_\w+|crypto\.(strong_crypto|admin_ssh_v1|ssl_static_key_ciphers|ssh_cbc_cipher|dh_parameters)|https\.(legacy_cipher|global_activation)|http\.(legacy_tls_protocol|weak_cipher_suite))$", _G(
+    (r"^(ssh\.(weak_\w+|protocol_version)|tls\.\w+|management\.(legacy_tls|tls_\w+)|eapi\.(legacy_tls|tls_profile\w*)|admin\.ssh_profile_\w+|crypto\.(strong_crypto|admin_ssh_v1|ssl_static_key_ciphers|ssh_cbc_cipher|dh_parameters)|https\.(legacy_cipher|global_activation)|http\.(legacy_tls_protocol|weak_cipher_suite)|sslvpn\.(legacy_tls|weak_algorithm))$", _G(
         "management-crypto", "management-crypto",
         "The encrypted management connection (SSH or HTTPS) still allows outdated protocol "
         "versions or algorithms that are known to be weak.",
@@ -203,7 +216,7 @@ _CATALOGUE = (
         "Confirm which clients (old monitoring or automation tools) still need legacy options, "
         "and plan to upgrade them rather than keep weak algorithms enabled.",
     )),
-    (r"^(management\.\w*certificate\w*|management\.self_signed_certificate|https\.\w*certificate\w*|eapi\.tls_certificate)$", _G(
+    (r"^(management\.\w*certificate\w*|management\.self_signed_certificate|https\.\w*certificate\w*|eapi\.tls_certificate|sslvpn\.factory_certificate)$", _G(
         "management-certificate", "management-crypto",
         "The certificate that proves the device's identity to administrators is missing, "
         "self-signed or factory default, weak, expired, for another name, or not trusted.",
@@ -247,7 +260,7 @@ _CATALOGUE = (
         "Confirm how local accounts are reviewed and removed, whether MFA is enforced upstream, "
         "and that logins are logged centrally.",
     )),
-    (r"^(aaa\.(radius_\w+|radsec_\w+)|auth\.ldap_\w+)$", _G(
+    (r"^(aaa\.(radius_\w+|radsec_\w+|ldap_\w+|tacacs_\w+)|auth\.ldap_\w+)$", _G(
         "authentication-transport", "authentication",
         "The connection between the device and its authentication server (RADIUS, RadSec or "
         "LDAP) is not protected as intended: validation, encryption or server identity checks "

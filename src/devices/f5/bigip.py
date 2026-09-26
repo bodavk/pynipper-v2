@@ -200,6 +200,63 @@ class F5LTMPolicy:
     evidence: ConfigEvidence
 
 
+@dataclass(frozen=True)
+class F5IKEPeer:
+    """`net ipsec ike-peer`: tmsh reference — `mode main | aggressive`, `version` (default v1),
+    `phase1-auth-method pre-shared-key | rsa-signature | ...`, `state enabled | disabled`."""
+
+    name: str
+    mode: str  # main | aggressive | unknown
+    auth_method: str
+    versions: tuple[str, ...]
+    enabled: bool
+    evidence: ConfigEvidence
+
+
+@dataclass(frozen=True)
+class F5SelfIP:
+    """`net self`: tmsh reference — `allow-service all | default | none | { list }`, default none.
+    K17333: `default` includes tcp:22 (SSH) and tcp:443 (HTTPS)."""
+
+    name: str
+    allow_service: tuple[str, ...]  # ("all",), ("default",), ("none",) or the custom list; () when absent
+    vlan: str
+    evidence: ConfigEvidence
+
+
+def _top_level(body: list[_TokenValue]) -> dict[str, tuple[list[str], int]]:
+    """Top-level `key value` / `key { values }` pairs of an object body with their line."""
+    result: dict[str, tuple[list[str], int]] = {}
+    index = 0
+    while index < len(body):
+        token = body[index]
+        if token.text in {"{", "}"}:
+            index += 1
+            continue
+        if index + 1 < len(body) and body[index + 1].text == "{":
+            values = _group_values(body, index + 1) or []
+            result[token.text] = (values, token.line)
+            depth = 0
+            index += 1
+            while index < len(body):
+                if body[index].text == "{":
+                    depth += 1
+                elif body[index].text == "}":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                index += 1
+            index += 1
+            continue
+        if index + 1 < len(body) and body[index + 1].line == token.line and body[index + 1].text not in {"{", "}"}:
+            result[token.text] = ([body[index + 1].text], token.line)
+            index += 2
+            continue
+        result[token.text] = ([], token.line)
+        index += 1
+    return result
+
+
 def _tokens(content: str) -> list[_TokenValue]:
     result: list[_TokenValue] = []
     line = 1
@@ -283,6 +340,8 @@ class F5BIGIPParser(BaseDeviceParser):
         self._asm_policies: dict[str, F5ASMPolicy] = {}
         self._ltm_policies: dict[str, F5LTMPolicy] = {}
         self._ntp_servers: tuple[F5NTPServer, ...] | None = None
+        self._ike_peers: dict[str, F5IKEPeer] = {}
+        self._self_ips: dict[str, F5SelfIP] = {}
         self._parse(_tokens(content))
         self._native = (
             *self._settings.values(), *self._remote_auth_profiles.values(),
@@ -338,6 +397,10 @@ class F5BIGIPParser(BaseDeviceParser):
                 self._read_asm_policy(header[2], header_line, tokens[body_start:cursor - 1])
             elif len(header) == 3 and header[:2] == ["ltm", "policy"]:
                 self._read_ltm_policy(header[2], header_line, tokens[body_start:cursor - 1])
+            elif len(header) == 4 and header[:3] == ["net", "ipsec", "ike-peer"]:
+                self._read_ike_peer(header[3], header_line, tokens[body_start:cursor - 1])
+            elif len(header) == 3 and header[:2] == ["net", "self"]:
+                self._read_self_ip(header[2], header_line, tokens[body_start:cursor - 1])
             elif scope == "sys ntp":
                 self._read_ntp(header_line, tokens[body_start:cursor - 1])
             elif len(header) == 3 and header[:2] == ["auth", "user"]:
@@ -642,6 +705,34 @@ class F5BIGIPParser(BaseDeviceParser):
         self._ltm_policies[name] = F5LTMPolicy(name, tuple(referenced), ConfigEvidence(
             f"ltm policy {name} asm enable policy {', '.join(referenced) or '<none>'}",
             self.config_filepath, line_number))
+
+    def _read_ike_peer(self, raw_name: str, line_number: int, body: list[_TokenValue]) -> None:
+        name = _object_name(raw_name)
+        if name is None:
+            return
+        items = _top_level(body)
+        mode = (items.get("mode", (["unknown"], line_number))[0] or ["unknown"])[0]
+        auth = (items.get("phase1-auth-method", (["unknown"], line_number))[0] or ["unknown"])[0]
+        versions = tuple(items["version"][0]) if "version" in items else ("v1",)
+        enabled = (items.get("state", (["enabled"], line_number))[0] or ["enabled"])[0] != "disabled"
+        evidence_line = items["mode"][1] if "mode" in items else line_number
+        self._ike_peers[name] = F5IKEPeer(name, mode, auth, versions, enabled, ConfigEvidence(
+            f"net ipsec ike-peer {name} mode {mode} phase1-auth-method {auth} version {' '.join(versions)}",
+            self.config_filepath, evidence_line))
+
+    def get_ike_peers(self) -> tuple[F5IKEPeer, ...]:
+        return tuple(self._ike_peers.values())
+
+    def _read_self_ip(self, raw_name: str, line_number: int, body: list[_TokenValue]) -> None:
+        items = _top_level(body)
+        allow, allow_line = items.get("allow-service", ([], line_number))
+        vlan = (items.get("vlan", ([""], line_number))[0] or [""])[0]
+        label = " ".join(allow) if allow else "<absent: none>"
+        self._self_ips[raw_name] = F5SelfIP(raw_name, tuple(allow), vlan, ConfigEvidence(
+            f"net self {raw_name} allow-service {label}", self.config_filepath, allow_line))
+
+    def get_self_ips(self) -> tuple[F5SelfIP, ...]:
+        return tuple(self._self_ips.values())
 
     def get_asm_bindings(self) -> tuple[tuple[F5Virtual, F5LTMPolicy, F5ASMPolicy], ...]:
         """Enabled virtual servers (documented default: enabled) whose attached LTM policy enables an ASM policy."""

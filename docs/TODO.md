@@ -22,12 +22,12 @@ Wave 4 of the [coverage backlog](agent_notes/SECURITY_COVERAGE_TASKS.md#wave-4--
 
 P1:
 
-- [ ] [SC-025](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-025) Cisco Smart Install (`vstack`) enabled.
-- [ ] [SC-031](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-031) AAA without protection: TACACS+/RADIUS servers without keys, LDAP without TLS, RADIUS without Message-Authenticator (IOS, ASA, FortiOS, F5).
-- [ ] [SC-034](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-034) IKEv1 aggressive mode with pre-shared keys (IOS, ASA, FortiOS, F5; Check Point needs a sample).
-- [ ] [SC-035](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-035) Recoverable stored secrets: IOS/ASA keys without `password encryption aes`, FortiOS `private-data-encryption` off, legacy FortiOS `AK1` hashes.
-- [ ] [SC-039](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-039) FortiGate SSL-VPN: old TLS, factory certificate, open source address, no login-attempt limit.
-- [ ] [SC-041](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-041) F5 self-IP port lockdown exposing SSH and the configuration utility on traffic VLANs.
+- [ ] [SC-025](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-025) Cisco Smart Install (`vstack`) enabled. **Done 2026-09-26** (explicit `vstack`; older releases without the line stay unknown).
+- [ ] [SC-031](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-031) AAA without protection: TACACS+/RADIUS servers without keys, LDAP without TLS, RADIUS without Message-Authenticator (IOS, ASA, FortiOS, F5). **First stage done 2026-09-26** (IOS/ASA TACACS+ keys, ASA and FortiOS LDAP); RADIUS Message-Authenticator for IOS/ASA/F5 remains.
+- [ ] [SC-034](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-034) IKEv1 aggressive mode with pre-shared keys (IOS, ASA, FortiOS, F5; Check Point needs a sample). **First stage done 2026-09-26** for IOS, ASA, FortiOS and F5.
+- [ ] [SC-035](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-035) Recoverable stored secrets: IOS/ASA keys without `password encryption aes`, FortiOS `private-data-encryption` off, legacy FortiOS `AK1` hashes. **First stage done 2026-09-26** (IOS, ASA, FortiOS private-data-encryption); `AK1` hashes remain.
+- [ ] [SC-039](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-039) FortiGate SSL-VPN: old TLS, factory certificate, open source address, no login-attempt limit. **First stage done 2026-09-26** (explicit values on an active SSL-VPN).
+- [x] [SC-041](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-041) F5 self-IP port lockdown exposing SSH and the configuration utility on traffic VLANs. **Done 2026-09-26.**
 
 P2:
 

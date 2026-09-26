@@ -68,3 +68,13 @@ sys ntp {
     servers { 192.0.2.123 }
     timezone UTC
 }
+net self external-self {
+    address 192.0.2.1/24
+    allow-service all
+    vlan external
+}
+net ipsec ike-peer /Common/branch {
+    mode aggressive
+    phase1-auth-method pre-shared-key
+    remote-address 198.51.100.9
+}

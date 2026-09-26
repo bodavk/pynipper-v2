@@ -12,6 +12,31 @@ from src.devices.common.models import DefaultCredentialAssessment
 CISCO_IOS_HARDENING_GUIDE = (
     "https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html"
 )
+CISCO_SMART_INSTALL_ADVISORY = (
+    "https://www.cisco.com/c/en/us/support/docs/csa/cisco-sa-20180409-smi.html"
+)
+CISCO_SMART_INSTALL_MISUSE = (
+    "https://sec.cloudapps.cisco.com/security/center/content/CiscoSecurityAdvisory/"
+    "cisco-sa-20170214-smi"
+)
+_TYPE6_KEY_CONTEXTS = frozenset({"tacacs_key", "isakmp_pre_shared_key", "keyring_pre_shared_key"})
+CISCO_TYPE6_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/routers/ios/config/17-x/sec-vpn/b-security-vpn/"
+    "m_sec-encrypt-preshare-0.html"
+)
+CISCO_PASSWORD_ENCRYPTION_FACTS = (
+    "https://www.cisco.com/c/en/us/support/docs/security-vpn/"
+    "remote-authentication-dial-user-service-radius/107614-64.html"
+)
+CISCO_IOS_AGGRESSIVE_MODE_REFERENCE = (
+    "https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/security/a1/sec-a1-cr-book/sec-cr-c4.html"
+)
+RFC_2409 = "https://www.rfc-editor.org/rfc/rfc2409"
+RFC_8907 = "https://www.rfc-editor.org/rfc/rfc8907#section-4.5"
+CISCO_IOS_TACACS_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/sec_usr_tacacs/configuration/xe-16/"
+    "sec-usr-tacacs-xe-16-book/sec-cfg-tacacs.html"
+)
 CISCO_IOS_SSH_ALGORITHM_GUIDE = (
     "https://www.cisco.com/c/en/us/td/docs/routers/ios-xe/security-vpn/"
     "security-vpn/m_sec-secure-shell-algorithm-ccc.html"
@@ -677,16 +702,26 @@ class PluginIOSBaseline(BasePlugin):
                         tuple(item for item in credential.evidence),
                     )
                 )
-            elif credential.context in {"radius_key", "line_password"}:
+            elif credential.context in {"radius_key", "line_password", *_TYPE6_KEY_CONTEXTS}:
                 self.add_issue(self._finding(
                     parser,
                     f"cisco.ios.credentials.{credential.context}_storage",
                     "Shared or line credential uses unsafe storage",
                     f"The {credential.context.replace('_', ' ')} at '{credential.account}' uses storage type '{credential.storage_type}', classified as '{result.storage_assessment.value}' under policy '{result.policy_version}'. The value is redacted.",
                     "Configuration disclosure can expose or permit recovery of the credential.",
-                    "Use supported protected storage and rotate the exposed value.",
+                    ("Store the key as type 6 (AES) where the release supports it: configure "
+                     "'key config-key password-encrypt' and 'password encryption aes', then rotate the "
+                     "exposed value."
+                     if credential.context in _TYPE6_KEY_CONTEXTS
+                     else "Use supported protected storage and rotate the exposed value."),
                     Severity.HIGH,
                     tuple(item for item in credential.evidence),
+                    references=(
+                        (CISCO_TYPE6_GUIDE, CISCO_PASSWORD_ENCRYPTION_FACTS)
+                        if credential.context in _TYPE6_KEY_CONTEXTS
+                        else (CISCO_IOS_HARDENING_GUIDE,)
+                    ),
+                    basis=FindingBasis.EXPLICIT_VALUE if credential.context in _TYPE6_KEY_CONTEXTS else None,
                 ))
 
     def check_snmp(self, parser: BaseDeviceParser) -> None:
@@ -1034,6 +1069,25 @@ class PluginIOSBaseline(BasePlugin):
                 )
             )
 
+    def check_smart_install(self, parser: BaseDeviceParser) -> None:
+        """SC-025: Smart Install accepts unauthenticated configuration and image changes."""
+        state, evidence = self._ios(parser).get_smart_install()
+        if state is not True:
+            return
+        self.add_issue(Finding(
+            rule_id="cisco.ios.services.smart_install",
+            device=parser.device_type,
+            title="Smart Install (vstack) is enabled",
+            observation="The running configuration contains 'vstack', so the Smart Install service listens on TCP 4786.",
+            impact="Smart Install has no authentication: anyone who can reach TCP 4786 can replace the configuration, load a different software image or run privileged commands.",
+            exploitability="Exposed Smart Install clients are widely scanned for and have been abused in mass attacks; no credentials are needed.",
+            recommendation="Run 'no vstack' once deployment is complete. If Smart Install is required, block TCP 4786 from untrusted networks with an interface ACL.",
+            severity=Severity.HIGH,
+            evidence=evidence,
+            references=(CISCO_SMART_INSTALL_ADVISORY, CISCO_SMART_INSTALL_MISUSE),
+            basis=FindingBasis.EXPLICIT_VALUE,
+        ))
+
     def check_https_public_certificate(self, parser: BaseDeviceParser) -> None:
         binding = self._ios(parser).get_https_selected_public_certificate()
         if binding is None:
@@ -1240,6 +1294,70 @@ class PluginIOSBaseline(BasePlugin):
                     evidence,
                     (CISCO_IOS_COPP_GUIDE,),
                 ))
+
+    def check_tacacs_keys(self, parser: BaseDeviceParser) -> None:
+        """SC-031: TACACS+ servers used by AAA method lists without a shared key."""
+        ios = self._ios(parser)
+        used_all = False
+        used_groups: set[str] = set()
+        for method_list in ios.get_aaa_method_lists():
+            tokens = list(method_list.methods)
+            for index, token in enumerate(tokens[:-1]):
+                if token.casefold() == "group":
+                    target = tokens[index + 1]
+                    if target.casefold() == "tacacs+":
+                        used_all = True
+                    else:
+                        used_groups.add(target)
+        members: set[str] = set()
+        for group in ios.get_aaa_server_group_records():
+            if group.protocol == "tacacs+" and group.name in used_groups:
+                members.update(member.casefold() for member in group.members)
+        if not used_all and not members:
+            return
+        global_key, servers = ios.get_tacacs_servers()
+        if global_key:
+            return
+        for name, address, has_key, evidence in servers:
+            if has_key:
+                continue
+            if not used_all and name.casefold() not in members and address.casefold() not in members:
+                continue
+            self.add_issue(Finding(
+                rule_id="cisco.ios.aaa.tacacs_key_missing",
+                device=parser.device_type,
+                title="TACACS+ server without a shared key",
+                observation=(f"TACACS+ server '{name}' is used by an AAA method list but neither the server nor "
+                             "a global 'tacacs-server key' defines a shared key."),
+                impact="Without a key TACACS+ packets are not obfuscated, so administrator usernames, passwords and commands cross the network in clear text.",
+                exploitability="An attacker on the path to the TACACS+ server can read administrator credentials from captured packets.",
+                recommendation="Configure a long random key on the server ('key 6 ...' under 'tacacs server') matching the TACACS+ server, and prefer TACACS+ over TLS where supported.",
+                severity=Severity.HIGH,
+                evidence=(evidence,),
+                references=(CISCO_IOS_TACACS_GUIDE, RFC_8907),
+                basis=FindingBasis.REQUIRED_SETTING_MISSING,
+            ))
+
+    def check_ike_aggressive_mode(self, parser: BaseDeviceParser) -> None:
+        """SC-034: IKEv1 aggressive mode accepted for pre-shared-key peers."""
+        accepted, evidence = self._ios(parser).get_ikev1_aggressive_mode()
+        if not accepted:
+            return
+        self.add_issue(Finding(
+            rule_id="cisco.ios.vpn.ike_aggressive_mode",
+            device=parser.device_type,
+            title="IKEv1 aggressive mode is accepted for pre-shared keys",
+            observation=("IKEv1 pre-shared keys are configured and 'crypto isakmp aggressive-mode disable' is absent, "
+                         "so the router processes incoming aggressive-mode requests (the documented default)."),
+            impact="Aggressive mode sends a hash derived from the pre-shared key before the peer is authenticated, so it can be captured and cracked offline.",
+            exploitability="An attacker who can reach UDP 500 can request an aggressive-mode exchange and brute-force a weak key offline.",
+            recommendation=("Configure 'crypto isakmp aggressive-mode disable' unless Easy VPN clients with pre-shared keys "
+                            "need it, prefer IKEv2 or certificates, and use long random pre-shared keys."),
+            severity=Severity.MEDIUM,
+            evidence=evidence,
+            references=(CISCO_IOS_AGGRESSIVE_MODE_REFERENCE, RFC_2409),
+            basis=FindingBasis.DOCUMENTED_DEFAULT,
+        ))
 
     def check_crypto(self, parser: BaseDeviceParser) -> None:
         native = parser.get_native_config()
@@ -1687,6 +1805,9 @@ class PluginIOSBaseline(BasePlugin):
         self.check_ntp(parser)
         self.check_banner(parser)
         self.check_unnecessary_services(parser)
+        self.check_smart_install(parser)
+        self.check_ike_aggressive_mode(parser)
+        self.check_tacacs_keys(parser)
         self.check_boot_config_retrieval(parser)
         self.check_interface_protections(parser)
         self.check_control_plane(parser)

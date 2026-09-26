@@ -685,7 +685,7 @@ Not scheduled (maintainer decision, 2026-09-25): SNMPv1/v2c community checks for
 
 **Priority:** P1. Smart Install accepts unauthenticated commands on TCP 4786 that can replace the configuration or image; it has been used in mass exploitation.
 
-**Status:** Evidence gate.
+**Status:** First stage implemented 2026-09-26: `cisco.ios.services.smart_install` for an effective `vstack` line (IOS and IOS-XE). Source: cisco-sa-20180409-smi (releases with CSCvd36820 show `vstack` when enabled and `no vstack` when disabled; older releases showed neither, so absence stays unknown) and cisco-sa-20170214-smi. Remaining: a release-gated default for pre-CSCvd36820 switch releases ([SC-044](#sc-044)).
 
 **Source of Truth:** Candidates: Cisco advisories on Smart Install protocol misuse (cisco-sa-20170214-smi) and CVE-2018-0171 (cisco-sa-20180328-smi2); Cisco IOS hardening guidance; IOS-XE switch NDM STIG entries for Smart Install, if present.
 
@@ -823,7 +823,7 @@ Not scheduled (maintainer decision, 2026-09-25): SNMPv1/v2c community checks for
 
 **Priority:** P1. Administrator passwords travel in these exchanges.
 
-**Status:** Evidence gate.
+**Status:** First stage implemented 2026-09-26: `cisco.ios.aaa.tacacs_key_missing` (TACACS+ server used by an AAA method list, no per-server or global key; RFC 8907 §4.5 forbids unobfuscated mode), `cisco.asa.aaa.tacacs_key_missing` and `cisco.asa.aaa.ldap_cleartext` (bound server groups; ASA command reference `ldap-over-ssl`), `fortinet.fortios.aaa.ldap_cleartext` (`secure` default disable per the 7.4 CLI reference) and `fortinet.fortios.aaa.ldap_server_identity`, for LDAP servers referenced by a user group. Remaining: IOS LDAP, RADIUS Message-Authenticator for IOS/ASA/F5.
 
 **Source of Truth:** Candidates: IOS AAA configuration guides (`tacacs server` / `radius server` `key`, `ldap server` secure mode); ASA CLI book 1 AAA chapter (`ldap-over-ssl enable`, `key`); FortiOS `config user ldap` (`set secure disable|starttls|ldaps`, `server-identity-check`); CVE-2024-3596 (BlastRADIUS) vendor advisories for Cisco, F5 and Fortinet; F5 remote-auth RADIUS/TACACS+ references.
 
@@ -892,7 +892,7 @@ Not scheduled (maintainer decision, 2026-09-25): SNMPv1/v2c community checks for
 
 **Priority:** P1 for gateways with pre-shared-key peers.
 
-**Status:** Evidence gate. Check Point stage is sample-gated (VPN communities live in `objects.C`).
+**Status:** First stage implemented 2026-09-26: `cisco.ios.vpn.ike_aggressive_mode` (IKEv1 pre-shared keys and no `crypto isakmp aggressive-mode disable`; the command reference says IOS processes all aggressive-mode SAs otherwise), `cisco.asa.vpn.ike_aggressive_mode` (IKEv1 enabled on an interface, IKEv1 PSK tunnel group, no `crypto ikev1 am-disable`/`crypto isakmp am-disable`; default enabled per the command reference), `fortinet.fortios.vpn.ike_aggressive_mode` (explicit `mode aggressive`, IKEv1, PSK; CLI defaults main/1/psk) and `f5.bigip.vpn.ike_aggressive_mode` (`net ipsec ike-peer` mode aggressive with pre-shared-key, version v1 default). Remaining: Check Point (sample-gated).
 
 **Source of Truth:** Candidates: IOS `crypto isakmp aggressive-mode disable`; ASA `crypto ikev1 am-disable` (default behaviour per release); FortiOS phase1 `set mode aggressive`; F5 `net ipsec ike-peer` `mode aggressive`; Check Point VPN community "aggressive mode" setting; NIST SP 800-77r1.
 
@@ -915,7 +915,7 @@ Not scheduled (maintainer decision, 2026-09-25): SNMPv1/v2c community checks for
 
 **Priority:** P1. Configuration backups are commonly shared; recoverable keys turn a leaked file into working credentials.
 
-**Status:** Evidence gate. Local-user password storage is already covered for IOS, ASA and F5; this task covers service keys and platform-wide encryption.
+**Status:** First stage implemented 2026-09-26: IOS `credentials.tacacs_key_storage`, `isakmp_pre_shared_key_storage` and `keyring_pre_shared_key_storage` (type 0/7; type 6 per the IOS XE Encrypted Preshared Key guide), ASA `credentials.tunnel_group_pre_shared_key_storage` and `aaa_server_key_storage` (clear-text value in a `more system:running-config` export; `*****` is masked/unknown, `8 ...` encrypted with the master passphrase), and FortiOS `credentials.private_data_storage` (non-administrator `ENC` secrets without `private-data-encryption`, FG-IR-19-007). Remaining: legacy FortiOS `AK1` administrator hashes (hash-format source not yet obtained), ASA empty enable default ([SC-044](#sc-044)).
 
 **Source of Truth:** Candidates: IOS `key config-key password-encrypt` + `password encryption aes` (type 6); ASA `key config-key password-encryption` + `password encryption aes`; FortiOS `config system global set private-data-encryption` and Fortinet PSIRT FG-IR-19-007 (CVE-2019-6693, static key for backup secrets); FortiOS admin password hash formats (legacy `AK1` vs `SH2`).
 
@@ -1007,7 +1007,7 @@ Not scheduled (maintainer decision, 2026-09-25): SNMPv1/v2c community checks for
 
 **Priority:** P1. The SSL-VPN portal is internet-facing and has a long history of pre-authentication vulnerabilities.
 
-**Status:** Evidence gate.
+**Status:** First stage implemented 2026-09-26 for an active SSL-VPN (`source-interface` set, status not disabled): `fortinet.fortios.sslvpn.legacy_tls`, `weak_algorithm`, `factory_certificate` and `unlimited_login_attempts`, explicit values only (7.4 CLI reference defaults: tls1-2, high, login-attempt-limit 2). Remaining: release-gated defaults for 6.x, MFA for VPN users.
 
 **Source of Truth:** Candidates: FortiOS `config vpn ssl settings` reference (`ssl-min-proto-ver`, `servercert`, `source-interface`, `source-address`, `login-attempt-limit`, `login-block-time`, `reqclientcert`, `algorithm`, `banned-cipher`); CIS FortiOS 7.x benchmark SSL-VPN items; FortiOS release notes on SSL-VPN tunnel-mode removal (release gating).
 
@@ -1053,7 +1053,7 @@ Not scheduled (maintainer decision, 2026-09-25): SNMPv1/v2c community checks for
 
 **Priority:** P1. Exploitation of the configuration utility and iControl REST (for example CVE-2020-5902, CVE-2022-1388, CVE-2023-46747) relies on reaching them; self IPs with `allow-service all` or `default` expose them on traffic VLANs.
 
-**Status:** Evidence gate.
+**Status:** Implemented 2026-09-26: `f5.bigip.management.self_ip_port_lockdown` for `allow-service all` (high), `default` or a custom list with TCP 22/443 (medium). Sources: tmsh `net self` reference (default none), K17333 (default set includes SSH and HTTPS), K23605346 (CVE-2022-1388 via self IPs). Remaining: validation against a real export.
 
 **Source of Truth:** Candidates: F5 article on port lockdown behaviour (default service list per release); F5 security advisories for the CVEs above (mitigation: set self-IP port lockdown to none); F5 NDM STIG.
 

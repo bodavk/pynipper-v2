@@ -31,6 +31,7 @@ set admin-server-cert corp-edge-fw
 set admin-lockout-threshold 3
 set admin-lockout-duration 120
 set admintimeout 5
+set private-data-encryption enable
 end
 config system admin
 edit remote-ops

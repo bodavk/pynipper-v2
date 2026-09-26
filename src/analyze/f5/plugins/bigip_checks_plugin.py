@@ -34,6 +34,12 @@ AFM_DEFAULT_PROCESSING = (
 AFM_DEFAULT_ACTION_DB = "https://cdn.f5.com/product/bugtracker/ID813165.html"
 ASM_POLICY = "https://clouddocs.f5.com/cli/tmsh-reference/v16/modules/asm/asm_policy.html"
 LTM_POLICY = "https://clouddocs.f5.com/cli/tmsh-reference/v16/modules/ltm/ltm_policy.html"
+NET_SELF = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules/net/net_self.html"
+PORT_LOCKDOWN = "https://my.f5.com/manage/s/article/K17333"
+ICONTROL_CVE_2022_1388 = "https://my.f5.com/manage/s/article/K23605346"
+IKE_PEER = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules/net/net_ipsec_ike-peer.html"
+RFC_2409 = "https://www.rfc-editor.org/rfc/rfc2409"
+_MANAGEMENT_SERVICES = {"tcp:22", "tcp:ssh", "tcp:443", "tcp:https", "tcp:any", "tcp:0"}
 
 
 class PluginF5BIGIPChecks(BasePlugin):
@@ -91,6 +97,8 @@ class PluginF5BIGIPChecks(BasePlugin):
         self._check_snmp(parser)
         self._check_ntp(parser)
         self._check_modules(parser)
+        self._check_self_ips(parser)
+        self._check_ike_peers(parser)
         console = setting("sys global-settings", "console-inactivity-timeout")
         if console and console.value == 0:
             self._emit(parser, console, rule_id="f5.bigip.console.idle_timeout_disabled",
@@ -459,3 +467,56 @@ class PluginF5BIGIPChecks(BasePlugin):
                     references=(ASM_POLICY, LTM_POLICY),
                     basis=FindingBasis.EXPLICIT_VALUE,
                 ))
+
+    def _check_self_ips(self, parser: F5BIGIPParser) -> None:
+        """SC-041: port lockdown on self IPs exposing SSH or the configuration utility/iControl REST."""
+        for self_ip in parser.get_self_ips():
+            services = {item.casefold() for item in self_ip.allow_service}
+            if "all" in services:
+                exposed, severity = "all services", Severity.HIGH
+            elif "default" in services:
+                exposed, severity = "the default service set, which includes SSH (TCP 22) and HTTPS (TCP 443)", Severity.MEDIUM
+            elif services & _MANAGEMENT_SERVICES:
+                exposed = "SSH or HTTPS (" + ", ".join(sorted(services & _MANAGEMENT_SERVICES)) + ")"
+                severity = Severity.MEDIUM
+            else:
+                continue
+            self.add_issue(Finding(
+                rule_id="f5.bigip.management.self_ip_port_lockdown",
+                device=parser.device_type,
+                title="Self IP allows management services",
+                observation=f"Self IP {self_ip.name} (VLAN {self_ip.vlan or 'unknown'}) has port lockdown set to allow {exposed}.",
+                impact="SSH, the Configuration utility and iControl REST can be reached on this traffic VLAN, not only on the management port.",
+                exploitability=(
+                    "Critical BIG-IP management vulnerabilities such as CVE-2022-1388 are exploitable through "
+                    "self IPs that allow these services; no credentials are needed for some of them."
+                ),
+                recommendation=(
+                    "Set port lockdown to Allow None ('modify net self <name> allow-service none'), or to a "
+                    "custom list without TCP 22 and 443; keep only services needed for HA or routing."
+                ),
+                severity=severity,
+                evidence=(self_ip.evidence,),
+                references=(PORT_LOCKDOWN, NET_SELF, ICONTROL_CVE_2022_1388),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+
+    def _check_ike_peers(self, parser: F5BIGIPParser) -> None:
+        """SC-034: IKEv1 aggressive mode with pre-shared-key authentication."""
+        for peer in parser.get_ike_peers():
+            if (not peer.enabled or peer.mode != "aggressive" or peer.auth_method != "pre-shared-key"
+                    or "v1" not in peer.versions):
+                continue
+            self.add_issue(Finding(
+                rule_id="f5.bigip.vpn.ike_aggressive_mode",
+                device=parser.device_type,
+                title="IKEv1 aggressive mode with a pre-shared key",
+                observation=f"IKE peer {peer.name} uses IKEv1 aggressive mode with pre-shared-key authentication.",
+                impact="Aggressive mode sends a hash derived from the pre-shared key before the peer is authenticated, so it can be captured and cracked offline.",
+                exploitability="An attacker who can reach the IKE service can request an aggressive-mode exchange and brute-force a weak key offline.",
+                recommendation="Use main mode or IKEv2, or certificate authentication; if aggressive mode is required, use a long random pre-shared key.",
+                severity=Severity.MEDIUM,
+                evidence=(peer.evidence,),
+                references=(IKE_PEER, RFC_2409),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))

@@ -60,6 +60,19 @@ CISCO_ASA_WEBVPN_AUTH_REFERENCE = (
     "configuration/vpn/asa-916-vpn-config/vpn-groups.html"
 )
 NIST_CRYPTO_TRANSITIONS = "https://csrc.nist.gov/pubs/sp/800/131/a/r2/final"
+CISCO_ASA_AM_DISABLE_REFERENCE = (
+    "https://www.cisco.com/c/en/us/td/docs/security/asa/asa-cli-reference/A-H/asa-command-ref-A-H/"
+    "crypto-a-to-crypto-ir-commands.html"
+)
+RFC_2409 = "https://www.rfc-editor.org/rfc/rfc2409"
+RFC_8907 = "https://www.rfc-editor.org/rfc/rfc8907#section-4.5"
+CISCO_ASA_LDAP_OVER_SSL_REFERENCE = (
+    "https://www.cisco.com/c/en/us/td/docs/security/asa/asa-cli-reference/I-R/asa-command-ref-I-R/m_l2-lof.html"
+)
+CISCO_ASA_MASTER_PASSPHRASE_REFERENCE = (
+    "https://www.cisco.com/c/en/us/td/docs/security/asa/asa918/configuration/general/"
+    "asa-918-general-config/basic-hostname-pw.html"
+)
 
 
 class PluginASABaseline(BasePlugin):
@@ -635,6 +648,71 @@ class PluginASABaseline(BasePlugin):
                 Severity.MEDIUM, (minimum.raw_line,), CISCO_ASA_PASSWORD_POLICY_REFERENCE,
             ))
 
+    def check_aaa_transport(self, parser: BaseDeviceParser) -> None:
+        """SC-031: bound TACACS+ hosts without a key and LDAP hosts binding in clear text."""
+        for host in self._asa(parser).get_aaa_server_hosts():
+            if not host["bound"]:
+                continue
+            if host["protocol"] == "tacacs+" and not host["key"]:
+                self.add_issue(self._finding(
+                    parser, "cisco.asa.aaa.tacacs_key_missing",
+                    "TACACS+ server without a shared key",
+                    f"TACACS+ host {host['address']} in bound server group '{host['group']}' has no key.",
+                    "Without a key TACACS+ packets are not obfuscated, so administrator and VPN user credentials cross the network in clear text.",
+                    "Configure a long random 'key' for the host that matches the TACACS+ server, and protect it with the master passphrase.",
+                    Severity.HIGH, (host["evidence"],), (RFC_8907, *CISCO_ASA_AAA_REFERENCE),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
+                ))
+            elif host["protocol"] == "ldap" and not host["ldap_over_ssl"] and host["sasl"] in {None, "plain"}:
+                self.add_issue(self._finding(
+                    parser, "cisco.asa.aaa.ldap_cleartext",
+                    "LDAP authentication without SSL",
+                    (f"LDAP host {host['address']} in bound server group '{host['group']}' does not enable "
+                     "'ldap-over-ssl' and uses simple (plain) binds."),
+                    "User and bind passwords are sent to the LDAP server in clear text and can be captured on the network path.",
+                    "Configure 'ldap-over-ssl enable' for the host (LDAPS, TCP 636) and trust the LDAP server certificate.",
+                    Severity.HIGH, (host["evidence"],), (CISCO_ASA_LDAP_OVER_SSL_REFERENCE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
+                ))
+
+    def check_ike_aggressive_mode(self, parser: BaseDeviceParser) -> None:
+        """SC-034: inbound IKEv1 aggressive mode accepted for pre-shared-key tunnel groups."""
+        accepted, evidence = self._asa(parser).get_ikev1_aggressive_mode()
+        if not accepted:
+            return
+        self.add_issue(self._finding(
+            parser, "cisco.asa.vpn.ike_aggressive_mode",
+            "IKEv1 aggressive mode is accepted for pre-shared keys",
+            ("IKEv1 is enabled on an interface with pre-shared-key tunnel groups and 'crypto ikev1 am-disable' is "
+             "absent, so inbound aggressive-mode connections are accepted (the documented default)."),
+            "Aggressive mode sends a hash derived from the pre-shared key before the peer is authenticated, so it can be captured and cracked offline.",
+            ("Configure 'crypto ikev1 am-disable' (older releases: 'crypto isakmp am-disable'), prefer IKEv2 or "
+             "certificates, and use long random pre-shared keys."),
+            Severity.MEDIUM, evidence, (CISCO_ASA_AM_DISABLE_REFERENCE, RFC_2409),
+            basis=FindingBasis.DOCUMENTED_DEFAULT,
+        ))
+
+    def check_service_key_storage(self, parser: BaseDeviceParser) -> None:
+        """SC-035: clear-text tunnel-group and AAA server keys in the export."""
+        labels = {
+            "tunnel_group_pre_shared_key": "VPN tunnel-group pre-shared key",
+            "aaa_server_key": "AAA server shared key",
+        }
+        for context, account, state, evidence in self._asa(parser).get_service_key_storage():
+            if state != "cleartext":
+                continue
+            self.add_issue(self._finding(
+                parser, f"cisco.asa.credentials.{context}_storage",
+                f"{labels[context]} is stored in clear text",
+                (f"The {labels[context]} for '{account}' appears in clear text in this export, so the "
+                 "master passphrase is not protecting it. The value is redacted."),
+                "Anyone with a copy of this configuration can reuse the key to impersonate a VPN peer or authentication server.",
+                ("Configure a master passphrase ('key config-key password-encryption' and "
+                 "'password encryption aes') so stored keys are AES-encrypted, then rotate the exposed key."),
+                Severity.HIGH, (evidence,), (CISCO_ASA_MASTER_PASSPHRASE_REFERENCE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+
     def analyze(self, parser: BaseDeviceParser) -> None:
         if parser.device_type != "ASA" or self._asa(parser).get_version() == "?":
             return
@@ -642,6 +720,9 @@ class PluginASABaseline(BasePlugin):
         self.check_management_sessions_and_ssh(parser)
         self.check_local_administrator_policy(parser)
         self.check_local_users(parser)
+        self.check_service_key_storage(parser)
+        self.check_ike_aggressive_mode(parser)
+        self.check_aaa_transport(parser)
         self.check_http_management(parser)
         self.check_ntp(parser)
         self.check_threat_detection(parser)

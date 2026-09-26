@@ -621,6 +621,35 @@ class FortiOSParser(BaseDeviceParser):
         walk(self.config, ())
         return [entries[number] for number in sorted(entries)]
 
+    _ADMIN_HASH_PREFIXES = ("SH2", "AK1", "PB2")
+
+    def get_reversible_secret_evidence(self) -> list[ConfigEvidence]:
+        """Secret fields stored as reversible ``ENC`` values (not administrator hashes).
+
+        FG-IR-19-007: without ``private-data-encryption`` these values are encrypted
+        with a key built into FortiOS, so anyone with the file can decrypt them.
+        Administrator password hashes (``ENC SH2...``/``AK1``/``PB2``) are excluded.
+        """
+        found: list[ConfigEvidence] = []
+
+        def walk(node: FortiDict, path: Tuple[str, ...]) -> None:
+            for name, value in node.items():
+                field_path = path + (str(name),)
+                if isinstance(value, dict):
+                    walk(value, field_path)
+                    continue
+                if str(name).casefold() not in self._SECRET_FIELDS:
+                    continue
+                words = self._as_list(value)
+                if len(words) < 2 or words[0] != "ENC" or words[1].startswith(self._ADMIN_HASH_PREFIXES):
+                    continue
+                evidence = self.evidence.get(field_path)
+                if evidence is not None:
+                    found.append(evidence)
+
+        walk(self.config, ())
+        return sorted(found, key=lambda item: item.line_number or 0)
+
     def _scoped_sections(self, section_name: str) -> Iterator[Tuple[str, FortiDict, Tuple[str, ...]]]:
         direct = self.config.get(section_name)
         if isinstance(direct, dict):
@@ -865,6 +894,66 @@ class FortiOSParser(BaseDeviceParser):
     def _supports_radsec(self) -> bool:
         numbers = re.findall(r"\d+", self.get_version())
         return len(numbers) >= 2 and (int(numbers[0]), int(numbers[1])) >= (7, 4)
+
+    def get_sslvpn_settings(self) -> list[dict]:
+        """``config vpn ssl settings`` per scope: active when enabled (default) and bound to a
+        ``source-interface``. Values are the explicit ones; absent fields are ``None``."""
+        results = []
+        for scope, settings, path in self._scoped_sections("vpn ssl settings"):
+            interfaces = self._as_list(settings.get("source-interface"))
+            active = bool(interfaces) and str(settings.get("status", "enable")).lower() != "disable"
+            values = {
+                field: (" ".join(self._as_list(settings[field])) if field in settings else None)
+                for field in ("ssl-min-proto-ver", "algorithm", "servercert", "login-attempt-limit")
+            }
+            results.append({
+                "scope": scope,
+                "active": active,
+                "interfaces": tuple(interfaces),
+                "values": values,
+                "evidence": {field: self._field_evidence(path + (field,)) for field in values},
+                "interface_evidence": self._field_evidence(path + ("source-interface",)),
+            })
+        return results
+
+    def get_ldap_servers(self) -> list[dict]:
+        """LDAP servers with their transport and the user groups that reference them.
+
+        CLI reference (config user ldap): ``secure`` disable | starttls | ldaps, default
+        disable (no TLS); ``server-identity-check`` default enable. A server is bound
+        when a user group in the same scope lists it as a member or match server.
+        """
+        references: Dict[Tuple[str, str], list[str]] = {}
+        for scope, section, _ in self._scoped_sections("user group"):
+            for group_name, settings in section.items():
+                if not isinstance(settings, dict):
+                    continue
+                names = set(self._as_list(settings.get("member")))
+                matches = settings.get("match")
+                if isinstance(matches, dict):
+                    for match in matches.values():
+                        if isinstance(match, dict):
+                            names.update(self._as_list(match.get("server-name")))
+                for name in names:
+                    references.setdefault((scope, name), []).append(str(group_name))
+        servers = []
+        for scope, section, section_path in self._scoped_sections("user ldap"):
+            for name, settings in section.items():
+                if not isinstance(settings, dict):
+                    continue
+                path = section_path + (str(name),)
+                secure_evidence = self._field_evidence(path + ("secure",))
+                servers.append({
+                    "scope": scope,
+                    "name": str(name),
+                    "secure": str(settings.get("secure", "disable")).lower(),
+                    "secure_explicit": "secure" in settings,
+                    "server_identity_check": str(settings.get("server-identity-check", "enable")).lower(),
+                    "groups": tuple(sorted(references.get((scope, str(name)), []))),
+                    "evidence": secure_evidence or self._field_evidence(path + ("server",)) or self._field_evidence(path),
+                    "identity_evidence": self._field_evidence(path + ("server-identity-check",)),
+                })
+        return servers
 
     def get_aaa_server_profiles(self) -> Tuple[FortiAAAServerProfile, ...]:
         """Resolve RADIUS profiles through user groups to enabled remote administrators."""

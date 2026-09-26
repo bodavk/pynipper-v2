@@ -77,6 +77,13 @@ FORTINET_CA_CERTIFICATE_REFERENCE = (
     "144962638/config-vpn-certificate-ca"
 )
 NIST_CRYPTO_TRANSITIONS = "https://csrc.nist.gov/pubs/sp/800/131/a/r2/final"
+FORTINET_PRIVATE_DATA_ADVISORY = "https://www.fortiguard.com/psirt/FG-IR-19-007"
+FORTINET_SSLVPN_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.4.4/cli-reference/114404382/config-vpn-ssl-settings"
+)
+FORTINET_LDAP_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.4.4/cli-reference/590785459/config-user-ldap"
+)
 FORTINET_AUTO_SCRIPT_REFERENCE = (
     "https://docs.fortinet.com/document/fortigate/7.4.1/cli-reference/64620/"
     "config-system-auto-script"
@@ -1679,6 +1686,155 @@ class PluginFortiOSBaseline(BasePlugin):
         self.check_aaa_transport(parser)
         self.check_local_in_policy(parser)
         self.check_ipsec_tunnels(parser)
+        self.check_private_data_encryption(parser)
+        self.check_ike_aggressive_mode(parser)
+        self.check_ldap_transport(parser)
+        self.check_sslvpn(parser)
+
+    def check_sslvpn(self, parser: BaseDeviceParser) -> None:
+        """SC-039: explicit weak settings on an active SSL-VPN portal."""
+        fortios = self._fortios(parser)
+        for vpn in fortios.get_sslvpn_settings():
+            if not vpn["active"]:
+                continue
+            values, evidence = vpn["values"], vpn["evidence"]
+            where = f"SSL-VPN in scope '{vpn['scope']}' (listening on {', '.join(vpn['interfaces'])})"
+            base = tuple(vpn["interface_evidence"])
+            checks = []
+            if values["ssl-min-proto-ver"] in {"tls1-0", "tls1-1", "sslv3"}:
+                checks.append((
+                    "fortinet.fortios.sslvpn.legacy_tls", "SSL-VPN accepts TLS versions below 1.2",
+                    f"{where} sets ssl-min-proto-ver {values['ssl-min-proto-ver']}.",
+                    "Legacy TLS versions have known weaknesses and let a network attacker downgrade VPN sessions.",
+                    "Set 'ssl-min-proto-ver tls1-2' (the current default) and keep FortiClient up to date.",
+                    Severity.MEDIUM, "ssl-min-proto-ver"))
+            if (values["algorithm"] or "").lower() == "low":
+                checks.append((
+                    "fortinet.fortios.sslvpn.weak_algorithm", "SSL-VPN allows weak cipher suites",
+                    f"{where} sets 'algorithm low', which allows any cipher suite.",
+                    "Weak ciphers reduce the protection of VPN sessions against interception.",
+                    "Set 'algorithm high' (the default).",
+                    Severity.MEDIUM, "algorithm"))
+            if (values["servercert"] or "").strip('"').casefold() in {"fortinet_factory", "self-sign"}:
+                checks.append((
+                    "fortinet.fortios.sslvpn.factory_certificate", "SSL-VPN uses the factory certificate",
+                    f"{where} uses server certificate {values['servercert']}.",
+                    "Users cannot verify the gateway and learn to accept certificate warnings, which makes interception and phishing of VPN credentials easier.",
+                    "Install a certificate from a trusted CA for the VPN host name and select it with 'set servercert'.",
+                    Severity.MEDIUM, "servercert"))
+            if values["login-attempt-limit"] == "0":
+                checks.append((
+                    "fortinet.fortios.sslvpn.unlimited_login_attempts", "SSL-VPN does not limit failed logins",
+                    f"{where} sets login-attempt-limit 0.",
+                    "Password guessing against VPN accounts is not slowed down.",
+                    "Set a small login-attempt-limit (default 2) with a login-block-time, and require MFA for VPN users.",
+                    Severity.MEDIUM, "login-attempt-limit"))
+            for rule, title, observation, impact, recommendation, severity, field in checks:
+                self.add_issue(self._finding(
+                    parser, rule, title, observation, impact, recommendation, severity,
+                    tuple(evidence[field]) + base or (f"set {field} {values[field]}",),
+                    (FORTINET_SSLVPN_REFERENCE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
+                ))
+
+    def check_ldap_transport(self, parser: BaseDeviceParser) -> None:
+        """SC-031: LDAP servers used by user groups without TLS or without server identity checks."""
+        fortios = self._fortios(parser)
+        for server in fortios.get_ldap_servers():
+            if not server["groups"]:
+                continue
+            evidence = tuple(server["evidence"]) or (f"config user ldap / edit {server['name']}",)
+            groups = ", ".join(server["groups"])
+            if server["secure"] == "disable":
+                self.add_issue(self._finding(
+                    parser,
+                    "fortinet.fortios.aaa.ldap_cleartext",
+                    "LDAP authentication without TLS",
+                    (f"LDAP server '{server['name']}' in scope '{server['scope']}' is used by user group(s) {groups} "
+                     "and 'secure' is " + ("disable." if server["secure_explicit"] else "not set (default disable).")),
+                    "User and bind passwords are sent to the LDAP server in clear text and can be captured on the network path.",
+                    "Set 'secure ldaps' or 'secure starttls' with a trusted CA certificate and keep server-identity-check enabled.",
+                    Severity.HIGH,
+                    evidence,
+                    (FORTINET_LDAP_REFERENCE,),
+                    basis=FindingBasis.EXPLICIT_VALUE if server["secure_explicit"] else FindingBasis.DOCUMENTED_DEFAULT,
+                ))
+            elif server["server_identity_check"] == "disable":
+                self.add_issue(self._finding(
+                    parser,
+                    "fortinet.fortios.aaa.ldap_server_identity",
+                    "LDAP server identity check is disabled",
+                    f"LDAP server '{server['name']}' uses TLS ({server['secure']}) but 'server-identity-check' is disabled.",
+                    "A system that can intercept the connection can present another certificate and receive user passwords.",
+                    "Enable server-identity-check and reference the CA that issued the LDAP server certificate.",
+                    Severity.MEDIUM,
+                    tuple(server["identity_evidence"]) or evidence,
+                    (FORTINET_LDAP_REFERENCE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
+                ))
+
+    def check_ike_aggressive_mode(self, parser: BaseDeviceParser) -> None:
+        """SC-034: explicit IKEv1 aggressive mode with pre-shared-key authentication.
+
+        CLI reference defaults: mode main, ike-version 1, authmethod psk.
+        """
+        fortios = self._fortios(parser)
+        for section in ("vpn ipsec phase1-interface", "vpn ipsec phase1"):
+            for scope, entries, path in fortios.iter_scoped_sections(section):
+                for name, settings in entries.items():
+                    if not isinstance(settings, dict):
+                        continue
+                    if self._text(settings.get("mode"), "main").lower() != "aggressive":
+                        continue
+                    if self._text(settings.get("ike-version"), "1") != "1":
+                        continue
+                    if self._text(settings.get("authmethod"), "psk").lower() != "psk":
+                        continue
+                    self.add_issue(self._finding(
+                        parser,
+                        "fortinet.fortios.vpn.ike_aggressive_mode",
+                        "IKEv1 aggressive mode with a pre-shared key",
+                        f"Phase1 '{name}' in scope '{scope}' uses IKEv1 aggressive mode with pre-shared-key authentication.",
+                        "Aggressive mode sends a hash derived from the pre-shared key before the peer is authenticated, so it can be captured and cracked offline.",
+                        "Use main mode or IKEv2 ('set ike-version 2'), or certificate authentication; if aggressive mode is required, use a long random pre-shared key.",
+                        Severity.MEDIUM,
+                        self._evidence(fortios, path + (str(name), "mode"), "set mode aggressive"),
+                        (FORTINET_PHASE1_REFERENCE, "https://www.rfc-editor.org/rfc/rfc2409"),
+                        basis=FindingBasis.EXPLICIT_VALUE,
+                    ))
+
+    def check_private_data_encryption(self, parser: BaseDeviceParser) -> None:
+        """SC-035: reversible secrets protected only by the built-in FortiOS key."""
+        fortios = self._fortios(parser)
+        secrets = fortios.get_reversible_secret_evidence()
+        if not secrets:
+            return
+        globals_ = list(fortios.iter_scoped_sections("system global"))
+        explicit = [
+            (settings, path) for _, settings, path in globals_
+            if settings.get("private-data-encryption") is not None
+        ]
+        if any(self._text(settings.get("private-data-encryption")).lower() == "enable" for settings, _ in explicit):
+            return
+        setting_evidence = tuple(
+            item for _, path in explicit
+            for item in fortios.field_evidence(path + ("private-data-encryption",))
+        )
+        self.add_issue(self._finding(
+            parser,
+            "fortinet.fortios.credentials.private_data_storage",
+            "Stored secrets use the built-in FortiOS encryption key",
+            (f"{len(secrets)} secret field(s) such as VPN pre-shared keys or server passwords are stored as "
+             "'ENC' values while private-data-encryption is "
+             + ("disabled." if explicit else "not enabled (disabled by default).")),
+            "Anyone who obtains the configuration file or a backup can decrypt these secrets, because the default key is the same on every FortiGate (CVE-2019-6693).",
+            ("On FortiOS 5.6.11, 6.0.7, 6.2.1 or later run 'config system global', 'set private-data-encryption enable' and set a unique key, "
+             "protect configuration backups with a password, and rotate secrets that may have been exposed."),
+            Severity.MEDIUM,
+            setting_evidence + tuple(secrets[:3]),
+            (FORTINET_PRIVATE_DATA_ADVISORY,),
+            basis=FindingBasis.EXPLICIT_VALUE if explicit else FindingBasis.DOCUMENTED_DEFAULT,
+        ))
 
 
 __all__ = ["PluginFortiOSBaseline"]

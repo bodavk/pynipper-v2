@@ -16,6 +16,7 @@
         "f5.bigip.http.weak_cipher_suite",
         "f5.bigip.logging.syslog_remote_none",
         "f5.bigip.ltm.clientssl_cleartext_enabled",
+        "f5.bigip.management.self_ip_port_lockdown",
         "f5.bigip.ntp.unauthenticated_server",
         "f5.bigip.password_policy.enforcement_disabled",
         "f5.bigip.password_policy.login_lockout_disabled",
@@ -24,9 +25,10 @@
         "f5.bigip.snmp.v3_security",
         "f5.bigip.snmp.write_community",
         "f5.bigip.ssh.idle_timeout_disabled",
-        "f5.bigip.ssh.unrestricted_sources"
+        "f5.bigip.ssh.unrestricted_sources",
+        "f5.bigip.vpn.ike_aggressive_mode"
       ],
-      "expected_finding_count": 20
+      "expected_finding_count": 22
     },
     {
       "name": "f5-bigip-secure",
@@ -56,11 +58,12 @@
         "cisco.ios.auxiliary.enabled",
         "cisco.ios.auxiliary.session_timeout",
         "cisco.ios.banner.login",
+        "cisco.ios.configuration.change_logging",
         "cisco.ios.console.authentication",
         "cisco.ios.console.session_timeout",
-        "cisco.ios.configuration.change_logging",
         "cisco.ios.control_plane.copp",
         "cisco.ios.credentials.enable_storage",
+        "cisco.ios.credentials.isakmp_pre_shared_key_storage",
         "cisco.ios.credentials.known_default_value",
         "cisco.ios.credentials.line_password_storage",
         "cisco.ios.credentials.local_storage",
@@ -85,11 +88,12 @@
         "cisco.ios.ssh.negotiation_timeout",
         "cisco.ios.ssh.protocol_version",
         "cisco.ios.ssh.vty_access_restriction",
+        "cisco.ios.vpn.ike_aggressive_mode",
         "cisco.ios.vty.authentication",
         "cisco.ios.vty.session_timeout",
         "cisco.ios.vty.telnet"
       ],
-      "expected_finding_count": 37
+      "expected_finding_count": 39
     },
     {
       "name": "cisco-ios-secure",
@@ -124,6 +128,7 @@
         "cisco.ios.layer2.access_edge.source_guard",
         "cisco.ios.logging.remote_destination",
         "cisco.ios.ntp.servers",
+        "cisco.ios.services.smart_install",
         "cisco.ios.ssh.authentication_retries",
         "cisco.ios.ssh.negotiation_timeout",
         "cisco.ios.ssh.protocol_version",
@@ -131,7 +136,7 @@
         "cisco.ios.vty.authentication",
         "cisco.iosxe.crypto.legacy_ikev2"
       ],
-      "expected_finding_count": 19
+      "expected_finding_count": 20
     },
     {
       "name": "cisco-iosxe-secure",
@@ -157,6 +162,7 @@
         "cisco.asa.aaa.management_authentication",
         "cisco.asa.console.session_timeout",
         "cisco.asa.credentials.local_user_storage",
+        "cisco.asa.credentials.tunnel_group_pre_shared_key_storage",
         "cisco.asa.crypto.legacy_transform",
         "cisco.asa.crypto.legacy_vpn",
         "cisco.asa.failover.authentication",
@@ -166,9 +172,10 @@
         "cisco.asa.management.unrestricted_http",
         "cisco.asa.management.unrestricted_ssh",
         "cisco.asa.ntp.authentication",
-        "cisco.asa.threat_detection.basic"
+        "cisco.asa.threat_detection.basic",
+        "cisco.asa.vpn.ike_aggressive_mode"
       ],
-      "expected_finding_count": 15
+      "expected_finding_count": 17
     },
     {
       "name": "cisco-asa-secure",
@@ -182,14 +189,15 @@
       "device": "FORTIOS",
       "input": "fortios/vulnerable.conf",
       "expected_rule_ids": [
+        "fortinet.fortios.aaa.radius_message_authenticator",
+        "fortinet.fortios.aaa.radsec_server_identity",
+        "fortinet.fortios.aaa.radsec_tls_version",
         "fortinet.fortios.admin.centralized_authentication",
         "fortinet.fortios.admin.lockout",
         "fortinet.fortios.admin.mfa",
         "fortinet.fortios.admin.session_timeout",
         "fortinet.fortios.admin.trusted_hosts",
-        "fortinet.fortios.aaa.radsec_server_identity",
-        "fortinet.fortios.aaa.radsec_tls_version",
-        "fortinet.fortios.aaa.radius_message_authenticator",
+        "fortinet.fortios.credentials.private_data_storage",
         "fortinet.fortios.crypto.admin_ssh_v1",
         "fortinet.fortios.crypto.dh_parameters",
         "fortinet.fortios.crypto.ssl_static_key_ciphers",
@@ -204,9 +212,13 @@
         "fortinet.fortios.snmp.legacy_community",
         "fortinet.fortios.snmp.secure_user_missing",
         "fortinet.fortios.ssh.weak_enc_algo",
-        "fortinet.fortios.tls.minimum_version"
+        "fortinet.fortios.sslvpn.factory_certificate",
+        "fortinet.fortios.sslvpn.legacy_tls",
+        "fortinet.fortios.sslvpn.unlimited_login_attempts",
+        "fortinet.fortios.tls.minimum_version",
+        "fortinet.fortios.vpn.ike_aggressive_mode"
       ],
-      "expected_finding_count": 23
+      "expected_finding_count": 28
     },
     {
       "name": "fortios-secure",
@@ -227,8 +239,8 @@
         "policy_version": "regression-v1",
         "protected_aaa_profiles": ["root:LEGACY-PROTECTED"]
       },
-      "expected_rule_ids": [],
-      "expected_finding_count": 0
+      "expected_rule_ids": ["fortinet.fortios.credentials.private_data_storage"],
+      "expected_finding_count": 1
     },
     {
       "name": "junos-vulnerable",

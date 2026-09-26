@@ -1403,14 +1403,16 @@ class CiscoASAParser(BaseDeviceParser):
                 selected.setdefault(item.line_number, (context, item))
         return [selected[number] for number in sorted(selected)]
 
-    def _key_directive_evidence(self) -> list[tuple[str, ConfigEvidence]]:
-        """Effective tunnel-group pre-shared keys and AAA server keys (appendix only).
+    def _key_directive_records(self) -> list[tuple[str, str, str, int]]:
+        """Effective tunnel-group pre-shared keys and AAA server keys.
 
         Child keys under ``tunnel-group NAME ipsec-attributes`` and
         ``aaa-server GROUP (IF) host ADDRESS`` follow last-value and ``no``
         removal, and disappear when the tunnel group or server is removed.
+        Returns (context, account, stored value text, line number); the value
+        never leaves the parser.
         """
-        blocks: dict[str, dict[str, tuple[str, int]]] = {}
+        blocks: dict[str, dict[str, tuple[str, str, str, int]]] = {}
         parent: str | None = None
         for number, raw in enumerate(self._source_lines, start=1):
             line = raw.strip()
@@ -1437,25 +1439,143 @@ class CiscoASAParser(BaseDeviceParser):
                 continue
             if parent.startswith("tunnel-group"):
                 psk = re.fullmatch(
-                    r"(no )?(ikev1 pre-shared-key|ikev2 (?:remote|local)-authentication pre-shared-key)(?: .*)?",
+                    r"(no )?(pre-shared-key|ikev1 pre-shared-key|ikev2 (?:remote|local)-authentication pre-shared-key)(?: (.*))?",
                     folded,
                 )
                 if psk:
                     if psk.group(1):
                         blocks[parent].pop(psk.group(2), None)
                     else:
-                        blocks[parent][psk.group(2)] = ("tunnel_group_pre_shared_key", number)
+                        value = line.split(None, len(psk.group(2).split()))[-1] if psk.group(3) else ""
+                        account = parent.removesuffix(" ipsec-attributes") + " " + psk.group(2)
+                        blocks[parent][psk.group(2)] = ("tunnel_group_pre_shared_key", account, value, number)
             else:
-                key = re.fullmatch(r"(no )?key(?: .*)?", folded)
+                key = re.fullmatch(r"(no )?key(?: (.*))?", folded)
                 if key:
                     if key.group(1):
                         blocks[parent].pop("key", None)
                     else:
-                        blocks[parent]["key"] = ("aaa_server_key", number)
+                        value = line.split(None, 1)[1] if key.group(2) else ""
+                        blocks[parent]["key"] = ("aaa_server_key", parent, value, number)
+        return [item for keys in blocks.values() for item in keys.values()]
+
+    def _key_directive_evidence(self) -> list[tuple[str, ConfigEvidence]]:
+        """Effective tunnel-group pre-shared key and AAA server key lines (appendix only)."""
         return [
             (context, ConfigEvidence(f"{context.replace('_', ' ')} <redacted>", self.config_filepath, number))
-            for keys in blocks.values() for context, number in keys.values()
+            for context, _, _, number in self._key_directive_records()
         ]
+
+    def get_aaa_server_hosts(self) -> list[dict]:
+        """AAA server hosts with protocol, key presence and LDAP transport, plus binding.
+
+        A group is bound when ``aaa authentication|authorization|accounting ...`` or a
+        tunnel-group ``authentication-server-group``/``authorization-server-group``
+        references it. LDAP hosts record ``ldap-over-ssl enable`` and ``sasl-mechanism``
+        (plain/simple binds send the password in clear text without SSL).
+        """
+        protocols: dict[str, str] = {}
+        hosts: dict[str, dict] = {}
+        referenced: set[str] = set()
+        parent: Optional[str] = None
+        for number, raw in enumerate(self._source_lines, start=1):
+            line = raw.strip()
+            if not line or line == "!":
+                continue
+            folded = line.casefold()
+            if not raw[:1].isspace():
+                parent = None
+                protocol = re.fullmatch(r"aaa-server (\S+) protocol (\S+)", line, re.IGNORECASE)
+                host = re.fullmatch(r"aaa-server (\S+) (?:\(\S+\) )?host (\S+)(?: .*)?", line, re.IGNORECASE)
+                removed = re.fullmatch(r"no aaa-server (\S+) (?:\(\S+\) )?host (\S+)(?: .*)?", line, re.IGNORECASE)
+                if protocol:
+                    protocols[protocol.group(1)] = protocol.group(2).casefold()
+                elif removed:
+                    hosts.pop(f"{removed.group(1)} {removed.group(2)}", None)
+                elif host:
+                    parent = f"{host.group(1)} {host.group(2)}"
+                    hosts[parent] = {
+                        "group": host.group(1), "address": host.group(2),
+                        "key": " key " in f" {folded} ", "ldap_over_ssl": False, "sasl": None,
+                        "evidence": ConfigEvidence(re.sub(r"(?i)( key) \S+.*$", r"\1 <redacted>", line),
+                                                   self.config_filepath, number),
+                    }
+                elif re.match(r"aaa (?:authentication|authorization|accounting) ", folded):
+                    # server-group names appear among the remaining words
+                    referenced.update(line.split()[2:])
+                continue
+            if parent is None:
+                bound = re.fullmatch(r"(?:authentication|authorization|accounting)-server-group (?:\(\S+\) )?(\S+)(?: .*)?", line)
+                if bound:
+                    referenced.add(bound.group(1))
+                continue
+            if re.fullmatch(r"key(?: .*)?", folded):
+                hosts[parent]["key"] = True
+            elif folded == "no key":
+                hosts[parent]["key"] = False
+            elif folded == "ldap-over-ssl enable":
+                hosts[parent]["ldap_over_ssl"] = True
+            elif folded.startswith("sasl-mechanism "):
+                hosts[parent]["sasl"] = folded.split()[1]
+        result = []
+        for data in hosts.values():
+            data = dict(data)
+            data["protocol"] = protocols.get(data["group"], "unknown")
+            data["bound"] = data["group"] in referenced
+            result.append(data)
+        return result
+
+    def get_ikev1_aggressive_mode(self) -> tuple[bool, tuple[ConfigEvidence, ...]]:
+        """IKEv1 aggressive mode accepted: IKEv1 enabled on an interface, an IKEv1
+        pre-shared key configured, and no ``crypto ikev1 am-disable`` (named
+        ``crypto isakmp am-disable`` before 8.4(1) and ``isakmp am-disable`` in 7.0).
+        The command reference documents aggressive mode as enabled by default.
+        """
+        disabled = False
+        enabled_lines: list[ConfigEvidence] = []
+        for number, raw in enumerate(self._source_lines, start=1):
+            if raw[:1].isspace():
+                continue
+            folded = raw.strip().casefold()
+            if folded in {"crypto ikev1 am-disable", "crypto isakmp am-disable", "isakmp am-disable"}:
+                disabled = True
+            elif folded in {"no crypto ikev1 am-disable", "no crypto isakmp am-disable", "no isakmp am-disable"}:
+                disabled = False
+            elif re.fullmatch(r"(?:crypto ikev1|crypto isakmp|isakmp) enable \S+", folded):
+                enabled_lines.append(ConfigEvidence(raw.strip(), self.config_filepath, number))
+        keys = [
+            ConfigEvidence(f"{account} <redacted>", self.config_filepath, number)
+            for context, account, _, number in self._key_directive_records()
+            if context == "tunnel_group_pre_shared_key" and "ikev2" not in account
+        ]
+        if disabled or not enabled_lines or not keys:
+            return False, ()
+        return True, tuple(enabled_lines[:2] + keys[:3])
+
+    def get_service_key_storage(self) -> list[tuple[str, str, str, ConfigEvidence]]:
+        """Storage state of effective tunnel-group and AAA server keys, without values.
+
+        ``show running-config`` masks keys as ``*****`` (state ``masked``); a
+        ``more system:running-config`` export shows them in clear text unless the
+        master passphrase (``key config-key password-encryption`` with
+        ``password encryption aes``) is set, in which case the value is preceded by
+        type ``8`` (state ``encrypted``). Returns (context, account, state, evidence).
+        """
+        results = []
+        for context, account, value, number in self._key_directive_records():
+            words = value.split()
+            if not words:
+                state = "empty"
+            elif set(words[0]) == {"*"}:
+                state = "masked"
+            elif words[0] == "8" and len(words) > 1:
+                state = "encrypted"
+            else:
+                state = "cleartext"
+            marker = {"masked": "<masked>", "encrypted": "8 <encrypted>"}.get(state, "<redacted>")
+            results.append((context, account, state, ConfigEvidence(
+                f"{account} {marker}", self.config_filepath, number)))
+        return results
 
     def get_snmp_communities(self) -> list[str]:
         return [community.name for community in self.get_snmp_configuration()[0]]

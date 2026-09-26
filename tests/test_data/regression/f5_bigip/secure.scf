@@ -58,3 +58,8 @@ trustedkey 1"
 sys provision ltm {
     level nominal
 }
+net self external-self {
+    address 192.0.2.1/24
+    allow-service none
+    vlan external
+}

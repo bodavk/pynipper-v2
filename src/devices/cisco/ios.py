@@ -562,6 +562,97 @@ class CiscoIOSParser(BaseDeviceParser):
             if line.strip() and not line[:1].isspace()
         ]
 
+    def get_tacacs_servers(self) -> tuple[bool, list[tuple[str, str, bool, ConfigEvidence]]]:
+        """TACACS+ servers and whether each has its own key.
+
+        Returns (global ``tacacs-server key`` present, [(name, address, has_key, evidence)]).
+        Named ``tacacs server`` blocks and legacy ``tacacs-server host`` lines follow
+        ``no`` removal. Key values stay inside the parser.
+        """
+        keyed = {account.casefold() for context, account, _, _, _ in self._key_directive_records()
+                 if context == "tacacs_key"}
+        global_key = "tacacs-server" in keyed
+        servers: dict[str, list] = {}
+        parent: Optional[str] = None
+        for number, raw in enumerate(self._source_lines, start=1):
+            line = raw.strip()
+            if not line or line == "!":
+                continue
+            folded = line.casefold()
+            if not raw[:1].isspace():
+                parent = None
+                removed = re.fullmatch(r"(?:no|default) tacacs server (\S+)", folded)
+                removed_host = re.fullmatch(r"(?:no|default) tacacs-server host (\S+)(?: .*)?", folded)
+                if removed:
+                    servers.pop(f"tacacs server {removed.group(1)}", None)
+                elif removed_host:
+                    servers.pop(f"tacacs-server host {removed_host.group(1)}", None)
+                elif re.fullmatch(r"tacacs server \S+", folded):
+                    parent = " ".join(folded.split()[:3])
+                    servers[parent] = [line.split()[2], "", ConfigEvidence(line, self.config_filepath, number)]
+                elif folded.startswith("tacacs-server host "):
+                    address = line.split()[2]
+                    servers[f"tacacs-server host {address.casefold()}"] = [
+                        address, address, ConfigEvidence(
+                            re.sub(r"(?i)( key)( \d)? \S+.*$", r"\1 <redacted>", line),
+                            self.config_filepath, number)]
+                continue
+            if parent and parent in servers:
+                address = re.fullmatch(r"address ipv[46] (\S+)", folded)
+                if address:
+                    servers[parent][1] = address.group(1)
+        result = []
+        for key, (name, address, evidence) in servers.items():
+            account = key if key.startswith("tacacs server") else f"tacacs-server host {address}".casefold()
+            result.append((name, address, account in keyed, evidence))
+        return global_key, result
+
+    def get_ikev1_aggressive_mode(self) -> tuple[bool, tuple[ConfigEvidence, ...]]:
+        """Whether IKEv1 aggressive mode is accepted for effective pre-shared keys.
+
+        Without ``crypto isakmp aggressive-mode disable`` IOS processes all incoming
+        aggressive-mode SAs (Security Command Reference). Returns (accepted, evidence of
+        the pre-shared keys); accepted is False when disabled or no IKEv1 key exists.
+        """
+        disabled = self._effective_global_toggle("crypto isakmp aggressive-mode disable")
+        keys = [record for record in self._key_directive_records()
+                if record[0] in {"isakmp_pre_shared_key", "keyring_pre_shared_key"}]
+        if disabled or not keys:
+            return False, ()
+        return True, tuple(
+            ConfigEvidence(f"{account} pre-shared key <redacted>", self.config_filepath, number)
+            for _, account, _, _, number in keys
+        )
+
+    def _effective_global_toggle(self, command: str) -> bool:
+        state = False
+        for line in self._global_lines():
+            folded = line.casefold()
+            if folded == command:
+                state = True
+            elif folded in {f"no {command}", f"default {command}"}:
+                state = False
+        return state
+
+    def get_smart_install(self) -> tuple[Optional[bool], tuple[str, ...]]:
+        """Effective Smart Install (`vstack`) state from explicit global commands.
+
+        Releases with Cisco bug CSCvd36820 show `vstack` when the client is enabled and
+        `no vstack` when it is disabled; older releases showed neither, so absence is
+        unknown (cisco-sa-20180409-smi). Returns (state, evidence lines in effect).
+        """
+        state: Optional[bool] = None
+        evidence: list[str] = []
+        for line in self._global_lines():
+            if line == "no vstack":
+                state, evidence = False, [line]
+            elif line == "vstack" or line.startswith("vstack "):
+                if state is not True:
+                    evidence = []
+                state = True
+                evidence.append(line)
+        return state, tuple(evidence)
+
     def _last_global_match(self, pattern: str) -> Optional[re.Match]:
         expression = re.compile(pattern)
         match = None
@@ -755,7 +846,7 @@ class CiscoIOSParser(BaseDeviceParser):
         return [*users.values(), *([enable] if enable else [])]
 
     def get_additional_credential_metadata(self) -> list[CredentialMetadata]:
-        """Return effective RADIUS and line secrets as value-free metadata."""
+        """Return effective RADIUS, TACACS+, IKE pre-shared-key and line secrets as value-free metadata."""
 
         credentials: dict[str, CredentialMetadata] = {}
 
@@ -839,6 +930,8 @@ class CiscoIOSParser(BaseDeviceParser):
                 account = f"radius-server host {tokens[2]}"
                 record(account.casefold(), "radius_key", account, "key", marker,
                        tokens[value_index] if len(tokens) > value_index else "", line_number)
+        for context, account, storage_type, value, number in self._key_directive_records():
+            record(f"{context} {account}".casefold(), context, account, "key", storage_type, value, number)
         return list(credentials.values())
 
     _SECRET_EVIDENCE_MARKER = re.compile(r"<(?:key |credential )?redacted>|<key present>")
@@ -870,21 +963,32 @@ class CiscoIOSParser(BaseDeviceParser):
             selected.setdefault(item.line_number, (context, item))
         return [selected[number] for number in sorted(selected)]
 
-    def _key_directive_evidence(self) -> list[tuple[str, ConfigEvidence]]:
-        """Effective TACACS+ and IKE pre-shared key directives (appendix only).
+    @staticmethod
+    def _typed_key(tokens: list[str]) -> tuple[str, str]:
+        """Split ``[type] value`` after a key keyword; no type means clear text (0)."""
+        if not tokens:
+            return "0", ""
+        if tokens[0].isdigit() and len(tokens) > 1:
+            return tokens[0], tokens[1]
+        return "0", tokens[0]
 
-        Global ``tacacs-server key`` and ``crypto isakmp key ... address``
-        follow last-value and ``no`` removal; ``tacacs server`` and
-        ``crypto keyring`` child keys disappear with their removed parent.
+    def _key_directive_records(self) -> list[tuple[str, str, str, str, int]]:
+        """Effective TACACS+ and IKE pre-shared key directives.
+
+        Returns (context, account, storage type, value, line number). Global
+        ``tacacs-server key``/``tacacs-server host ... key`` and ``crypto isakmp key``
+        follow last-value and ``no`` removal; ``tacacs server`` and ``crypto keyring``
+        child keys disappear with their removed parent. Values never leave the parser.
         """
-        global_keys: dict[str, tuple[str, int]] = {}
-        block_keys: dict[str, dict[str, tuple[str, int]]] = {}
+        global_keys: dict[str, tuple[str, str, str, str, int]] = {}
+        block_keys: dict[str, dict[str, tuple[str, str, str, str, int]]] = {}
         parent: str | None = None
         for number, raw in enumerate(self._source_lines, start=1):
             line = raw.strip()
             if not line or line == "!":
                 continue
             folded = line.casefold()
+            words = line.split()
             if not raw[:1].isspace():
                 parent = None
                 removal = re.fullmatch(r"(?:no|default) (tacacs server \S+|crypto keyring \S+)", folded)
@@ -898,15 +1002,24 @@ class CiscoIOSParser(BaseDeviceParser):
                 if re.fullmatch(r"(?:no|default) tacacs-server key(?: .*)?", folded):
                     global_keys.pop("tacacs-server key", None)
                 elif folded.startswith("tacacs-server key "):
-                    global_keys["tacacs-server key"] = ("tacacs_key", number)
+                    storage, value = self._typed_key(words[2:])
+                    global_keys["tacacs-server key"] = ("tacacs_key", "tacacs-server", storage, value, number)
+                elif re.fullmatch(r"(?:no|default) tacacs-server host \S+(?: .*)?", folded):
+                    global_keys.pop(f"tacacs-server host {folded.split()[3]}", None)
+                elif folded.startswith("tacacs-server host ") and " key " in f" {folded} ":
+                    index = [word.casefold() for word in words].index("key", 3)
+                    storage, value = self._typed_key(words[index + 1:])
+                    account = f"tacacs-server host {words[2]}"
+                    global_keys[account.casefold()] = ("tacacs_key", account, storage, value, number)
                 else:
-                    isakmp = re.fullmatch(r"(no )?crypto isakmp key (?:\d+ )?\S+ (address|hostname) (\S+)(?: .*)?", folded)
+                    isakmp = re.fullmatch(r"(no )?crypto isakmp key (?:(\d) )?(\S+) (address|hostname) (\S+)(?: .*)?", line, re.IGNORECASE)
                     if isakmp:
-                        identity = f"isakmp {isakmp.group(2)} {isakmp.group(3)}"
+                        identity = f"isakmp {isakmp.group(4).casefold()} {isakmp.group(5).casefold()}"
                         if isakmp.group(1):
                             global_keys.pop(identity, None)
                         else:
-                            global_keys[identity] = ("isakmp_pre_shared_key", number)
+                            global_keys[identity] = ("isakmp_pre_shared_key", f"isakmp peer {isakmp.group(5)}",
+                                                     isakmp.group(2) or "0", isakmp.group(3), number)
                 continue
             if parent is None:
                 continue
@@ -914,7 +1027,8 @@ class CiscoIOSParser(BaseDeviceParser):
                 if re.fullmatch(r"(?:no|default) key(?: .*)?", folded):
                     block_keys[parent].pop("key", None)
                 elif folded.startswith("key "):
-                    block_keys[parent]["key"] = ("tacacs_key", number)
+                    storage, value = self._typed_key(words[1:])
+                    block_keys[parent]["key"] = ("tacacs_key", parent, storage, value, number)
             else:
                 psk = re.fullmatch(r"(no )?pre-shared-key (address|hostname) (\S+)(?: \S+)?(?: key .*)?", folded)
                 if psk:
@@ -922,13 +1036,19 @@ class CiscoIOSParser(BaseDeviceParser):
                     if psk.group(1):
                         block_keys[parent].pop(identity, None)
                     elif " key " in f" {folded} ":
-                        block_keys[parent][identity] = ("keyring_pre_shared_key", number)
-        found = list(global_keys.values()) + [
+                        index = [word.casefold() for word in words].index("key", 2)
+                        storage, value = self._typed_key(words[index + 1:])
+                        block_keys[parent][identity] = ("keyring_pre_shared_key", f"{parent.removeprefix('crypto ')} peer {psk.group(3)}",
+                                                        storage, value, number)
+        return list(global_keys.values()) + [
             item for keys in block_keys.values() for item in keys.values()
         ]
+
+    def _key_directive_evidence(self) -> list[tuple[str, ConfigEvidence]]:
+        """Effective TACACS+ and IKE pre-shared key directive lines (appendix only)."""
         return [
             (context, ConfigEvidence(f"{context.replace('_', ' ')} <redacted>", self.config_filepath, number))
-            for context, number in found
+            for context, _, _, _, number in self._key_directive_records()
         ]
 
     def get_snmp_community_metadata(self) -> list[tuple[str, str, ConfigEvidence]]:
