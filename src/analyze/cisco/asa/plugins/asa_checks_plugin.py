@@ -1,6 +1,9 @@
+import re
+
 from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.credentials import credential_policy_from_context, evaluate_credential
 from src.analyze.common.issue import Finding, FindingBasis, Severity
+from src.analyze.common.risky_services import CISCO_PORT_NAMES, risky_labels
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.policy_semantics import ProofState, network_covers, service_covers
 from src.devices.cisco.asa import CiscoASAParser
@@ -17,6 +20,9 @@ CISCO_ASA_PASSWORD_REFERENCE = (
 CISCO_ASA_SNMP_GUIDE = (
     "https://www.cisco.com/c/en/us/td/docs/security/asa/asa917/configuration/"
     "general/asa-917-general-config/monitor-snmp.html"
+)
+CISCO_ASA_LOGGING_HOST_REFERENCE = (
+    "https://www.cisco.com/c/en/us/td/docs/security/asa/asa-cli-reference/I-R/asa-command-ref-I-R/m_log-lz.html"
 )
 CISCO_ASA_LOGGING_GUIDE = (
     "https://www.cisco.com/c/en/us/td/docs/security/asa/asa916/configuration/"
@@ -263,6 +269,22 @@ class PluginASAChecks(BasePlugin):
             )
             return
 
+        cleartext = [host for host in hosts if not re.search(r"\bsecure\b", host, re.IGNORECASE)]
+        if cleartext:
+            self.add_issue(Finding(
+                rule_id="cisco.asa.logging.remote_cleartext",
+                device=parser.device_type,
+                title="Remote syslog is sent without TLS",
+                observation="One or more 'logging host' destinations do not use the 'secure' keyword (TLS over TCP); the default is clear-text UDP 514.",
+                impact="Log messages, including usernames and addresses, can be read or forged in transit.",
+                severity=Severity.LOW,
+                exploitability="An attacker on the path to the log server can read events or inject misleading ones.",
+                recommendation="Use 'logging host <if> <ip> tcp/<port> secure' with a TLS-capable syslog server, or carry syslog over a protected management network.",
+                evidence=tuple(cleartext),
+                references=(CISCO_ASA_LOGGING_HOST_REFERENCE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+
         level = asa.get_logging_trap_level()
         severity_values = {
             "emergencies": 0,
@@ -355,6 +377,27 @@ class PluginASAChecks(BasePlugin):
                     )
                 )
 
+    @staticmethod
+    def _risky_entry_services(entry) -> list[str]:
+        """SC-043: catalogued destination ports on an active permit from any source."""
+        if entry.inactive or entry.action != "permit" or entry.source not in {"any", "any4", "any6"}:
+            return []
+        protocol = entry.protocol.casefold()
+        if protocol not in {"tcp", "udp", "tcp-udp"}:
+            return []
+        qualifiers = list(entry.service_qualifiers)
+
+        def port(value: str) -> int | None:
+            return int(value) if value.isdigit() else CISCO_PORT_NAMES.get(value)
+
+        labels: set[str] = set()
+        if len(qualifiers) >= 2 and qualifiers[0] == "eq" and port(qualifiers[1]) is not None:
+            value = port(qualifiers[1])
+            labels = risky_labels(protocol, value, value)
+        elif len(qualifiers) >= 3 and qualifiers[0] == "range" and port(qualifiers[1]) is not None and port(qualifiers[2]) is not None:
+            labels = risky_labels(protocol, port(qualifiers[1]), port(qualifiers[2]))
+        return sorted(labels)
+
     def check_acl_hygiene_and_effectiveness(self, parser: BaseDeviceParser) -> None:
         asa = self._asa(parser)
         for binding in asa.get_acl_bindings():
@@ -396,6 +439,21 @@ class PluginASAChecks(BasePlugin):
                         severity=Severity.MEDIUM,
                         evidence=evidence,
                         references=(CISCO_ASA_ACCESS_RULES_GUIDE,),
+                    ))
+                risky = self._risky_entry_services(entry)
+                if risky:
+                    self.add_issue(Finding(
+                        rule_id="cisco.asa.acl.risky_service_exposure",
+                        device=parser.device_type,
+                        title="Risky service is permitted from any source",
+                        observation=f"Entry {position} in ACL '{entry.acl_name}' on '{binding['interface']}' permits {', '.join(risky)} from any source.",
+                        impact="Clear-text logins, file sharing, remote administration and database services are common targets for credential theft and exploitation.",
+                        exploitability="Any host that reaches the interface can connect to the permitted service.",
+                        recommendation="Restrict the source to the hosts that need the service, and replace clear-text protocols with encrypted alternatives.",
+                        severity=Severity.HIGH,
+                        evidence=evidence,
+                        references=(CISCO_ASA_ACCESS_RULES_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     ))
                 if entry.action == "permit" and entry.is_broad_permit and not entry.logging:
                     self.add_issue(Finding(

@@ -78,3 +78,10 @@ net ipsec ike-peer /Common/branch {
     phase1-auth-method pre-shared-key
     remote-address 198.51.100.9
 }
+auth remote-user {
+    default-role admin
+}
+ltm persistence cookie /Common/app_cookie {
+    cookie-encryption disabled
+    method insert
+}

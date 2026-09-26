@@ -35,6 +35,7 @@ cli global-settings {
 }
 auth password-policy {
     policy-enforcement enabled
+    password-memory 5
 }
 sys syslog {
     remote-servers {
@@ -62,4 +63,7 @@ net self external-self {
     address 192.0.2.1/24
     allow-service none
     vlan external
+}
+auth remote-user {
+    default-role no-access
 }

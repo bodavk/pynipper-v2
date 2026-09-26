@@ -6,6 +6,7 @@ import re
 
 from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.issue import Finding, FindingBasis, Severity
+from src.analyze.common.risky_services import risky_labels
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.policy_semantics import (
     ProofState,
@@ -80,6 +81,18 @@ NIST_CRYPTO_TRANSITIONS = "https://csrc.nist.gov/pubs/sp/800/131/a/r2/final"
 FORTINET_PRIVATE_DATA_ADVISORY = "https://www.fortiguard.com/psirt/FG-IR-19-007"
 FORTINET_SSLVPN_REFERENCE = (
     "https://docs.fortinet.com/document/fortigate/7.4.4/cli-reference/114404382/config-vpn-ssl-settings"
+)
+FORTINET_HA_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.4.2/cli-reference/22620/config-system-ha"
+)
+FORTINET_AUTO_INSTALL_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.4.1/cli-reference/109620/config-system-auto-install"
+)
+FORTINET_NTP_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.4.4/cli-reference/105110478/config-system-ntp"
+)
+FORTINET_FAZ_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.4.0/cli-reference/443620/config-log-fortianalyzer-setting"
 )
 FORTINET_LDAP_REFERENCE = (
     "https://docs.fortinet.com/document/fortigate/7.4.4/cli-reference/590785459/config-user-ldap"
@@ -1176,6 +1189,31 @@ class PluginFortiOSBaseline(BasePlugin):
                     references,
                 ))
 
+            if (
+                policy.action == "accept"
+                and policy.source_networks.any
+                and not policy.source_negated
+                and not policy.service_negated
+                and not policy.services.any
+            ):
+                risky = sorted({
+                    label for interval in policy.services.intervals
+                    for label in risky_labels(interval.protocol, interval.first_port, interval.last_port)
+                })
+                if risky:
+                    self.add_issue(self._finding(
+                        parser,
+                        "fortinet.fortios.policy.risky_service_exposure",
+                        "Risky service is allowed from any source",
+                        f"Enabled {policy.family} accept policy '{policy.name}' in scope '{policy.scope}' allows {', '.join(risky)} from source 'all'.",
+                        "Clear-text logins, file sharing, remote administration and database services are common targets for credential theft and exploitation.",
+                        "Restrict the source to the hosts that need the service, and replace clear-text protocols with encrypted alternatives.",
+                        Severity.HIGH,
+                        evidence,
+                        references,
+                        basis=FindingBasis.EXPLICIT_VALUE,
+                    ))
+
             key = (policy.scope.casefold(), policy.family)
             if not policy.proof_eligible:
                 continue
@@ -1690,6 +1728,118 @@ class PluginFortiOSBaseline(BasePlugin):
         self.check_ike_aggressive_mode(parser)
         self.check_ldap_transport(parser)
         self.check_sslvpn(parser)
+        self.check_ha_protection(parser)
+        self.check_usb_auto_install(parser)
+        self.check_ntp_server_mode(parser)
+        self.check_fortianalyzer_transport(parser)
+
+    def check_fortianalyzer_transport(self, parser: BaseDeviceParser) -> None:
+        """SC-032: FortiAnalyzer log transport with low encryption or no certificate verification."""
+        fortios = self._fortios(parser)
+        for section in ("log fortianalyzer setting", "log fortianalyzer2 setting", "log fortianalyzer3 setting"):
+            for scope, settings, path in fortios.iter_scoped_sections(section):
+                if self._text(settings.get("status")).lower() != "enable":
+                    continue
+                if self._text(settings.get("enc-algorithm")).lower() in {"low", "disable"}:
+                    self.add_issue(self._finding(
+                        parser,
+                        "fortinet.fortios.logging.remote_weak_tls",
+                        "FortiAnalyzer logging allows weak encryption",
+                        f"Enabled '{section}' in scope '{scope}' sets enc-algorithm {self._text(settings.get('enc-algorithm'))} (default high).",
+                        "Logs sent to FortiAnalyzer may be protected only by weak cipher suites.",
+                        "Set 'enc-algorithm high' (the default).",
+                        Severity.MEDIUM,
+                        self._evidence(fortios, path + ("enc-algorithm",), "set enc-algorithm low"),
+                        (FORTINET_FAZ_REFERENCE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
+                    ))
+                if self._text(settings.get("certificate-verification")).lower() == "disable":
+                    self.add_issue(self._finding(
+                        parser,
+                        "fortinet.fortios.logging.remote_identity_unverified",
+                        "FortiAnalyzer identity is not verified",
+                        f"Enabled '{section}' in scope '{scope}' sets certificate-verification disable (default enable).",
+                        "A system that can intercept the connection can impersonate the FortiAnalyzer and receive or suppress logs.",
+                        "Set 'certificate-verification enable' and configure the FortiAnalyzer serial number or CA.",
+                        Severity.MEDIUM,
+                        self._evidence(fortios, path + ("certificate-verification",), "set certificate-verification disable"),
+                        (FORTINET_FAZ_REFERENCE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
+                    ))
+
+    def check_ha_protection(self, parser: BaseDeviceParser) -> None:
+        """SC-038: active HA cluster with heartbeat authentication or encryption off (default disable)."""
+        fortios = self._fortios(parser)
+        for scope, settings, path in fortios.iter_scoped_sections("system ha"):
+            mode = self._text(settings.get("mode"), "standalone").lower()
+            if mode not in {"a-p", "a-a"}:
+                continue
+            missing = [field for field in ("authentication", "encryption")
+                       if self._text(settings.get(field), "disable").lower() != "enable"]
+            if not missing:
+                continue
+            explicit = [field for field in missing if field in settings]
+            evidence = tuple(item for field in ("mode", *missing) for item in fortios.field_evidence(path + (field,)))
+            self.add_issue(self._finding(
+                parser,
+                "fortinet.fortios.ha.heartbeat_protection",
+                "HA heartbeat is not authenticated or encrypted",
+                (f"HA mode {mode} in scope '{scope}' has heartbeat {' and '.join(missing)} disabled"
+                 + ("." if len(explicit) == len(missing) else " (the default for settings that are not set).")),
+                "Heartbeat and session/configuration synchronisation traffic can be read or spoofed on the HA link, including synchronised secrets.",
+                "Enable 'set authentication enable' and 'set encryption enable' under 'config system ha', and keep HA links on a dedicated, isolated network.",
+                Severity.MEDIUM,
+                evidence or ("config system ha",),
+                (FORTINET_HA_REFERENCE,),
+                basis=FindingBasis.EXPLICIT_VALUE if len(explicit) == len(missing) else FindingBasis.DOCUMENTED_DEFAULT,
+            ))
+
+    def check_usb_auto_install(self, parser: BaseDeviceParser) -> None:
+        """SC-040: explicit USB auto-install of configuration or firmware at boot (default disable)."""
+        fortios = self._fortios(parser)
+        for scope, settings, path in fortios.iter_scoped_sections("system auto-install"):
+            enabled = [field for field in ("auto-install-config", "auto-install-image")
+                       if self._text(settings.get(field)).lower() == "enable"]
+            if not enabled:
+                continue
+            self.add_issue(self._finding(
+                parser,
+                "fortinet.fortios.system.usb_auto_install",
+                "USB auto-install is enabled",
+                f"Scope '{scope}' enables {' and '.join(enabled)}, so a USB drive present at boot can load a configuration or firmware image.",
+                "Someone with brief physical access can replace the configuration or firmware without any credentials by rebooting with a prepared USB drive.",
+                "Set 'auto-install-config disable' and 'auto-install-image disable' under 'config system auto-install' (the defaults) and restrict physical access.",
+                Severity.LOW,
+                tuple(item for field in enabled for item in fortios.field_evidence(path + (field,))) or ("config system auto-install",),
+                (FORTINET_AUTO_INSTALL_REFERENCE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+
+    def check_ntp_server_mode(self, parser: BaseDeviceParser) -> None:
+        """SC-033: FortiGate NTP server mode on a WAN-role interface."""
+        fortios = self._fortios(parser)
+        wan = {
+            name.casefold() for _, name, settings, _ in fortios.iter_interfaces()
+            if self._text(settings.get("role")).lower() == "wan" or name.lower().startswith("wan")
+        }
+        for scope, settings, path in fortios.iter_scoped_sections("system ntp"):
+            if self._text(settings.get("server-mode")).lower() != "enable":
+                continue
+            exposed = [name for name in self._values(settings, "interface") if name.casefold() in wan]
+            if not exposed:
+                continue
+            self.add_issue(self._finding(
+                parser,
+                "fortinet.fortios.ntp.server_exposed",
+                "FortiGate answers NTP on a WAN interface",
+                f"NTP server mode in scope '{scope}' is enabled on WAN interface(s) {', '.join(exposed)}.",
+                "Internet hosts can query the firewall's time service, which can be abused for reflection traffic and reveals device information.",
+                "Limit 'set interface' under 'config system ntp' to internal interfaces or disable server-mode.",
+                Severity.LOW,
+                tuple(item for field in ("server-mode", "interface") for item in fortios.field_evidence(path + (field,))) or ("set server-mode enable",),
+                (FORTINET_NTP_REFERENCE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
 
     def check_sslvpn(self, parser: BaseDeviceParser) -> None:
         """SC-039: explicit weak settings on an active SSL-VPN portal."""

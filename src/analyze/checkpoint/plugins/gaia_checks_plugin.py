@@ -11,6 +11,7 @@ SNMP = _GUIDE + "SNMP-Gaia-Clish.htm"
 PASSWORD_POLICY = _GUIDE + "Password-Policy-Gaia-Clish.htm"
 SESSION = _GUIDE + "Session.htm"
 MESSAGES = _GUIDE + "Messages.htm"
+USERS = _GUIDE + "Users-Gaia-Clish.htm"
 NIST_PASSWORDS = "https://pages.nist.gov/800-63-4/sp800-63b.html"
 DEFAULT_COMMUNITIES = {"public", "private"}
 
@@ -32,6 +33,19 @@ class PluginCheckPointGaiaChecks(BasePlugin):
         self._check_snmp(parser)
         self._check_password_policy(parser)
         self._check_session(parser)
+        self._check_user_shells(parser)
+
+    def _check_user_shells(self, parser: CheckPointGaiaParser) -> None:
+        """SC-030: users whose login shell is bash (Expert mode) instead of Clish."""
+        for user in parser.get_local_users():
+            if user.shell not in {"/bin/bash", "bash"} or user.name == "root":
+                continue
+            evidence = tuple(item for item in user.evidence if " shell " in f" {item.text} ") or user.evidence
+            self._emit(parser, "auth.user_bash_shell", "User logs in to the Expert (bash) shell",
+                       f"User '{user.name}' has shell /bin/bash, so login opens the Linux Expert shell instead of Clish.",
+                       "A compromised password for this user gives a full operating-system shell without the Expert-mode password step.",
+                       f"Set 'set user {user.name} shell /etc/cli.sh' unless Expert access at login is required.",
+                       Severity.LOW, evidence, (USERS,), FindingBasis.EXPLICIT_VALUE)
 
     def _check_management(self, parser: CheckPointGaiaParser) -> None:
         telnet = parser.get_telnet()

@@ -14,5 +14,5 @@ sys sshd {
 }
 sys httpd { allow none redirect-http-to-https enabled }
 cli global-settings { audit unexpected idle-timeout 15 }
-auth password-policy { policy-enforcement enabled }
+auth password-policy { policy-enforcement enabled password-memory 5 }
 sys syslog { remote-servers { collector { host 192.0.2.20 } } }

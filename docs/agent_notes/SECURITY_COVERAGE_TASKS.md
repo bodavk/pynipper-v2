@@ -708,7 +708,7 @@ Not scheduled (maintainer decision, 2026-09-25): SNMPv1/v2c community checks for
 
 **Priority:** P2.
 
-**Status:** Evidence gate.
+**Status:** Implemented 2026-09-26 (explicit states only): `services.unnecessary` now resolves `no` removal and adds `service pad`, `ip finger`, `ip identd` and `mop enabled` on interfaces that are not shut down; new `cisco.ios.services.remote_shell` (`ip rcmd rsh-enable`/`rcp-enable`), `cisco.ios.services.tftp_server` (`tftp-server`) and `cisco.ios.management.insecure_protocol` for IOS-XE `gnxi server`. Sources: Cisco IOS hardening guide, IOS XE File Transfer Services guide, IOS XE Programmability gNMI guide, IOS XE Security Warnings Reference. Remaining: `ip dns server`, release-gated defaults ([SC-044](#sc-044)).
 
 **Source of Truth:** Candidates: Cisco Guide to Harden Cisco IOS Devices; IOS command references for each command; IOS-XE programmability guide (gNMI `gnxi server` vs `gnxi secure-server`); IOS/IOS-XE NDM STIGs.
 
@@ -731,7 +731,7 @@ Not scheduled (maintainer decision, 2026-09-25): SNMPv1/v2c community checks for
 
 **Priority:** P2.
 
-**Status:** Evidence gate.
+**Status:** Implemented 2026-09-26: `cisco.ios.tls.minimum_version` (`ip http tls-version TLSv1.0|TLSv1.1`) and `cisco.ios.tls.weak_cipher` (SHA-1, DES/3DES, RC4, MD5, NULL/export suites in `ip http secure-ciphersuite`), only while `ip http secure-server` is enabled. Source: Cisco IOS XE Security Warnings Reference. Absent settings stay unassessed.
 
 **Source of Truth:** Candidates: IOS-XE HTTP server configuration guide (`ip http tls-version`, `ip http secure-ciphersuite`); IOS-XE NDM STIG TLS entries.
 
@@ -754,7 +754,7 @@ Not scheduled (maintainer decision, 2026-09-25): SNMPv1/v2c community checks for
 
 **Priority:** P2. A host on the segment can take over the default gateway and intercept traffic.
 
-**Status:** Evidence gate.
+**Status:** First stage implemented 2026-09-26 for IOS/IOS-XE: `cisco.ios.fhrp.authentication` for HSRP, VRRPv2 and GLBP groups on interfaces that are not shut down, when no MD5 authentication is configured (missing setting) or plain-text authentication is explicit. VRRPv3 (`vrrp N address-family`) is not assessed. Sources: IOS FHRP command reference, Cisco HSRP guide. Remaining: EOS and Junos VRRP.
 
 **Source of Truth:** Candidates: IOS First Hop Redundancy Protocols configuration guides (`standby authentication md5`, `vrrp authentication`, `glbp authentication`); router STIG entries on FHRP authentication; later Arista EOS VRRP and Junos VRRP references.
 
@@ -777,7 +777,7 @@ Not scheduled (maintainer decision, 2026-09-25): SNMPv1/v2c community checks for
 
 **Priority:** P2. A rogue switch with a higher revision can overwrite or delete the VLAN database.
 
-**Status:** Evidence gate.
+**Status:** Blocked by export evidence (checked 2026-09-26). The Catalyst VTP guide states that only VTP mode and domain name are saved in the running configuration (and only in transparent mode); the VTP password lives in the VLAN database and is shown only by `show vtp password`. A running-config export therefore cannot prove that a password is missing. Revisit only with a companion `show vtp status`/`show vtp password` input.
 
 **Source of Truth:** Candidates: Catalyst VTP configuration guides (VTP v1/v2 `vtp password`, VTP v3 primary server and hidden password); switch L2 STIG entries.
 
@@ -800,7 +800,7 @@ Not scheduled (maintainer decision, 2026-09-25): SNMPv1/v2c community checks for
 
 **Priority:** P2.
 
-**Status:** Evidence gate. Junos already has `juniper.junos.ssh.root_login`.
+**Status:** First stage implemented 2026-09-26: F5 `auth.root_login_enabled` (explicit `sys db systemauth.disablerootlogin false`), `auth.user_bash_shell`, `auth.remote_default_admin` (explicit `auth remote-user default-role admin`; default no-access) and `password_policy.history_disabled` (enforcement on, `password-memory` 0 or default 0); Gaia `auth.user_bash_shell`. Sources: tmsh auth user/remote-user/password-policy references, F5 DevCentral lockdown article, Gaia Users page. Remaining: root-login default (no F5 statement of the default found), Gaia expert password, EOS.
 
 **Source of Truth:** Candidates: F5 articles on disabling root login (`sys db systemauth.disablerootlogin`), user terminal access (`shell bash` vs `tmsh`) and remote-user default role/console access (`auth remote-user`); F5 NDM STIG; Check Point Gaia Administration Guide (users, shell, expert password).
 
@@ -846,7 +846,7 @@ Not scheduled (maintainer decision, 2026-09-25): SNMPv1/v2c community checks for
 
 **Priority:** P2. Logs reveal usernames, addresses and events and can be forged or suppressed in transit.
 
-**Status:** Evidence gate. FortiOS syslogd transport is already covered (`fortinet.fortios.logging.remote_cleartext`, `remote_weak_tls`).
+**Status:** First stage implemented 2026-09-26: `cisco.asa.logging.remote_cleartext` (logging host without `secure`; ASA command reference) and FortiAnalyzer `logging.remote_weak_tls` (`enc-algorithm low`) and `logging.remote_identity_unverified` (`certificate-verification disable`). Remaining: IOS-XE syslog over TLS (platform and release support not yet qualified), F5 syslog TLS.
 
 **Source of Truth:** Candidates: IOS-XE `logging host ... transport tls`; ASA `logging host ... tcp/port secure`; FortiOS `config log fortianalyzer setting` (`enc-algorithm`, `reliable`); F5 remote syslog over TLS (syslog-ng include) articles; FortiGate FW STIG V-234141 (S10).
 
@@ -869,7 +869,7 @@ Not scheduled (maintainer decision, 2026-09-25): SNMPv1/v2c community checks for
 
 **Priority:** P2. Unrestricted mode 6/7 queries enable amplification attacks and information disclosure.
 
-**Status:** Evidence gate.
+**Status:** First stage implemented 2026-09-26: `cisco.ios.ntp.server_exposed` (NTP configured, no `ntp access-group`; the command reference documents full access by default) and `fortinet.fortios.ntp.server_exposed` (`server-mode enable` on a WAN-role interface). Remaining: F5, EOS, Junos.
 
 **Source of Truth:** Candidates: IOS NTP configuration guide (`ntp access-group peer|serve|serve-only|query-only`, `ntp allow mode control`, default behaviour when a server is configured); FortiOS `config system ntp` (`set server-mode enable`, `set interface`); F5 NTP `restrict` via include; later EOS `ntp serve`, Junos NTP.
 
@@ -938,7 +938,7 @@ Not scheduled (maintainer decision, 2026-09-25): SNMPv1/v2c community checks for
 
 **Priority:** P2.
 
-**Status:** Evidence gate.
+**Status:** First stage implemented 2026-09-26 for IOS/IOS-XE: `credentials.ftp_client_storage` (`ip ftp password`), `credentials.http_client_storage` (`ip http client password`) and `credentials.url_storage` (`user:password@` in any URL); evidence is redacted. Source: Cisco IOS XE Security Warnings Reference. Remaining: ASA URLs, F5 monitors with basic-auth headers.
 
 **Source of Truth:** Candidates: IOS `ip ftp username/password`, `ip http client username/password`, `archive path` and `boot system` URL syntax; ASA `boot config`/URL-based settings; F5 `ltm monitor http/https` `send` strings with `Authorization: Basic` and monitor `username`/`password` properties.
 
@@ -961,7 +961,7 @@ Not scheduled (maintainer decision, 2026-09-25): SNMPv1/v2c community checks for
 
 **Priority:** P2.
 
-**Status:** Evidence gate.
+**Status:** Implemented 2026-09-26 for IOS/IOS-XE as `cisco.ios.snmp.legacy_version` (v1/v2c notification targets; version 1 when unspecified). ASA was already covered by `cisco.asa.snmp.legacy_version`. Remaining: FortiOS and F5 trap targets.
 
 **Source of Truth:** Candidates: IOS `snmp-server host ... version 1|2c <community>`; ASA `snmp-server host ... community`; FortiOS `config system snmp community` `config hosts` with `ha-direct`/trap settings; F5 `sys snmp traps`.
 
@@ -984,7 +984,7 @@ Not scheduled (maintainer decision, 2026-09-25): SNMPv1/v2c community checks for
 
 **Priority:** P2.
 
-**Status:** Evidence gate. ASA failover is already covered (`cisco.asa.failover.authentication`).
+**Status:** Implemented 2026-09-26 for FortiOS: `fortinet.fortios.ha.heartbeat_protection` when HA mode is a-p/a-a and heartbeat authentication or encryption is disabled (both default disable per the 7.4 CLI reference). Remaining: Check Point ClusterXL CCP encryption (not visible in Gaia exports so far).
 
 **Source of Truth:** Candidates: FortiOS `config system ha` (`set authentication`, `set encryption`, `set password`); FortiGate NDM STIG; Check Point ClusterXL CCP encryption (research; may not be visible in Gaia exports).
 
@@ -1030,7 +1030,7 @@ Not scheduled (maintainer decision, 2026-09-25): SNMPv1/v2c community checks for
 
 **Priority:** P2. Needs physical access, but removes the need for any credential.
 
-**Status:** Evidence gate.
+**Status:** Partly implemented 2026-09-26: `fortinet.fortios.system.usb_auto_install` for explicit `auto-install-config`/`auto-install-image enable` (default disable in 7.4). `admin-maintainer` is not listed in the 7.4 `config system global` reference, so no check was added.
 
 **Source of Truth:** Candidates: FortiOS `config system global set admin-maintainer`; `config system auto-install` (`auto-install-config`, `auto-install-image`); CIS FortiOS benchmark items for both; documented defaults per release.
 
@@ -1076,7 +1076,7 @@ Not scheduled (maintainer decision, 2026-09-25): SNMPv1/v2c community checks for
 
 **Priority:** P2.
 
-**Status:** Evidence gate.
+**Status:** First stage implemented 2026-09-26: `f5.bigip.ltm.clientssl_weak_cipher` (positive weak tokens in the explicit cipher string of a client SSL profile on an enabled virtual server) and `f5.bigip.ltm.cookie_unencrypted` (insert/rewrite cookie persistence with explicit `cookie-encryption disabled`; K6917 describes the decodable IP/port encoding). Remaining: server-side certificate validation (policy-gated), release-dependent DEFAULT cipher strings.
 
 **Source of Truth:** Candidates: F5 client SSL profile reference (`options`, `ciphers`), server SSL profile reference (`peer-cert-mode`, `authenticate-name`, `ca-file`), cookie persistence profile (`cookie-encryption`) and F5 articles on cookie persistence revealing pool member addresses; F5 ALG STIG (S13).
 
@@ -1099,7 +1099,7 @@ Not scheduled (maintainer decision, 2026-09-25): SNMPv1/v2c community checks for
 
 **Priority:** P2.
 
-**Status:** Evidence gate. Check Point FW1 already has `checkpoint.fw1.policy.risky_service_exposure` with FTP, Telnet, TFTP, NetBIOS/SMB, RDP, rlogin/rsh and VNC.
+**Status:** Implemented 2026-09-26: shared catalogue `src/analyze/common/risky_services.py` (FTP, Telnet, TFTP, SMB/NetBIOS, RDP, VNC, X11, rlogin/rsh/rexec, SNMP, LDAP, POP3/IMAP, MS SQL, Oracle, MySQL, PostgreSQL, Redis, MongoDB, Docker API) used by Check Point FW1 (unchanged rule ID), new `cisco.asa.acl.risky_service_exposure` (bound active permit from any source with eq/range ports) and `fortinet.fortios.policy.risky_service_exposure` (accept policy from source all with resolved service ports). Ranges wider than 1024 ports are left to the broad-service rules. Remaining: F5 virtual servers on clear-text ports.
 
 **Source of Truth:** Candidates: IANA service registry; CISA and vendor guidance on exposed SMB, RDP, Telnet, FTP, SNMP and database ports; Firewall SRG (S07).
 

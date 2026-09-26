@@ -19,6 +19,27 @@ CISCO_SMART_INSTALL_MISUSE = (
     "https://sec.cloudapps.cisco.com/security/center/content/CiscoSecurityAdvisory/"
     "cisco-sa-20170214-smi"
 )
+CISCO_IOS_FILE_TRANSFER_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/routers/ios/config/17-x/syst-mgmt/b-system-management/"
+    "m_ifs-file-trans-0.html"
+)
+CISCO_IOSXE_GNMI_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/prog/configuration/179/b_179_programmability_cg/"
+    "m_178_prog_gnmi.html"
+)
+CISCO_IOSXE_SECURITY_WARNINGS = (
+    "https://www.cisco.com/c/en/us/about/trust-center/resilient-infrastructure/"
+    "resilient-infrastructure-security-warnings-reference.html"
+)
+CISCO_FHRP_COMMAND_REFERENCE = (
+    "https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/ipapp_fhrp/command/fhp-cr-book/fhp-s2.html"
+)
+CISCO_HSRP_GUIDE = (
+    "https://www.cisco.com/c/en/us/support/docs/ip/hot-standby-router-protocol-hsrp/9234-hsrpguidetoc.html"
+)
+CISCO_NTP_ACCESS_GROUP_REFERENCE = (
+    "https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/bsm/command/bsm-cr-book/bsm-cr-n1.html"
+)
 _TYPE6_KEY_CONTEXTS = frozenset({"tacacs_key", "isakmp_pre_shared_key", "keyring_pre_shared_key"})
 CISCO_TYPE6_GUIDE = (
     "https://www.cisco.com/c/en/us/td/docs/routers/ios/config/17-x/sec-vpn/b-security-vpn/"
@@ -1044,30 +1065,68 @@ class PluginIOSBaseline(BasePlugin):
             )
 
     def check_unnecessary_services(self, parser: BaseDeviceParser) -> None:
-        lines = self._global_lines(parser)
-        unsafe = [
-            line
-            for line in lines
-            if line in {
-                "service finger",
-                "service tcp-small-servers",
-                "service udp-small-servers",
-                "ip bootp server",
-            }
-        ]
-        if unsafe:
+        ios = self._ios(parser)
+        services = ios.get_legacy_services()
+        if services:
+            names = sorted({name for name, _ in services})
             self.add_issue(
                 self._finding(
                     parser,
                     "cisco.ios.services.unnecessary",
                     "Unnecessary legacy services are enabled",
-                    f"Explicit legacy service commands are active: {', '.join(unsafe)}.",
+                    f"Explicit legacy service commands are active: {', '.join(names)}.",
                     "Unneeded listeners increase management-plane attack surface.",
                     "Disable every service that is not operationally required using its 'no' form.",
                     Severity.MEDIUM,
-                    tuple(unsafe),
+                    tuple(evidence for _, evidence in services),
                 )
             )
+        servers = ios.get_file_and_shell_servers()
+        shells = [evidence for kind, evidence in servers if kind in {"rsh", "rcp"}]
+        if shells:
+            self.add_issue(Finding(
+                rule_id="cisco.ios.services.remote_shell",
+                device=parser.device_type,
+                title="rsh/rcp server is enabled",
+                observation="The router accepts remote shell (rsh) or remote copy (rcp) requests.",
+                impact="rsh and rcp send commands, files and usernames in clear text and authenticate by remote username and host address, which can be spoofed.",
+                exploitability="An attacker who can reach TCP 514 from an allowed host address or spoof one can run commands or copy files, including the configuration.",
+                recommendation="Disable with 'no ip rcmd rsh-enable' and 'no ip rcmd rcp-enable' and use SSH/SCP instead.",
+                severity=Severity.HIGH,
+                evidence=tuple(shells),
+                references=(CISCO_IOS_FILE_TRANSFER_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+        tftp = [evidence for kind, evidence in servers if kind == "tftp"]
+        if tftp:
+            self.add_issue(Finding(
+                rule_id="cisco.ios.services.tftp_server",
+                device=parser.device_type,
+                title="TFTP server is enabled on the device",
+                observation="The device serves files over TFTP ('tftp-server').",
+                impact="TFTP has no authentication or encryption; anyone allowed by the optional access list can download the served files.",
+                exploitability="An attacker who can reach UDP 69 can download software images or other served files and learn the exact release.",
+                recommendation="Remove 'tftp-server' when it is not needed, or restrict it with an access list and use SCP instead.",
+                severity=Severity.MEDIUM,
+                evidence=tuple(tftp),
+                references=(CISCO_IOS_FILE_TRANSFER_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+        gnmi = ios.get_gnmi_insecure_server()
+        if gnmi:
+            self.add_issue(Finding(
+                rule_id="cisco.ios.management.insecure_protocol",
+                device=parser.device_type,
+                title="gNMI is enabled without TLS",
+                observation="'gnxi server' starts the insecure gNMI server (default port 50052) without TLS.",
+                impact="gNMI usernames, passwords and configuration data cross the network in clear text.",
+                exploitability="An attacker on the path can capture credentials and read or change the configuration through gNMI.",
+                recommendation="Use only 'gnxi secure-server' with a trustpoint and remove 'gnxi server'; Cisco documents insecure mode for day-zero setup only.",
+                severity=Severity.HIGH,
+                evidence=(gnmi,),
+                references=(CISCO_IOSXE_GNMI_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
 
     def check_smart_install(self, parser: BaseDeviceParser) -> None:
         """SC-025: Smart Install accepts unauthenticated configuration and image changes."""
@@ -1336,6 +1395,124 @@ class PluginIOSBaseline(BasePlugin):
                 evidence=(evidence,),
                 references=(CISCO_IOS_TACACS_GUIDE, RFC_8907),
                 basis=FindingBasis.REQUIRED_SETTING_MISSING,
+            ))
+
+    def check_fhrp_authentication(self, parser: BaseDeviceParser) -> None:
+        """SC-028: HSRP/VRRPv2/GLBP groups without MD5 authentication."""
+        for group in self._ios(parser).get_fhrp_groups():
+            if group["auth"] == "md5":
+                continue
+            name = group["protocol"].upper()
+            explicit = group["auth"] == "text"
+            self.add_issue(Finding(
+                rule_id="cisco.ios.fhrp.authentication",
+                device=parser.device_type,
+                title=f"{name} group without MD5 authentication",
+                observation=(f"{name} group {group['group']} on {group['interface']} "
+                             + ("uses plain-text authentication, which is sent unencrypted in every hello."
+                                if explicit else "has no MD5 authentication configured.")),
+                impact="Any host on the segment can send hellos with a higher priority and become the active default gateway.",
+                exploitability="An attacker on the same VLAN can take over the virtual gateway address and intercept or drop the segment's traffic.",
+                recommendation=f"Configure '{group['protocol']} {group['group']} authentication md5 key-chain <name>' (or key-string) on every group member.",
+                severity=Severity.MEDIUM,
+                evidence=tuple(group["evidence"]) + ((group["auth_evidence"],) if group["auth_evidence"] else ()),
+                references=(CISCO_FHRP_COMMAND_REFERENCE, CISCO_HSRP_GUIDE),
+                basis=FindingBasis.EXPLICIT_VALUE if explicit else FindingBasis.MISSING_EXPLICIT_SETTING,
+            ))
+
+    def check_ntp_access(self, parser: BaseDeviceParser) -> None:
+        """SC-033: NTP runs without any access group, so anyone may query or peer."""
+        exposed, evidence = self._ios(parser).get_ntp_service_exposure()
+        if not exposed:
+            return
+        self.add_issue(Finding(
+            rule_id="cisco.ios.ntp.server_exposed",
+            device=parser.device_type,
+            title="NTP service has no access control",
+            observation="NTP is configured and no 'ntp access-group' exists; by default full access (time requests and control queries) is granted to all systems.",
+            impact="Any host that can reach UDP 123 can query the device's NTP service, including control queries that reveal information and can be used for reflection traffic.",
+            exploitability="Attackers scan for NTP services that answer control queries and use them for amplification or reconnaissance.",
+            recommendation="Add 'ntp access-group peer <acl>' for the time sources and 'ntp access-group serve-only <acl>' for clients, and block UDP 123 from untrusted networks.",
+            severity=Severity.LOW,
+            evidence=evidence,
+            references=(CISCO_NTP_ACCESS_GROUP_REFERENCE,),
+            basis=FindingBasis.DOCUMENTED_DEFAULT,
+        ))
+
+    def check_http_tls(self, parser: BaseDeviceParser) -> None:
+        """SC-027: explicit legacy TLS versions or weak cipher suites on the HTTPS server."""
+        settings = self._ios(parser).get_http_tls_settings()
+        if not settings["https"]:
+            return
+        version = str(settings.get("tls_version", ""))
+        if version.casefold() in {"tlsv1.0", "tlsv1.1"}:
+            self.add_issue(Finding(
+                rule_id="cisco.ios.tls.minimum_version",
+                device=parser.device_type,
+                title="HTTPS management accepts TLS below 1.2",
+                observation=f"'ip http tls-version {version}' allows TLS versions older than 1.2 on the HTTPS server.",
+                impact="Legacy TLS versions have known weaknesses that can expose administrator sessions.",
+                exploitability="An attacker on the path can force or exploit a weak TLS version when a client supports it.",
+                recommendation="Set 'ip http tls-version TLSv1.2' (or TLSv1.3 where supported).",
+                severity=Severity.MEDIUM,
+                evidence=(settings["tls_evidence"],),
+                references=(CISCO_IOSXE_SECURITY_WARNINGS,),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+        weak = settings.get("weak_suites") or []
+        if weak:
+            self.add_issue(Finding(
+                rule_id="cisco.ios.tls.weak_cipher",
+                device=parser.device_type,
+                title="HTTPS management allows weak cipher suites",
+                observation=f"'ip http secure-ciphersuite' includes {', '.join(weak)} (SHA-1, DES/3DES, RC4 or MD5 based).",
+                impact="Weak cipher suites reduce the protection of administrator sessions.",
+                exploitability="An attacker on the path benefits when a client negotiates one of these suites.",
+                recommendation="Limit 'ip http secure-ciphersuite' to AES-GCM or TLS 1.3 suites such as tls13-aes256-gcm-sha384.",
+                severity=Severity.MEDIUM,
+                evidence=(settings["suite_evidence"],),
+                references=(CISCO_IOSXE_SECURITY_WARNINGS,),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+
+    def check_snmp_notifications(self, parser: BaseDeviceParser) -> None:
+        """SC-037: SNMPv1/v2c trap or inform targets send the community in clear text."""
+        legacy = [evidence for _, version, evidence in self._ios(parser).get_snmp_notification_hosts()
+                  if version in {"1", "2c"}]
+        if not legacy:
+            return
+        self.add_issue(Finding(
+            rule_id="cisco.ios.snmp.legacy_version",
+            device=parser.device_type,
+            title="SNMP notifications use SNMPv1/v2c",
+            observation="SNMP trap or inform targets use version 1 or 2c (version 1 is the default when none is given).",
+            impact="Each notification carries the community string in clear text and has no integrity protection.",
+            exploitability="An attacker on the path can read the community and reuse it if the same string grants SNMP access.",
+            recommendation="Send notifications with 'snmp-server host <address> version 3 priv <user>' and remove v1/v2c targets.",
+            severity=Severity.MEDIUM,
+            evidence=tuple(legacy),
+            references=(CISCO_IOSXE_SECURITY_WARNINGS, CISCO_IOS_SNMPV3_GUIDE),
+            basis=FindingBasis.EXPLICIT_VALUE,
+        ))
+
+    def check_embedded_credentials(self, parser: BaseDeviceParser) -> None:
+        """SC-036: clear-text FTP/HTTP client passwords and credentials in URLs."""
+        labels = {"ftp_client": "FTP client password ('ip ftp password')",
+                  "http_client": "HTTP client password ('ip http client password')",
+                  "url": "password embedded in a URL"}
+        for kind, evidence in self._ios(parser).get_embedded_credentials():
+            self.add_issue(Finding(
+                rule_id=f"cisco.ios.credentials.{kind}_storage",
+                device=parser.device_type,
+                title="Clear-text credential outside the credential store",
+                observation=f"The configuration contains a {labels[kind]}. The value is redacted.",
+                impact="The password is readable by anyone with the configuration and is sent over clear-text FTP/HTTP when used.",
+                exploitability="An attacker who obtains a configuration backup or captures the transfer can reuse the account on the file server.",
+                recommendation="Use SCP/SFTP or HTTPS with a dedicated low-privilege account and remove stored FTP/HTTP passwords and URL credentials.",
+                severity=Severity.MEDIUM,
+                evidence=(evidence,),
+                references=(CISCO_IOSXE_SECURITY_WARNINGS,),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
     def check_ike_aggressive_mode(self, parser: BaseDeviceParser) -> None:
@@ -1808,6 +1985,11 @@ class PluginIOSBaseline(BasePlugin):
         self.check_smart_install(parser)
         self.check_ike_aggressive_mode(parser)
         self.check_tacacs_keys(parser)
+        self.check_http_tls(parser)
+        self.check_fhrp_authentication(parser)
+        self.check_ntp_access(parser)
+        self.check_snmp_notifications(parser)
+        self.check_embedded_credentials(parser)
         self.check_boot_config_retrieval(parser)
         self.check_interface_protections(parser)
         self.check_control_plane(parser)

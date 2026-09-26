@@ -35,7 +35,7 @@ def test_effective_last_setting_and_service_gate(tmp_path):
 sys sshd { login disabled allow { 192.0.2.0/24 } inactivity-timeout 300 }
 sys httpd { allow none redirect-http-to-https enabled }
 cli global-settings { audit enabled idle-timeout 15 }
-auth password-policy { policy-enforcement enabled }
+auth password-policy { policy-enforcement enabled password-memory 5 }
 sys syslog { remote-servers { log1 { host 192.0.2.2 } } }
 """)
     assert _ids(parser) == []
@@ -81,7 +81,7 @@ auth user /Common/third { password ThirdSecret }
 
 def test_explicit_local_lockout_and_minimum_length_settings(tmp_path):
     parser = _parse(tmp_path, """#TMSH-VERSION: 16.1.5
-auth password-policy { policy-enforcement enabled max-login-failures 0 minimum-length 0 }
+auth password-policy { policy-enforcement enabled password-memory 5 max-login-failures 0 minimum-length 0 }
 """)
     assert set(_ids(parser)) == {
         "f5.bigip.password_policy.login_lockout_disabled",
@@ -91,13 +91,13 @@ auth password-policy { policy-enforcement enabled max-login-failures 0 minimum-l
     assert parser.get_setting("auth password-policy", "minimum-length").value == 0
 
     safe = _parse(tmp_path, """#TMSH-VERSION: 16.1.5
-auth password-policy { policy-enforcement enabled max-login-failures 5 minimum-length 14 }
+auth password-policy { policy-enforcement enabled password-memory 5 max-login-failures 5 minimum-length 14 }
 """)
     assert _ids(safe) == []
 
 
 def test_password_policy_overrides_and_unknown_values_are_conservative(tmp_path):
-    parser = _parse(tmp_path, """auth password-policy { policy-enforcement enabled max-login-failures 0 minimum-length 0 }
+    parser = _parse(tmp_path, """auth password-policy { policy-enforcement enabled password-memory 5 max-login-failures 0 minimum-length 0 }
 auth password-policy { max-login-failures 6 minimum-length bogus }
 """)
     assert "f5.bigip.password_policy.login_lockout_disabled" not in _ids(parser)
@@ -198,7 +198,7 @@ def test_ldap_peer_check_requires_only_active_verifiably_unchecked_providers(tmp
 def test_public_password_policy_report_is_secret_free(tmp_path, output_type):
     source = tmp_path / "device.scf"
     source.write_text("""#TMSH-VERSION: 16.1.5
-auth password-policy { policy-enforcement enabled max-login-failures 0 minimum-length 0 }
+auth password-policy { policy-enforcement enabled password-memory 5 max-login-failures 0 minimum-length 0 }
 auth user /Common/admin { password SensitiveF5Secret }
 """, encoding="utf-8")
     output = tmp_path / f"report.{output_type.lower()}"

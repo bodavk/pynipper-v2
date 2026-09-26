@@ -146,7 +146,7 @@ _CATALOGUE = (
         "another control (proxy, endpoint protection, upstream IPS) inspects the same traffic.",
     )),
     # Management access -----------------------------------------------------------
-    (r"^(management\.(telnet|http|insecure_protocol)|vty\.(telnet|insecure_output_transport)|eapi\.(insecure_http|https_disabled)|http\.(cleartext_service|redirect_disabled))$", _G(
+    (r"^(management\.(telnet|http|insecure_protocol)|services\.remote_shell|vty\.(telnet|insecure_output_transport)|eapi\.(insecure_http|https_disabled)|http\.(cleartext_service|redirect_disabled))$", _G(
         "management-cleartext", "management-access",
         "The device can be managed over an unencrypted protocol such as Telnet or plain HTTP. "
         "Everything typed or sent in such a session, including administrator passwords, crosses "
@@ -175,6 +175,20 @@ _CATALOGUE = (
         "Check whether TCP 4786 is blocked towards this device and whether Smart Install is "
         "still used for deployment.",
     )),
+    (r"^auth\.(root_login_enabled|user_bash_shell|remote_default_admin)$", _G(
+        "privileged-access", "authorization",
+        "An account has more direct or broader privilege than needed: the root account can log in, an administrator gets a full Linux shell, or every remotely authenticated user becomes an administrator.",
+        "An attacker who guesses or phishes one password, even for an ordinary directory account, gets full control of the device and its operating system.",
+        "Named accounts with the least privilege needed limit what a single stolen password can do and keep actions attributable to a person.",
+        "Check which accounts actually need shell or administrator access and whether remote role mappings exist for them.",
+    )),
+    (r"^ltm\.cookie_unencrypted$", _G(
+        "information-disclosure", "platform",
+        "The device reveals internal details to clients, such as internal server addresses in a cookie.",
+        "An attacker decodes a persistence cookie from one response and learns the internal IP address and port of the web server behind the load balancer.",
+        "Internal addressing helps an attacker plan later steps. Encrypting the cookie keeps persistence working without exposing it.",
+        "Check whether other responses (headers, error pages) also reveal internal names or addresses.",
+    )),
     (r"^ltm\.clientssl_cleartext_enabled$", _G(
         "service-cleartext", "traffic-policy",
         "An application service that is meant to use TLS also accepts unencrypted connections, "
@@ -202,7 +216,7 @@ _CATALOGUE = (
         "separate out-of-band network), and confirm that strong authentication, lockout and "
         "logging are in place for the exposed service.",
     )),
-    (r"^(ssh\.(weak_\w+|protocol_version)|tls\.\w+|management\.(legacy_tls|tls_\w+)|eapi\.(legacy_tls|tls_profile\w*)|admin\.ssh_profile_\w+|crypto\.(strong_crypto|admin_ssh_v1|ssl_static_key_ciphers|ssh_cbc_cipher|dh_parameters)|https\.(legacy_cipher|global_activation)|http\.(legacy_tls_protocol|weak_cipher_suite)|sslvpn\.(legacy_tls|weak_algorithm))$", _G(
+    (r"^(ssh\.(weak_\w+|protocol_version)|tls\.\w+|management\.(legacy_tls|tls_\w+)|eapi\.(legacy_tls|tls_profile\w*)|admin\.ssh_profile_\w+|crypto\.(strong_crypto|admin_ssh_v1|ssl_static_key_ciphers|ssh_cbc_cipher|dh_parameters)|https\.(legacy_cipher|global_activation)|http\.(legacy_tls_protocol|weak_cipher_suite)|sslvpn\.(legacy_tls|weak_algorithm)|ltm\.clientssl_weak_cipher)$", _G(
         "management-crypto", "management-crypto",
         "The encrypted management connection (SSH or HTTPS) still allows outdated protocol "
         "versions or algorithms that are known to be weak.",
@@ -444,7 +458,7 @@ _CATALOGUE = (
         "Check whether an external tool backs up this device and test a restore.",
     )),
     # Routing -----------------------------------------------------------------------------------
-    (r"^routing\.(\w+\.)?(\w*authentication|key_resolution|key_lifetime_unusable|version1_receive)$", _G(
+    (r"^(routing\.(\w+\.)?(\w*authentication|key_resolution|key_lifetime_unusable|version1_receive)|fhrp\.authentication)$", _G(
         "routing-authentication", "routing",
         "A routing protocol session (BGP, OSPF, RIP, EIGRP) accepts neighbors or updates "
         "without proper authentication, or its keys are missing, weak or expired.",
@@ -485,7 +499,7 @@ _CATALOGUE = (
         "Check for upstream DDoS protection and whether management and routing traffic are "
         "prioritized.",
     )),
-    (r"^(interface\.(ip_hardening|reverse_path|unused_enabled)|interfaces\.redirects|ip\.source_route|services\.(unnecessary|legacy))$", _G(
+    (r"^(interface\.(ip_hardening|reverse_path|unused_enabled)|interfaces\.redirects|ip\.source_route|services\.(unnecessary|legacy|tftp_server)|ntp\.server_exposed|system\.usb_auto_install|ha\.heartbeat_protection)$", _G(
         "service-hardening", "control-plane",
         "Legacy IP features or services that are rarely needed are still enabled (for example "
         "source routing, ICMP redirects, proxy ARP, small servers), or anti-spoofing is missing.",

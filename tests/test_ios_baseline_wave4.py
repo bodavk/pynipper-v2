@@ -61,6 +61,7 @@ ntp authenticate
 ntp authentication-key 1 md5 REDACTED
 ntp trusted-key 1
 ntp server 192.0.2.123 key 1
+ntp access-group peer 10
 banner login ^Authorized access only^
 snmp-server group SECURE v3 priv
 interface GigabitEthernet0/0
@@ -122,6 +123,7 @@ def test_ios_baseline_vulnerable_rule_snapshot(tmp_path):
         "cisco.ios.snmp.default_community",
         "cisco.ios.logging.remote_destination",
         "cisco.ios.ntp.authentication",
+        "cisco.ios.ntp.server_exposed",
         "cisco.ios.banner.login",
         "cisco.ios.services.unnecessary",
         "cisco.ios.ip.source_route",

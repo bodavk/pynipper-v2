@@ -23,7 +23,8 @@ _FIELDS = {
     "sys global-settings": {"hostname", "console-inactivity-timeout"},
     "cli global-settings": {"audit", "idle-timeout"},
     "sys syslog": {"remote-servers"},
-    "auth password-policy": {"policy-enforcement", "max-login-failures", "minimum-length"},
+    "auth password-policy": {"policy-enforcement", "max-login-failures", "minimum-length", "password-memory"},
+    "auth remote-user": {"default-role", "remote-console-access"},
     "auth source": {"type", "fallback"},
 }
 
@@ -171,6 +172,8 @@ class F5ClientSSLProfile:
     mode_enabled: bool | None
     allow_non_ssl: bool | None
     evidence: ConfigEvidence
+    ciphers: str = ""
+    ciphers_evidence: ConfigEvidence | None = None
 
 
 @dataclass(frozen=True)
@@ -180,6 +183,7 @@ class F5Virtual:
     client_profiles: tuple[str, ...]
     evidence: ConfigEvidence
     policies: tuple[str, ...] = ()
+    persist: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -341,6 +345,8 @@ class F5BIGIPParser(BaseDeviceParser):
         self._ltm_policies: dict[str, F5LTMPolicy] = {}
         self._ntp_servers: tuple[F5NTPServer, ...] | None = None
         self._ike_peers: dict[str, F5IKEPeer] = {}
+        self._user_shells: dict[str, ConfigEvidence] = {}
+        self._cookie_persistence: dict[str, dict] = {}
         self._self_ips: dict[str, F5SelfIP] = {}
         self._parse(_tokens(content))
         self._native = (
@@ -399,6 +405,18 @@ class F5BIGIPParser(BaseDeviceParser):
                 self._read_ltm_policy(header[2], header_line, tokens[body_start:cursor - 1])
             elif len(header) == 4 and header[:3] == ["net", "ipsec", "ike-peer"]:
                 self._read_ike_peer(header[3], header_line, tokens[body_start:cursor - 1])
+            elif len(header) == 4 and header[:3] == ["ltm", "persistence", "cookie"]:
+                name = _object_name(header[3])
+                if name:
+                    items = _top_level(tokens[body_start:cursor - 1])
+                    self._cookie_persistence[name] = {
+                        "method": (items.get("method", (["insert"], 0))[0] or ["insert"])[0],
+                        "encryption": (items.get("cookie-encryption", ([""], 0))[0] or [""])[0],
+                        "evidence": ConfigEvidence(
+                            f"ltm persistence cookie {name} cookie-encryption "
+                            f"{(items.get('cookie-encryption', (['<absent>'], 0))[0] or ['<absent>'])[0]}",
+                            self.config_filepath, items.get("cookie-encryption", ([], header_line))[1]),
+                    }
             elif len(header) == 3 and header[:2] == ["net", "self"]:
                 self._read_self_ip(header[2], header_line, tokens[body_start:cursor - 1])
             elif scope == "sys ntp":
@@ -427,6 +445,9 @@ class F5BIGIPParser(BaseDeviceParser):
                 depth += 1
             elif token.text == "}":
                 depth -= 1
+            elif depth == 0 and token.text == "shell" and index + 1 < len(body):
+                self._user_shells[name] = ConfigEvidence(
+                    f"auth user {name} shell {body[index + 1].text}", self.config_filepath, token.line)
             elif depth == 0 and token.text in {"password", "encrypted-password"}:
                 candidate = body[index + 1].text if index + 1 < len(body) else ""
                 if candidate and candidate not in {"{", "}", "none", "default"}:
@@ -534,7 +555,7 @@ class F5BIGIPParser(BaseDeviceParser):
             elif name in {"login", "redirect-http-to-https", "audit", "policy-enforcement"}:
                 value = candidate if candidate in {"enabled", "disabled"} else None
             elif name in {"inactivity-timeout", "console-inactivity-timeout", "idle-timeout",
-                          "max-login-failures", "minimum-length"}:
+                          "max-login-failures", "minimum-length", "password-memory"}:
                 if candidate == "disabled" and name == "idle-timeout":
                     value = candidate
                 elif re.fullmatch(r"[0-9]+", candidate):
@@ -561,6 +582,8 @@ class F5BIGIPParser(BaseDeviceParser):
                 value = candidate if resolve_ssl_protocols(candidate) is not None else None
             elif name == "ssl-ciphersuite":
                 value = candidate if _CIPHER_LIST.fullmatch(candidate) else None
+            elif name in {"default-role", "remote-console-access"} and scope == "auth remote-user":
+                value = candidate if re.fullmatch(r"[a-z-]+", candidate) else None
             elif name == "fallback" and scope == "auth source":
                 if candidate in {"true", "false"}:
                     value = candidate
@@ -579,12 +602,18 @@ class F5BIGIPParser(BaseDeviceParser):
         previous = self._client_ssl.get(name)
         mode = previous.mode_enabled if previous else None
         cleartext = previous.allow_non_ssl if previous else None
+        ciphers = previous.ciphers if previous else ""
+        ciphers_evidence = previous.ciphers_evidence if previous else None
         depth = 0
         for index, token in enumerate(body):
             if token.text == "{":
                 depth += 1
             elif token.text == "}":
                 depth -= 1
+            elif depth == 0 and token.text == "ciphers" and index + 1 < len(body):
+                ciphers = body[index + 1].text
+                ciphers_evidence = ConfigEvidence(
+                    f"ltm profile client-ssl {name} ciphers {ciphers}", self.config_filepath, token.line)
             elif depth == 0 and token.text in {"mode", "allow-non-ssl"}:
                 candidate = body[index + 1].text if index + 1 < len(body) else ""
                 value = {"enabled": True, "disabled": False}.get(candidate)
@@ -596,6 +625,7 @@ class F5BIGIPParser(BaseDeviceParser):
             name, mode, cleartext,
             ConfigEvidence(f"ltm profile client-ssl {name} allow-non-ssl {'enabled' if cleartext else 'disabled' if cleartext is False else '<unknown>'}",
                            self.config_filepath, line_number),
+            ciphers, ciphers_evidence,
         )
 
     def _read_virtual(self, raw_name: str, line_number: int,
@@ -607,6 +637,7 @@ class F5BIGIPParser(BaseDeviceParser):
         enabled = previous.enabled if previous else None
         profiles = previous.client_profiles if previous else ()
         policies = previous.policies if previous else ()
+        persist = previous.persist if previous else ()
         depth = 0
         for index, token in enumerate(body):
             if token.text == "{":
@@ -615,6 +646,22 @@ class F5BIGIPParser(BaseDeviceParser):
                 depth -= 1
             elif depth == 0 and token.text in {"enabled", "disabled"}:
                 enabled = token.text == "enabled"
+            elif depth == 0 and token.text == "persist":
+                next_index = index + 1
+                if next_index < len(body) and body[next_index].text in {"replace-all-with", "add"}:
+                    next_index += 1
+                members = _block_contents(body, next_index) or []
+                attached_persist, member_depth = [], 0
+                for member in members:
+                    if member.text == "{":
+                        member_depth += 1
+                    elif member.text == "}":
+                        member_depth -= 1
+                    elif member_depth == 0 and member.text != "none":
+                        persist_name = _object_name(member.text, name)
+                        if persist_name:
+                            attached_persist.append(persist_name)
+                persist = tuple(attached_persist)
             elif depth == 0 and token.text == "policies":
                 next_index = index + 1
                 if next_index < len(body) and body[next_index].text in {"replace-all-with", "add"}:
@@ -664,7 +711,7 @@ class F5BIGIPParser(BaseDeviceParser):
             name, enabled, profiles,
             ConfigEvidence(f"ltm virtual {name} {'enabled' if enabled else 'disabled' if enabled is False else '<unknown>'}",
                            self.config_filepath, line_number),
-            policies,
+            policies, persist,
         )
 
     def _read_asm_policy(self, raw_name: str, line_number: int, body: list[_TokenValue]) -> None:
@@ -748,6 +795,52 @@ class F5BIGIPParser(BaseDeviceParser):
                     if asm:
                         result.append((virtual, ltm, asm))
         return tuple(result)
+
+    def get_bound_weak_client_ciphers(self) -> tuple[tuple[F5Virtual, F5ClientSSLProfile, tuple[str, ...]], ...]:
+        """Enabled virtual servers whose clientside SSL profile explicitly adds weak cipher tokens.
+
+        Only positive tokens of the explicit ``ciphers`` string count (``!``/``-`` exclusions
+        are ignored); the built-in DEFAULT string is release dependent and not assessed.
+        """
+        result = []
+        for virtual in self._virtuals.values():
+            if virtual.enabled is False:
+                continue
+            for profile_name in virtual.client_profiles:
+                profile = self._client_ssl.get(profile_name)
+                if not profile or not profile.ciphers:
+                    continue
+                weak = tuple(
+                    token for token in re.split(r"[:, ]+", profile.ciphers)
+                    if token and token[0] not in "!-" and _WEAK_SUITE.search(token.lstrip("+").upper())
+                )
+                if weak:
+                    result.append((virtual, profile, weak))
+        return tuple(result)
+
+    def get_unencrypted_cookie_persistence(self) -> tuple[tuple[F5Virtual, str, ConfigEvidence], ...]:
+        """Enabled virtual servers using an insert/rewrite cookie persistence profile with
+        explicit ``cookie-encryption disabled`` (K6917: the cookie encodes pool member IP and port)."""
+        result = []
+        for virtual in self._virtuals.values():
+            if virtual.enabled is False:
+                continue
+            for name in virtual.persist:
+                profile = self._cookie_persistence.get(name)
+                if profile and profile["encryption"] == "disabled" and profile["method"] in {"insert", "rewrite"}:
+                    result.append((virtual, name, profile["evidence"]))
+        return tuple(result)
+
+    def get_user_shells(self) -> dict[str, ConfigEvidence]:
+        """Explicit ``auth user <name> shell`` values (bash | tmsh | none)."""
+        return dict(self._user_shells)
+
+    def get_db(self, name: str) -> tuple[str, ConfigEvidence] | None:
+        """An exported ``sys db`` value with its evidence."""
+        value, line = self._db.get(name.casefold(), ("", 0))
+        if not value:
+            return None
+        return value, ConfigEvidence(f"sys db {name} value {value}", self.config_filepath, line)
 
     def get_firewall_default_action(self) -> tuple[str, ConfigEvidence | None]:
         """`sys db tm.fw.defaultaction`; F5 documents the default as accept (ADC mode)."""

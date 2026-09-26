@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Wave 4 priority 2 checks, from vendor documentation read on 2026-09-26:
+  - Cisco IOS/IOS-XE: more legacy services (`service pad`, `ip finger`, `ip identd`, `mop enabled`) with `no` removal; rsh/rcp servers; TFTP server; IOS-XE gNMI without TLS (`gnxi server`); HTTPS server TLS below 1.2 or weak cipher suites; HSRP/VRRP/GLBP without MD5 authentication; NTP without any `ntp access-group`; FTP/HTTP client passwords and credentials in URLs; SNMPv1/v2c notification targets.
+  - Cisco ASA: syslog hosts without TLS (`secure`); any-source permits for risky services (Telnet, FTP, SMB, RDP, databases and others).
+  - FortiGate: HA heartbeat without authentication/encryption; USB auto-install enabled; NTP server mode on WAN interfaces; FortiAnalyzer logging with low encryption or no certificate verification; any-source policies for risky services.
+  - F5 BIG-IP: direct root login allowed, local users with a bash shell, remote users with the admin role by default, password history not enforced, weak ciphers on client SSL profiles of enabled virtual servers, and unencrypted persistence cookies.
+  - Check Point Gaia: users with a bash login shell.
+- Shared risky-service catalogue (`src/analyze/common/risky_services.py`), now also used by the Check Point Firewall-1 check.
 - Cleartext-protocol and credential-protection checks (Wave 4, first P1 stages), from vendor documentation read on 2026-09-26:
   - Cisco IOS/IOS-XE: Smart Install enabled (`vstack`); TACACS+ servers used for AAA without a key; TACACS+ and IKE pre-shared keys stored as type 0/7; IKEv1 aggressive mode accepted for pre-shared keys (no `crypto isakmp aggressive-mode disable`).
   - Cisco ASA: tunnel-group pre-shared keys and AAA server keys in clear text (no master passphrase); bound TACACS+ hosts without a key; bound LDAP hosts without `ldap-over-ssl`; IKEv1 aggressive mode accepted (no `crypto ikev1 am-disable`).

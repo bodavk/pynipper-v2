@@ -3,6 +3,7 @@
 from datetime import date, datetime
 import re
 
+from src.analyze.common.risky_services import RISKY_SERVICE_NAMES, is_risky_port
 from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.issue import Finding, Severity
 from src.devices.common.policy_semantics import (
@@ -75,21 +76,7 @@ class PluginCheckPointBaseline(BasePlugin):
     }
     # NEEDS_HUMAN_REVIEW: this project risk catalogue is intentionally small;
     # replace/extend it with the organization's approved service-risk policy.
-    _RISKY_SERVICE_NAMES = {
-        "ftp",
-        "microsoft-ds",
-        "ms-wbt-server",
-        "netbios-dgm",
-        "netbios-ns",
-        "netbios-ssn",
-        "rdp",
-        "rlogin",
-        "rsh",
-        "telnet",
-        "tftp",
-        "vnc",
-    }
-    _RISKY_PORTS = {21, 23, 69, 135, 137, 138, 139, 445, 513, 514, 3389}
+    # SC-043: shared catalogue in src/analyze/common/risky_services.py
 
     @staticmethod
     def _checkpoint(parser: BaseDeviceParser) -> CheckPointFW1Parser:
@@ -192,13 +179,13 @@ class PluginCheckPointBaseline(BasePlugin):
         risky = set()
         for name in self._expand(rule.services, services):
             record = services.get(name)
-            if name in self._RISKY_SERVICE_NAMES:
+            if name.casefold() in RISKY_SERVICE_NAMES:
                 risky.add(name)
                 continue
             if record is None:
                 continue
             ports = self._port_numbers(record.port)
-            if ports.intersection(self._RISKY_PORTS) or any(5900 <= port <= 5999 for port in ports):
+            if any(is_risky_port(port) for port in ports):
                 risky.add(record.name)
         return tuple(sorted(risky, key=str.casefold))
 

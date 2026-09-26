@@ -6,6 +6,7 @@
       "input": "f5_bigip/vulnerable.scf",
       "expected_rule_ids": [
         "f5.bigip.auth.active_remote_servers_none",
+        "f5.bigip.auth.remote_default_admin",
         "f5.bigip.cli.audit_disabled",
         "f5.bigip.cli.idle_timeout_disabled",
         "f5.bigip.console.idle_timeout_disabled",
@@ -28,7 +29,7 @@
         "f5.bigip.ssh.unrestricted_sources",
         "f5.bigip.vpn.ike_aggressive_mode"
       ],
-      "expected_finding_count": 22
+      "expected_finding_count": 23
     },
     {
       "name": "f5-bigip-secure",
@@ -63,6 +64,7 @@
         "cisco.ios.console.session_timeout",
         "cisco.ios.control_plane.copp",
         "cisco.ios.credentials.enable_storage",
+        "cisco.ios.credentials.ftp_client_storage",
         "cisco.ios.credentials.isakmp_pre_shared_key_storage",
         "cisco.ios.credentials.known_default_value",
         "cisco.ios.credentials.line_password_storage",
@@ -70,20 +72,25 @@
         "cisco.ios.crypto.legacy_ike",
         "cisco.ios.crypto.legacy_ipsec",
         "cisco.ios.discovery.cdp.external",
+        "cisco.ios.fhrp.authentication",
         "cisco.ios.http.access_restriction",
         "cisco.ios.http.cleartext_service",
+        "cisco.ios.interface.ip_hardening",
         "cisco.ios.interface.ip_hardening",
         "cisco.ios.ip.source_route",
         "cisco.ios.logging.remote_destination",
         "cisco.ios.ntp.authentication",
+        "cisco.ios.ntp.server_exposed",
         "cisco.ios.routing.bgp.authentication",
         "cisco.ios.routing.bgp.inbound_policy",
         "cisco.ios.routing.bgp.outbound_policy",
         "cisco.ios.routing.bgp.prefix_limit",
         "cisco.ios.routing.ospf.authentication",
+        "cisco.ios.services.remote_shell",
         "cisco.ios.services.unnecessary",
         "cisco.ios.snmp.default_community",
         "cisco.ios.snmp.legacy_community",
+        "cisco.ios.snmp.legacy_version",
         "cisco.ios.ssh.authentication_retries",
         "cisco.ios.ssh.negotiation_timeout",
         "cisco.ios.ssh.protocol_version",
@@ -93,7 +100,7 @@
         "cisco.ios.vty.session_timeout",
         "cisco.ios.vty.telnet"
       ],
-      "expected_finding_count": 39
+      "expected_finding_count": 45
     },
     {
       "name": "cisco-ios-secure",
@@ -203,6 +210,7 @@
         "fortinet.fortios.crypto.ssl_static_key_ciphers",
         "fortinet.fortios.crypto.strong_crypto",
         "fortinet.fortios.dos.wan_policy_missing",
+        "fortinet.fortios.ha.heartbeat_protection",
         "fortinet.fortios.logging.missing",
         "fortinet.fortios.management.auxiliary_services",
         "fortinet.fortios.management.insecure_protocol",
@@ -215,10 +223,11 @@
         "fortinet.fortios.sslvpn.factory_certificate",
         "fortinet.fortios.sslvpn.legacy_tls",
         "fortinet.fortios.sslvpn.unlimited_login_attempts",
+        "fortinet.fortios.system.usb_auto_install",
         "fortinet.fortios.tls.minimum_version",
         "fortinet.fortios.vpn.ike_aggressive_mode"
       ],
-      "expected_finding_count": 28
+      "expected_finding_count": 30
     },
     {
       "name": "fortios-secure",
@@ -586,6 +595,7 @@
       "device": "CHECKPOINT_GAIA",
       "input": "checkpoint_gaia/vulnerable.conf",
       "expected_rule_ids": [
+        "checkpoint.gaia.auth.user_bash_shell",
         "checkpoint.gaia.banner.login_disabled",
         "checkpoint.gaia.cli.idle_timeout_excessive",
         "checkpoint.gaia.management.telnet",
@@ -598,7 +608,7 @@
         "checkpoint.gaia.snmp.v3_security",
         "checkpoint.gaia.snmp.write_community"
       ],
-      "expected_finding_count": 11
+      "expected_finding_count": 12
     },
     {
       "name": "checkpoint-gaia-secure",

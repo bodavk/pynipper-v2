@@ -634,6 +634,93 @@ class CiscoIOSParser(BaseDeviceParser):
                 state = False
         return state
 
+    _LEGACY_SERVICE_TOGGLES = {
+        "service finger": "finger", "ip finger": "finger",
+        "service tcp-small-servers": "tcp-small-servers",
+        "service udp-small-servers": "udp-small-servers",
+        "ip bootp server": "bootp server", "service pad": "pad", "ip identd": "identd",
+    }
+
+    def get_legacy_services(self) -> list[tuple[str, ConfigEvidence]]:
+        """Explicitly enabled legacy services after ``no`` removal (SC-026).
+
+        Only explicit enabling commands count: defaults differ by release (Cisco
+        hardening guide), so a missing line stays unknown. ``mop enabled`` counts on
+        interfaces that are not shut down.
+        """
+        state: dict[str, Optional[ConfigEvidence]] = {}
+        for number, raw in enumerate(self._source_lines, start=1):
+            if raw[:1].isspace():
+                continue
+            line = raw.strip()
+            folded = re.sub(r"\s+", " ", line.casefold())
+            negated = folded.startswith(("no ", "default "))
+            command = folded.split(" ", 1)[1] if negated else folded
+            # `ip finger rfc-compliant` still enables finger
+            base = "ip finger" if command.startswith("ip finger") else command
+            name = self._LEGACY_SERVICE_TOGGLES.get(base)
+            if name:
+                state[name] = None if negated else ConfigEvidence(line, self.config_filepath, number)
+        result = [(name, evidence) for name, evidence in state.items() if evidence is not None]
+        for header, _, children in self._indented_blocks("interface "):
+            shutdown = False
+            mop = None
+            for line_number, _, command in children:
+                if command == "shutdown":
+                    shutdown = True
+                elif command == "no shutdown":
+                    shutdown = False
+                elif command == "mop enabled":
+                    mop = ConfigEvidence("mop enabled", self.config_filepath, line_number)
+                elif command == "no mop enabled":
+                    mop = None
+            if mop and not shutdown:
+                result.append(("mop", mop))
+        return result
+
+    def get_file_and_shell_servers(self) -> list[tuple[str, ConfigEvidence]]:
+        """Effective ``ip rcmd rsh-enable``/``rcp-enable`` and ``tftp-server`` lines.
+
+        rsh/rcp servers are disabled by default (IOS XE File Transfer Services guide).
+        """
+        found: dict[str, tuple[str, ConfigEvidence]] = {}
+        for number, raw in enumerate(self._source_lines, start=1):
+            if raw[:1].isspace():
+                continue
+            line = raw.strip()
+            folded = re.sub(r"\s+", " ", line.casefold())
+            for command, kind in (("ip rcmd rsh-enable", "rsh"), ("ip rcmd rcp-enable", "rcp")):
+                if folded == command:
+                    found[kind] = (kind, ConfigEvidence(line, self.config_filepath, number))
+                elif folded in {f"no {command}", f"default {command}"}:
+                    found.pop(kind, None)
+            tftp = re.fullmatch(r"(no )?tftp-server (\S+)(?: .*)?", folded)
+            if tftp:
+                key = f"tftp {tftp.group(2)}"
+                if tftp.group(1):
+                    found.pop(key, None)
+                else:
+                    found[key] = ("tftp", ConfigEvidence(line, self.config_filepath, number))
+        return list(found.values())
+
+    def get_gnmi_insecure_server(self) -> Optional[ConfigEvidence]:
+        """IOS-XE ``gnxi server`` (insecure gNMI, default port 50052) while ``gnxi`` is on."""
+        enabled = False
+        server: Optional[ConfigEvidence] = None
+        for number, raw in enumerate(self._source_lines, start=1):
+            if raw[:1].isspace():
+                continue
+            folded = raw.strip().casefold()
+            if folded == "gnxi":
+                enabled = True
+            elif folded == "no gnxi":
+                enabled = False
+            elif folded == "gnxi server":
+                server = ConfigEvidence(raw.strip(), self.config_filepath, number)
+            elif folded == "no gnxi server":
+                server = None
+        return server if enabled else None
+
     def get_smart_install(self) -> tuple[Optional[bool], tuple[str, ...]]:
         """Effective Smart Install (`vstack`) state from explicit global commands.
 
@@ -1078,6 +1165,141 @@ class CiscoIOSParser(BaseDeviceParser):
                                    self.config_filepath, line_number),
                 )
         return list(communities.values())
+
+    def get_ntp_service_exposure(self) -> tuple[bool, tuple[ConfigEvidence, ...]]:
+        """NTP is running (server, peer or master configured) without any ``ntp access-group``.
+
+        Basic System Management Command Reference: without access groups there is no
+        access control and full access (time requests and control queries) is granted.
+        """
+        running: list[ConfigEvidence] = []
+        access_group = False
+        for number, raw in enumerate(self._source_lines, start=1):
+            if raw[:1].isspace():
+                continue
+            folded = re.sub(r"\s+", " ", raw.strip().casefold())
+            if re.match(r"ntp (server|peer|master)\b", folded):
+                running.append(ConfigEvidence(re.sub(r"(?i) key \S+", " key <redacted>", raw.strip()),
+                                              self.config_filepath, number))
+            elif re.match(r"ntp access-group (ipv[46] )?(peer|query-only|serve|serve-only)\b", folded):
+                access_group = True
+            elif re.match(r"no ntp access-group\b", folded):
+                access_group = False
+        return bool(running) and not access_group, tuple(running[:3])
+
+    def get_fhrp_groups(self) -> list[dict]:
+        """HSRP, VRRPv2 and GLBP groups on interfaces that are not shut down (SC-028).
+
+        Each record: protocol, group, interface, auth (``md5``, ``text`` or ``none``) and
+        evidence with key material redacted. VRRPv3 (``vrrp N address-family``) has no
+        authentication and is not returned.
+        """
+        records = []
+        expression = re.compile(r"(standby|vrrp|glbp)(?:\s+(\d+))?\s+(ip|authentication)\b\s*(.*)", re.IGNORECASE)
+        for header, _, children in self._indented_blocks("interface "):
+            shutdown = False
+            groups: dict[tuple[str, str], dict] = {}
+            for line_number, _, command in children:
+                if command == "shutdown":
+                    shutdown = True
+                    continue
+                if command == "no shutdown":
+                    shutdown = False
+                    continue
+                match = expression.fullmatch(command)
+                if not match:
+                    continue
+                protocol = match.group(1).casefold()
+                group = match.group(2) or "0"
+                data = groups.setdefault((protocol, group), {
+                    "protocol": protocol, "group": group, "interface": header.split(maxsplit=1)[1],
+                    "has_address": False, "auth": "none",
+                    "evidence": [], "auth_evidence": None,
+                })
+                if match.group(3).casefold() == "ip":
+                    data["has_address"] = True
+                    data["evidence"].append(ConfigEvidence(command, self.config_filepath, line_number))
+                else:
+                    rest = match.group(4).split()
+                    data["auth"] = "md5" if rest[:1] and rest[0].casefold() == "md5" else "text"
+                    shown = " ".join(rest[:1]) if data["auth"] == "md5" else "text"
+                    data["auth_evidence"] = ConfigEvidence(
+                        f"{protocol} {group} authentication {shown} <redacted>", self.config_filepath, line_number)
+            if shutdown:
+                continue
+            for data in groups.values():
+                if data["has_address"]:
+                    records.append(data)
+        return records
+
+    def get_snmp_notification_hosts(self) -> list[tuple[str, str, ConfigEvidence]]:
+        """Effective ``snmp-server host`` targets as (address, version, evidence).
+
+        The version is 1 when no ``version`` keyword is given (IOS default); the
+        community or user name is redacted.
+        """
+        hosts: dict[str, tuple[str, str, ConfigEvidence]] = {}
+        for line_number, raw in enumerate(self._source_lines, start=1):
+            if raw[:1].isspace():
+                continue
+            words = raw.split()
+            lowered = [word.casefold() for word in words]
+            removal = lowered[:1] in (["no"], ["default"])
+            body = words[1:] if removal else words
+            low = lowered[1:] if removal else lowered
+            if low[:2] != ["snmp-server", "host"] or len(body) < 3:
+                continue
+            address = body[2]
+            key = address.casefold()
+            if removal:
+                hosts.pop(key, None)
+                continue
+            version = "1"
+            if "version" in low[3:]:
+                index = low.index("version", 3)
+                version = low[index + 1] if index + 1 < len(low) else "unknown"
+            hosts[key] = (address, version, ConfigEvidence(
+                f"snmp-server host {address} version {version} <community or user redacted>",
+                self.config_filepath, line_number))
+        return list(hosts.values())
+
+    _WEAK_TLS_CIPHER = re.compile(r"(?:^|-)(?:rc4|des|3des|md5|null|export)(?:-|$)|-sha$")
+
+    def get_http_tls_settings(self) -> dict[str, object]:
+        """Explicit ``ip http tls-version`` and ``ip http secure-ciphersuite`` for the HTTPS server."""
+        version = self._last_global_match(r"ip http tls-version\s+(\S+)")
+        suites = self._last_global_match(r"ip http secure-ciphersuite\s+(.+)")
+        result: dict[str, object] = {"https": self.get_https_server_state() == ConfigurationState.ENABLED}
+        if version:
+            result["tls_version"] = version.group(1)
+            result["tls_evidence"] = ConfigEvidence(version.group(0), self.config_filepath, None)
+        if suites:
+            names = suites.group(1).split()
+            result["weak_suites"] = [name for name in names if self._WEAK_TLS_CIPHER.search(name.casefold())]
+            result["suite_evidence"] = ConfigEvidence(suites.group(0), self.config_filepath, None)
+        return result
+
+    _URL_CREDENTIAL = re.compile(r"(?i)\b((?:ftp|http|https|scp|sftp|rcp)://)([^:/@\s]+):([^@\s]+)@")
+
+    def get_embedded_credentials(self) -> list[tuple[str, ConfigEvidence]]:
+        """Clear-text client credentials outside the credential stores (SC-036).
+
+        ``ip ftp password``, ``ip http client password`` and ``user:password@`` in any
+        file-transfer URL. Evidence has the secret replaced.
+        """
+        found: dict[str, tuple[str, ConfigEvidence]] = {}
+        for line_number, raw in enumerate(self._source_lines, start=1):
+            line = raw.strip()
+            folded = re.sub(r"\s+", " ", line.casefold())
+            for command, kind in (("ip ftp password", "ftp_client"), ("ip http client password", "http_client")):
+                if folded.startswith(command + " ") and not raw[:1].isspace():
+                    found[command] = (kind, ConfigEvidence(f"{command} <redacted>", self.config_filepath, line_number))
+                elif folded in {f"no {command}", f"default {command}"} or folded.startswith(f"no {command} "):
+                    found.pop(command, None)
+            if self._URL_CREDENTIAL.search(line):
+                redacted = self._URL_CREDENTIAL.sub(lambda m: f"{m.group(1)}{m.group(2)}:<redacted>@", line)
+                found[f"url {line_number}"] = ("url", ConfigEvidence(redacted, self.config_filepath, line_number))
+        return list(found.values())
 
     def get_http_server_state(self) -> ConfigurationState:
         match = self._last_global_match(r"(?P<disabled>no )?ip http server")

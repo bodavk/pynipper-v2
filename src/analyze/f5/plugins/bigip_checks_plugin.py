@@ -40,6 +40,12 @@ ICONTROL_CVE_2022_1388 = "https://my.f5.com/manage/s/article/K23605346"
 IKE_PEER = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules/net/net_ipsec_ike-peer.html"
 RFC_2409 = "https://www.rfc-editor.org/rfc/rfc2409"
 _MANAGEMENT_SERVICES = {"tcp:22", "tcp:ssh", "tcp:443", "tcp:https", "tcp:any", "tcp:0"}
+REMOTE_USER = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules/auth/auth_remote-user.html"
+PASSWORD_POLICY_LATEST = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules/auth/auth_password-policy.html"
+USER_LATEST = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules/auth/auth_user.html"
+LOCKDOWN_SETTINGS = "https://community.f5.com/kb/technicalarticles/10-settings-to-lock-down-your-big-ip/274601"
+COOKIE_PERSISTENCE = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules/ltm/ltm_persistence_cookie.html"
+COOKIE_ENCODING = "https://my.f5.com/manage/s/article/K6917"
 
 
 class PluginF5BIGIPChecks(BasePlugin):
@@ -99,6 +105,8 @@ class PluginF5BIGIPChecks(BasePlugin):
         self._check_modules(parser)
         self._check_self_ips(parser)
         self._check_ike_peers(parser)
+        self._check_admin_access(parser)
+        self._check_data_plane(parser)
         console = setting("sys global-settings", "console-inactivity-timeout")
         if console and console.value == 0:
             self._emit(parser, console, rule_id="f5.bigip.console.idle_timeout_disabled",
@@ -518,5 +526,102 @@ class PluginF5BIGIPChecks(BasePlugin):
                 severity=Severity.MEDIUM,
                 evidence=(peer.evidence,),
                 references=(IKE_PEER, RFC_2409),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+
+    def _check_admin_access(self, parser: F5BIGIPParser) -> None:
+        """SC-030: root login, bash shells, remote-user default admin role and password history."""
+        root = parser.get_db("systemauth.disablerootlogin")
+        if root and root[0].strip('"').casefold() == "false":
+            self.add_issue(Finding(
+                rule_id="f5.bigip.auth.root_login_enabled",
+                device=parser.device_type,
+                title="Direct root login is allowed",
+                observation="'sys db systemauth.disablerootlogin' is false, so the root account can log in directly.",
+                impact="A single shared, all-powerful account can log in without being tied to a person, and its compromise gives full system access.",
+                exploitability="Attackers target the well-known root account with password guessing or reused credentials.",
+                recommendation="Run 'modify sys db systemauth.disablerootlogin value true' and use named administrator accounts.",
+                severity=Severity.MEDIUM,
+                evidence=(root[1],),
+                references=(LOCKDOWN_SETTINGS,),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+        for name, evidence in parser.get_user_shells().items():
+            if not evidence.text.endswith(" shell bash") or name.rsplit("/", 1)[-1] == "root":
+                continue
+            self.add_issue(Finding(
+                rule_id="f5.bigip.auth.user_bash_shell",
+                device=parser.device_type,
+                title="Local user has an unrestricted bash shell",
+                observation=f"Local user {name} has 'shell bash', an unrestricted system prompt.",
+                impact="Anyone who obtains this account's password gets a full Linux shell instead of the restricted tmsh.",
+                exploitability="A compromised administrator password leads directly to operating-system level control.",
+                recommendation=f"Set 'modify auth user {name} shell tmsh' (or none) unless bash is operationally required.",
+                severity=Severity.LOW,
+                evidence=(evidence,),
+                references=(USER_LATEST, LOCKDOWN_SETTINGS),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+        role = parser.get_setting("auth remote-user", "default-role")
+        if role and role.value == "admin":
+            self.add_issue(Finding(
+                rule_id="f5.bigip.auth.remote_default_admin",
+                device=parser.device_type,
+                title="Remote users get the administrator role by default",
+                observation="'auth remote-user default-role admin' gives every remotely authenticated user without a specific role mapping the admin role (default: no-access).",
+                impact="Any account the remote directory accepts, not only intended administrators, gets full control of the BIG-IP.",
+                exploitability="An attacker with any valid directory account can log in as an administrator.",
+                recommendation="Set 'default-role no-access' and grant roles through 'auth remote-role' mappings for administrator groups.",
+                severity=Severity.HIGH,
+                evidence=(role.evidence,),
+                references=(REMOTE_USER,),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+        enforcement = parser.get_setting("auth password-policy", "policy-enforcement")
+        memory = parser.get_setting("auth password-policy", "password-memory")
+        if enforcement and enforcement.value == "enabled" and (memory is None or memory.value == 0):
+            self.add_issue(Finding(
+                rule_id="f5.bigip.password_policy.history_disabled",
+                device=parser.device_type,
+                title="Password history is not enforced",
+                observation=("Password-policy enforcement is enabled but password-memory is "
+                             + ("0." if memory else "not set (default 0).")),
+                impact="Users can set a previous password again, including one that was exposed.",
+                exploitability="A leaked old password remains usable after a forced change.",
+                recommendation="Set 'modify auth password-policy password-memory <n>' to remember recent passwords.",
+                severity=Severity.LOW,
+                evidence=((memory.evidence,) if memory else (enforcement.evidence,)),
+                references=(PASSWORD_POLICY_LATEST,),
+                basis=FindingBasis.EXPLICIT_VALUE if memory else FindingBasis.DOCUMENTED_DEFAULT,
+            ))
+
+    def _check_data_plane(self, parser: F5BIGIPParser) -> None:
+        """SC-042: weak client-side ciphers and unencrypted persistence cookies on enabled virtuals."""
+        for virtual, profile, weak in parser.get_bound_weak_client_ciphers():
+            self.add_issue(Finding(
+                rule_id="f5.bigip.ltm.clientssl_weak_cipher",
+                device=parser.device_type,
+                title="Virtual server offers weak TLS cipher suites",
+                observation=f"Virtual server {virtual.name} uses client SSL profile {profile.name}, whose cipher string adds {', '.join(weak)}.",
+                impact="Application traffic, including user credentials, may be protected only by weak or broken ciphers.",
+                exploitability="An attacker on the path benefits when a client negotiates one of these suites.",
+                recommendation="Remove weak tokens from the cipher string or use a current F5 cipher group, and test client compatibility.",
+                severity=Severity.MEDIUM,
+                evidence=(virtual.evidence, profile.ciphers_evidence or profile.evidence),
+                references=(CLIENT_SSL, NIST_TLS),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+        for virtual, name, evidence in parser.get_unencrypted_cookie_persistence():
+            self.add_issue(Finding(
+                rule_id="f5.bigip.ltm.cookie_unencrypted",
+                device=parser.device_type,
+                title="Persistence cookie reveals internal server addresses",
+                observation=f"Virtual server {virtual.name} uses cookie persistence profile {name} with cookie-encryption disabled.",
+                impact="The persistence cookie encodes the pool member's internal IP address and port, which any client can decode.",
+                exploitability="An attacker learns internal addressing and server layout from a single response, which helps later targeting.",
+                recommendation=f"Set 'cookie-encryption required' with a passphrase on {name}.",
+                severity=Severity.LOW,
+                evidence=(virtual.evidence, evidence),
+                references=(COOKIE_ENCODING, COOKIE_PERSISTENCE),
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
