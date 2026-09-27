@@ -414,6 +414,13 @@ class IOSACLRule:
         )
 
 
+@dataclass(frozen=True)
+class IOSManagementACL:
+    name: str
+    state: str
+    evidence: tuple[ConfigEvidence, ...]
+
+
 class CiscoIOSParser(BaseDeviceParser):
 
     device_type = "IOS_ROUTER"
@@ -1445,12 +1452,98 @@ class CiscoIOSParser(BaseDeviceParser):
 
     def get_http_access_class(self) -> Optional[str]:
         value: Optional[str] = None
-        expression = re.compile(r"(?:(?P<disabled>no)\s+)?ip http access-class(?:\s+(?P<value>\S+))?")
+        expression = re.compile(r"(?:(?P<disabled>no|default)\s+)?ip http access-class(?:\s+ipv4)?(?:\s+(?P<value>\S+))?")
         for line in self._global_lines():
             match = expression.fullmatch(line)
             if match:
                 value = None if match.group("disabled") else match.group("value")
         return value
+
+    def get_management_ipv4_acl(self, name: str) -> IOSManagementACL:
+        """Bounded standard-ACL source restriction proof, in effective order.
+
+        Unsupported entries block proof; no extended or IPv6 semantics are inferred.
+        """
+        entries: list[tuple[str, str, ConfigEvidence]] = []
+        defined = False
+        supported = True
+        current = False
+        key = name.casefold()
+        for number, raw in enumerate(self._source_lines, 1):
+            line = raw.strip()
+            if not line or line.startswith("!"):
+                continue
+            evidence = ConfigEvidence(line, self.config_filepath, number)
+            if not raw[:1].isspace():
+                current = False
+                removed = re.fullmatch(r"(?:no|default) (?:ip access-list (?:standard|extended) |access-list )(\S+)", line)
+                if removed and removed.group(1).casefold() == key:
+                    entries, defined, supported = [], False, True
+                    continue
+                remove_entry = re.fullmatch(r"no access-list (\S+) (.+)", line)
+                if remove_entry and remove_entry.group(1).casefold() == key:
+                    entries = [item for item in entries if item[1] != remove_entry.group(2)]
+                    continue
+                header = re.fullmatch(r"ip access-list (standard|extended) (\S+)", line)
+                if header and header.group(2).casefold() == key:
+                    current, defined = True, True
+                    supported = supported and header.group(1) == "standard"
+                    continue
+                numbered = re.fullmatch(r"access-list (\S+) (.+)", line)
+                if not numbered or numbered.group(1).casefold() != key:
+                    continue
+                defined = True
+                supported = supported and name.isdigit() and (
+                    1 <= int(name) <= 99 or 1300 <= int(name) <= 1999)
+                command = numbered.group(2)
+            elif current:
+                command = line
+            else:
+                continue
+            if command.startswith(("remark ", "!")):
+                continue
+            remove = re.fullmatch(r"no (\d+)", command)
+            if remove:
+                entries = [item for item in entries if item[0] != remove.group(1)]
+                continue
+            if command.startswith("no "):
+                target = command[3:]
+                entries = [item for item in entries if item[1] != target]
+                continue
+            match = re.fullmatch(r"(?:(\d+)\s+)?(.+)", command)
+            sequence, body = match.groups()
+            if body.startswith("remark "):
+                continue
+            if sequence:
+                entries = [item for item in entries if item[0] != sequence]
+            entries.append((sequence or "", body, evidence))
+        evidence = tuple(item[2] for item in entries)
+        if not defined:
+            return IOSManagementACL(name, "unresolved", evidence)
+        if not supported or not entries:
+            return IOSManagementACL(name, "unsupported", evidence)
+        if all(item[0] for item in entries):
+            entries.sort(key=lambda item: int(item[0]))
+        elif any(item[0] for item in entries):
+            return IOSManagementACL(name, "unsupported", evidence)
+        for _, body, _ in entries:
+            match = re.fullmatch(r"(permit|deny) (.+?)(?: log(?:-input)?)?", body)
+            if not match:
+                return IOSManagementACL(name, "unsupported", evidence)
+            action, selector = match.groups()
+            if selector in {"any4", "any6"}:
+                return IOSManagementACL(name, "unsupported", evidence)
+            network = self._acl_network_semantics(selector, "ipv4")
+            if not network.complete:
+                return IOSManagementACL(name, "unsupported", evidence)
+            universal = network.any or any(
+                item.first == 0 and item.last == (1 << 32) - 1
+                for item in network.intervals)
+            if action == "deny":
+                return IOSManagementACL(name, "restrictive", evidence)
+            if universal:
+                return IOSManagementACL(name, "permit-all", evidence)
+        return IOSManagementACL(name, "restrictive", evidence)
 
     def get_http_authentication(self) -> Optional[str]:
         value: Optional[str] = None
@@ -1557,6 +1650,41 @@ class CiscoIOSParser(BaseDeviceParser):
                 )
             )
         return profiles
+
+    def get_management_acl_vty_profiles(self) -> tuple[VTYProfile, ...]:
+        """Overlay transport and ACL mutations across overlapping VTY ranges."""
+        states = {}
+        for profile in self.get_management_lines("vty"):
+            match = re.fullmatch(r"line vty (\d+)(?: (\d+))?", profile.line)
+            if not match:
+                continue
+            first, last = int(match[1]), int(match[2] or match[1])
+            if last < first or last - first > 4096:
+                continue
+            for number in range(first, last + 1):
+                state = states.setdefault(number, {"transports": (), "acl": "", "exec": True})
+                for evidence in profile.evidence[1:]:
+                    command = evidence.text.strip()
+                    if command.startswith("transport input "):
+                        state["transports"] = tuple(command.split()[2:])
+                    elif re.fullmatch(r"(?:no|default) transport input(?: .*)?", command):
+                        state["transports"] = ()
+                    elif command in {"no exec", "exec", "default exec"}:
+                        state["exec"] = command != "no exec"
+                    else:
+                        acl = re.fullmatch(r"access-class (\S+) in(?: vrf-also)?", command)
+                        if acl:
+                            state["acl"] = acl[1]
+                        elif re.fullmatch(r"(?:no|default) access-class(?: \S+)? in(?: vrf-also)?", command):
+                            state["acl"] = ""
+        grouped = {}
+        for number, state in sorted(states.items()):
+            if state["exec"]:
+                grouped.setdefault((state["transports"], state["acl"]), []).append(number)
+        return tuple(VTYProfile(
+            line="VTY lines " + ", ".join(map(str, numbers)),
+            transports=transports, ipv4_access_class=acl,
+        ) for (transports, acl), numbers in grouped.items())
 
     def get_aaa_method_lists(self) -> list[IOSAAAMethodList]:
         """Return effective login/EXEC/command authorization method lists."""

@@ -1,5 +1,5 @@
 from src.analyze.common.base_plugin import BasePlugin
-from src.analyze.common.issue import Finding, Severity
+from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.cisco.ios import CiscoIOSParser, ConfigurationState
 
@@ -91,6 +91,28 @@ class PluginHTTP(BasePlugin):
         )
 
     def analyze(self, parser: BaseDeviceParser) -> None:
+        ios = self._ios_parser(parser)
+        enabled = [name for name, state in (
+            ("HTTP", ios.get_http_server_state()),
+            ("HTTPS", ios.get_https_server_state()),
+        ) if state == ConfigurationState.ENABLED]
+        name = ios.get_http_access_class()
+        if enabled and name:
+            acl = ios.get_management_ipv4_acl(name)
+            if acl.state == "permit-all":
+                self.add_issue(Finding(
+                    rule_id="cisco.ios.http.unrestricted_sources",
+                    device=parser.device_type,
+                    title="Web management ACL permits every IPv4 source",
+                    observation=f"Enabled {' and '.join(enabled)} management uses standard IPv4 ACL {name}, which permits every source.",
+                    impact="The attached ACL provides no IPv4 source restriction for web administration.",
+                    exploitability="A source with network reachability can attempt web administration; upstream controls are not assessed.",
+                    recommendation="Restrict the attached ACL to approved management sources.",
+                    severity=Severity.HIGH,
+                    evidence=(f"ip http access-class {name}",) + acl.evidence,
+                    references=(CISCO_IOS_HTTP_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
+                ))
         for issue in (
             self.get_cisco_ios_http(parser),
             self.get_cisco_ios_http_access_list(parser),

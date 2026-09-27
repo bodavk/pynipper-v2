@@ -2,11 +2,13 @@
 
 Reviewed **2026-09-22** against the current source, after the recent parser and detection upgrades. This is the authoritative security-coverage backlog; it replaces the overlapping broad detection bullets in [TODO](../TODO.md). It specifies future implementation, not changes made during this review. No Git commands were used. Existing detection defects and external samples remain in [real-world findings](REALWORLD_VALIDATION_FINDINGS.md); completed remediation is reconciled in [validation tasks](REALWORLD_VALIDATION_TASKS.md).
 
+Backlog extended **2026-09-26** following a new source review and targeted synthetic probes. This update schedules work only; it does not mark the new stages implemented. The current queue below overrides historical wave ordering for remaining work.
+
 ## Scope and execution contract
 
 There are **16 registered IDs and 13 parser/analyzer pipelines**, including F5 BIG-IP and Check Point Gaia OS (added 2026-09-25). IOS aliases share one implementation; PIX shares ASA code but does not thereby have independently verified dialect coverage. Source authority is [registry](../../src/devices/registry.py), not historical roadmap claims.
 
-Priorities are implementation priorities: **P1** closes a high-impact exposure or an important prerequisite; **P2** covers selected medium risks or evidence qualification. DISA High/CAT I and Medium/CAT II are source severities, not this project's priority scale. CIS Level 1/2 describes profiles, not vulnerability severity. Do not manufacture a Critical rating because a source has no such rating. Final finding severity depends on the proven unsafe state and exposure.
+Priorities are implementation priorities: **P1** closes a high-impact exposure or an important prerequisite; **P2** covers selected medium risks or evidence qualification; **P3** is lower direct security relevance or workflow convenience. DISA High/CAT I and Medium/CAT II are source severities, not this project's priority scale. CIS Level 1/2 describes profiles, not vulnerability severity. Do not manufacture a Critical rating because a source has no such rating. Final finding severity depends on the proven unsafe state and exposure.
 
 Selected medium issues matter because they commonly weaken administrative authentication, log integrity, routing trust, or access-edge isolation. No multi-stage attack scoring engine is requested. Low-value cosmetic controls, blanket benchmark parity, live scanning, password cracking, and speculative new platforms are outside this backlog.
 
@@ -20,9 +22,25 @@ Mandatory implementation rules, incorporated into **every** task:
 - **Mandatory tests:** unsafe positive, secure negative, override/removal/inheritance, malformed and unknown, inactive/unbound, assessment/export scope, secret redaction, and installed public CLI JSON/HTML. Test the meaningful combinations for the feature; explicitly justify genuinely inapplicable cases. Include adversarial fixtures that defeat presence-only checks.
 - After implementation run `.\.venv\Scripts\python.exe scripts\run_full_regression.py` from the repository root. Review intentional snapshot changes; never regenerate expectations to hide a regression. Each task's acceptance criteria include this gate.
 
+## Current execution priorities — 2026-09-26
+
+This queue prioritizes **remaining work**, not already completed stages. P1 = priority security work (administrative compromise, authentication bypass, route injection, or false assurance about those controls); P2 = medium/deployment-specific hardening or assessment assurance; P3 = lower security relevance/auditor convenience. Evidence/fixture gates still apply. Preserve stable task IDs even when execution order changes. Existing P1 SC-003/008/009/013/014/015/025/031/034/035/039/041 stages remain priority wherever genuinely unfinished and evidence-ready.
+
+| Priority | Remaining work and rationale |
+|---|---|
+| **P1 — direct high-impact configuration risks** | [SC-046](#sc-046) effective management ACLs; [SC-026](#sc-026) unsafe management APIs; [SC-011](#sc-011) privileged API identities; [SC-047](#sc-047) SRX host-inbound administration; [SC-013](#sc-013) VPN authentication and exposed legacy VPN; [SC-005](#sc-005) explicit RIPv1/IS-IS trust; [SC-043](#sc-043) accurate risky-service permissions. These can enable administrative access, credential exposure, route manipulation or sensitive-service access. |
+| **P1 — offline operating requirement** | [SC-045](#sc-045): eliminate implicit outbound advisory requests from ordinary audits. This is a data-handling/product requirement, not a device misconfiguration or Critical vulnerability. |
+| **P2 — deployment-dependent security depth** | [SC-048](#sc-048) IPv6 access-edge/dual-stack controls; multicast and additional address families in [SC-005](#sc-005); DNS in [SC-026](#sc-026). Promote an affected deployment stage to P1 when supplied scope proves an untrusted control-plane or management bypass. Do not prioritize unused protocols. |
+| **P2 — assurance** | [SC-049](#sc-049) per-control coverage and manual-review inventory, after direct high-risk misses; this reduces false assurance without adding a device vulnerability. |
+| **P3 — lower direct security relevance** | [SC-050](#sc-050) batch manifests and offline comparisons. Improve auditor efficiency after ready P1/P2 detection work. |
+
+The 2026-09-26 review proposals were merged as follows: A3/A10 into SC-026; A4 into SC-011; A6 into SC-013; A7/A9 into SC-005; A11 into SC-043. New A1/A2/A5/A8/A12/A13 work is SC-045/046/047/048/049/050 respectively. No duplicate A-series implementation backlog exists. All existing completed scope remains recorded. **SC-044 insecure defaults is unchanged and remains separately owned.**
+
+Offline boundary for every task: consume only supplied configuration/backup/companion artifacts and approved local datasets. No device connection, active probe, DNS lookup, live certificate revocation fetch or automated remote-file retrieval. Historical PT-010/SC-022 data-acquisition work must be separated from the audit path through SC-045; source research by developers is not an audit runtime feature.
+
 ## Standards and release applicability
 
-All online sources below were accessed **2026-09-22**. STIG Viewer is the user-requested mirror of DISA text; vendor command documentation determines parser grammar. Catalog version is not an OS version. Some date-addressed STIG pages render newer revisions; record the displayed revision and rule ID when implementing. Catalog currency below was checked against the [STIG catalog](https://www.stigviewer.com/stigs); this is not a certification or an exhaustive control-by-control compliance claim.
+The original standards catalog below was accessed **2026-09-22**; sources in the explicitly dated extensions were reviewed **2026-09-26**. STIG Viewer is the user-requested mirror of DISA text; vendor command documentation determines parser grammar. Catalog version is not an OS version. Some date-addressed STIG pages render newer revisions; record the displayed revision and rule ID when implementing. Catalog currency below was checked against the [STIG catalog](https://www.stigviewer.com/stigs); this is not a certification or an exhaustive control-by-control compliance claim.
 
 | Family | Published benchmark identified | Applicability to this tool |
 |---|---|---|
@@ -88,6 +106,8 @@ This table describes **implemented subsets**, not complete coverage of a categor
 | F5_BIGIP | Explicit management source/redirect/idle settings, tmsh audit, password-enforcement and zero-lockout/minimum-length checks, plaintext local-user password storage, active remote-auth empty-server and LDAP SSL/peer-check disablement, remote-syslog-none, bound ClientSSL allow-non-SSL, AFM default-accept, bound inactive/transparent ASM policies | [SC-014](#sc-014), [SC-015](#sc-015), [SC-016](#sc-016), [SC-022](#sc-022), conditional-module [SC-024](#sc-024); Wave 4: [SC-030](#sc-030), [SC-031](#sc-031), [SC-032](#sc-032), [SC-033](#sc-033), [SC-034](#sc-034), [SC-036](#sc-036), [SC-037](#sc-037), [SC-041](#sc-041), [SC-042](#sc-042), [SC-043](#sc-043), [SC-044](#sc-044) |
 
 Administrative access, AAA, credentials, SNMP, logging, time, services, routing, filtering, crypto, certificates, discovery and control-plane protection were considered. Banners already have checks on several families and are not a priority expansion here. Missing routing/L2 functions on appliances that do not use those roles are not automatically applicable. Certificate selection is not equivalent to certificate validation; algorithm blacklists are not credential-value checks; configured backup/update schedules are not proof of successful operation. No missing checks are inferred simply from an absent category name in a plugin.
+
+The platform table above records the original task mapping and subsequent adapter additions. Cross-platform SC-045/049/050 apply to every registered ID; SC-046 adds IOS/XE management depth, SC-047 applies only to SRX JUNOS, and SC-048 lists its independently qualified switching stages. API/DNS, identity and protocol expansions are included in SC-026/011/005/013/043 rather than new duplicate tasks.
 
 ## Wave 1 — deepen existing evidence and close exposed decision gaps
 
@@ -192,23 +212,37 @@ Implementation update: SC-001 resolves effective VTY AAA bindings across overlap
 
 **Task ID and Title:** SC-011 — Effective accprofile privileges and log administration.
 
-**Priority:** P1.
+**Priority:** P1 — broadly trusted privileged API identities can expose configuration write access; preserve existing custom-role checks.
 
-**Status:** Implemented for bound write-capable custom roles and existing trusted-host/MFA checks; authorized log-administrator policy remains open pending explicit applicability. **Research 2026-09-25:** FortiOS 7.4 [`config system accprofile`](https://docs.fortinet.com/document/fortigate/7.4.1/cli-reference/2620/config-system-accprofile): groups default to `none`; `loggrp read-write`, or `custom` with `loggrp-permission` `config`/`data-access` `read-write`, grants log write rights. Syntax is verified; the authorized-role policy is still the maintainer's decision.
+**Status:** Implemented for bound write-capable custom roles and existing trusted-host/MFA checks. Organization-specific log-administrator grading is not scheduled, per the 2026-09-25 maintainer decision. **Research 2026-09-25:** FortiOS 7.4 [`config system accprofile`](https://docs.fortinet.com/document/fortigate/7.4.1/cli-reference/2620/config-system-accprofile): groups default to `none`; `loggrp read-write`, or `custom` with `loggrp-permission` `config`/`data-access` `read-write`, grants log write rights. Syntax was verified, but the later maintainer decision excludes authorized-log-role policy grading.
+
+**2026-09-26 extension (A4):** API identities remain unassessed. A synthetic `system api-user` using `super_admin` with an explicit any-address trusted host added no findings. Existing `system admin` custom-role checks remain implemented. The maintainer decision not to grade log-administrator rights against an organization role list remains in force.
+
 
 **Source of Truth:** S09; [Forti baseline](../../src/analyze/fortinet/plugins/fortios_baseline_plugin.py) `check_administrators` classifies privilege using `profile == "super_admin"`; no effective custom `accprofile`/`loggrp` analysis.
 
+[FortiOS administrator checks](../../src/analyze/fortinet/plugins/fortios_baseline_plugin.py), `check_administrators`; [FortiOS 7.2.2 API-user reference](https://docs.fortinet.com/document/fortigate/7.2.2/cli-reference/17620/config-system-api-user), reviewed 2026-09-26, documents the distinct API-user profile, VDOM, trusted-host and peer-authentication fields.
+
+
 **Linked Findings:** Custom roles can escape existing privileged-account trusted-host/MFA checks.
 
-**Dependencies:** FortiOS release-specific accprofile permissions and global/VDOM scoping; explicit authorized-role policy for organizational privilege restrictions.
+**Dependencies:** FortiOS release-specific accprofile permissions and global/VDOM scoping; API-user schema and effective trusted-host/peer-authentication evidence. Do not require an organization log-role list.
 
 **Architecture/Convention Notes:** Parser resolves role definitions; reuse existing administrator findings for newly recognized equivalent privileges.
 
-**Concrete Requirements:** FORTIOS. Parse custom profiles and their write/admin permissions, including log-management permissions; bind enabled local/remote admin entries. Apply existing source restriction/MFA checks to genuinely privileged custom roles. Assess excess log-deletion/configuration privileges only against explicit authorized scope. Unknown profiles are unresolved, never ordinary read-only users. Typed role records required; no new CLI unless approved role policy needs an assessment-context field.
+**Concrete Requirements:** FORTIOS. Parse custom profiles and their write/admin permissions, including log-management permissions; bind enabled local/remote admin entries. Apply existing source restriction/MFA checks to genuinely privileged custom roles. Organization-specific excess log-deletion/configuration privilege grading is excluded by the maintainer decision; role resolution remains relevant to the existing source/MFA checks. Unknown profiles are unresolved, never ordinary read-only users. Typed role records required; no new CLI unless approved role policy needs an assessment-context field.
+
+**Open P1 API-user stage:** FORTIOS. Parse `config system api-user` separately from interactive administrators. Resolve accprofile through the existing privilege resolver, VDOM scope, IPv4/IPv6 trusthost entries and explicitly configured peer-authentication references. Detect proven broadly trusted write-capable API identities; distinguish read-only and unresolved roles. Keep token values out of normal findings/inventory. Do not impose interactive MFA on machine identities or infer token age/rotation from unavailable evidence. Parser-owned typed API identity records are required; existing output interfaces suffice. Assess explicit broad grants now; defaults belong to the separate defaults work.
+
 
 **Test Requirements:** Mandatory suite plus custom write role without trusted hosts, read-only role, scoped VDOM administrator, unresolved profile, disabled account and remote MFA of unknown status.
 
+Add broad privileged API token, restricted token, read-only role, unresolved custom profile, same-name roles in different scopes, IPv4/IPv6 independence, peer-auth reference and API-key redaction cases.
+
+
 **Acceptance Criteria:** Role names cannot bypass existing privileged-account protections; no claim that a configured permission was exercised at runtime.
+
+API accounts cannot escape privilege/source auditing merely because they are outside `system admin`. Existing interactive checks remain stable; no organization-specific log-role policy is introduced.
 
 <a id="sc-012"></a>
 ### SC-012 — Complete protected logging and useful event levels
@@ -288,11 +322,17 @@ Implement by risk and fixture quality. Shared L2 and routing concepts offer reus
 
 **Task ID and Title:** SC-005 — Expand routing trust beyond protocol/attachment presence.
 
-**Priority:** P1 for unauthenticated active routing; P2 for policy/key-lifetime depth.
+**Priority:** P1 for explicit unauthenticated/weak routing trust capable of route injection; P2 for IPv6/VRF expansion and deployment-specific multicast controls. Implement the explicit RIPv1 gap before niche protocol breadth.
 
 **Status:** Bounded IOS/XE classic default-VRF IPv4 RIPv2 and EIGRP authentication; direct external-BGP IPv4 prefix-list, route-map and AS-path filter-list missing-reference/sole-permit-all checks; and explicit-UTC, assessment-time-gated OSPF/RIP/EIGRP key-lifetime viability implemented. A named-mode EIGRP stage was added on 2026-09-25 from the Cisco EIGRP command reference and configuration guide: default-VRF `address-family ipv4 [unicast] autonomous-system N` under `router eigrp <name>`, with `af-interface default` inherited by every interface and a specific `af-interface` overriding it; `shutdown` and `passive-interface` under af-interface exclude the interface; `authentication mode md5` needs a populated `authentication key-chain`, and `authentication mode hmac-sha-256 [0|7] <key>` is accepted (the key is redacted and shown only in the `--show-secrets` appendix). A specific `no authentication ...` against an inherited default stays unknown. VRF/IPv6/multicast address families, named/VRF RIP, EOS/HP routing, broader filter effectiveness and other-platform/ambiguous-clock key-lifetime stages remain open. For the EOS BGP stage (2026-09-24), the peer-group and VRF grammar was confirmed from the Arista BGP guide, but IPv4-unicast default activation and the `maximum-routes` default could not be confirmed from accessible sources. Those two defaults decide which peers are active and whether a prefix-limit finding is valid, so the stage waits for that evidence. SC-005 remains partial. **Research 2026-09-25:** Arista [BGP chapter](https://www.arista.com/en/um-eos/eos-border-gateway-protocol-bgp): `bgp default ipv4-unicast` (all neighbors IPv4-active) is the switch default; `no neighbor maximum-routes` applies the system default of 256000, and only `maximum-routes 0` removes the limit. Cisco [RIP command reference](https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/iproute_rip/command/irr-cr-book/irr-cr-rip.html): the VRF example sets `version 2` inside each `address-family ipv4 vrf`, and timers are explicitly not inherited; `version` inheritance is not stated, so a VRF stage should only assess address families with their own `version 2`. **Implemented 2026-09-25:** IOS RIP VRF stage for `address-family ipv4 vrf` blocks that set their own `version 2`. **EOS BGP stage implemented 2026-09-25** (default VRF, IPv4 unicast; `vrf` blocks and other address families are left out). Peers are active by default unless `no bgp default ipv4-unicast`, and `address-family ipv4` activation is then required. `neighbor <x> peer group <g>` inheritance is followed. Rules: `authentication` (no `neighbor password`); `inbound_policy`/`outbound_policy` on external peers; `missing_route_map`, which is a documented default because EOS permits all routes for a misconfigured route map unless `bgp missing-policy ... action deny`; `permit_all_route_map`; and `prefix_limit_disabled` for an explicit `maximum-routes 0`. A missing `maximum-routes` is not graded, because the default is 256000.
 
+**2026-09-26 extension (review proposals A7/A9):** Existing implemented stages remain complete. Explicit RIPv1, IS-IS, IPv6 routing and multicast stages below are open. A synthetic explicit IOS RIPv1 instance returned zero RIP interface records and no routing finding; the parser currently retains only version-2 RIP scopes.
+
+
 **Source of Truth:** S03; IOS `check_routing` covers BGP/OSPF plus bounded classic RIPv2 and EIGRP interface/key-chain slices, using the [Cisco IOS RIP command reference](https://www.cisco.com/c/en/us/td/docs/ios/iproute_rip/command/reference/irr_book/irr_rip.html), [Cisco EIGRP command reference](https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/iproute_eigrp/command/ire-cr-book/ire-i1.html), and [Cisco EIGRP passive-interface FAQ](https://www.cisco.com/c/en/us/support/docs/ip/enhanced-interior-gateway-routing-protocol-eigrp/13681-eigrpfaq.html). Narrow BGP effects follow [Cisco's explicit prefix-list permit-all example](https://www.cisco.com/c/en/us/td/docs/routers/ios-xe/ip-routing/b-ip-routing/m_irg-external-sp-0.html), [route-map no-match semantics](https://www.cisco.com/c/en/us/td/docs/routers/ios-xe/ip-routing/b-ip-routing/m_iri-iprouting.html), and the [Cisco AS-path filter command reference](https://www.cisco.com/c/en/us/td/docs/ios/iproute_bgp/command/reference/irg_book/irg_bgp2.html); most routing filter forms still test attachment presence only. Junos baseline has BGP/OSPF; EOS/HP plugins lack equivalent routing-security analysis.
+
+Additional evidence: [IOS RIP resolver](../../src/devices/cisco/ios.py), `get_rip_interfaces` (version-2 scope filter); [Junos routing parser](../../src/devices/juniper/junos.py), bounded OSPFv2 records. [RFC 2453](https://www.rfc-editor.org/rfc/rfc2453.html) documents RIPv1 authentication limitations; [Cisco IS-IS reference](https://www.cisco.com/c/en/us/td/docs/ios/iproute_isis/command/reference/irs_book/irs_is1.html) distinguishes authentication scopes; [Cisco Secure IP Multicast Deployments](https://www.cisco.com/c/en/us/support/docs/ip/ip-multicast/218004-secure-ip-multicast-deployments.html) establishes PIM control/filtering intent. Sources reviewed 2026-09-26.
+
 
 **Linked Findings:** Different platform coverage depths; do not claim BGP/OSPF checks are absent everywhere.
 
@@ -302,9 +342,24 @@ Implement by risk and fixture quality. Shared L2 and routing concepts offer reus
 
 **Concrete Requirements:** (1) IOS IDs/IOS_XE: active EIGRP/RIP authentication and explicit weak/null mode; (2) EOS and routing-capable HP_PROCURVE: BGP/OSPF active auth and bound external filters; (3) IOS/IOS_XE/JUNOS/EOS: detect proven permit-all/nonrestrictive attached routing filters, missing referenced filters and unusable key-chain lifetimes. Unknown complex policy is not automatically empty or safe. Do not require BGP authentication on dormant templates. Interface change only for approved expected-prefix/key-time policy in assessment context.
 
+Additional independently deliverable stages, preserving completed BGP/EIGRP/RIPv2 behavior:
+
+1. **P1 — explicit RIPv1:** IOS IDs/IOS_XE first. Resolve configured send/receive versions, active interface/network attachment and passive/shutdown state; detect explicit v1 participation or v1 fallback without relying on omitted defaults. Do not silently discard an explicitly unsupported protocol from coverage.
+2. **P1 — IS-IS authentication:** IOS/IOS-XE first, then separately qualified JUNOS/ARISTA_EOS. Resolve active interface/process bindings, Level 1/2, hello versus database authentication, explicit text/disabled modes and key references. Assess HMAC usage in its protocol context rather than copying password-hash policy.
+3. **P2 — IPv6/VRF depth:** extend supported OSPFv3 and routing address families with their actual authentication mechanisms and override rules. Unknown IPsec/authentication-trailer or inheritance state stays unknown; do not infer IPv6 protection from IPv4 checks.
+4. **P2 — multicast control:** IOS/IOS-XE first. Resolve PIM-enabled interfaces, neighbor filters, RP/BSR controls, multicast boundaries and configured MSDP peers/authentication. Report proven overly broad filters or inappropriate participation on explicitly assessed endpoint/external interfaces. Missing site topology or unsupported predicates remain unassessed; multicast use alone is not a vulnerability.
+
+Parsers own each new protocol's typed effective state. Existing role/context interfaces suffice initially; approved expected-peer/prefix policy needs an explicit context extension only when required. No routing-neighbor queries, multicast probes or live topology discovery. Omitted/default-setting tables remain SC-044, outside these stages.
+
+
 **Test Requirements:** Mandatory suite plus peer inheritance override, IPv4/IPv6 independence, passive interface, permit-all route map with a name, unresolved prefix list, unsupported predicate and expired versus future-valid key.
 
+Additional fixtures: explicit RIPv1 versus authenticated v2; v1 receive override; shutdown/passive interfaces; IS-IS L1/L2 and hello/database differences; unbound key chain; IPv6-only/VRF routing; PIM permit-all versus restrictive neighbor filter; untrusted edge versus authorized multicast uplink. All require unknown-state, redaction and public-pipeline tests.
+
+
 **Acceptance Criteria:** Track and test each numbered adapter stage separately; attachment names alone cannot establish effective filtering, and no runtime-neighbor assertion is made.
+
+Each stage has qualified vendor grammar and its own fixtures; a recognized unassessed routing feature is disclosed rather than silently omitted. No unsupported family is represented as protected and no configured adjacency is represented as observed live.
 
 <a id="sc-006"></a>
 ### SC-006 — Deployment-time automatic configuration services
@@ -384,11 +439,17 @@ Implement by risk and fixture quality. Shared L2 and routing concepts offer reus
 
 **Task ID and Title:** SC-013 — Effective remote-access authentication chain and access restriction.
 
-**Priority:** P1.
+**Priority:** P1 for remote-access authentication bypass, exposed PPTP and proven cleartext credentials; P2 for deployment-specific PPP/L2TP extensions where exposure is not yet established.
 
 **Status:** Bounded ASA WebVPN explicit group-URL/AAA-only finding under an opt-in client-certificate policy implemented. Default/alias/IPsec entry points, fallback and authorization-filter resolution, and other-vendor stages remain evidence-gated. SC-013 remains partial.
 
+**2026-09-26 extension (A6):** Legacy PPTP and PPP authentication stages are open. Explicit FortiOS PPTP gateway enablement produced no relevant finding in a synthetic processor run. Existing ASA client-certificate and other implemented VPN stages remain intact.
+
+
 **Source of Truth:** S04; ASA SSL/IPsec checks inspect crypto but not effective remote-access tunnel-group/group-policy authentication. FortiOS, PAN-OS and SonicOS adapters do not provide equivalent complete remote-access auth-chain evaluation.
+
+Additional sources reviewed 2026-09-26: [FortiOS 7.4.1 PPTP gateway reference](https://docs.fortinet.com/document/fortigate/7.4.1/cli-reference/336620/config-vpn-pptp), [Cisco PAP security explanation](https://www.cisco.com/c/en/us/support/docs/wan/point-to-point-protocol-ppp/10313-config-pap.html), and [Microsoft PPTP/L2TP deprecation guidance](https://techcommunity.microsoft.com/blog/windowsservernewsandbestpractices/pptp-and-l2tp-deprecation-a-new-era-of-secure-connectivity/4263956). Current VPN plugin paths assess IPsec/IKE/SSL properties without equivalent PPTP/PPP analysis.
+
 
 **Linked Findings:** Separate from completed RV-001/RV-002; TLS strength does not establish user authentication.
 
@@ -398,9 +459,17 @@ Implement by risk and fixture quality. Shared L2 and routing concepts offer reus
 
 **Concrete Requirements:** ASA, then FORTIOS/PAN_OS/SONICOS. Resolve active remote-access entry points, effective authentication choices, fallback, certificate requirement and bound authorization filters. Report explicit password-only paths under an applicable approved stronger-auth policy and proven unrestricted authorization against explicit expected scope. Certificate-specific ASA STIG policy stays distinct from generic MFA. Omitted identity-provider policy is unknown. Add minimal approved remote-access policy context, not live authentication attempts.
 
+**Open legacy-protocol stages:** (1) FORTIOS: detect explicitly enabled PPTP gateway and qualified active PPTP client configuration. (2) IOS IDs/IOS_XE: resolve VPDN, virtual-template and active PPP interface relationships, authentication method ordering and fallback. Detect explicit PAP on a proven unprotected path and source-qualified weak fallback. (3) ASA and other already-supported families only after export/grammar qualification: distinguish L2TP alone from L2TP over IPsec. Never claim outer-network credential exposure merely because PAP exists inside a protected tunnel. Missing outer-protection relationships remain unknown; unbound templates are not active services. Extend vendor typed VPN/authentication records, reuse existing JSON/HTML interfaces, and perform no connection or credential attempt.
+
+
 **Test Requirements:** Mandatory suite plus inherited weak default group, secure certificate path, unbound portal, fallback bypass, unresolved external IdP and disabled VPN.
 
+Add enabled/disabled PPTP, active versus unused virtual templates, PAP versus a qualified stronger method, weak fallback ordering, protected L2TP/IPsec, unresolved protection, malformed groups and credential-redaction cases.
+
+
 **Acceptance Criteria:** Each vendor stage has its own source mapping and fixtures; reports state configured requirements, never that MFA was actually performed.
+
+Explicit legacy VPN enablement is assessable independently of insecure defaults. Reports distinguish protocol weakness, authentication weakness and proven cleartext exposure; no live negotiated-session claim is made.
 
 <a id="sc-014"></a>
 ### SC-014 — F5 administrative identity and privilege
@@ -706,11 +775,17 @@ Not scheduled (maintainer decision, 2026-09-25): SNMPv1/v2c community checks for
 
 **Task ID and Title:** SC-026 — Extend `cisco.ios.services.unnecessary` and add insecure model-driven management.
 
-**Priority:** P2.
+**Priority:** P1 for cleartext or authentication-bypassing network management APIs; P2 for bounded DNS exposure and remaining legacy service breadth. DNS is a risk only when the unsafe service/access combination is proven.
 
 **Status:** Implemented 2026-09-26 (explicit states only): `services.unnecessary` now resolves `no` removal and adds `service pad`, `ip finger`, `ip identd` and `mop enabled` on interfaces that are not shut down; new `cisco.ios.services.remote_shell` (`ip rcmd rsh-enable`/`rcp-enable`), `cisco.ios.services.tftp_server` (`tftp-server`) and `cisco.ios.management.insecure_protocol` for IOS-XE `gnxi server`. Sources: Cisco IOS hardening guide, IOS XE File Transfer Services guide, IOS XE Programmability gNMI guide, IOS XE Security Warnings Reference. Remaining: `ip dns server`, release-gated defaults ([SC-044](#sc-044)). Update 2026-09-26: `ip dns server` was not added — the IOS DNS configuration guide gives no security guidance or default for it, so no vendor-backed rule exists yet.
 
+**2026-09-26 extensions (A3/A10):** Keep the implemented IOS legacy-service and insecure gNMI stages. Junos REST HTTP/gRPC, EOS management gRPC, effective NETCONF/RESTCONF restrictions and bounded DNS exposure remain open. A synthetic Junos REST HTTP service added no findings. DNS enablement alone still does not prove an open resolver.
+
+
 **Source of Truth:** Candidates: Cisco Guide to Harden Cisco IOS Devices; IOS command references for each command; IOS-XE programmability guide (gNMI `gnxi server` vs `gnxi secure-server`); IOS/IOS-XE NDM STIGs.
+
+Additional evidence: [Junos service inventory](../../src/devices/juniper/junos.py), `get_services`, and legacy-service plugin lack REST/gRPC evaluation. [Juniper REST API configuration](https://www.juniper.net/documentation/us/en/software/junos/rest-api/topics/task/rest-api-configuring.html) recommends HTTPS; [Junos telemetry guide](https://www.juniper.net/documentation/us/en/software/junos/interfaces-telemetry/interfaces-telemetry.pdf) documents explicit gRPC cleartext and authentication bypass. [RFC 5358](https://www.rfc-editor.org/rfc/rfc5358.html) supplies restricted-recursion intent; [FortiOS DNS-server reference](https://docs.fortinet.com/document/fortigate/6.2.4/cli-reference/103620/system-dns-server) supplies initial listener/mode syntax. Reviewed 2026-09-26; qualify exact deployment releases before implementation.
+
 
 **Linked Findings:** Current list covers only `service finger`, `service tcp-small-servers`, `service udp-small-servers`, `ip bootp server`.
 
@@ -720,9 +795,21 @@ Not scheduled (maintainer decision, 2026-09-25): SNMPv1/v2c community checks for
 
 **Concrete Requirements:** IOS IDs and IOS_XE. Candidates: `service pad`, `ip finger`, `ip identd`, `mop enabled` on an active interface, `ip rcmd rsh-enable` / `ip rcmd rcp-enable` (cleartext remote shell and copy), `tftp-server` (cleartext file server), `ip dns server` (open resolver), IOS-XE `gnxi server` / insecure gNMI listener. Release-gated `DOCUMENTED_DEFAULT` only where sourced (see also [SC-044](#sc-044)).
 
+**P1 automation/API stages:** JUNOS first: resolve REST HTTP and explicit gRPC cleartext/authentication-bypass network listeners. ARISTA_EOS next: qualify gRPC/gNMI transport/authentication/listener restrictions. IOS_XE: assess effective NETCONF/RESTCONF access restrictions beyond existing `gnxi server`. Parse listener address/port, VRF, transport, authentication, inheritance and attached restrictions as typed evidence. Distinguish local-only sockets and disabled listeners. NETCONF/RESTCONF are not inherently unsafe; detect the unsafe property. Reuse SC-046 for management ACL resolution, and leave unresolved authentication/transport state unknown.
+
+**P2 DNS stages:** FORTIOS interface-bound DNS and IOS/IOS_XE DNS server first; PAN_OS/JUNOS only after independent grammar qualification. Resolve explicit recursive/forwarding mode, listener/interface and applicable source restrictions. Report proven permission for arbitrary untrusted clients, not every `ip dns server` line. Separate DNS clients, internal resolvers, authoritative-only service and forwarding services. Qualify zone-transfer controls only where exported. Do not issue DNS queries. Missing topology/access-filter semantics stay unknown. Existing roles/output suffice; parser-owned endpoint/service records are required.
+
+These additions supersede the original shorthand equating `ip dns server` with an open resolver. No additional omitted/default-setting rules are requested; SC-044 remains separately owned.
+
+
 **Test Requirements:** Mandatory suite per command, including `no` removal and interface scope for `mop`.
 
+Add Junos REST HTTP/HTTPS, gRPC bypass versus authenticated TLS, local-only socket, disabled listener, IPv4/IPv6/VRF restrictions and unknown inherited profile; DNS client-only, authoritative-only, restricted internal resolver, explicitly broad forwarding/recursive service and unresolved source ACL. Apply the mandatory public-pipeline/redaction suite.
+
+
 **Acceptance Criteria:** Each new command cites a vendor source; no default assumed across release trains.
+
+A network API is assessed independently of interactive SSH/J-Web. DNS findings prove configured service admission, not Internet reachability. Secure APIs and ordinary DNS clients are not classified as unsafe merely because they are enabled.
 
 <a id="sc-027"></a>
 ### SC-027 — IOS HTTPS server TLS version and ciphers
@@ -787,7 +874,7 @@ Not scheduled (maintainer decision, 2026-09-25): SNMPv1/v2c community checks for
 
 **Architecture/Convention Notes:** If the export does not show VTP state, report unknown, never a finding.
 
-**Concrete Requirements:** IOS_SWITCH, IOS_CATALYST, IOS_XE switches. Explicit `vtp mode server|client` without `vtp password` → finding. `transparent` or `off` → no finding. VTP v3 handled per its own model.
+**Concrete Requirements:** IOS_SWITCH, IOS_CATALYST and IOS_XE switches. Running-config alone cannot establish whether a VTP password exists. Do not implement a missing-password finding from an absent `vtp password` line. Qualify a supplied companion export with mode/version/domain and password-presence evidence before assessment; never request a live command or expose a password. Transparent/off and VTP v3 require their own applicability. The documented export-evidence block takes precedence over the superseded presence-only proposal.
 
 **Test Requirements:** Mandatory suite including a router export and an export with no VTP lines.
 
@@ -1097,11 +1184,17 @@ Not scheduled (maintainer decision, 2026-09-25): SNMPv1/v2c community checks for
 
 **Task ID and Title:** SC-043 — Shared catalogue of risky services and consistent detection across firewalls.
 
-**Priority:** P2.
+**Priority:** P1 for proven untrusted access to management/data services; correct classification and ordering before expanding coverage. P2 for further catalogue breadth and additional adapter rollout.
 
 **Status:** Implemented 2026-09-26: shared catalogue `src/analyze/common/risky_services.py` (FTP, Telnet, TFTP, SMB/NetBIOS, RDP, VNC, X11, rlogin/rsh/rexec, SNMP, LDAP, POP3/IMAP, MS SQL, Oracle, MySQL, PostgreSQL, Redis, MongoDB, Docker API) used by Check Point FW1 (unchanged rule ID), new `cisco.asa.acl.risky_service_exposure` (bound active permit from any source with eq/range ports) and `fortinet.fortios.policy.risky_service_exposure` (accept policy from source all with resolved service ports). Ranges wider than 1024 ports are left to the broad-service rules. Remaining: F5 virtual servers on clear-text ports. Update 2026-09-26: F5 `ltm.risky_service_exposure` for enabled virtual servers listening on a catalogued port with source 0.0.0.0/0 (the default).
 
+**2026-09-26 extension (A11):** Existing catalogue integrations remain implemented; effective-exposure accuracy is open. A synthetic F5 UDP/23 virtual was reported as Telnet because the endpoint record omits transport and the plugin combines TCP/UDP matches.
+
+
 **Source of Truth:** Candidates: IANA service registry; CISA and vendor guidance on exposed SMB, RDP, Telnet, FTP, SNMP and database ports; Firewall SRG (S07).
+
+[F5 endpoint accessor](../../src/devices/f5/bigip.py), `get_virtual_endpoints`; [F5 exposure check](../../src/analyze/f5/plugins/bigip_checks_plugin.py); [shared catalogue](../../src/analyze/common/risky_services.py); ASA/FortiOS policy checks and [bounded policy semantics](../../src/devices/common/policy_semantics.py). These support a configuration-level conclusion, not proof of end-to-end reachability.
+
 
 **Linked Findings:** `checkpoint.fw1.policy.risky_service_exposure`, `*.policy.broad_service` (these only catch "any service").
 
@@ -1111,9 +1204,17 @@ Not scheduled (maintainer decision, 2026-09-25): SNMPv1/v2c community checks for
 
 **Concrete Requirements:** Extend the catalogue (SNMP 161/162, LDAP 389, POP3 110, IMAP 143, X11 6000+, MSSQL 1433, MySQL 3306, PostgreSQL 5432, Oracle 1521, Redis 6379, MongoDB 27017, Docker 2375, Telnet 23, FTP 21, TFTP 69). Apply to CHECKPOINT_FW1, ASA/PIX ACLs bound to interfaces, FORTIOS policies, and F5 virtual servers listening on cleartext administrative ports.
 
+**Open accuracy/depth stages:** Preserve TCP/UDP/IP-protocol identity in F5 endpoint records and all catalogue adapters; never identify UDP/23 as TCP Telnet. Separate exposed sensitive services from proven cleartext application traffic. Before asserting effective permitted access, consider supported preceding denies, negation, schedules and policy predicates; unknown dependencies yield a potential/unassessed result rather than a proven exposure claim. Extend literal-any matching to auditor-declared untrusted source ranges using existing object/service containment. Disclose unmodeled NAT, upstream controls and application TLS; a database port alone does not establish cleartext traffic. Start ASA/FORTIOS/F5/CHECKPOINT_FW1, then add other adapters only with equivalent evidence. Reuse typed policy records; add protocol to F5 endpoint API and explicit expected source-scope input only if needed. Expand catalogue entries such as RPC/NFS or rsync only after authoritative semantic qualification.
+
+
 **Test Requirements:** Mandatory suite, including named service objects and port ranges.
 
+Add UDP/23 versus TCP/23, restrictive versus complete prior deny, partially overlapping deny, negated sources/services, time-scoped rules with and without assessment time, named groups, explicit untrusted subnet, protected application on a catalogued port and unresolved NAT. Retain disabled/unbound, scope and redaction coverage.
+
+
 **Acceptance Criteria:** Existing Check Point snapshots change only by intentional catalogue additions.
+
+Protocol-correct catalogue matches and proven policy outcomes are required. Potential exposure, configured permission and cleartext transport are distinct claims. Finishing the F5 protocol fix does not close the other depth stages.
 
 <a id="sc-044"></a>
 ### SC-044 — Release-gated insecure defaults on legacy releases
@@ -1163,6 +1264,148 @@ Not scheduled (maintainer decision, 2026-09-25): SNMPv1/v2c community checks for
 
 **Acceptance Criteria:** Every result cites dataset/source/date and exact match; no version string alone is declared unsupported or vulnerable.
 
+## Additional offline security and assessment tasks — 2026-09-26
+
+These tasks continue numbering after SC-044. Their execution order is governed by the current priority queue, not their position after the historical waves. They do not extend the separately owned insecure-defaults database.
+
+<a id="sc-045"></a>
+### SC-045 — Enforce offline auditing by default
+
+**Task ID and Title:** SC-045 — Separate network-free configuration auditing from advisory-data acquisition.
+
+**Priority:** P1 operating/data-handling requirement. This is not a device vulnerability severity; an audit must not implicitly contact an external service.
+
+**Status:** Implemented 2026-09-26. Default dispatch is offline, the Cisco analyzer no longer invokes openVuln, and the shared analyzer helper rejects online requests. Advisory fetching is a separate explicit command; local bundle replay and error reporting remain available. Public JSON/HTML tests cover all 16 IDs with socket/DNS/HTTP access prohibited and fake Cisco credentials.
+
+**Source of Truth:** [CLI dispatch](../../src/main.py), `main`; [legacy Cisco advisory service](../../src/analyze/cisco/ios/api/cisco_ios_vulns_service.py), `get_api_vulnerabilities`; the user's explicit offline-product requirement. Outbound calls occur when the legacy path is enabled and Cisco credentials are configured. Existing NVD bundle replay is already available.
+
+**Linked Findings:** Review A1; [PT-010](PRACTICAL_TESTING_TASKS.md#pt-010) and [SC-022](#sc-022) contain related acquisition/replay work, not justification for implicit network access.
+
+**Dependencies:** Inventory all advisory clients and input/report paths; preserve local bundle compatibility. Decide the explicit acquisition interface within the established CLI conventions without making ordinary audits dependent on it.
+
+**Architecture/Convention Notes:** Keep audit dispatch and parsers network-free. Retain supplied bundle provenance and separate advisory status from configuration findings. No device connection is ever added. Network acquisition, if retained, belongs to a separate explicit command/workflow.
+
+**Concrete Requirements:** All 16 registered IDs. Remove implicit legacy Cisco lookup from ordinary audit execution; absence of `--offline` must no longer grant network authorization. Ordinary audits and local bundle replay must perform no HTTP calls, DNS resolution, revocation retrieval or remote referenced-file fetching. Make CLI help/README behavior consistent and define compatibility/deprecation for old flags. A missing or mismatched bundle yields unavailable/unknown advisories while configuration analysis continues. Do not remove offline advisory replay or introduce a device scanner.
+
+**Test Requirements:** Run each public device pipeline with socket/DNS/HTTP access prohibited, including configured fake Cisco credentials, default flags, explicit offline mode, valid bundle replay and invalid/stale bundles. Verify no network access and valid JSON/HTML configuration reports; never use live credentials or APIs in these tests. Apply the regression gate.
+
+**Acceptance Criteria:** A user can audit any supported export without knowing a special offline flag; no audit path silently contacts a vendor or device. Any retained data-fetch operation requires a separate explicit invocation.
+
+<a id="sc-046"></a>
+### SC-046 — Resolve effective management source restrictions
+
+**Task ID and Title:** SC-046 — Evaluate attached management ACLs per service and address family.
+
+**Priority:** P1 — a permissive attachment can leave administrative services broadly accessible while the present check finds no missing restriction.
+
+**Status:** First stage implemented 2026-09-28: standard IPv4 permit-all ACLs bound to active SSH VTY and HTTP/HTTPS are reported, with ordered ACL removals and overlapping VTY transport/ACL mutations. Extended ACLs, independent IPv6 applicability, unresolved-reference report coverage and other adapters remain open. No end-to-end reachability is inferred.
+
+**Source of Truth:** [IOS SSH plugin](../../src/analyze/cisco/ios/plugins/ssh_plugin.py), `get_cisco_ios_vty_access_restriction`; [HTTP plugin](../../src/analyze/cisco/ios/plugins/http_plugin.py), `get_cisco_ios_http_access_list`; [IOS parser](../../src/devices/cisco/ios.py), `has_inbound_access_class` accepts IPv4 OR IPv6 presence. [Cisco IOS-XE hardening guide](https://sec.cloudapps.cisco.com/security/center/resources/IOS_XE_hardening) recommends restricted management access; [RFC 9099](https://www.rfc-editor.org/rfc/rfc9099.html) supports independent IPv6 protection.
+
+**Linked Findings:** Review A2. Related AAA bindings in [SC-001](#sc-001), routing filters in [SC-005](#sc-005), API endpoints in [SC-026](#sc-026); those do not replace management ACL evaluation.
+
+**Dependencies:** Reuse bounded ACL/object semantics; qualify management attachment behavior, VRF and IPv4/IPv6 listener applicability. Unknown or undefined references must not be interpreted as permit-all without vendor proof.
+
+**Architecture/Convention Notes:** Parser resolves ordered ACL contents and service/line binding. Use typed outcomes for restrictive, proven permit-all, unresolved and unsupported; retain existing missing-attachment rule IDs and avoid duplicate findings for one condition.
+
+**Concrete Requirements:** IOS_SWITCH, IOS_ROUTER, IOS_CATALYST, IOS_XE first. Evaluate every applicable active VTY and HTTP(S) access restriction, not just its name. Detect proven permit-all filters and separately report unresolved references as unassessed coverage. Evaluate IPv4 and IPv6 separately when each service/address family is applicable. Handle earlier denies, overrides, standard/extended ACL grammar and supported predicates. Add ARISTA_EOS and other adapters only after verifying equivalent attachment-only limitations. Existing finding/coverage output suffices; extend parser binding records as needed. Do not claim end-to-end Internet reachability or grade omitted defaults.
+
+**Test Requirements:** Restrictive versus permit-any ACL, unresolved reference, earlier deny, unsupported predicate, overlapping VTY ranges, HTTP and HTTPS independently, dual-stack service with only one family protected, VRF binding, disabled service, unknown applicability, source redaction and public CLI/regression.
+
+**Acceptance Criteria:** An ACL name is never sufficient evidence of effective source restriction, and one address family's filter cannot satisfy another's protection. Unknown references do not become invented active exposure.
+
+<a id="sc-047"></a>
+### SC-047 — Resolve Junos SRX host-inbound access
+
+**Task ID and Title:** SC-047 — Audit traffic addressed to SRX services independently from transit policy.
+
+**Priority:** P1 — broad admission to enabled administrative services can expose the firewall itself despite restrictive transit rules.
+
+**Status:** Open. Source review found no effective host-inbound evaluator in the current Junos parser/plugins.
+
+**Source of Truth:** [Junos parser](../../src/devices/juniper/junos.py), [baseline](../../src/analyze/juniper/junos/plugins/baseline_plugin.py) and [policy plugin](../../src/analyze/juniper/junos/plugins/junos_checks_plugin.py). Juniper's [host-inbound system-service reference](https://www.juniper.net/documentation/us/en/software/junos/cli-reference/topics/ref/statement/security-edit-system-service-zone-host-inbound-traffic.html), reviewed 2026-09-26, distinguishes `all`, `any-service`, exceptions and interface-level behavior.
+
+**Linked Findings:** Review A5; distinct from screen/IDP work in [SC-010](#sc-010), and complementary to API checks in [SC-026](#sc-026).
+
+**Dependencies:** Confirm SRX role, explicit external/interface assessment roles, zone membership, inheritance and supported attached interface/loopback filter semantics. Qualify logical-system scope before expanding beyond local exports.
+
+**Architecture/Convention Notes:** Parser owns zone/interface precedence, set/delete/deactivate/apply-groups and service bindings. Keep host-inbound state separate from transit policy. No inference from zone names such as `untrust` alone.
+
+**Concrete Requirements:** JUNOS on SRX. Resolve zone/interface `host-inbound-traffic system-services` and routing-protocol permissions, including explicit `all`, `any-service` and exceptions. Combine admission with configured enabled services and assessed interface roles. Detect proven broad administrative admission; account for supported restrictive interface/lo0 filters before calling access unrestricted. An allowed service is not necessarily enabled, and transit default deny does not protect device-local traffic. Unknown inheritance or complex filters remain unknown/potential exposure. Add typed host-inbound records; existing JSON/HTML and assessment roles suffice initially.
+
+**Test Requirements:** Broad versus narrow service list; `all` versus `any-service`; interface override and exception; disabled/unconfigured service; restrictive lo0 filter; explicit external versus internal role; deactivated groups, malformed references, EX negative, redaction and public-pipeline/regression tests.
+
+**Acceptance Criteria:** The report distinguishes device-local admission from transit filtering and identifies the exact service/interface scope. It never equates a host-inbound permission with an observed running listener.
+
+<a id="sc-048"></a>
+### SC-048 — Audit IPv6 first-hop protection and address-family parity
+
+**Task ID and Title:** SC-048 — RA Guard, DHCPv6 Guard and independently assessed dual-stack controls.
+
+**Priority:** P2 by default, promoted to P1 for supplied deployments with a proven untrusted IPv6 gateway/DHCP or administrative-access bypass. Unused IPv6 functions do not justify high-priority absence findings.
+
+**Status:** Open; current IPv6 inventory/filtering support is partial, not absent. No dedicated RA Guard/DHCPv6 Guard evaluator was identified.
+
+**Source of Truth:** Current IOS/XE, AOS-S, EOS and Junos edge-check methods; [RFC 9099](https://www.rfc-editor.org/rfc/rfc9099.html) and [RFC 7113](https://www.rfc-editor.org/info/rfc7113/) support first-hop protection and its limitations. Exact vendor/release attachment grammar must be qualified independently.
+
+**Linked Findings:** Review A8; promotes the former generic IPv6 access-edge TODO into a bounded task. Coordinate [SC-003](#sc-003)/[SC-004](#sc-004), management-family checks in [SC-046](#sc-046), and routing families in [SC-005](#sc-005); do not duplicate their detectors.
+
+**Dependencies:** Explicit access-edge/uplink/router roles, supplied IPv6 deployment scope, vendor policy/interface attachment evidence and sanitized exports. Do not infer omitted defaults or hardware enforcement capability.
+
+**Architecture/Convention Notes:** Parser-owned per-port protection policy, device role and inheritance; normalized outcomes only where semantics match across vendors. Reuse assessment roles; any required IPv6-use declaration must be explicit.
+
+**Concrete Requirements:** Switching IOS_XE first, then qualified IOS_SWITCH/IOS_CATALYST, HP_PROCURVE, ARISTA_EOS and EX JUNOS. Resolve attached RA/DHCPv6 guard policies and explicit router/server/trusted modes or disablements. Detect inappropriate trusted infrastructure roles on assessed endpoint ports and proven local bypasses. Add paired IPv4/IPv6 fixtures for applicable existing management/filtering checks across adapters, including firewall families. Preserve required ICMPv6 operation; no blanket ICMPv6 blocking recommendation. Missing role/policy and unproven fragment-bypass resistance remain unknown; no packet transmission or vulnerability assertion from hardware assumptions.
+
+**Test Requirements:** Endpoint marked router/server, legitimate uplink, protected endpoint, local override, unused/unbound policy, inactive port, LAG/inheritance unknown, IPv6-only and dual-stack cases, malformed syntax, redaction and public CLI/regression.
+
+**Acceptance Criteria:** Explicit IPv6 trust bypasses are assessed separately from IPv4 controls; normal routers/uplinks are not falsely flagged. Unsupported address-family coverage is disclosed, not treated as secure.
+
+<a id="sc-049"></a>
+### SC-049 — Add per-control assessment outcomes and manual-review coverage
+
+**Task ID and Title:** SC-049 — Explain assessed, unassessed and unsupported security controls.
+
+**Priority:** P2 assurance work, after direct high-risk detection gaps. This improves audit reliability rather than identifying a new device vulnerability.
+
+**Status:** Open. Current coverage reports normalized field knowledge states; it does not consistently record every control's eligibility/outcome.
+
+**Source of Truth:** [Coverage builder](../../src/report/coverage.py), `_FIELDS` and `build_report_context`; [finding model](../../src/analyze/common/issue.py); [assessment context](../../src/common/assessment.py). The RIPv1 and management-API probes showed how configured unassessed features can be absent from finding output. [CIS Control 12](https://www.cisecurity.org/controls/network-infrastructure-management) supplies the configuration-management rationale, not a claimed compliance score.
+
+**Linked Findings:** Review A12; complements [PT-009](PRACTICAL_TESTING_TASKS.md#pt-009). Finding basis explains why a finding exists, not why a control produced none.
+
+**Dependencies:** Define versioned control metadata and typed outcome contract, then migrate an explicit initial set of high-risk rules. Backward-compatible JSON/HTML extension and coverage semantics require design before bulk migration.
+
+**Architecture/Convention Notes:** Keep control metadata/platform applicability separate from findings. A parser supplies evidence/unknown states; a check records its outcome. Never derive a pass merely from absence of a finding. Do not incorporate or duplicate SC-044's default database.
+
+**Concrete Requirements:** All registered IDs. Represent finding, evaluated-without-finding, unknown, unsupported, excluded and not-applicable outcomes with prerequisites/reasons. Track role, export completeness, companion input, supported grammar and explicit assessment time. Add a sanitized 'Configured features requiring manual review' section for recognized unsupported security constructs; recognition must not pretend to understand their full semantics. Record rule/control version, supported platforms and authoritative references. Unmigrated checks must be visibly unavailable rather than silently evaluated. Changes affect typed analysis results and additive versioned JSON/HTML coverage, not just presentation text.
+
+**Test Requirements:** Same control with unsafe/safe/unknown/unsupported/excluded/not-applicable inputs; missing prerequisites; unknown inherited policy; recognized unsupported routing/API feature; unmigrated plugin; stable schema compatibility; no secret/raw payload leakage; public pipeline and regression.
+
+**Acceptance Criteria:** An auditor can distinguish a safely assessed control from one never assessed. Coverage is not represented as benchmark certification or a vulnerability severity, and broad normalized-field knowledge never implies all related checks ran.
+
+<a id="sc-050"></a>
+### SC-050 — Add offline batch manifests and assessment comparison
+
+**Task ID and Title:** SC-050 — Reproducible multi-device audits and supplied-export comparisons.
+
+**Priority:** P3 — lower direct security relevance; schedule after evidence-ready P1/P2 checks. This is audit-efficiency work.
+
+**Status:** Open. Current CLI primarily handles one artifact/device and one report.
+
+**Source of Truth:** [CLI](../../src/main.py), [registry](../../src/devices/registry.py), [report generation](../../src/report/report.py), existing JSON/coverage interfaces and user workflow of receiving multiple configuration exports.
+
+**Linked Findings:** Review A13; builds on [SC-045](#sc-045) offline enforcement and [SC-049](#sc-049) assessment outcomes. Does not replace existing per-device output or auto-detection.
+
+**Dependencies:** Manifest schema, stable explicit device/object identity, deterministic rule/policy version provenance and conservative comparison semantics. Accurate resolved-versus-unassessed comparison depends on SC-049 or equally explicit coverage evidence.
+
+**Architecture/Convention Notes:** Thin orchestration over existing registry/pipelines; no second detection engine. Keep output separate from supplied inputs, fail safely on duplicate paths/identities, preserve per-device error isolation and never retrieve artifacts automatically.
+
+**Concrete Requirements:** All supported families, including directory-style FW1 exports. Accept a local manifest of input paths, device identity/family, export scope and assessment-policy path. Produce individual reports plus a consolidated index. Record input hashes, tool/rule-set and assessment-policy identity and local advisory-bundle provenance. Compare two supplied assessment sets as new, unchanged, resolved or no longer assessable using stable rule/object keys rather than display titles. A missing artifact, changed exclusion or reduced parser coverage must not be called remediation. Add explicit CLI/manifest and versioned comparison-output contracts. No live discovery, hostname resolution, device login or remote acquisition.
+
+**Test Requirements:** Mixed-family batch, FW1 directory artifact, duplicate device/output, malformed manifest, one-device failure isolation, stable ordering/hashes, safe output paths, comparison across unknown/excluded/missing inputs, changed policy/rule versions, secret masking and public CLI/regression.
+
+**Acceptance Criteria:** Batch output reproduces equivalent individual offline audits; comparisons never claim a risk was fixed merely because its evidence disappeared. No audit input is overwritten and no device/network access occurs.
+
 ## Source appendix and audit validation
 
 Source evidence below is the current implementation boundary. Method names are supplied because line numbers move as planned work lands. Parser records and registered plugin bodies were inspected together; negative findings above are scoped to those paths, not based only on documentation/search keywords.
@@ -1185,3 +1428,6 @@ Source evidence below is the current implementation boundary. Method names are s
 Deferred intentionally: generic banner wording, low-severity GTSM-only expansion, wholesale disablement of discovery on all ports, speculative SSL decryption mandates, runtime-unused ACL detection, signature freshness, live MFA/certificate revocation verification and successful backup proof. Those need different scope or operational evidence. Existing static ACL effectiveness, stored-secret classification, known-default credential checks and report coverage are retained, not relisted as absent capabilities.
 
 Validation of this documentation refresh: 65 tests in `tests/test_realworld*.py` and 36 ASA-baseline/credential tests passed (101 focused tests total). The only warning concerned pytest cache write permission. This supports removing completed RV work; it is not a full regression run or proof of complete benchmark compliance. Runtime code, schemas and snapshots were not changed. Task/source links and all 15 registry IDs were checked during final document validation.
+
+
+Documentation update validation (2026-09-26): seven review proposals were merged into five existing tasks, and six distinct tasks were added as SC-045 through SC-050 (50 total). New task stages remain open. This update makes no code, runtime schema or snapshot changes; historical test counts above are not new test runs. SC-044 was preserved unchanged. Task numbering, required fields and local links were checked for this update.

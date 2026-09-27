@@ -127,8 +127,8 @@
         "cisco.ios.banner.login",
         "cisco.ios.configuration.change_logging",
         "cisco.ios.control_plane.copp",
-        "cisco.ios.http.access_restriction",
         "cisco.ios.http.cleartext_service",
+        "cisco.ios.http.unrestricted_sources",
         "cisco.ios.ip.source_route",
         "cisco.ios.layer2.access_edge.arp_inspection",
         "cisco.ios.layer2.access_edge.dhcp_snooping",
@@ -140,7 +140,7 @@
         "cisco.ios.ssh.authentication_retries",
         "cisco.ios.ssh.negotiation_timeout",
         "cisco.ios.ssh.protocol_version",
-        "cisco.ios.ssh.vty_access_restriction",
+        "cisco.ios.ssh.unrestricted_sources",
         "cisco.ios.vty.authentication",
         "cisco.iosxe.crypto.legacy_ikev2"
       ],

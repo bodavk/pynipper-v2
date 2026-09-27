@@ -136,6 +136,27 @@ class PluginSSH(BasePlugin):
         )
 
     def analyze(self, parser: BaseDeviceParser) -> None:
+        ios = self._ios_parser(parser)
+        if ios.get_ssh_state() == ConfigurationState.ENABLED:
+            for profile in ios.get_management_acl_vty_profiles():
+                if not profile.permits_ssh or not profile.ipv4_access_class:
+                    continue
+                acl = ios.get_management_ipv4_acl(profile.ipv4_access_class)
+                if acl.state != "permit-all":
+                    continue
+                self.add_issue(Finding(
+                    rule_id="cisco.ios.ssh.unrestricted_sources",
+                    device=parser.device_type,
+                    title="SSH management ACL permits every IPv4 source",
+                    observation=f"{profile.line} uses standard IPv4 ACL {acl.name}, whose effective rules permit every source.",
+                    impact="The attached ACL provides no IPv4 source restriction for this SSH listener.",
+                    exploitability="A source with network reachability can attempt SSH access; upstream controls are not assessed.",
+                    recommendation="Restrict the attached ACL to approved management sources.",
+                    severity=Severity.HIGH,
+                    evidence=(profile.line,) + acl.evidence,
+                    references=(CISCO_IOS_SSH_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
+                ))
         for issue in (
             self.get_cisco_ios_ssh(parser),
             self.get_cisco_ios_ssh_retries(parser),

@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- SC-046 first stage: detect standard IPv4 management ACLs proven to permit every source on active SSH VTY and HTTP/HTTPS services. Preserve named/numbered ACL order and removals, overlapping VTY changes and IPv4 HTTP attachment syntax. Unsupported ACL forms remain ungraded.
+
+- Configuration audits now run offline regardless of legacy Cisco credentials or `-x`. Advisory acquisition is a separate `python -m src.advisories fetch` command; saved bundle replay remains available. Legacy online audit flags provide migration guidance, and missing or invalid bundles leave configuration reporting available (SC-045).
+
 ### Fixed
 
 - CVE lookup (PT-010) reported zero CVEs for affected releases (for example 134 for FortiOS 6.4.2): NVD currently returns an empty page when 2000 results per page are requested. Pages now hold 1000 results, and an empty page with a non-zero total is reported as an error instead of "no CVEs".

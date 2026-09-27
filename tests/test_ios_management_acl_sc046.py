@@ -1,0 +1,68 @@
+import pytest
+import json
+from src.main import main
+
+from src.devices.cisco.ios import CiscoIOSParser
+from src.analyze.cisco.ios.core.process_cisco_ios_conf import process_cisco_ios_conf
+
+
+def parse(tmp_path, acl, tail=""):
+    source = tmp_path / "ios.conf"
+    source.write_text("version 15.2\nip ssh version 2\nip http secure-server\n"
+                      "ip http access-class ipv4 MGMT\nline vty 0 4\n transport input ssh\n"
+                      " access-class MGMT in\n!\n" + acl + tail, encoding="utf-8")
+    return CiscoIOSParser(str(source))
+
+
+@pytest.mark.parametrize("rules,state", [
+    ("10 permit any", "permit-all"),
+    ("10 permit 0.0.0.0 255.255.255.255", "permit-all"),
+    ("20 permit any\n 10 deny host 192.0.2.1", "restrictive"),
+    ("10 permit host 192.0.2.1", "restrictive"),
+    ("10 permit any time-range HOURS", "unsupported"),
+    ("10 permit any\n no 10", "unsupported"),
+    ("10 permit host 192.0.2.1\n 10 permit any", "permit-all"),
+    ("10 permit any6", "unsupported"),
+])
+def test_standard_acl_order_and_unsupported_predicates(tmp_path, rules, state):
+    parser = parse(tmp_path, "ip access-list standard MGMT\n " + rules + "\n")
+    assert parser.get_management_ipv4_acl("MGMT").state == state
+    findings = [item for item in process_cisco_ios_conf(parser).values() if item.rule_id.endswith("unrestricted_sources")]
+    assert len(findings) == (2 if state == "permit-all" else 0)
+    if findings:
+        assert all(item.evidence_locations for item in findings)
+
+
+def test_removed_and_unresolved_references_are_not_permit_all(tmp_path):
+    parser = parse(tmp_path, "ip access-list standard MGMT\n permit any\n!\nno ip access-list standard MGMT\n")
+    assert parser.get_management_ipv4_acl("MGMT").state == "unresolved"
+    parser = parse(tmp_path, "access-list 10 permit any\nno access-list 10 permit any\n")
+    assert parser.get_management_ipv4_acl("10").state != "permit-all"
+
+
+def test_disabled_services_and_ipv6_attachment_do_not_trigger(tmp_path):
+    parser = parse(tmp_path, "ip access-list standard MGMT\n permit any\n!\n",
+                   "no ip http secure-server\nline vty 0 4\n transport input none\n")
+    assert not [item for item in process_cisco_ios_conf(parser).values() if item.rule_id.endswith("unrestricted_sources")]
+
+
+def test_overlapping_vty_override_preserves_other_lines(tmp_path):
+    parser = parse(tmp_path, "ip access-list standard MGMT\n permit any\n!\n",
+                   "line vty 2 4\n transport input none\n")
+    ssh = [item for item in process_cisco_ios_conf(parser).values()
+           if item.rule_id == "cisco.ios.ssh.unrestricted_sources"]
+    assert len(ssh) == 1
+    assert "VTY lines 0, 1 uses" in ssh[0].observation
+
+
+@pytest.mark.parametrize("format", ["HTML", "JSON"])
+def test_public_reports_management_acl_findings(tmp_path, format):
+    parse(tmp_path, "ip access-list standard MGMT\n permit any\n")
+    output = tmp_path / ("report." + format.lower())
+    assert main(["-d", "cisco-ios", "-i", str(tmp_path / "ios.conf"),
+                 "-o", format, "-f", str(output)]) == 0
+    report = output.read_text(encoding="utf-8")
+    assert "SSH management ACL permits every IPv4 source" in report
+    assert "Web management ACL permits every IPv4 source" in report
+    if format == "JSON":
+        assert json.loads(report)["security-audit"]

@@ -214,10 +214,12 @@ def test_default_runs_make_no_request(tmp_path, fake_network):
 def test_cli_lookup_save_and_offline_replay(tmp_path, fake_network, monkeypatch):
     monkeypatch.setenv("NVD_API_KEY", "env-secret-key")
     bundle = tmp_path / "fortios-7.4.6.nvd.json"
-    code, report = _report(tmp_path, "--cve-lookup", "--cve-save", str(bundle))
+    from src.advisories.__main__ import main as fetch
+    assert fetch(["fetch", "-d", "fortios", "--software-version", "7.4.6", "--output", str(bundle)]) == 0
+    code, report = _report(tmp_path, "--cve-data", str(bundle))
     assert code == 0 and len(fake_network.calls) == 4
     lookup = report["software-advisory-lookup"]
-    assert lookup["status"] == "completed" and lookup["saved-bundle"] == bundle.name
+    assert lookup["status"] == "completed" and bundle.name in lookup["source"]
     assert [item["cve"] for item in report["vulnerabilities"]] == ["CVE-2024-0001", "CVE-2024-0003", "CVE-2024-0002"]
     assert report["vulnerabilities"][0]["known-exploited"] is True
     assert "env-secret-key" not in json.dumps(report) + bundle.read_text(encoding="utf-8")
@@ -235,10 +237,12 @@ def test_cli_lookup_save_and_offline_replay(tmp_path, fake_network, monkeypatch)
 
 def test_html_shows_status_kev_and_limitations(tmp_path, fake_network):
     output = tmp_path / "r.html"
-    assert main(["-d", "fortios", "-i", str(FORTIOS), "-o", "HTML", "-f", str(output), "--cve-lookup"]) == 0
+    bundle = tmp_path / "bundle.json"
+    lookup_software_advisories("FORTIOS", "7.4.6", AdvisoryRequest(online=True, save_path=str(bundle)))
+    assert main(["-d", "fortios", "-i", str(FORTIOS), "-o", "HTML", "-f", str(output), "--cve-data", str(bundle)]) == 0
     html = output.read_text(encoding="utf-8")
     section = html.split('id="security-vulns"')[1].split("</section>")[0]
-    assert "3 CVEs listed by NVD CVE API 2.0" in section
+    assert "3 CVEs listed by Saved NVD bundle" in section
     assert "1 is in the CISA Known Exploited Vulnerabilities catalog" in section
     assert section.index("CVE-2024-0001") < section.index("CVE-2024-0003") < section.index("CVE-2024-0002")
     assert "KEV</span> added 2024-02-09" in section
@@ -249,23 +253,24 @@ def test_html_shows_status_kev_and_limitations(tmp_path, fake_network):
 def test_html_default_explains_how_to_request(tmp_path):
     output = tmp_path / "r.html"
     assert main(["-d", "fortios", "-i", str(FORTIOS), "-o", "HTML", "-f", str(output), "-x"]) == 0
-    assert "CVE lookup was not requested" in output.read_text(encoding="utf-8")
+    assert "No local advisory bundle supplied" in output.read_text(encoding="utf-8")
 
 
 def test_train_only_version_needs_operator_release(tmp_path, fake_network):
     source = CORPUS / "cisco_iosxe" / "vulnerable.conf"
     output = tmp_path / "xe.json"
-    assert main(["-d", "IOS_XE", "-i", str(source), "-o", "JSON", "-f", str(output), "--cve-lookup"]) == 0
+    bundle = tmp_path / "bundle.json"
+    bundle.write_text("{}", encoding="utf-8")
+    assert main(["-d", "IOS_XE", "-i", str(source), "-o", "JSON", "-f", str(output), "--cve-data", str(bundle)]) == 0
     lookup = json.loads(output.read_text(encoding="utf-8"))["software-advisory-lookup"]
     assert lookup["reason-code"] == "imprecise-version" and "--software-version" in lookup["reason"]
     assert fake_network.calls == []
 
 
 @pytest.mark.parametrize("args,message", [
-    (["--cve-lookup", "-x"], "cannot be combined"),
-    (["--cve-save", "x.json"], "requires --cve-lookup"),
+    (["--cve-lookup", "-x"], "separate from audits"),
+    (["--cve-save", "x.json"], "separate from audits"),
     (["--software-version", "7.4.6"], "only used with"),
-    (["--cve-data", "missing.json"], "does not exist"),
 ])
 def test_cli_rejects_inconsistent_options(tmp_path, capsys, args, message):
     with pytest.raises(SystemExit):
@@ -274,11 +279,11 @@ def test_cli_rejects_inconsistent_options(tmp_path, capsys, args, message):
 
 
 def test_cli_refuses_to_overwrite_a_bundle(tmp_path, capsys):
+    from src.advisories.__main__ import main as fetch
     existing = tmp_path / "b.json"
     existing.write_text("{}", encoding="utf-8")
     with pytest.raises(SystemExit):
-        main(["-d", "fortios", "-i", str(FORTIOS), "-f", str(tmp_path / "r.html"),
-              "--cve-lookup", "--cve-save", str(existing)])
+        fetch(["fetch", "-d", "fortios", "--software-version", "7.4.6", "--output", str(existing)])
     assert "new file" in capsys.readouterr().err
 
 
@@ -497,6 +502,8 @@ def test_cli_reports_end_of_life(tmp_path, monkeypatch):
     source.write_text("#config-version=FGT60E-6.4.2-FW-build1723-200730:opmode=0:vdom=0:user=admin\n"
                       "config system global\nset hostname fgt\nend\n", encoding="utf-8")
     html = tmp_path / "r.html"
-    assert main(["-d", "fortios", "-i", str(source), "-o", "HTML", "-f", str(html), "--cve-lookup"]) == 0
+    bundle = tmp_path / "bundle.json"
+    lookup_software_advisories("FORTIOS", "6.4.2", AdvisoryRequest(online=True, save_path=str(bundle)))
+    assert main(["-d", "fortios", "-i", str(source), "-o", "HTML", "-f", str(html), "--cve-data", str(bundle)]) == 0
     text = html.read_text(encoding="utf-8")
     assert "End of Support" in text and "2024-09-30" in text and "endoflife.date" in text

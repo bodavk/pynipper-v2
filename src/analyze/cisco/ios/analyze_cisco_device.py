@@ -3,7 +3,6 @@ from src.advisories import software_advisories
 import os
 
 from src.devices import get_parser
-from .api.cisco_ios_vulns_service import get_api_vulnerabilities
 from .core.process_cisco_ios_conf import process_cisco_ios_conf
 
 from ....report.report import generate_report
@@ -20,17 +19,13 @@ def analyze_cisco_device(device, input_filename, output_filename, output_type, c
     if assessment_context is not None:
         parser.set_assessment_context(assessment_context)
     
-    version_cisco_device = parser.get_version()
     if not os.path.isfile(configuration):
         raise PynipperConfigurationFileNotFound(
             "ERROR: Pynipper configuration file doesn't exists"
         )
 
-    # Get vulns by Cisco API
-    print("[2/4] Fetching Cisco API information")
-    vulns = get_api_vulnerabilities(configuration, version_cisco_device, online)
-    nvd_advisories, advisory_status = software_advisories(device, parser, advisory_request)
-    vulns = list(vulns) + nvd_advisories
+    print("[2/4] Reading local advisory data")
+    vulns, advisory_status = software_advisories(device, parser, advisory_request)
 
     # Get Cisco report missconfigurations
     print("[3/4] Checking missconfiguration vulnerabilities")

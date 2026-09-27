@@ -1,8 +1,22 @@
 # Open improvement work
 
-Reconciled on 2026-09-22. The prioritized, source-backed implementation backlog for all 16 device IDs is [High-risk security coverage tasks](agent_notes/SECURITY_COVERAGE_TASKS.md). It contains 44 tasks, including explicit evidence prerequisites, parser/detection contracts, interface constraints and acceptance tests. Completed RV task bodies were removed from [external-validation tasks](agent_notes/REALWORLD_VALIDATION_TASKS.md); RV-008 remains open. This index retains genuinely open work outside that focused review.
+Updated on 2026-09-26. The prioritized, source-backed implementation backlog for all 16 device IDs is [High-risk security coverage tasks](agent_notes/SECURITY_COVERAGE_TASKS.md). It contains 50 tasks, including explicit evidence prerequisites, parser/detection contracts, interface constraints and acceptance tests. Completed RV task bodies were removed from [external-validation tasks](agent_notes/REALWORLD_VALIDATION_TASKS.md); RV-008 remains open. This index retains genuinely open work outside that focused review.
 
 An item is not permission to turn absent or incomplete configuration evidence into a finding: first verify the vendor grammar, applicable release, authoritative control source, and representative sanitized fixtures. Follow [Extending pynipper-v2](EXTENDING.md) for implementation and validation requirements.
+
+## Current security-risk priority queue
+
+Use the [SC execution priorities](agent_notes/SECURITY_COVERAGE_TASKS.md#current-execution-priorities--2026-09-26) before the historical lists below. Only unfinished stages are scheduled; completed implementations are retained as evidence.
+
+- [ ] **P1 — direct high-impact risks:** SC-046 effective management ACLs; SC-026 unsafe management APIs; SC-011 privileged API identities; SC-047 SRX host-inbound access; SC-013 remote-access authentication/legacy VPN; SC-005 explicit RIPv1/IS-IS trust; SC-043 effective risky-service exposure. New work extends existing tasks where applicable.
+- [x] **P1 — offline requirement:** [SC-045](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-045) removes implicit outbound requests from audits. Advisory acquisition now uses a separate explicit command; local replay is retained.
+- [ ] **P2 — deployment-specific protection:** [SC-048](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-048) IPv6 first-hop and dual-stack coverage; multicast/IPv6 routing stages in SC-005; bounded DNS exposure in SC-026. Elevate a stage only when supplied scope establishes high-impact exposure.
+- [ ] **P2 — assessment assurance:** [SC-049](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-049) rule-level outcomes and manual-review coverage, complementary to PT-009.
+- [ ] **P3 — lower security priority:** [SC-050](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-050) offline batch manifests and comparisons.
+
+SC-044 insecure-default research remains unchanged and separately owned. Detailed requirements and acceptance tests live only in the SC backlog, not in this index.
+
+SC-046 progress (2026-09-28): standard IPv4 permit-all ACL detection is implemented for active IOS/XE SSH and HTTP/HTTPS management, including ordered removals and overlapping VTY changes. Extended ACLs, independent IPv6 applicability and unresolved-reference coverage remain open.
 
 ## Priority: practical-testing defects
 
@@ -43,13 +57,13 @@ P2:
 - [ ] [SC-038](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-038) FortiGate HA heartbeat without authentication/encryption (Check Point ClusterXL research). **FortiOS done 2026-09-26.**
 - [ ] [SC-040](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-040) FortiGate maintainer account and USB auto-install. **USB auto-install done 2026-09-26**; maintainer setting not in current CLI reference.
 - [ ] [SC-042](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-042) F5 weak client-side TLS, unvalidated server-side TLS, unencrypted persistence cookies. **Weak client ciphers and cookies done 2026-09-26.**
-- [x] [SC-043](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-043) Shared risky-service catalogue for firewall policies (Check Point, ASA, FortiOS, F5 virtuals). **Done 2026-09-26** including F5 virtual servers.
+- [ ] [SC-043](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-043) Shared risky-service catalogue for firewall policies. Initial Check Point/ASA/FortiOS/F5 integrations are done; **P1 effective-exposure refinements remain**, including F5 protocol identity and policy-order accuracy. See the current queue.
 - [ ] [SC-044](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-044) Release-gated insecure defaults for IOS 12.x, ASA 8.x, PIX, FortiOS 5.x/6.0, BIG-IP 11.x/12.x and FW1 R6x/R7x. **IOS 11.x/12.0 finger and small-server defaults done 2026-09-26.**
 - [ ] Gaia OS items (allowed clients, web UI TLS, SSH ciphers, AAA, NTP, syslog) live in [SC-023](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-023); F5 APM in [SC-024](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-024).
 
 ## Detection and parser coverage
 
-- [ ] Continue open work across [SC-001 through SC-044](agent_notes/SECURITY_COVERAGE_TASKS.md#current-coverage-and-explicit-per-device-work) in the documented risk/evidence waves; SC-001, SC-002, SC-009 and SC-012 have bounded explicit-state coverage, SC-007 is implemented and SC-011 is partly implemented. This replaces the former broad F5, routing, access-edge, ScreenOS and certificate-expansion bullets; do not maintain duplicate implementations here.
+- [ ] Continue open work across [SC-001 through SC-050](agent_notes/SECURITY_COVERAGE_TASKS.md#current-coverage-and-explicit-per-device-work) in the documented risk/evidence waves; SC-001, SC-002, SC-009 and SC-012 have bounded explicit-state coverage, SC-007 is implemented and SC-011 is partly implemented. This replaces the former broad F5, routing, access-edge, ScreenOS and certificate-expansion bullets; do not maintain duplicate implementations here.
 
 ## Inputs and assessment scope
 
@@ -80,7 +94,7 @@ Kept open on purpose; do not close or delete. Each needs a real sanitized export
 These items stay recorded but are scheduled after the SC backlog work that can be done without new vendor evidence and after `--show-secrets` completion.
 
 - [ ] Extend bounded policy-effectiveness analysis to Junos stateless firewall filters where attachment, term order, address/service semantics, and unsupported predicates can be proven. Expand other native adapters only when equivalent evidence and adversarial tests are available; never infer runtime-unused rules from configuration alone.
-- [ ] Qualify additional discovery and IPv6 access-edge protections only where explicit roles and fixtures demonstrate value beyond the prioritized SC tasks. No blanket discovery disablement or platform defaults inferred from names.
+- [ ] Qualify additional discovery protections only where explicit roles and fixtures demonstrate value. IPv6 access-edge work is now owned by SC-048 at deployment-dependent P2 priority; do not keep a duplicate low-priority task here. No blanket discovery disablement or platform defaults inferred from names.
 - [ ] PIX qualification is owned by [SC-020](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-020); optional Check Point OS posture is owned by [SC-023](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-023). Other new/legacy dialects (FWSM, old SonicOS preferences, CatOS/NMP, CSS, Passport/Accelar, F5OS/UCS) require demonstrated demand, representative exports and maintenance justification before becoming implementation tasks.
 - [ ] Add anonymized fixtures for newly encountered, supported configuration syntax and review maturity claims in [Supported devices](SUPPORTED_DEVICES.md) as evidence improves.
 - [ ] Design a user-requested cracking-tool hash export for individually validated formats, if its handling and maintenance are approved. Keep normal findings, logs, and reports secret-free; require explicit destination, overwrite, permissions, and format rules, and never launch a cracking tool automatically.

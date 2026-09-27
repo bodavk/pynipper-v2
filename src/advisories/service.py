@@ -51,7 +51,7 @@ class AdvisoryRequest:
 def not_requested_status() -> dict:
     return {
         "status": "not-requested",
-        "reason": "CVE lookup was not requested. Use --cve-lookup (online, NVD) or --cve-data (saved bundle).",
+        "reason": "No local advisory bundle supplied. Use --cve-data with a bundle from the separate advisory fetch command.",
     }
 
 
@@ -214,7 +214,12 @@ def _lifecycle_status(device: str, version: str, request: AdvisoryRequest,
     try:
         if request.bundle_path:
             with open(request.bundle_path, encoding="utf-8") as handle:
-                stored = (json.load(handle) or {}).get("lifecycle") or {}
+                bundle = json.load(handle)
+            if not isinstance(bundle, dict):
+                raise ValueError("The file is not a pynipper NVD bundle.")
+            stored = bundle.get("lifecycle") or {}
+            if not isinstance(stored, dict):
+                raise ValueError("Invalid lifecycle bundle data.")
             if stored.get("product") != product:
                 return {"status": "unavailable", "cycle": cycle,
                         "reason": "The saved bundle has no endoflife.date data for this product."}, None

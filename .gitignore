@@ -50,6 +50,10 @@ coverage.xml
 *.py,cover
 .hypothesis/
 .pytest_cache/
+# Generated pytest files from a Windows temporary-path quoting error.
+/UsersBogdanAppDataLocalTemppynipper-sc045-full-20260926-a/
+# Optional local test output; intentional fixtures remain under tests/test_data.
+/.test-artifacts/
 
 # Translations
 *.mo

@@ -170,10 +170,12 @@ Management-certificate assessment uses the same separation. PAN-OS resolves an a
 
 ### Analyzer layer
 
+SC-045 supersedes the historical online acquisition flow described below: analyzers accept only local advisory bundles. The shared analyzer helper rejects online requests, and the legacy Cisco analyzer never calls its advisory client. `python -m src.advisories fetch` is the separate acquisition entry point and accepts explicit product/version/module metadata without reading a device export. `-x` remains a compatibility no-op. Invalid local bundles produce advisory errors while configuration analysis continues.
+
 An analyzer is the CLI-facing orchestration function for one platform. It:
 
 1. obtains the registered parser through `get_parser()`;
-2. optionally obtains software advisory data: the Cisco openVuln lookup for IOS when credentials exist, and for every family the opt-in NVD CVE lookup through `src.advisories.software_advisories()`;
+2. optionally reads local software advisory data through `src.advisories.software_advisories()`; online requests are rejected at this boundary;
 3. calls the platform processor;
 4. gathers hostname/device metadata;
 5. calls the report generator.
@@ -227,6 +229,8 @@ Unit tests cover parser semantics, individual rules, finding validation, registr
 The registry contains both target-baseline and partial devices. Registration guarantees that the CLI can construct and dispatch the implementation; it does not guarantee equal detection depth. [Supported devices](SUPPORTED_DEVICES.md) is the user-facing authority for current maturity and input-dialect limits. Original-Nipper lineage does not imply dialect or check-category parity.
 
 ## Architectural invariants
+
+Management ACL proof (SC-046) currently supports standard IPv4 source ACLs attached to active IOS/XE SSH VTY or HTTP/HTTPS services. Parser-owned records distinguish proven permit-all, restrictive, unresolved and unsupported state. VTY transport and ACL mutations are overlaid per physical line before grouping. Extended ACL and IPv6 service applicability require separate qualification; the new findings do not infer exposure from unresolved names.
 
 - Do not add a second device list or dispatch chain.
 - Do not treat absence as a known secure or insecure state unless the relevant platform/version default is established.

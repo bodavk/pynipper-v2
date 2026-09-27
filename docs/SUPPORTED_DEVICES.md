@@ -20,6 +20,8 @@ This table separates registry support from detection depth. â€œTarget baselineâ€
 
 The canonical IDs and accepted aliases are defined in `src/devices/registry.py`.
 
+IOS/XE management ACL coverage includes proven permit-all standard IPv4 ACLs on active SSH VTY and HTTP/HTTPS services. Extended management ACLs, IPv6 listener applicability and unresolved-reference coverage remain incomplete (SC-046).
+
 For Junos, identified SRX models also receive an applied-IDP check: an IDP policy applied by an active permit rule whose every IPS rule is explicitly non-blocking (for example `no-action`) is reported. Identified SRX models also receive bounded external-zone screen analysis: an actively bound screen with explicitly deactivated SYN/UDP/ICMP flood protection, or active UDP/ICMP flood protection configured to alarm without dropping, can be reported. An auditor-supplied external interface role is required. This does not assess missing screen profiles, unexpanded groups, IDP effectiveness or operational protection.
 
 For interactive use, the CLI recommends short family names such as `cisco-ios`, `cisco-ios-xe`, `cisco-asa` and `fortios`; historical IDs and aliases remain accepted. Omitting `-d` requests conservative format identification from distinctive export markers. Ambiguous Cisco IOS/IOS-XE exports and formats without a reliable marker require explicit `-d`; automatic identification does not infer switch/router or interface roles. The selected canonical family appears in the report's device type.

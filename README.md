@@ -2,7 +2,7 @@
 
 pynipper-v2 checks saved network-device configurations for security problems. You give it a configuration export and it writes an HTML or JSON report with each finding, the configuration lines behind it, its severity and how to fix it.
 
-It works offline by default, and nothing is sent anywhere unless you turn on the optional CVE lookup.
+Configuration audits run offline. Optional advisory downloads use a separate command; audits read saved bundles locally.
 
 The installed command is `pynipper-ng`, kept for compatibility with the original project.
 
@@ -63,9 +63,9 @@ Common options:
 | `-f FILE` | Report file name |
 | `-o HTML` / `-o JSON` | Report format (HTML is the default) |
 | `-d NAME` | Set the device type yourself. Run `pynipper-ng --help` for the names, e.g. `cisco-ios`, `fortios`, `checkpoint-gaia` |
-| `-x` | Stay fully offline (turns off the optional Cisco openVuln lookup, which only runs for IOS with API credentials) |
+| `-x` | Compatibility flag; every audit is already offline |
 | `--assessment-policy FILE` | Add facts the export can't show, such as interface roles or your own requirements. See [Assessment policy](docs/ASSESSMENT_POLICY.md) |
-| `--cve-lookup` | Look up known CVEs and end-of-support status for the software release (see below) |
+| `--cve-data FILE` | Read known CVEs and end-of-support data from a local advisory bundle |
 | `--show-secrets` | Add an unmasked credential appendix (see below) |
 
 Example with an explicit device type and JSON output:
@@ -88,7 +88,8 @@ Keep in mind:
 ## Known CVEs and end of support (opt-in)
 
 ```powershell
-pynipper-ng -i fortigate.conf -f report.html --cve-lookup
+python -m src.advisories fetch -d fortios --software-version 7.4.6 --output fortios-advisories.json
+pynipper-ng -i fortigate.conf -f report.html --cve-data fortios-advisories.json
 ```
 
 - Asks the free [NVD CVE API](https://nvd.nist.gov/developers/vulnerabilities) which CVEs affect the release in the export. The report lists them with their CVSS score and marks those in the CISA Known Exploited Vulnerabilities catalog.
@@ -96,8 +97,8 @@ pynipper-ng -i fortigate.conf -f report.html --cve-lookup
 - **Only the product and version are sent** (for example `cpe:2.3:o:fortinet:fortios:7.4.6`), never configuration content. endoflife.date receives only the product name.
 - If the export only shows a release train (IOS-XE `version 17.9`), give the exact release with `--software-version 17.9.4a`.
 - Without an API key a lookup takes a few seconds. A free NVD key makes it faster: set `NVD_API_KEY`, or `API_KEY` under `[NVD]` in the `-c` configuration file. The key is never written to a report.
-- `--cve-save FILE` stores the responses; `--cve-data FILE` replays them later offline.
-- Works for IOS, IOS-XE, ASA, FortiOS, Junos, ScreenOS, PAN-OS, Arista EOS, SonicOS, ArubaOS-Switch 16.x and F5 BIG-IP (each provisioned module is looked up). PIX, older ProCurve releases and Check Point are reported as not supported.
+- The separate `fetch` command stores responses in a new file; `--cve-data FILE` replays them during an offline audit. Old audit flags `--cve-lookup` and `--cve-save` now explain how to migrate. Cisco credentials no longer trigger automatic lookup.
+- Works for IOS, IOS-XE, ASA, FortiOS, Junos, ScreenOS, PAN-OS, Arista EOS, SonicOS, ArubaOS-Switch 16.x and F5 BIG-IP (supply each provisioned module with repeated `--module ltm`, `--module apm`, etc. when fetching). PIX, older ProCurve releases and Check Point are reported as not supported.
 - A listed CVE means NVD records the release as affected. It doesn't prove the vulnerable feature is turned on.
 - Behind a company proxy that inspects HTTPS, the Windows certificate store is used automatically. If you still get a TLS error, set `REQUESTS_CA_BUNDLE` to your organization's CA file.
 
