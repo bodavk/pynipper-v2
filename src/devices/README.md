@@ -4,6 +4,8 @@ The authoritative device list is `src/devices/registry.py`. Every registered par
 
 ## Parser maturity
 
+Junos REST listeners expose typed explicit addresses, transport, port, allowed sources and resolution state. Unexpanded inheritance and missing listener-address defaults remain unknown; local-only binding is separate from a network listener.
+
 | Device ID | Parser | Current parser scope |
 |---|---|---|
 | `IOS_SWITCH`, `IOS_ROUTER`, `IOS_CATALYST` | `CiscoIOSParser` | Verified IOS-family parsing for HTTP/SSH and baseline controls, including effective typed management lines, overlapping-VTY AAA authorization/accounting bindings and explicit named-group membership, SNMPv3 user/group/view/ACL relationships, per-association NTP key/trust state, BGP peer-group/AF/VRF routing trust with bounded direct IPv4 prefix-list effects, explicit-interface OSPFv2 and bounded classic RIPv2/EIGRP authentication, effective CDP/LLDP interface directions, assessed access-edge 802.1X bypass and BPDU-guard inheritance/override state, explicit SSH-suite/key metadata, and secret-free credential formats |

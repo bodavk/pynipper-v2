@@ -543,6 +543,25 @@ class PluginJunOSBaseline(BasePlugin):
                 )
             )
 
+    def check_rest_listeners(self, parser: BaseDeviceParser) -> None:
+        for listener in self._junos(parser).get_rest_listeners():
+            if listener.transport != "http" or listener.resolution_state != "network":
+                continue
+            port = str(listener.port) if listener.port is not None else "not explicitly exported"
+            self.add_issue(Finding(
+                rule_id="juniper.junos.management.rest_http",
+                device=parser.device_type,
+                title="REST management API uses clear-text HTTP",
+                observation=f"The REST HTTP listener is configured on {', '.join(listener.addresses)} (port: {port}). Source restrictions, if configured, do not encrypt its traffic.",
+                impact="REST credentials and management commands can be intercepted or modified on an unprotected traffic path.",
+                exploitability="An attacker must be able to observe or modify the client-to-device traffic path; this export does not prove external reachability or runtime listener state.",
+                recommendation="Remove REST HTTP access and configure HTTPS with an appropriate server certificate and approved client restrictions.",
+                severity=Severity.HIGH,
+                evidence=listener.evidence,
+                references=("https://www.juniper.net/documentation/us/en/software/junos/rest-api/topics/task/rest-api-configuring.html",),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+
     def check_snmp(self, parser: BaseDeviceParser) -> None:
         communities: dict[str, list[JunosStatement]] = defaultdict(list)
         for statement in self._statements(parser, ("snmp", "community")):
@@ -1161,6 +1180,7 @@ class PluginJunOSBaseline(BasePlugin):
     def analyze(self, parser: BaseDeviceParser) -> None:
         self.check_ssh_algorithms(parser)
         self.check_additional_services(parser)
+        self.check_rest_listeners(parser)
         self.check_snmp(parser)
         self.check_default_security_policy(parser)
         if not self._applicable(parser):

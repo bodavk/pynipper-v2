@@ -146,7 +146,7 @@ _CATALOGUE = (
         "another control (proxy, endpoint protection, upstream IPS) inspects the same traffic.",
     )),
     # Management access -----------------------------------------------------------
-    (r"^(management\.(telnet|http|insecure_protocol)|services\.remote_shell|vty\.(telnet|insecure_output_transport)|eapi\.(insecure_http|https_disabled)|http\.(cleartext_service|redirect_disabled))$", _G(
+    (r"^(management\.(telnet|http|rest_http|insecure_protocol)|services\.remote_shell|vty\.(telnet|insecure_output_transport)|eapi\.(insecure_http|https_disabled)|http\.(cleartext_service|redirect_disabled))$", _G(
         "management-cleartext", "management-access",
         "The device can be managed over an unencrypted protocol such as Telnet or plain HTTP. "
         "Everything typed or sent in such a session, including administrator passwords, crosses "

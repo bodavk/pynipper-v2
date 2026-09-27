@@ -230,6 +230,8 @@ The registry contains both target-baseline and partial devices. Registration gua
 
 ## Architectural invariants
 
+Junos REST listeners are modeled separately from J-Web and SSH. Typed records retain explicit transport, addresses, port, allowed sources and resolution state after native deletion/deactivation processing. The clear-text check requires a validated non-loopback HTTP address and resolved inheritance. Source restrictions do not change HTTP transport security; runtime state and network reachability remain outside the export.
+
 Management ACL proof (SC-046) currently supports standard IPv4 source ACLs attached to active IOS/XE SSH VTY or HTTP/HTTPS services. Parser-owned records distinguish proven permit-all, restrictive, unresolved and unsupported state. VTY transport and ACL mutations are overlaid per physical line before grouping. Extended ACL and IPv6 service applicability require separate qualification; the new findings do not infer exposure from unresolved names.
 
 - Do not add a second device list or dispatch chain.

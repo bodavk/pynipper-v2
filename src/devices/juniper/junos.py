@@ -50,6 +50,16 @@ class JunosDefaultSecurityPolicy:
 
 
 @dataclass(frozen=True)
+class JunosRESTListener:
+    transport: str
+    addresses: tuple[str, ...]
+    port: int | None
+    allowed_sources: tuple[str, ...]
+    resolution_state: str
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
 class JunosZoneScreen:
     zone: str
     screen: str
@@ -1420,6 +1430,59 @@ class JunOSParser(BaseDeviceParser):
                 evidence=(statement.evidence,),
             )
         return list(credentials.values())
+
+    def get_rest_listeners(self) -> tuple[JunosRESTListener, ...]:
+        """Explicit REST listener bindings; omitted binding defaults stay unknown."""
+        prefix = ("system", "services", "rest")
+        statements = self.get_active_statements(prefix)
+        sources = tuple(dict.fromkeys(
+            value for item in statements
+            if item.path[3:5] == ("control", "allowed-sources")
+            for value in item.path[5:]
+        ))
+        listeners = []
+        for transport in ("http", "https"):
+            selected = [item for item in statements if item.path[3:4] == (transport,)]
+            if not selected:
+                continue
+            addresses = tuple(dict.fromkeys(
+                value for item in selected if item.path[4:5] == ("addresses",)
+                for value in item.path[5:]
+            ))
+            ports = [item.path[5:] for item in selected if item.path[4:5] == ("port",)]
+            port = None
+            malformed = False
+            if ports:
+                last = ports[-1]
+                if (len(last) == 1 and len(last[0]) <= 5 and last[0].isascii()
+                        and last[0].isdigit() and 1024 <= int(last[0]) <= 65535):
+                    port = int(last[0])
+                else:
+                    malformed = True
+            try:
+                parsed = tuple(ipaddress.ip_address(value) for value in addresses)
+            except ValueError:
+                parsed = ()
+                malformed = True
+            unknown_options = any(
+                len(item.path) > 4 and item.path[4] not in {
+                    "addresses", "port", "cipher-list", "server-certificate", "mutual-authentication"
+                } for item in selected
+            )
+            state = (
+                "inheritance-unknown" if self.has_unexpanded_inheritance()
+                else "unknown" if malformed or unknown_options or not parsed
+                else "local-only" if all(address.is_loopback for address in parsed)
+                else "network"
+            )
+            listeners.append(JunosRESTListener(
+                transport, addresses, port, sources, state,
+                tuple(item.evidence for item in selected) + tuple(
+                    item.evidence for item in statements
+                    if item.path[3:5] == ("control", "allowed-sources")
+                ),
+            ))
+        return tuple(listeners)
 
     def get_services(self) -> dict:
         paths = self._active_paths()

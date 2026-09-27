@@ -18,6 +18,8 @@ SC-044 insecure-default research remains unchanged and separately owned. Detaile
 
 SC-046 progress (2026-09-28): standard IPv4 permit-all ACL detection is implemented for active IOS/XE SSH and HTTP/HTTPS management, including ordered removals and overlapping VTY changes. Extended ACLs, independent IPv6 applicability and unresolved-reference coverage remain open.
 
+SC-026 progress (2026-09-28): Junos REST HTTP explicit network-listener detection is implemented. Junos gRPC, EOS API controls and the other API/DNS stages remain open.
+
 ## Priority: practical-testing defects
 
 - [x] PT-001 to PT-004 ([details](agent_notes/PRACTICAL_TESTING_TASKS.md)): MarkupSafe pin, FortiOS and cross-vendor multi-line value parsing, and evidence line numbers.

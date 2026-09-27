@@ -4,6 +4,8 @@ Analyzers run focused plugin classes against a `BaseDeviceParser` and return ven
 
 ## Verified target-platform coverage
 
+Junos REST HTTP detection reports explicit non-loopback listener bindings with clear-text credential transport. It preserves source evidence and treats loopback-only, inactive and unresolved bindings conservatively; gRPC API analysis remains a separate open stage.
+
 | Platform | Implemented analysis |
 |---|---|
 | Cisco IOS | Effective HTTP/SSH, per-line transport/timeout/access-class, resolved AAA authentication/authorization plus explicit authorization-bypass, unbound/disabled accounting and unusable named-group checks, AUX, credential, per-user/group/view/source-scoped SNMPv3, logging, per-association authenticated NTP, BGP neighbor authentication and external-peer route policy/prefix limits plus bounded direct IPv4 prefix-list effects, OSPFv2 and bounded active classic RIPv2/EIGRP interface authentication, explicitly external CDP/LLDP exposure, bounded assessed access-edge 802.1X and BPDU-guard bypass checks, banner, service, interface, control-plane, and VPN baseline rules |

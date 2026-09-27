@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- SC-026 Junos REST stage: report clear-text HTTP REST APIs with explicit network listener addresses. Preserve configured ports and allowed sources; loopback-only, inactive, malformed and unexpanded inherited bindings remain ungraded. Added parser, finding and public-report regression coverage.
+
 - SC-046 first stage: detect standard IPv4 management ACLs proven to permit every source on active SSH VTY and HTTP/HTTPS services. Preserve named/numbered ACL order and removals, overlapping VTY changes and IPv4 HTTP attachment syntax. Unsupported ACL forms remain ungraded.
 
 - Configuration audits now run offline regardless of legacy Cisco credentials or `-x`. Advisory acquisition is a separate `python -m src.advisories fetch` command; saved bundle replay remains available. Legacy online audit flags provide migration guidance, and missing or invalid bundles leave configuration reporting available (SC-045).
