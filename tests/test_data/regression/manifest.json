@@ -275,6 +275,7 @@
         "juniper.junos.filter.broad_accept",
         "juniper.junos.interfaces.redirects",
         "juniper.junos.logging.remote_destination",
+        "juniper.junos.management.grpc_cleartext",
         "juniper.junos.management.insecure_protocol",
         "juniper.junos.management.rest_http",
         "juniper.junos.ntp.authentication",
@@ -291,7 +292,7 @@
         "juniper.junos.ssh.root_login",
         "juniper.junos.ssh.weak_ciphers"
       ],
-      "expected_finding_count": 29
+      "expected_finding_count": 30
     },
     {
       "name": "junos-secure",

@@ -22,6 +22,8 @@ The canonical IDs and accepted aliases are defined in `src/devices/registry.py`.
 
 Junos REST coverage includes explicitly configured HTTP network listeners with source/port evidence. Loopback-only, omitted-address defaults, malformed values and unexpanded group inheritance are ungraded. This check establishes configured clear-text transport, not Internet reachability or a live listener.
 
+Junos classic JET gRPC coverage reports clear-text listeners with explicit valid non-loopback addresses and ports. Inactive, malformed, inherited and omitted bindings remain ungraded. Authentication bypass, TLS correctness and actual reachability are not assessed by this check.
+
 IOS/XE management ACL coverage includes proven permit-all standard IPv4 ACLs on active SSH VTY and HTTP/HTTPS services. Extended management ACLs, IPv6 listener applicability and unresolved-reference coverage remain incomplete (SC-046).
 
 For Junos, identified SRX models also receive an applied-IDP check: an IDP policy applied by an active permit rule whose every IPS rule is explicitly non-blocking (for example `no-action`) is reported. Identified SRX models also receive bounded external-zone screen analysis: an actively bound screen with explicitly deactivated SYN/UDP/ICMP flood protection, or active UDP/ICMP flood protection configured to alarm without dropping, can be reported. An auditor-supplied external interface role is required. This does not assess missing screen profiles, unexpanded groups, IDP effectiveness or operational protection.

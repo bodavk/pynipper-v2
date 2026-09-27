@@ -4,7 +4,7 @@ Analyzers run focused plugin classes against a `BaseDeviceParser` and return ven
 
 ## Verified target-platform coverage
 
-Junos REST HTTP detection reports explicit non-loopback listener bindings with clear-text credential transport. It preserves source evidence and treats loopback-only, inactive and unresolved bindings conservatively; gRPC API analysis remains a separate open stage.
+Junos REST HTTP detection reports explicit non-loopback listener bindings with clear-text credential transport. Classic JET gRPC clear-text detection requires an explicit valid network address and port. Both preserve source evidence and treat loopback-only, inactive and unresolved bindings conservatively. gRPC authentication bypass and TLS interactions remain open stages; neither transport check proves actual reachability.
 
 | Platform | Implemented analysis |
 |---|---|

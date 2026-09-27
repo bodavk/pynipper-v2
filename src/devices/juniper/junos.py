@@ -60,6 +60,16 @@ class JunosRESTListener:
 
 
 @dataclass(frozen=True)
+class JunosGRPCListener:
+    address: str | None
+    port: int | None
+    routing_instance: str | None
+    skip_authentication: bool
+    resolution_state: str
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
 class JunosZoneScreen:
     zone: str
     screen: str
@@ -1430,6 +1440,50 @@ class JunOSParser(BaseDeviceParser):
                 evidence=(statement.evidence,),
             )
         return list(credentials.values())
+
+    def get_grpc_cleartext_listener(self) -> JunosGRPCListener | None:
+        """Explicit classic JET clear-text listener; no default binding inference."""
+        prefix = ("system", "services", "extension-service", "request-response", "grpc")
+        statements = self.get_active_statements(prefix)
+        clear = [item for item in statements if item.path[5:6] == ("clear-text",)]
+        if not clear:
+            return None
+        def value(suffix):
+            matches = [item.path[len(prefix) + len(suffix):] for item in statements
+                       if item.path[5:5 + len(suffix)] == suffix]
+            if not matches or any(len(item) != 1 for item in matches):
+                return None
+            values = set(item[0] for item in matches)
+            return next(iter(values)) if len(values) == 1 else None
+
+        address = value(("clear-text", "address"))
+        raw_port = value(("clear-text", "port"))
+        port = (int(raw_port) if raw_port and raw_port.isascii() and raw_port.isdigit()
+                and len(raw_port) <= 5 and 1 <= int(raw_port) <= 65535 else None)
+        try:
+            parsed = ipaddress.ip_address(address) if address else None
+        except ValueError:
+            parsed = None
+        unknown = any(
+            len(item.path) > 6 and item.path[6] not in {"address", "port"}
+            for item in clear
+        ) or any(len(item.path) > 5 and item.path[5] not in {
+            "clear-text", "ssl", "max-connections", "routing-instance", "skip-authentication"
+        } for item in statements)
+        state = (
+            "inheritance-unknown" if self.has_unexpanded_inheritance()
+            else "unknown" if parsed is None or port is None or unknown
+            else "local-only" if parsed.is_loopback
+            else "network"
+        )
+        metadata = [item for item in statements if item.path[5:6] in {
+            ("routing-instance",), ("skip-authentication",)
+        }]
+        return JunosGRPCListener(
+            address, port, value(("routing-instance",)),
+            any(item.path == prefix + ("skip-authentication",) for item in metadata),
+            state, tuple(item.evidence for item in clear + metadata),
+        )
 
     def get_rest_listeners(self) -> tuple[JunosRESTListener, ...]:
         """Explicit REST listener bindings; omitted binding defaults stay unknown."""

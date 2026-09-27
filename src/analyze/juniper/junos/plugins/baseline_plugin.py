@@ -562,6 +562,24 @@ class PluginJunOSBaseline(BasePlugin):
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
+    def check_grpc_listener(self, parser: BaseDeviceParser) -> None:
+        listener = self._junos(parser).get_grpc_cleartext_listener()
+        if listener is None or listener.resolution_state != "network":
+            return
+        self.add_issue(Finding(
+            rule_id="juniper.junos.management.grpc_cleartext",
+            device=parser.device_type,
+            title="gRPC service uses clear-text network transport",
+            observation=f"The JET request-response gRPC clear-text listener is configured at {listener.address}, port {listener.port}; routing instance: {listener.routing_instance or 'unspecified or unresolved'}.",
+            impact="Management or telemetry data carried by this connection lacks transport encryption and can be observed or altered on an unprotected path.",
+            exploitability="An attacker must be able to observe or modify the connection path. Actual reachability, service operation and RPC authorization are not proven by this export.",
+            recommendation="Replace the clear-text listener with a release-supported TLS listener and validate the server identity and client authentication requirements.",
+            severity=Severity.HIGH,
+            evidence=listener.evidence,
+            references=("https://www.juniper.net/documentation/us/en/software/junos/interfaces-telemetry/interfaces-telemetry.pdf",),
+            basis=FindingBasis.EXPLICIT_VALUE,
+        ))
+
     def check_snmp(self, parser: BaseDeviceParser) -> None:
         communities: dict[str, list[JunosStatement]] = defaultdict(list)
         for statement in self._statements(parser, ("snmp", "community")):
@@ -1181,6 +1199,7 @@ class PluginJunOSBaseline(BasePlugin):
         self.check_ssh_algorithms(parser)
         self.check_additional_services(parser)
         self.check_rest_listeners(parser)
+        self.check_grpc_listener(parser)
         self.check_snmp(parser)
         self.check_default_security_policy(parser)
         if not self._applicable(parser):
