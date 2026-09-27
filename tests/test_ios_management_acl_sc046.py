@@ -66,3 +66,74 @@ def test_public_reports_management_acl_findings(tmp_path, format):
     assert "Web management ACL permits every IPv4 source" in report
     if format == "JSON":
         assert json.loads(report)["security-audit"]
+
+
+@pytest.mark.parametrize("rules,state", [
+    ("10 permit ip any any", "permit-all"),
+    ("10 permit tcp any any log", "permit-all"),
+    ("10 permit ip 0.0.0.0 255.255.255.255 0.0.0.0 255.255.255.255", "permit-all"),
+    ("20 permit ip any any\n 10 deny ip host 192.0.2.1 any", "restrictive"),
+    ("10 permit tcp host 192.0.2.1 any", "restrictive"),
+    ("10 permit ip any any\n 20 deny ip any any", "permit-all"),
+    ("10 deny ip any any\n no 10\n 20 permit ip any any", "permit-all"),
+    ("10 deny ip any any\n 10 permit ip any any", "permit-all"),
+    ("10 permit ip any any\n no permit ip any any", "unsupported"),
+    ("10 permit tcp any any eq 22", "unsupported"),
+    ("10 permit ip any host 192.0.2.1", "unsupported"),
+    ("10 permit tcp any any established", "unsupported"),
+    ("10 permit ip any any time-range HOURS", "unsupported"),
+    ("10 deny udp any any\n 20 permit ip any any", "unsupported"),
+    ("10 permit ip object-group SOURCES any\n 20 permit ip any any", "unsupported"),
+    ("10 permit ip 192.0.2.1 any", "unsupported"),
+    ("10 permit ip any6 any", "unsupported"),
+    ("10 permit ip any any6", "unsupported"),
+    ("10 permit ip any", "unsupported"),
+    ("10 permit ip invalid 0.0.0.255 any", "unsupported"),
+    ("9" * 5000 + " permit ip any any", "unsupported"),
+])
+def test_extended_acl_bounded_ssh_proof(tmp_path, rules, state):
+    parser = parse(tmp_path, "ip access-list extended MGMT\n " + rules + "\n")
+    assert parser.get_management_ipv4_acl("MGMT", allow_extended=True).state == state
+    assert parser.get_management_ipv4_acl("MGMT").state == "unsupported"
+    findings = [item for item in process_cisco_ios_conf(parser).values()
+                if item.rule_id.endswith("unrestricted_sources")]
+    assert len(findings) == (1 if state == "permit-all" else 0)
+    if findings:
+        assert findings[0].rule_id == "cisco.ios.ssh.unrestricted_sources"
+        assert findings[0].evidence_locations
+
+
+@pytest.mark.parametrize("name", ["100", "199", "2000", "2699"])
+def test_numbered_extended_acl_removals(tmp_path, name):
+    parser = parse(tmp_path, f"access-list {name} deny ip host 192.0.2.1 any\n"
+                   f"access-list {name} permit ip any any\n"
+                   f"no access-list {name} deny ip host 192.0.2.1 any\n")
+    assert parser.get_management_ipv4_acl(name, allow_extended=True).state == "permit-all"
+    parser = parse(tmp_path, f"access-list {name} permit ip any any\nno access-list {name}\n")
+    assert parser.get_management_ipv4_acl(name, allow_extended=True).state == "unresolved"
+
+
+@pytest.mark.parametrize("tail", [
+    "no ip access-list extended MGMT\n",
+    "line vty 0 4\n transport input none\n",
+    "line vty 0 4\n access-class MISSING in\n",
+    "line vty 0 4\n no access-class MGMT in\n ipv6 access-class MGMT in\n",
+])
+def test_extended_acl_removed_unbound_or_disabled(tmp_path, tail):
+    parser = parse(tmp_path, "ip access-list extended MGMT\n permit ip any any\n!\n", tail)
+    assert not [item for item in process_cisco_ios_conf(parser).values()
+                if item.rule_id.endswith("unrestricted_sources")]
+
+
+@pytest.mark.parametrize("device", ["cisco-ios", "ios-xe"])
+@pytest.mark.parametrize("format", ["HTML", "JSON"])
+def test_extended_acl_public_reports_and_secret_redaction(tmp_path, device, format):
+    parse(tmp_path, "ip access-list extended MGMT\n permit ip any any\n!\n",
+          "username auditor secret 0 DoNotExposeThisSecret\n")
+    output = tmp_path / ("extended." + format.lower())
+    assert main(["-d", device, "-i", str(tmp_path / "ios.conf"),
+                 "-o", format, "-f", str(output)]) == 0
+    report = output.read_text(encoding="utf-8")
+    assert "SSH management ACL permits every IPv4 source" in report
+    assert "Web management ACL permits every IPv4 source" not in report
+    assert "DoNotExposeThisSecret" not in report

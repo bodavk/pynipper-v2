@@ -16,7 +16,7 @@ Use the [SC execution priorities](agent_notes/SECURITY_COVERAGE_TASKS.md#current
 
 SC-044 insecure-default research remains unchanged and separately owned. Detailed requirements and acceptance tests live only in the SC backlog, not in this index.
 
-SC-046 progress (2026-09-28): standard IPv4 permit-all ACL detection is implemented for active IOS/XE SSH and HTTP/HTTPS management, including ordered removals and overlapping VTY changes. Extended ACLs, independent IPv6 applicability and unresolved-reference coverage remain open.
+SC-046 progress (2026-09-28): standard IPv4 permit-all ACL detection is implemented for active IOS/XE SSH and HTTP/HTTPS management, including ordered removals and overlapping VTY changes. SSH also supports bounded named/numbered extended IPv4 IP/TCP rules with universal destinations and no port predicates. HTTP stays standard-only. Remaining: broader extended predicates, independent IPv6 applicability and unresolved-reference report coverage.
 
 SC-026 progress (2026-09-28): Junos REST HTTP and classic JET gRPC clear-text explicit network-listener detection are implemented. gRPC authentication-bypass/TLS interactions, omitted listener defaults, EOS API controls and the other API/DNS stages remain open.
 

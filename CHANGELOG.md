@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- SC-046 extended SSH stage: detect named/numbered extended IPv4 ACLs that demonstrably allow every source to SSH through unrestricted IP/TCP rules. Respect ordering, removals and replacements; leave release-dependent destinations and unsupported predicates ungraded. HTTP retains standard-only ACL evaluation. Added adversarial and JSON/HTML regression tests.
+
 - SC-026 Junos gRPC transport stage: detect classic JET clear-text listeners with explicit valid network addresses and ports. Preserve routing-instance and authentication metadata without claiming authentication bypass; loopback, inactive, malformed, omitted and inherited bindings remain ungraded. Added parser, public-report and corpus regression coverage.
 
 - SC-026 Junos REST stage: report clear-text HTTP REST APIs with explicit network listener addresses. Preserve configured ports and allowed sources; loopback-only, inactive, malformed and unexpanded inherited bindings remain ungraded. Added parser, finding and public-report regression coverage.

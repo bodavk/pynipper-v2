@@ -1459,14 +1459,17 @@ class CiscoIOSParser(BaseDeviceParser):
                 value = None if match.group("disabled") else match.group("value")
         return value
 
-    def get_management_ipv4_acl(self, name: str) -> IOSManagementACL:
-        """Bounded standard-ACL source restriction proof, in effective order.
+    def get_management_ipv4_acl(self, name: str, *, allow_extended: bool = False) -> IOSManagementACL:
+        """Bounded source restriction proof, in effective order.
 
-        Unsupported entries block proof; no extended or IPv6 semantics are inferred.
+        VTY callers may opt into extended IP/TCP rules with universal destinations
+        and no port predicates. HTTP callers retain standard-only semantics.
+        Unsupported entries block proof; IPv6 semantics are not inferred.
         """
         entries: list[tuple[str, str, ConfigEvidence]] = []
         defined = False
         supported = True
+        kind: str | None = None
         current = False
         key = name.casefold()
         for number, raw in enumerate(self._source_lines, 1):
@@ -1478,7 +1481,7 @@ class CiscoIOSParser(BaseDeviceParser):
                 current = False
                 removed = re.fullmatch(r"(?:no|default) (?:ip access-list (?:standard|extended) |access-list )(\S+)", line)
                 if removed and removed.group(1).casefold() == key:
-                    entries, defined, supported = [], False, True
+                    entries, defined, supported, kind = [], False, True, None
                     continue
                 remove_entry = re.fullmatch(r"no access-list (\S+) (.+)", line)
                 if remove_entry and remove_entry.group(1).casefold() == key:
@@ -1487,14 +1490,23 @@ class CiscoIOSParser(BaseDeviceParser):
                 header = re.fullmatch(r"ip access-list (standard|extended) (\S+)", line)
                 if header and header.group(2).casefold() == key:
                     current, defined = True, True
-                    supported = supported and header.group(1) == "standard"
+                    selected_kind = header.group(1)
+                    supported = supported and kind in {None, selected_kind}
+                    kind = selected_kind
                     continue
                 numbered = re.fullmatch(r"access-list (\S+) (.+)", line)
                 if not numbered or numbered.group(1).casefold() != key:
                     continue
                 defined = True
-                supported = supported and name.isdigit() and (
-                    1 <= int(name) <= 99 or 1300 <= int(name) <= 1999)
+                # Bound conversion of untrusted identifiers before calling int.
+                numeric = int(name) if name.isascii() and name.isdigit() and len(name) <= 4 else 0
+                selected_kind = (
+                    "standard" if 1 <= numeric <= 99 or 1300 <= numeric <= 1999
+                    else "extended" if 100 <= numeric <= 199 or 2000 <= numeric <= 2699
+                    else None
+                )
+                supported = supported and selected_kind is not None and kind in {None, selected_kind}
+                kind = selected_kind
                 command = numbered.group(2)
             elif current:
                 command = line
@@ -1520,9 +1532,11 @@ class CiscoIOSParser(BaseDeviceParser):
         evidence = tuple(item[2] for item in entries)
         if not defined:
             return IOSManagementACL(name, "unresolved", evidence)
-        if not supported or not entries:
+        if not supported or not entries or (kind == "extended" and not allow_extended):
             return IOSManagementACL(name, "unsupported", evidence)
         if all(item[0] for item in entries):
+            if any(len(item[0]) > 10 or not item[0].isascii() for item in entries):
+                return IOSManagementACL(name, "unsupported", evidence)
             entries.sort(key=lambda item: int(item[0]))
         elif any(item[0] for item in entries):
             return IOSManagementACL(name, "unsupported", evidence)
@@ -1531,6 +1545,23 @@ class CiscoIOSParser(BaseDeviceParser):
             if not match:
                 return IOSManagementACL(name, "unsupported", evidence)
             action, selector = match.groups()
+            if kind == "extended":
+                tokens = selector.split()
+                if not tokens or tokens[0] not in {"ip", "tcp"}:
+                    return IOSManagementACL(name, "unsupported", evidence)
+                selector, index = self._acl_address(tokens, 1)
+                destination, index = self._acl_address(tokens, index)
+                if len(selector.split()) == 1 and selector != "any":
+                    return IOSManagementACL(name, "unsupported", evidence)
+                # Destination-specific VTY behavior varies by release (CSCuw89081).
+                # Port, state, time and other predicates need separate qualification.
+                destination_network = self._acl_network_semantics(destination, "ipv4")
+                if (index != len(tokens) or destination in {"any4", "any6"}
+                        or not destination_network.complete
+                        or not (destination_network.any or any(
+                            item.first == 0 and item.last == (1 << 32) - 1
+                            for item in destination_network.intervals))):
+                    return IOSManagementACL(name, "unsupported", evidence)
             if selector in {"any4", "any6"}:
                 return IOSManagementACL(name, "unsupported", evidence)
             network = self._acl_network_semantics(selector, "ipv4")
