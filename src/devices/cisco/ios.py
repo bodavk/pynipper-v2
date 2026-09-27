@@ -1587,6 +1587,47 @@ class CiscoIOSParser(BaseDeviceParser):
                 value = None if match.group("disabled") else match.group("value")
         return value
 
+    @property
+    def diagnostics(self) -> list[str]:
+        """Report bounded management ACL gaps without claiming exposure or safety.
+
+        Compute from effective bindings on every read, independently of plugin
+        execution order. Never copy ACL identifiers, raw entries or credentials
+        into this report-facing channel.
+        """
+        diagnostics: list[str] = []
+
+        def describe(service: str, scope: str, acl: IOSManagementACL) -> None:
+            if acl.state not in {"unresolved", "unsupported"}:
+                return
+            reason = (
+                "the attached IPv4 ACL definition was not resolved from this export"
+                if acl.state == "unresolved"
+                else "the attached IPv4 ACL is empty or outside the supported evaluation grammar"
+            )
+            diagnostics.append(
+                f"Management ACL assessment incomplete: {service} ({scope}): {reason}. "
+                "Source restriction is unassessed, not proven secure or unrestricted; manual review is required."
+            )
+
+        if (self.assessment_context.permits_rule("cisco.ios.ssh.unrestricted_sources")
+                and self.get_ssh_state() == ConfigurationState.ENABLED):
+            for profile in self.get_management_acl_vty_profiles():
+                if profile.permits_ssh and profile.ipv4_access_class:
+                    describe("SSH", profile.line, self.get_management_ipv4_acl(
+                        profile.ipv4_access_class, allow_extended=True,
+                    ))
+        name = self.get_http_access_class()
+        if name and self.assessment_context.permits_rule("cisco.ios.http.unrestricted_sources"):
+            acl = self.get_management_ipv4_acl(name)
+            for service, state in (
+                ("HTTP", self.get_http_server_state()),
+                ("HTTPS", self.get_https_server_state()),
+            ):
+                if state == ConfigurationState.ENABLED:
+                    describe(service, "global listener", acl)
+        return diagnostics
+
     def get_ssh_state(self) -> ConfigurationState:
         ssh_commands = [
             line

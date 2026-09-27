@@ -4,6 +4,8 @@ from src.main import main
 
 from src.devices.cisco.ios import CiscoIOSParser
 from src.analyze.cisco.ios.core.process_cisco_ios_conf import process_cisco_ios_conf
+from src.common.assessment import AssessmentContext
+from src.report.coverage import build_report_context
 
 
 def parse(tmp_path, acl, tail=""):
@@ -137,3 +139,63 @@ def test_extended_acl_public_reports_and_secret_redaction(tmp_path, device, form
     assert "SSH management ACL permits every IPv4 source" in report
     assert "Web management ACL permits every IPv4 source" not in report
     assert "DoNotExposeThisSecret" not in report
+
+
+@pytest.mark.parametrize("acl,reason", [
+    ("", "definition was not resolved"),
+    ("ip access-list standard MGMT\n permit any\n!\nno ip access-list standard MGMT\n",
+     "definition was not resolved"),
+    ("ip access-list standard MGMT\n", "outside the supported evaluation grammar"),
+    ("ip access-list standard MGMT\n permit any time-range HOURS\n",
+     "outside the supported evaluation grammar"),
+])
+def test_management_acl_unknowns_are_coverage_not_findings(tmp_path, acl, reason):
+    parser = parse(tmp_path, acl)
+    before = build_report_context(parser)["coverage"]["diagnostics"]
+    findings = process_cisco_ios_conf(parser).values()
+    assert not [item for item in findings if item.rule_id.endswith("unrestricted_sources")]
+    assert before == build_report_context(parser)["coverage"]["diagnostics"] == parser.diagnostics
+    assert len(before) == 2
+    assert all(reason in note and "manual review is required" in note for note in before)
+    assert any("SSH (VTY lines" in note for note in before)
+    assert any("HTTPS (global listener)" in note for note in before)
+
+
+@pytest.mark.parametrize("rule", ["permit any", "permit host 192.0.2.1"])
+def test_resolved_acl_does_not_generate_incomplete_note(tmp_path, rule):
+    assert parse(tmp_path, f"ip access-list standard MGMT\n {rule}\n").diagnostics == []
+
+
+def test_inactive_removed_and_excluded_bindings_do_not_generate_notes(tmp_path):
+    parser = parse(tmp_path, "", "no ip http secure-server\nline vty 0 4\n transport input none\n")
+    assert parser.diagnostics == []
+    parser = parse(tmp_path, "", "no ip http access-class\nline vty 0 4\n no access-class MGMT in\n")
+    assert parser.diagnostics == []
+    parser = parse(tmp_path, "")
+    parser.set_assessment_context(AssessmentContext(excluded_categories=frozenset({"ssh", "http"})))
+    assert parser.diagnostics == []
+
+
+def test_partial_vty_override_and_independent_http_listeners(tmp_path):
+    parser = parse(tmp_path, "", "ip http server\nline vty 2 4\n transport input none\n")
+    notes = parser.diagnostics
+    assert len(notes) == 3
+    assert "VTY lines 0, 1" in notes[0] and "VTY lines 0, 1, 2" not in notes[0]
+    assert any("HTTP (global listener)" in note for note in notes)
+    assert any("HTTPS (global listener)" in note for note in notes)
+
+
+@pytest.mark.parametrize("device", ["cisco-ios", "ios-xe"])
+@pytest.mark.parametrize("format", ["HTML", "JSON"])
+def test_unresolved_acl_public_coverage_is_sanitized(tmp_path, device, format):
+    parser = parse(tmp_path, "", "ip http access-class ipv4 DoNotExposeThisIdentifier\n")
+    notes = build_report_context(parser)["coverage"]["diagnostics"]
+    assert all("DoNotExposeThisIdentifier" not in note for note in notes)
+    output = tmp_path / ("coverage." + format.lower())
+    assert main(["-d", device, "-i", parser.config_filepath, "-o", format, "-f", str(output)]) == 0
+    report = output.read_text(encoding="utf-8")
+    assert "Management ACL assessment incomplete" in report
+    assert "Source restriction is unassessed" in report
+    if format == "JSON":
+        payload = json.loads(report)
+        assert payload["coverage"]["diagnostics"] == notes

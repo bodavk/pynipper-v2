@@ -247,6 +247,8 @@ Management ACL proof (SC-046) supports standard IPv4 source ACLs attached to act
 
 ## Durable engineering decisions
 
+IOS/XE management ACL coverage diagnostics are computed by the parser from effective active SSH and HTTP(S) bindings, independently of plugin execution order. Unresolved definitions and unsupported/empty ACLs produce manual-review notes through the existing coverage diagnostics channel, never exposure findings or passed-control claims. Notes omit raw ACL identifiers and entries, respect rule-category exclusions, and do not assess absent or IPv6-only attachments. Repeated report construction must not accumulate duplicate notes.
+
 These decisions apply to future checks, parser work, and device additions:
 
 - Reconstruct effective configuration state in parsers, preserving source order, scope, negation, removal, disablement, and inheritance where the format supports them.
