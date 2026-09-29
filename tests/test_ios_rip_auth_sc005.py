@@ -17,7 +17,8 @@ NO_AUTH = "cisco.ios.routing.rip.authentication"
 UNRESOLVED = "cisco.ios.routing.rip.key_resolution"
 TEXT = "cisco.ios.routing.rip.cleartext_authentication"
 VERSION1 = "cisco.ios.routing.rip.version1_receive"
-RIP_IDS = {NO_AUTH, UNRESOLVED, TEXT, VERSION1}
+VERSION1_SEND = "cisco.ios.routing.rip.version1_send"
+RIP_IDS = {NO_AUTH, UNRESOLVED, TEXT, VERSION1, VERSION1_SEND}
 
 
 def _scan(tmp_path, commands):
@@ -101,13 +102,67 @@ def test_passive_interface_still_receives_and_is_assessed(tmp_path):
     RIP + PORT + " ip vrf forwarding CUSTOMER\n",
     RIP + "interface GigabitEthernet0/0\n ip address 198.51.100.1 255.255.255.0\n",
     RIP + "no router rip\n" + PORT,
-    "router rip\n version 1\n network 192.0.2.0\n" + PORT,
     "router rip\n version 2\n network 192.0.2.0\n no network 192.0.2.0\n" + PORT,
 ])
 def test_inactive_or_unmatched_rip_is_not_flagged(tmp_path, commands):
     parser, findings = _scan(tmp_path, commands)
     assert parser.get_rip_interfaces() == []
     assert not RIP_IDS.intersection(findings)
+
+
+def test_explicit_process_version1_is_not_discarded(tmp_path):
+    parser, findings = _scan(
+        tmp_path, "router rip\n version 1\n network 192.0.2.0\n"
+        "interface GigabitEthernet0/0\n ip address 192.0.2.1 255.255.255.0\n",
+    )
+    record = parser.get_rip_interfaces()[0]
+    assert record.receive_version == "1-accepted"
+    assert record.send_version == "1-included"
+    assert {VERSION1, VERSION1_SEND}.issubset(findings)
+    assert findings[VERSION1_SEND].basis.value == "explicit-value"
+
+
+def test_interface_v2_overrides_process_v1_in_both_directions(tmp_path):
+    _, findings = _scan(
+        tmp_path, "router rip\n version 1\n network 192.0.2.0\n"
+        + PORT + " ip rip send version 2\n",
+    )
+    assert VERSION1 not in findings
+    assert VERSION1_SEND not in findings
+
+
+@pytest.mark.parametrize("tail,receive,send", [
+    (" ip rip receive version 1 2\n ip rip send version 1 2\n", True, True),
+    (" ip rip receive version 1\n ip rip send version 2\n", True, False),
+    (" ip rip send version 1\n", False, True),
+    (" ip rip send version 1\n no ip rip send version\n", False, False),
+    (" ip rip receive version 1\n no ip rip receive version\n", False, False),
+    (" ip rip send version 1\n shutdown\n", False, False),
+])
+def test_explicit_interface_v1_direction_and_override(tmp_path, tail, receive, send):
+    _, findings = _scan(tmp_path, RIP + PORT + tail)
+    assert (VERSION1 in findings) is receive
+    assert (VERSION1_SEND in findings) is send
+
+
+def test_passive_rip_does_not_send_but_still_accepts_version1(tmp_path):
+    _, findings = _scan(
+        tmp_path, "router rip\n version 1\n network 192.0.2.0\n"
+        " passive-interface GigabitEthernet0/0\n"
+        "interface GigabitEthernet0/0\n ip address 192.0.2.1 255.255.255.0\n",
+    )
+    assert VERSION1 in findings
+    assert VERSION1_SEND not in findings
+
+
+def test_explicit_v1_interface_with_unspecified_process_version(tmp_path):
+    _, findings = _scan(
+        tmp_path, "router rip\n network 192.0.2.0\n"
+        "interface GigabitEthernet0/0\n ip address 192.0.2.1 255.255.255.0\n"
+        " ip rip receive version 1\n ip rip send version 1\n",
+    )
+    assert {VERSION1, VERSION1_SEND}.issubset(findings)
+    assert NO_AUTH not in findings
 
 
 def test_removed_chain_and_key_are_unresolved(tmp_path):
@@ -164,6 +219,31 @@ def test_public_cli_and_redaction(tmp_path, output_type):
         assert any(item["rule_id"] == TEXT for item in data["security-audit"].values())
 
 
+@pytest.mark.parametrize("output_type", ["JSON", "HTML"])
+def test_public_report_explicit_version1(tmp_path, output_type):
+    config = tmp_path / "ripv1.conf"
+    config.write_text(
+        BASE + "router rip\n version 1\n network 192.0.2.0\n"
+        "interface GigabitEthernet0/0\n ip address 192.0.2.1 255.255.255.0\n",
+        encoding="utf-8",
+    )
+    report = tmp_path / f"ripv1.{output_type.lower()}"
+    completed = subprocess.run(
+        [sys.executable, "-m", "src.main", "-d", "IOS_XE", "-i", str(config),
+         "-o", output_type, "-f", str(report), "-x"],
+        capture_output=True, text=True, check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    rendered = report.read_text(encoding="utf-8")
+    assert "RIP interface accepts unauthenticated version 1 updates" in rendered
+    assert "RIP interface sends unauthenticated version 1 updates" in rendered
+    if output_type == "JSON":
+        data = json.loads(rendered)
+        assert {VERSION1, VERSION1_SEND}.issubset(
+            {item["rule_id"] for item in data["security-audit"].values()}
+        )
+
+
 VRF_PORT = ("interface GigabitEthernet0/1\n vrf forwarding CUST\n"
             " ip address 198.51.100.1 255.255.255.0\n ip rip receive version 2\n")
 
@@ -186,12 +266,21 @@ def test_vrf_address_family_with_its_own_version_2_is_assessed(tmp_path):
 
 @pytest.mark.parametrize("af_body", [
     "  network 198.51.100.0\n",  # version not set inside the address family: inheritance unknown
-    "  version 1\n  network 198.51.100.0\n",
     "  version 2\n",  # no network
 ])
 def test_vrf_address_family_without_own_version_2_is_not_assessed(tmp_path, af_body):
     parser, _ = _scan(tmp_path, _vrf_rip(af_body) + PORT + VRF_PORT)
     assert [record.interface for record in parser.get_rip_interfaces()] == ["GigabitEthernet0/0"]
+
+
+def test_vrf_address_family_with_own_version1_is_assessed(tmp_path):
+    parser, findings = _scan(
+        tmp_path, _vrf_rip("  version 1\n  network 198.51.100.0\n") + PORT + VRF_PORT,
+    )
+    records = {record.interface: record for record in parser.get_rip_interfaces()}
+    assert records["GigabitEthernet0/1"].receive_version == "2"  # interface override
+    assert records["GigabitEthernet0/1"].send_version == "1-included"
+    assert VERSION1_SEND in findings
 
 
 def test_default_vrf_is_still_assessed_next_to_a_vrf_family(tmp_path):

@@ -222,6 +222,7 @@ class IOSRIPInterface:
     active: bool
     passive: bool
     receive_version: str
+    send_version: str
     authentication_state: str
     authentication_mode: str
     key_reference: str
@@ -3287,7 +3288,7 @@ class CiscoIOSParser(BaseDeviceParser):
         return results
 
     def get_rip_interfaces(self) -> list[IOSRIPInterface]:
-        """Resolve bounded classic IPv4 RIP network attachments (default VRF and, SC-005, VRF address families with their own ``version 2``)."""
+        """Resolve explicit IPv4 RIP versions on bound default/VRF interfaces."""
         def classful_network(value: str) -> ipaddress.IPv4Network | None:
             try:
                 address = ipaddress.IPv4Address(value)
@@ -3358,7 +3359,7 @@ class CiscoIOSParser(BaseDeviceParser):
                     continue
             scope[4].append(self._routing_evidence(command, line_number))
         scopes.pop("unsupported", None)
-        scopes = {name: scope for name, scope in scopes.items() if scope[0] == "2" and scope[1]}
+        scopes = {name: scope for name, scope in scopes.items() if scope[1]}
         if not scopes:
             return []
 
@@ -3370,6 +3371,8 @@ class CiscoIOSParser(BaseDeviceParser):
             vrf = "default"
             addresses: set[ipaddress.IPv4Address] = set()
             receive_version = "unknown"
+            receive_declared = False
+            send_version = "unknown"
             mode = "text"  # Documented RIPv2 mode when a key chain is bound.
             key_reference = ""
             binding_invalid = False
@@ -3398,8 +3401,14 @@ class CiscoIOSParser(BaseDeviceParser):
                         pass
                 elif re.fullmatch(r"ip rip receive version [12](?: [12])?", text):
                     receive_version = "1-accepted" if "1" in text.split()[4:] else "2"
+                    receive_declared = True
                 elif text == "no ip rip receive version":
                     receive_version = "unknown"
+                    receive_declared = False
+                elif re.fullmatch(r"ip rip send version [12](?: [12])?", text):
+                    send_version = "1-included" if "1" in text.split()[4:] else "2"
+                elif text == "no ip rip send version":
+                    send_version = "unknown"
                 elif text in {"ip rip authentication mode text", "ip rip authentication mode md5"}:
                     mode = text.split()[-1]
                 elif text == "no ip rip authentication mode":
@@ -3420,13 +3429,25 @@ class CiscoIOSParser(BaseDeviceParser):
             scope_name = "default" if vrf == "default" else f"vrf:{vrf}"
             if not active or not addresses or scope_name not in scopes:
                 continue
-            _, networks, passive_default, passive_overrides, process_evidence = scopes[scope_name]
+            process_version, networks, passive_default, passive_overrides, process_evidence = scopes[scope_name]
+            if process_version == "unknown" and (vrf != "default" or not (
+                receive_version == "1-accepted" or send_version == "1-included"
+            )):
+                continue
             matched = [network for network in networks.values() if any(address in network for address in addresses)]
             if not matched:
                 continue
             chain = chains.get(key_reference.casefold()) if key_reference else None
+            if receive_version == "unknown" and process_version in {"1", "2"}:
+                receive_version = "1-accepted" if process_version == "1" else "2"
+            if send_version == "unknown" and process_version in {"1", "2"}:
+                send_version = "1-included" if process_version == "1" else "2"
             if receive_version == "1-accepted":
                 state = "version1-accepted"
+            elif process_version != "2":
+                # An explicit RIPv1 send command is assessable without assuming
+                # how a release handles omitted/default receive authentication.
+                state = "unknown"
             elif binding_invalid or mode == "unknown":
                 state = "unknown"
             elif not key_reference:
@@ -3436,7 +3457,7 @@ class CiscoIOSParser(BaseDeviceParser):
             elif mode == "text":
                 state = "weak-cleartext"
             elif mode == "md5":
-                state = "configured-md5" if receive_version == "2" else "unknown"
+                state = "configured-md5" if receive_declared and receive_version == "2" else "unknown"
             else:
                 state = "unknown"
             all_evidence = evidence + process_evidence
@@ -3448,6 +3469,7 @@ class CiscoIOSParser(BaseDeviceParser):
                 active=True,
                 passive=passive_overrides.get(interface.casefold(), passive_default),
                 receive_version=receive_version,
+                send_version=send_version,
                 authentication_state=state,
                 authentication_mode=mode,
                 key_reference=key_reference,

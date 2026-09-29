@@ -20,6 +20,8 @@ SC-046 progress (2026-09-28): standard IPv4 permit-all ACL detection is implemen
 
 SC-047 (2026-09-29): SRX host-inbound admission of enabled management services on assessed external interfaces is implemented, including interface overrides, `all`/`any-service` with exceptions, management functional zone, J-Web listener lists and lo0/interface filter uncertainty. Parser records now also expose routing-protocol admission and separate logical-system zone/interface scopes. Remaining: qualify active routing relationships against protocol admission and tenant-local service enablement before adding findings.
 
+SC-005 (2026-09-29): Cisco IOS/IOS-XE explicit RIPv1 participation is now assessed on active, network-bound interfaces. Global/interface send and receive versions are resolved independently; passive interfaces do not generate outbound findings. IS-IS trust and the remaining cross-platform/IPv6 stages stay open.
+
 SC-011 (2026-09-29): FortiOS API-user explicit broad trusted-host detection is implemented for proven write-capable profiles, with separate IPv4/IPv6 and VDOM scope and redacted API keys. Exported peer-group/member references resolve to typed known/unresolved state; certificate validity, effective authentication and omitted defaults remain open.
 
 SC-026 progress (2026-09-28): Junos REST HTTP and classic JET gRPC clear-text explicit network-listener detection are implemented. gRPC authentication-bypass/TLS interactions, omitted listener defaults, EOS API controls and the other API/DNS stages remain open.

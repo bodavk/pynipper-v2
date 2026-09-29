@@ -458,6 +458,13 @@ _CATALOGUE = (
         "Check whether an external tool backs up this device and test a restore.",
     )),
     # Routing -----------------------------------------------------------------------------------
+    (r"^routing\.rip\.version1_send$", _G(
+        "rip-version1-send", "routing",
+        "The router sends RIP version 1 updates without authentication.",
+        "A device on the same routing link can observe the unauthenticated updates and may act on or forge routing information.",
+        "RIPv1 does not support the RIPv2 authentication mechanism; sending it does not prove that this router accepts RIPv1 updates.",
+        "Verify the intended neighbor versions and whether the interface is isolated or passive before migrating to authenticated RIPv2.",
+    )),
     (r"^(routing\.(\w+\.)?(\w*authentication|key_resolution|key_lifetime_unusable|version1_receive)|fhrp\.authentication)$", _G(
         "routing-authentication", "routing",
         "A routing protocol session (BGP, OSPF, RIP, EIGRP) accepts neighbors or updates "

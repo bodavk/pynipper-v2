@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- SC-005 Cisco RIP: retain active explicitly configured version-1 send and receive participation, including global/interface overrides, passive interfaces and VRF-local versions. Separate findings for unauthenticated inbound updates and outbound version-1 advertisements; omitted process-version behavior remains ungraded.
+
 - SC-047 parser depth: expose typed SRX host-inbound routing-protocol admissions and isolate logical-system zone/interface records from primary-system management checks. Preserve interface override uncertainty, inactive/delete semantics and all/except lists; no new finding is inferred from admission alone.
 
 - SC-011 FortiOS API-user stage: assess explicitly unrestricted IPv4/IPv6 trusted hosts on write-capable API identities with scoped accprofile/VDOM evidence. Resolve exported peer-group/member references without claiming effective certificate authentication. Keep read-only and unresolved profiles ungraded, redact API keys, and add a permanent vulnerable corpus case.

@@ -2048,6 +2048,21 @@ class PluginIOSBaseline(BasePlugin):
 
         for interface in ios.get_rip_interfaces():
             state = interface.authentication_state
+            if interface.send_version == "1-included" and not interface.passive:
+                send_scope = f"RIP network {interface.network} on {interface.interface}"
+                if interface.vrf != "default":
+                    send_scope += f" in VRF {interface.vrf}"
+                self.add_issue(self._finding(
+                    parser, "cisco.ios.routing.rip.version1_send",
+                    "RIP interface sends unauthenticated version 1 updates",
+                    f"{send_scope} explicitly sends RIP version 1 updates, which cannot be authenticated.",
+                    "Routing information sent without authentication can be accepted or altered by an untrusted RIP neighbor.",
+                    "Send only RIPv2 with an effective authenticated key chain, or disable RIP on this interface.",
+                    Severity.MEDIUM,
+                    tuple(item for item in interface.evidence),
+                    (CISCO_IOS_RIP_GUIDE,),
+                    FindingBasis.EXPLICIT_VALUE,
+                ))
             if state == "configured-md5":
                 report_unusable_key_lifetime(
                     f"RIPv2 on {interface.interface}", interface.key_reference,
@@ -2055,7 +2070,7 @@ class PluginIOSBaseline(BasePlugin):
                 )
             if state in {"configured-md5", "unknown"}:
                 continue
-            scope = f"RIPv2 network {interface.network} on {interface.interface}"
+            scope = f"RIP network {interface.network} on {interface.interface}"
             if interface.vrf != "default":
                 scope += f" in VRF {interface.vrf}"
             if interface.passive:
@@ -2090,6 +2105,7 @@ class PluginIOSBaseline(BasePlugin):
                 recommendation, severity,
                 tuple(item for item in interface.evidence),
                 (CISCO_IOS_RIP_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE if state == "version1-accepted" else None,
             ))
 
         for interface in ios.get_eigrp_interfaces():
