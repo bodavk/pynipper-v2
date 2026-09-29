@@ -111,6 +111,10 @@ CISCO_IOS_RIP_GUIDE = (
     "https://www.cisco.com/c/en/us/td/docs/ios/"
     "iproute_rip/command/reference/irr_book/irr_rip.html"
 )
+CISCO_IOS_ISIS_AUTH_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/iproute_isis/"
+    "configuration/xe-3e/irs-xe-3e-book/rs-scty-0.html"
+)
 CISCO_IOS_EIGRP_GUIDE = (
     "https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/"
     "iproute_eigrp/command/ire-cr-book/ire-i1.html"
@@ -2106,6 +2110,43 @@ class PluginIOSBaseline(BasePlugin):
                 tuple(item for item in interface.evidence),
                 (CISCO_IOS_RIP_GUIDE,),
                 basis=FindingBasis.EXPLICIT_VALUE if state == "version1-accepted" else None,
+            ))
+
+        for admission in ios.get_isis_authentication():
+            if admission.state not in {"send-only", "text-mode", "unresolved"}:
+                continue
+            scope = (
+                f"IS-IS {admission.instance or 'default instance'} {admission.level} "
+                f"{admission.scope} authentication on {admission.interface}"
+            )
+            if admission.state == "send-only":
+                suffix = "send_only"
+                title = "IS-IS authentication is send-only"
+                observation = f"{scope} explicitly sends authentication but does not validate received packets."
+                recommendation = "Disable send-only after configuring working authentication on all intended peers."
+                severity = Severity.HIGH
+                impact = "Incoming IS-IS packets are not checked against the configured authentication key."
+            elif admission.state == "text-mode":
+                suffix = "cleartext_authentication"
+                title = "IS-IS selects cleartext authentication"
+                observation = f"{scope} explicitly selects a cleartext authentication mode or legacy password."
+                recommendation = "Use a supported authenticated key chain and message-digest mode for this scope."
+                severity = Severity.MEDIUM
+                impact = "A reachable observer may recover an authentication password from protocol traffic."
+            else:
+                suffix = "key_resolution"
+                title = "IS-IS authentication key chain is unresolved"
+                observation = f"{scope} selects MD5 but has no exported effective key in its bound key chain."
+                recommendation = "Bind a populated key chain and verify both send and receive authentication."
+                severity = Severity.MEDIUM
+                impact = "The declared MD5 mode lacks the exported key material needed for effective authentication."
+            self.add_issue(self._finding(
+                parser, f"cisco.ios.routing.isis.{suffix}", title, observation,
+                impact,
+                recommendation, severity,
+                tuple(item for item in admission.evidence),
+                (CISCO_IOS_ISIS_AUTH_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
         for interface in ios.get_eigrp_interfaces():

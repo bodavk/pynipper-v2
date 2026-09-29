@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- SC-005 Cisco IS-IS: resolve active, explicitly leveled IOS/IOS-XE process/interface bindings into separate hello and link-state database authentication records. Detect configured send-only receive bypass, cleartext mode or legacy passwords, and MD5 modes without an effective exported key chain; redact IS-IS passwords in all finding evidence and leave omitted or ambiguous authentication ungraded.
+
 - SC-005 Cisco RIP: retain active explicitly configured version-1 send and receive participation, including global/interface overrides, passive interfaces and VRF-local versions. Separate findings for unauthenticated inbound updates and outbound version-1 advertisements; omitted process-version behavior remains ungraded.
 
 - SC-047 parser depth: expose typed SRX host-inbound routing-protocol admissions and isolate logical-system zone/interface records from primary-system management checks. Preserve interface override uncertainty, inactive/delete semantics and all/except lists; no new finding is inferred from admission alone.

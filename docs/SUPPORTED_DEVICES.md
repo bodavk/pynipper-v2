@@ -28,6 +28,8 @@ IOS/IOS-XE management ACL checks assess standard IPv4 ACLs for SSH and HTTP(S), 
 
 Active IPv4 management ACL attachments that cannot be resolved or evaluated are listed as unassessed manual-review items in report coverage diagnostics. These notes are not vulnerabilities or security passes; disabled services and excluded rule categories do not generate them.
 
+IOS/IOS-XE routing coverage includes explicit RIPv1 send/receive participation and a bounded IS-IS authentication check. IS-IS grades only active IPv4 process/interface bindings with an exported NET and explicit routing level; interface hello and process database authentication are assessed separately for send-only, cleartext and unresolved MD5 key chains. Omitted authentication and unqualified multiarea/default behavior remain ungraded.
+
 IOS/XE management ACL coverage includes proven permit-all standard IPv4 ACLs on active SSH VTY and HTTP/HTTPS services. Extended management ACLs, IPv6 listener applicability and unresolved-reference coverage remain incomplete (SC-046).
 
 For Junos, identified SRX models also receive an applied-IDP check: an IDP policy applied by an active permit rule whose every IPS rule is explicitly non-blocking (for example `no-action`) is reported. Identified SRX models also receive bounded external-zone screen analysis: an actively bound screen with explicitly deactivated SYN/UDP/ICMP flood protection, or active UDP/ICMP flood protection configured to alarm without dropping, can be reported. An auditor-supplied external interface role is required. This does not assess missing screen profiles, unexpanded groups, IDP effectiveness or operational protection.

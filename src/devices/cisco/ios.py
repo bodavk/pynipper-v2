@@ -231,6 +231,17 @@ class IOSRIPInterface:
 
 
 @dataclass(frozen=True)
+class IOSISISAuthentication:
+    instance: str
+    interface: str
+    level: str
+    scope: str  # hello or database
+    state: str  # send-only, text-mode, unresolved, configured-md5, unknown
+    key_reference: str
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
 class IOSEIGRPInterface:
     interface: str
     autonomous_system: str
@@ -858,10 +869,14 @@ class CiscoIOSParser(BaseDeviceParser):
         """Create routing evidence while discarding all supplied key material."""
 
         redacted = re.sub(
-            r"(?i)(\b(?:password|authentication-key|authentication-key-chain|"
+            r"(?i)(\b(?:isis password|area-password|domain-password)\s+)(?:[07]\s+)?\S+",
+            r"\1<redacted>", text.strip(),
+        )
+        redacted = re.sub(
+            r"(?i)(\b(?:password|area-password|domain-password|authentication-key|authentication-key-chain|"
             r"message-digest-key\s+\S+\s+\S+|key-string)\s+)(\S+)",
             r"\1<redacted>",
-            text.strip(),
+            redacted,
         )
         # EIGRP named mode carries the key inline: authentication mode hmac-sha-256 [0|7] <key>.
         redacted = re.sub(r"(?i)(\bhmac-sha-256\s+)(?:[07]\s+)?\S+", r"\1<redacted>", redacted)
@@ -3182,6 +3197,163 @@ class CiscoIOSParser(BaseDeviceParser):
                     self._routing_evidence(command, line_number)
                 )
         return chains
+
+    def get_isis_authentication(self) -> list[IOSISISAuthentication]:
+        """Resolve explicit IOS IS-IS hello/database authentication on active IPv4 bindings.
+
+        An explicit process ``is-type`` is required: multi-area defaults differ,
+        and an unqualified level must not be turned into an absence finding.
+        """
+        levels = ("level-1", "level-2")
+
+        def new_settings() -> dict[str, dict[str, object]]:
+            return {level: {"mode": "", "chain": "", "legacy": False, "send_only": False}
+                    for level in levels}
+
+        def selected(suffix: str) -> tuple[str, ...]:
+            return (suffix,) if suffix in levels else levels
+
+        def apply_auth(settings: dict[str, dict[str, object]], text: str, *, interface: bool) -> bool:
+            body = text
+            if interface:
+                body = body.replace("no isis ", "no ", 1) if body.startswith("no isis ") else body.removeprefix("isis ")
+            chain_removal = re.fullmatch(r"no authentication key-chain(?: (level-[12]))?", body)
+            if chain_removal:
+                for level in selected(chain_removal.group(1) or ""):
+                    settings[level]["chain"] = ""
+                return True
+            for field, pattern in (
+                ("mode", r"(no )?authentication mode(?: (md5|text))?(?: (level-[12]))?"),
+                ("chain", r"(no )?authentication key-chain(?: (\S+))?(?: (level-[12]))?"),
+                ("send_only", r"(no )?authentication send-only(?: (level-[12]))?"),
+            ):
+                match = re.fullmatch(pattern, body)
+                if not match:
+                    continue
+                if field == "send_only":
+                    for level in selected(match.group(2) or ""):
+                        settings[level][field] = not bool(match.group(1))
+                else:
+                    for level in selected(match.group(3) or ""):
+                        settings[level][field] = "" if match.group(1) else (match.group(2) or "")
+                return True
+            if interface:
+                legacy = re.fullmatch(r"(no )?isis password(?: .+?)?(?: (level-[12]))?", text)
+                if legacy:
+                    for level in selected(legacy.group(2) or ""):
+                        settings[level]["legacy"] = not bool(legacy.group(1))
+                    return True
+            else:
+                legacy = re.match(r"(no )?(area-password|domain-password)(?:\s|$)", text)
+                if legacy:
+                    level = "level-1" if legacy.group(2) == "area-password" else "level-2"
+                    settings[level]["legacy"] = not bool(legacy.group(1))
+                    return True
+            return False
+
+        def auth_state(data: dict[str, object], chains: dict) -> str:
+            mode, chain = data["mode"], data["chain"]
+            if data["send_only"] and (mode or chain or data["legacy"]):
+                return "send-only"
+            if mode == "text" or (data["legacy"] and not mode):
+                return "text-mode"
+            if mode == "md5" and not data["legacy"]:
+                keys = chains.get(str(chain).casefold()) if chain else None
+                return "configured-md5" if keys and any(keys[0].values()) else "unresolved"
+            return "unknown"
+
+        processes: dict[str, dict[str, object]] = {}
+        events = [(number, header, children) for header, number, children
+                  in self._indented_blocks("router isis")
+                  if re.fullmatch(r"router isis(?: \S+)?", header, re.IGNORECASE)]
+        events.extend((number, line.strip(), None)
+                      for number, line in enumerate(self.parser.ioscfg, 1)
+                      if not line[:1].isspace()
+                      and re.fullmatch(r"no router isis(?: \S+)?", line.strip(), re.IGNORECASE))
+        for number, header, children in sorted(events, key=lambda item: item[0]):
+            words = header.casefold().split()
+            tag = words[-1] if len(words) in {3, 4} and words[-1] != "isis" else ""
+            if children is None:
+                processes.pop(tag, None)
+                continue
+            data: dict[str, object] = {"net": False, "is_type": "", "passive_default": False,
+                                       "passive": {}, "auth": new_settings(),
+                                       "evidence": [self._routing_evidence(header, number)]}
+            for line_number, _, command in children:
+                text = command.casefold()
+                if text.startswith("net "):
+                    data["net"] = True
+                elif text.startswith("no net"):
+                    data["net"] = False
+                elif re.fullmatch(r"is-type level-(?:1|1-2|2-only)", text):
+                    data["is_type"] = text.split()[-1]
+                elif text.startswith("no is-type"):
+                    data["is_type"] = ""
+                elif text == "passive-interface default":
+                    data["passive_default"] = True
+                    data["passive"].clear()
+                elif text == "no passive-interface default":
+                    data["passive_default"] = False
+                    data["passive"].clear()
+                elif text.startswith("passive-interface "):
+                    data["passive"][text.split(maxsplit=1)[1]] = True
+                elif text.startswith("no passive-interface "):
+                    data["passive"][text.split(maxsplit=2)[2]] = False
+                apply_auth(data["auth"], text, interface=False)
+                data["evidence"].append(self._routing_evidence(command, line_number))
+            processes[tag] = data
+
+        chains = self._routing_key_chains()
+        records: list[IOSISISAuthentication] = []
+        database_seen: set[tuple[str, str]] = set()
+        for header, header_line, children in self._indented_blocks("interface "):
+            name = header.split(maxsplit=1)[1]
+            bound = ""
+            is_bound = False
+            shutdown = False
+            circuit = ""
+            auth = new_settings()
+            evidence = [self._routing_evidence(header, header_line)]
+            for line_number, _, command in children:
+                text = command.casefold()
+                match = re.fullmatch(r"ip router isis(?: (\S+))?", text)
+                if match:
+                    bound, is_bound = match.group(1) or "", True
+                elif re.fullmatch(r"no ip router isis(?: \S+)?", text):
+                    bound, is_bound = "", False
+                elif text == "shutdown":
+                    shutdown = True
+                elif text == "no shutdown":
+                    shutdown = False
+                elif re.fullmatch(r"isis circuit-type level-(?:1|1-2|2-only)", text):
+                    circuit = text.split()[-1]
+                elif text == "no isis circuit-type":
+                    circuit = ""
+                apply_auth(auth, text, interface=True)
+                evidence.append(self._routing_evidence(command, line_number))
+            process = processes.get(bound) if is_bound and not shutdown else None
+            if not process or not process["net"] or not process["is_type"]:
+                continue
+            if process["passive"].get(name.casefold(), process["passive_default"]):
+                continue
+            process_levels = selected(process["is_type"] if process["is_type"] != "level-2-only" else "level-2")
+            circuit_levels = selected(circuit if circuit != "level-2-only" else "level-2")
+            for level in levels:
+                if level not in process_levels or level not in circuit_levels:
+                    continue
+                hello = auth[level]
+                records.append(IOSISISAuthentication(
+                    bound, name, level, "hello", auth_state(hello, chains),
+                    str(hello["chain"]), tuple(dict.fromkeys(evidence + process["evidence"])),
+                ))
+                if (bound, level) not in database_seen:
+                    database_seen.add((bound, level))
+                    database = process["auth"][level]
+                    records.append(IOSISISAuthentication(
+                        bound, name, level, "database", auth_state(database, chains),
+                        str(database["chain"]), tuple(dict.fromkeys(process["evidence"] + evidence)),
+                    ))
+        return records
 
     def get_routing_key_lifetime_states(self) -> dict[str, tuple[str, tuple[ConfigEvidence, ...]]]:
         """Assess key-chain send/accept viability only with explicit UTC clock and audit time."""

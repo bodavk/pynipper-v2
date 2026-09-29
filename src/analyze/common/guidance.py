@@ -458,6 +458,27 @@ _CATALOGUE = (
         "Check whether an external tool backs up this device and test a restore.",
     )),
     # Routing -----------------------------------------------------------------------------------
+    (r"^routing\.isis\.send_only$", _G(
+        "isis-send-only", "routing",
+        "IS-IS authentication is configured to send a key without validating incoming protocol packets.",
+        "A reachable neighbor may send unauthenticated control traffic while the local device is in send-only transition mode.",
+        "Send-only is a migration aid, not an effective inbound-authentication policy; hello and database levels are separate.",
+        "Confirm this is not an active migration window and validate the peer key chain before removing send-only.",
+    )),
+    (r"^routing\.isis\.cleartext_authentication$", _G(
+        "isis-cleartext-authentication", "routing",
+        "An active IS-IS level explicitly selects text-mode or legacy password authentication.",
+        "An observer on the routing link may learn the shared password from protocol packets.",
+        "The stored password encoding does not change the cleartext authentication mode used on the wire.",
+        "Check peer compatibility and migrate both hello and database protection to a supported digest mode.",
+    )),
+    (r"^routing\.isis\.key_resolution$", _G(
+        "isis-key-resolution", "routing",
+        "An active IS-IS level names MD5 authentication but lacks a resolved effective key chain.",
+        "A missing or empty key chain can prevent the intended authentication from protecting routing exchanges.",
+        "A mode declaration alone does not supply a usable authentication key.",
+        "Confirm the exported key-chain definition, key lifetime, and peer configuration.",
+    )),
     (r"^routing\.rip\.version1_send$", _G(
         "rip-version1-send", "routing",
         "The router sends RIP version 1 updates without authentication.",
