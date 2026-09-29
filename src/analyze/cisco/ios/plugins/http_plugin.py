@@ -136,6 +136,25 @@ class PluginHTTP(BasePlugin):
                     references=(CISCO_IOS_HTTP_GUIDE,),
                     basis=FindingBasis.EXPLICIT_VALUE,
                 ))
+        if enabled and ios.device_type == "IOS_XE":
+            name6 = ios.get_http_ipv6_access_class()
+            if name6:
+                acl6 = ios.get_management_ipv6_acl(name6)
+                if acl6.state == "permit-all":
+                    self.add_issue(Finding(
+                        rule_id="cisco.ios.http.ipv6_unrestricted_sources",
+                        device=parser.device_type,
+                        title="Web management ACL permits every IPv6 source",
+                        observation=f"Enabled {' and '.join(enabled)} management uses IPv6 ACL {name6}, which permits every source.",
+                        impact="The attached ACL provides no IPv6 source restriction for web administration.",
+                        exploitability="A source with network reachability can attempt web administration; upstream controls are not assessed.",
+                        recommendation="Restrict the IPv6 ACL to approved management sources.",
+                        severity=Severity.HIGH,
+                        evidence=(f"ip http access-class ipv6 {name6}",) + acl6.evidence,
+                        references=(CISCO_IOS_HTTP_GUIDE,
+                                    "https://www.cisco.com/c/en/us/support/docs/ios-nx-os-software/ios-xe-17/221107-filter-traffic-destined-to-cisco-ios-xe.html"),
+                        basis=FindingBasis.EXPLICIT_VALUE,
+                    ))
         for issue in (
             self.get_cisco_ios_http(parser),
             self.get_cisco_ios_http_access_list(parser),

@@ -1569,6 +1569,108 @@ class CiscoIOSParser(BaseDeviceParser):
                 value = None if match.group("disabled") else match.group("value")
         return value
 
+    def get_http_ipv6_access_class(self) -> Optional[str]:
+        """Return the explicit IOS-XE IPv6 WebUI ACL binding, independently of IPv4."""
+        value: Optional[str] = None
+        for line in self._global_lines():
+            match = re.fullmatch(r"ip http access-class ipv6 (\S+)", line)
+            if match:
+                value = match.group(1)
+            elif re.fullmatch(r"(?:no|default) ip http access-class(?: ipv6(?: \S+)?)?", line):
+                if "ipv6" in line or line.endswith("access-class"):
+                    value = None
+        return value
+
+    def get_management_ipv6_acl(self, name: str) -> IOSManagementACL:
+        """Prove only first-match, universal IPv6 source permits in a named ACL.
+
+        Unsupported protocol, address, port or time predicates stop the proof.
+        IPv4 ACL contents never satisfy this address-family assessment.
+        """
+        entries: list[tuple[str, str, ConfigEvidence]] = []
+        defined = False
+        current = False
+        key = name.casefold()
+        for number, raw in enumerate(self._source_lines, 1):
+            line = raw.strip()
+            if not line or line.startswith("!"):
+                continue
+            if not raw[:1].isspace():
+                current = False
+                removed = re.fullmatch(r"(?:no|default) ipv6 access-list (\S+)", line)
+                if removed and removed.group(1).casefold() == key:
+                    entries, defined = [], False
+                    continue
+                header = re.fullmatch(r"ipv6 access-list (\S+)", line)
+                if header and header.group(1).casefold() == key:
+                    current, defined = True, True
+                continue
+            if not current or line.startswith(("remark ", "!")):
+                continue
+            removal = re.fullmatch(r"no (\d+)", line)
+            if removal:
+                entries = [item for item in entries if item[0] != removal.group(1)]
+                continue
+            if line.startswith("no "):
+                entries = [item for item in entries if item[1] != line[3:]]
+                continue
+            leading = re.fullmatch(r"(\d+) (.+)", line)
+            trailing = re.fullmatch(r"(.+) sequence (\d+)", line)
+            if leading and trailing:
+                return IOSManagementACL(name, "unsupported", tuple(item[2] for item in entries))
+            sequence = leading.group(1) if leading else trailing.group(2) if trailing else ""
+            body = leading.group(2) if leading else trailing.group(1) if trailing else line
+            if body.startswith("remark "):
+                continue
+            if sequence:
+                entries = [item for item in entries if item[0] != sequence]
+            entries.append((sequence, body, ConfigEvidence(line, self.config_filepath, number)))
+        evidence = tuple(item[2] for item in entries)
+        if not defined:
+            return IOSManagementACL(name, "unresolved", evidence)
+        if not entries:
+            return IOSManagementACL(name, "unsupported", evidence)
+        if all(item[0] for item in entries):
+            if any(len(item[0]) > 10 or not item[0].isascii() for item in entries):
+                return IOSManagementACL(name, "unsupported", evidence)
+            entries.sort(key=lambda item: int(item[0]))
+        elif any(item[0] for item in entries):
+            return IOSManagementACL(name, "unsupported", evidence)
+        for _, body, _ in entries:
+            match = re.fullmatch(r"(permit|deny) (.+?)(?: log(?:-input)?)?", body)
+            if not match:
+                return IOSManagementACL(name, "unsupported", evidence)
+            action, selector = match.groups()
+            tokens = selector.split()
+            if tokens[:1] in (["ipv6"], ["tcp"]):
+                tokens = tokens[1:]
+            source, index = self._acl_address(tokens, 0)
+            destination, index = self._acl_address(tokens, index)
+            if index != len(tokens) or not source or not destination:
+                return IOSManagementACL(name, "unsupported", evidence)
+            if source in {"any4", "any6"} or destination in {"any4", "any6"}:
+                return IOSManagementACL(name, "unsupported", evidence)
+            destination_network = self._acl_network_semantics(destination, "ipv6")
+            if not destination_network.complete or not (
+                destination_network.any or any(
+                    item.first == 0 and item.last == (1 << 128) - 1
+                    for item in destination_network.intervals
+                )
+            ):
+                return IOSManagementACL(name, "unsupported", evidence)
+            source_network = self._acl_network_semantics(source, "ipv6")
+            if not source_network.complete:
+                return IOSManagementACL(name, "unsupported", evidence)
+            universal = source_network.any or any(
+                item.first == 0 and item.last == (1 << 128) - 1
+                for item in source_network.intervals
+            )
+            if action == "deny":
+                return IOSManagementACL(name, "restrictive", evidence)
+            if universal:
+                return IOSManagementACL(name, "permit-all", evidence)
+        return IOSManagementACL(name, "restrictive", evidence)
+
     def get_management_ipv4_acl(self, name: str, *, allow_extended: bool = False) -> IOSManagementACL:
         """Bounded source restriction proof, in effective order.
 
@@ -1707,26 +1809,31 @@ class CiscoIOSParser(BaseDeviceParser):
         """
         diagnostics: list[str] = []
 
-        def describe(service: str, scope: str, acl: IOSManagementACL) -> None:
+        def describe(service: str, scope: str, acl: IOSManagementACL, family: str = "IPv4") -> None:
             if acl.state not in {"unresolved", "unsupported"}:
                 return
             reason = (
-                "the attached IPv4 ACL definition was not resolved from this export"
+                f"the attached {family} ACL definition was not resolved from this export"
                 if acl.state == "unresolved"
-                else "the attached IPv4 ACL is empty or outside the supported evaluation grammar"
+                else f"the attached {family} ACL is empty or outside the supported evaluation grammar"
             )
             diagnostics.append(
                 f"Management ACL assessment incomplete: {service} ({scope}): {reason}. "
                 "Source restriction is unassessed, not proven secure or unrestricted; manual review is required."
             )
 
-        if (self.assessment_context.permits_rule("cisco.ios.ssh.unrestricted_sources")
-                and self.get_ssh_state() == ConfigurationState.ENABLED):
+        if self.get_ssh_state() == ConfigurationState.ENABLED:
             for profile in self.get_management_acl_vty_profiles():
-                if profile.permits_ssh and profile.ipv4_access_class:
+                if (profile.permits_ssh and profile.ipv4_access_class and
+                        self.assessment_context.permits_rule("cisco.ios.ssh.unrestricted_sources")):
                     describe("SSH", profile.line, self.get_management_ipv4_acl(
                         profile.ipv4_access_class, allow_extended=True,
                     ))
+                if (profile.permits_ssh and profile.ipv6_access_class and
+                        self.assessment_context.permits_rule("cisco.ios.ssh.ipv6_unrestricted_sources")):
+                    describe("SSH", profile.line, self.get_management_ipv6_acl(
+                        profile.ipv6_access_class,
+                    ), "IPv6")
         name = self.get_http_access_class()
         if name and self.assessment_context.permits_rule("cisco.ios.http.unrestricted_sources"):
             acl = self.get_management_ipv4_acl(name)
@@ -1736,6 +1843,17 @@ class CiscoIOSParser(BaseDeviceParser):
             ):
                 if state == ConfigurationState.ENABLED:
                     describe(service, "global listener", acl)
+        if (self.device_type == "IOS_XE" and
+                self.assessment_context.permits_rule("cisco.ios.http.ipv6_unrestricted_sources")):
+            name6 = self.get_http_ipv6_access_class()
+            if name6:
+                acl6 = self.get_management_ipv6_acl(name6)
+                for service, state in (
+                    ("HTTP", self.get_http_server_state()),
+                    ("HTTPS", self.get_https_server_state()),
+                ):
+                    if state == ConfigurationState.ENABLED:
+                        describe(service, "global listener", acl6, "IPv6")
         return diagnostics
 
     def get_ssh_state(self) -> ConfigurationState:
@@ -1844,7 +1962,7 @@ class CiscoIOSParser(BaseDeviceParser):
             if last < first or last - first > 4096:
                 continue
             for number in range(first, last + 1):
-                state = states.setdefault(number, {"transports": (), "acl": "", "exec": True})
+                state = states.setdefault(number, {"transports": (), "acl": "", "acl6": "", "exec": True})
                 for evidence in profile.evidence[1:]:
                     command = evidence.text.strip()
                     if command.startswith("transport input "):
@@ -1859,14 +1977,19 @@ class CiscoIOSParser(BaseDeviceParser):
                             state["acl"] = acl[1]
                         elif re.fullmatch(r"(?:no|default) access-class(?: \S+)? in(?: vrf-also)?", command):
                             state["acl"] = ""
+                        acl6 = re.fullmatch(r"ipv6 access-class (\S+) in", command)
+                        if acl6:
+                            state["acl6"] = acl6[1]
+                        elif re.fullmatch(r"(?:no|default) ipv6 access-class(?: \S+)? in", command):
+                            state["acl6"] = ""
         grouped = {}
         for number, state in sorted(states.items()):
             if state["exec"]:
-                grouped.setdefault((state["transports"], state["acl"]), []).append(number)
+                grouped.setdefault((state["transports"], state["acl"], state["acl6"]), []).append(number)
         return tuple(VTYProfile(
             line="VTY lines " + ", ".join(map(str, numbers)),
-            transports=transports, ipv4_access_class=acl,
-        ) for (transports, acl), numbers in grouped.items())
+            transports=transports, ipv4_access_class=acl, ipv6_access_class=acl6,
+        ) for (transports, acl, acl6), numbers in grouped.items())
 
     def get_aaa_method_lists(self) -> list[IOSAAAMethodList]:
         """Return effective login/EXEC/command authorization method lists."""

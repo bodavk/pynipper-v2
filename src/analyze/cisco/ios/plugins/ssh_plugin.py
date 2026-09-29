@@ -139,26 +139,37 @@ class PluginSSH(BasePlugin):
         ios = self._ios_parser(parser)
         if ios.get_ssh_state() == ConfigurationState.ENABLED:
             for profile in ios.get_management_acl_vty_profiles():
-                if not profile.permits_ssh or not profile.ipv4_access_class:
+                if not profile.permits_ssh:
                     continue
-                acl = ios.get_management_ipv4_acl(profile.ipv4_access_class, allow_extended=True)
-                if acl.state != "permit-all":
-                    continue
-                self.add_issue(Finding(
-                    rule_id="cisco.ios.ssh.unrestricted_sources",
-                    device=parser.device_type,
-                    title="SSH management ACL permits every IPv4 source",
-                    observation=f"{profile.line} uses IPv4 ACL {acl.name}, whose effective rules permit every source for SSH.",
-                    impact="The attached ACL provides no IPv4 source restriction for this SSH listener.",
-                    exploitability="A source with network reachability can attempt SSH access; upstream controls are not assessed.",
-                    recommendation="Restrict the attached ACL to approved management sources.",
-                    severity=Severity.HIGH,
-                    evidence=(profile.line,) + acl.evidence,
-                    references=(CISCO_IOS_SSH_GUIDE,
-                                "https://www.cisco.com/c/en/us/support/docs/ip/telnet/116101-problem-telnet-00.html",
-                                "https://www.cisco.com/c/en/us/support/docs/security/ios-firewall/23602-confaccesslists.html"),
-                    basis=FindingBasis.EXPLICIT_VALUE,
-                ))
+                for family, name in (("IPv4", profile.ipv4_access_class),
+                                     ("IPv6", profile.ipv6_access_class)):
+                    if not name:
+                        continue
+                    acl = (ios.get_management_ipv4_acl(name, allow_extended=True)
+                           if family == "IPv4" else ios.get_management_ipv6_acl(name))
+                    if acl.state != "permit-all":
+                        continue
+                    self.add_issue(Finding(
+                        rule_id=("cisco.ios.ssh.unrestricted_sources" if family == "IPv4"
+                                 else "cisco.ios.ssh.ipv6_unrestricted_sources"),
+                        device=parser.device_type,
+                        title=f"SSH management ACL permits every {family} source",
+                        observation=f"{profile.line} uses {family} ACL {acl.name}, whose effective rules permit every source for SSH.",
+                        impact=f"The attached ACL provides no {family} source restriction for this SSH listener.",
+                        exploitability="A source with network reachability can attempt SSH access; upstream controls are not assessed.",
+                        recommendation="Restrict the attached ACL to approved management sources.",
+                        severity=Severity.HIGH,
+                        evidence=(profile.line,) + acl.evidence,
+                        references=(
+                            CISCO_IOS_SSH_GUIDE,
+                            "https://www.cisco.com/c/en/us/td/docs/routers/ios-xe/security-vpn/security-vpn/m_ip6-acls-xe.html",
+                        ) if family == "IPv6" else (
+                            CISCO_IOS_SSH_GUIDE,
+                            "https://www.cisco.com/c/en/us/support/docs/ip/telnet/116101-problem-telnet-00.html",
+                            "https://www.cisco.com/c/en/us/support/docs/security/ios-firewall/23602-confaccesslists.html",
+                        ),
+                        basis=FindingBasis.EXPLICIT_VALUE,
+                    ))
         for issue in (
             self.get_cisco_ios_ssh(parser),
             self.get_cisco_ios_ssh_retries(parser),
