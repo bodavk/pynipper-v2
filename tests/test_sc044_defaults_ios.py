@@ -166,3 +166,25 @@ def test_vtp_mode(tmp_path, device, body, expected):  # IOS-27
 def test_system_mode_insecure(tmp_path):  # IOS-30
     findings = _rules(_run(tmp_path, _conf("26.1", "system mode insecure\n"), "IOS_XE"), "cisco.ios.system.insecure_mode")
     assert len(findings) == 1 and guidance_for(findings[0].rule_id)
+
+
+@pytest.mark.parametrize("version,body,expected", [
+    ("17.9", "", {"kex", "mac"}),
+    ("17.9", "ip ssh server algorithm kex ecdh-sha2-nistp256\n", {"mac"}),
+    ("17.12", "", set()),
+    ("15.2", "", set()),  # classic IOS: default lists not documented here
+])
+def test_iosxe_ssh_default_algorithms(tmp_path, version, body, expected):  # IOS-17
+    text = _conf(version, "ip ssh version 2\n" + body + "line vty 0 4\n transport input ssh\n")
+    found = set()
+    for finding in _rules(_run(tmp_path, text, "IOS_XE"), "cisco.ios.ssh.weak_algorithms"):
+        if finding.basis is FindingBasis.DOCUMENTED_DEFAULT:
+            found.update(item.split(":")[0] for item in finding.evidence)
+    assert found == expected
+
+
+def test_http_authentication_default(tmp_path):  # IOS-16
+    findings = _rules(_run(tmp_path, _conf("15.2", "ip http server\n")), "cisco.ios.http.authentication")
+    assert findings and findings[0].basis is FindingBasis.DOCUMENTED_DEFAULT
+    assert not _rules(_run(tmp_path, _conf("15.2", "ip http server\nip http authentication local\n")),
+                      "cisco.ios.http.authentication")

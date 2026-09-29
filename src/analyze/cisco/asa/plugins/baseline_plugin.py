@@ -236,6 +236,11 @@ class PluginASABaseline(BasePlugin):
             defaults.append("key exchange: dh-group1-sha1 (default before 9.12(1))")
         if release is not None and policy.encryption is None:
             defaults.append("encryption: medium level with CBC-mode ciphers (default)")
+        # ASA-07: 'ssh cipher integrity' history, '(9.10 and earlier) Medium is the
+        # default' until 9.12(1); 9.13(1) lists hmac-sha1-96 in medium as insecure.
+        if (release is not None and policy.integrity is None and release < (9, 12, 1)
+                and (release >= (9, 4, 3) or (release[:2] == (9, 1) and release[2] >= 7))):
+            defaults.append("integrity: medium level with hmac-sha1-96 (default before 9.12(1))")
         if defaults:
             self.add_issue(self._finding(
                 parser,

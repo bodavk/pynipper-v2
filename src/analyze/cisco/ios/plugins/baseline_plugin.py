@@ -140,6 +140,10 @@ CISCO_IOS_KEY_LIFETIME_GUIDE = (
     "iproute_pi/command/reference/iri_book/iri_pi2.html"
 )
 # SC-044 release-default sources (docs/agent_notes/INSECURE_DEFAULTS_BY_RELEASE.md).
+CISCO_CAT9200_SSH_1712 = (
+    "https://www.cisco.com/c/en/us/td/docs/switches/lan/catalyst9200/software/release/17-12/"
+    "configuration_guide/sec/b_1712_sec_9200_cg/secure_shell_version_2_support.html"
+)
 CISCO_TERMINAL_SERVICES_CR = (
     "https://www.cisco.com/c/en/us/td/docs/ios/termserv/command/reference/tsv_book/tsv_s1.html"
 )
@@ -664,6 +668,32 @@ class PluginIOSBaseline(BasePlugin):
                     (CISCO_IOS_SSH_ALGORITHM_GUIDE,),
                 )
             )
+        # SC-044 IOS-17: Catalyst 9200 17.12 SSH guide, 'Starting from Cisco IOS XE
+        # Release 17.10, the following Key Exchange and MAC algorithms are removed from
+        # the default list': diffie-hellman-group14-sha1 and hmac-sha1 (plus sha2 non-EtM).
+        train = ios.get_train()
+        configured = {policy.category for policy in ios.get_ssh_server_algorithms() if policy.algorithms is not None}
+        if ios.is_iosxe() and train and (16, 0) <= train < (17, 10):
+            defaults = []
+            if "kex" not in configured:
+                defaults.append("kex: default list includes diffie-hellman-group14-sha1")
+            if "mac" not in configured:
+                defaults.append("mac: default list includes hmac-sha1")
+            if defaults:
+                self.add_issue(self._finding(
+                    parser,
+                    "cisco.ios.ssh.weak_algorithms",
+                    "SSH server uses default algorithm lists that include SHA-1",
+                    f"IOS XE {train[0]}.{train[1]} has no 'ip ssh server algorithm' line for "
+                    + " and ".join(item.split(":")[0] for item in defaults)
+                    + "; before 17.10 the default lists still offer SHA-1 key exchange and MACs.",
+                    "SHA-1 based key exchange and integrity are deprecated and weaken administrative sessions.",
+                    "Set 'ip ssh server algorithm kex ecdh-sha2-nistp256 ...' and 'ip ssh server algorithm mac hmac-sha2-256-etm@openssh.com ...', or upgrade to 17.10 or later.",
+                    Severity.LOW,
+                    tuple(defaults),
+                    (CISCO_IOS_SSH_ALGORITHM_GUIDE, CISCO_CAT9200_SSH_1712),
+                    basis=FindingBasis.DOCUMENTED_DEFAULT,
+                ))
         key = ios.get_ssh_rsa_key_modulus()
         if key.configured and key.value is not None and key.value < 2048:
             self.add_issue(

@@ -122,3 +122,50 @@ def test_ike_version(tmp_path, body, basis):  # F5-22
     text = _conf("16.1.5", "net ipsec ike-peer /Common/p {\n" + body + "    remote-address 198.51.100.1\n}\n")
     findings = [f for f in _run(tmp_path, text) if f.rule_id == "f5.bigip.vpn.ikev1"]
     assert (findings[0].basis if findings else None) is basis
+
+
+SNMP = ("sys snmp {{\n    allowed-addresses {{ 192.0.2.0/24 }}\n"
+        "    communities {{ /Common/c1 {{ community-name monitor1 access ro }} }}\n{extra}}}\n")
+
+
+@pytest.mark.parametrize("version,extra,basis", [
+    ("16.1.5", "", FindingBasis.DOCUMENTED_DEFAULT),
+    ("16.1.5", "    snmpv1 disable\n    snmpv2c disable\n", None),
+    ("16.1.5", "    snmpv1 disable\n    snmpv2c enable\n", FindingBasis.EXPLICIT_VALUE),
+    ("12.1.3", "", None),  # no documented default cell before v13
+])
+def test_snmp_v1_v2c_default(tmp_path, version, extra, basis):  # F5-19
+    findings = [f for f in _run(tmp_path, _conf(version, SNMP.format(extra=extra)))
+                if f.rule_id == "f5.bigip.snmp.legacy_version"]
+    assert (findings[0].basis if findings else None) is basis
+    assert all("monitor1" not in " ".join(map(str, f.evidence)) for f in findings)
+
+
+def _cookie(profile_body, persist="/Common/app_cookie"):
+    return (f"ltm persistence cookie /Common/app_cookie {{\n    defaults-from /Common/cookie\n{profile_body}}}\n"
+            f"ltm virtual /Common/vs {{\n    destination /Common/192.0.2.10:80\n"
+            f"    persist {{ {persist} {{ default yes }} }}\n}}\n")
+
+
+@pytest.mark.parametrize("body,persist,basis", [
+    ("", "/Common/app_cookie", FindingBasis.DOCUMENTED_DEFAULT),
+    ("", "/Common/cookie", FindingBasis.DOCUMENTED_DEFAULT),  # built-in profile bound directly
+    ("    cookie-encryption required\n", "/Common/app_cookie", None),
+    ("    cookie-encryption disabled\n", "/Common/app_cookie", FindingBasis.EXPLICIT_VALUE),
+    ("    method hash\n", "/Common/app_cookie", None),
+])
+def test_cookie_encryption_default(tmp_path, body, persist, basis):  # F5-15
+    findings = [f for f in _run(tmp_path, _conf("16.1.5", _cookie(body, persist)))
+                if f.rule_id == "f5.bigip.ltm.cookie_unencrypted"]
+    assert len(findings) <= 1
+    assert (findings[0].basis if findings else None) is basis
+
+
+@pytest.mark.parametrize("version,body,expected", [
+    ("13.1.0", "auth password-policy {\n    minimum-length 12\n}\n", True),
+    ("13.1.0", "auth password-policy {\n    policy-enforcement enabled\n}\n", False),
+    ("14.1.0", "auth password-policy {\n    minimum-length 12\n}\n", False),  # enabled by default from 14.0.0
+    ("13.1.0", "", False),  # object not exported
+])
+def test_password_policy_default(tmp_path, version, body, expected):  # F5-21
+    assert bool(_defaults(_run(tmp_path, _conf(version, body)), "f5.bigip.password_policy.enforcement_disabled")) is expected

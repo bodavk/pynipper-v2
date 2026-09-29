@@ -15,6 +15,10 @@ JUNIPER_FILTER_GUIDE = (
     "https://www.juniper.net/documentation/us/en/software/junos/user-access/"
     "topics/example/permitted-ip-configuring.html"
 )
+JUNIPER_REMOTE_ACCESS_OVERVIEW = (
+    "https://www.juniper.net/documentation/us/en/software/junos/user-access/topics/topic-map/"
+    "junos-software-remote-access-overview.html"
+)
 JUNIPER_SSH_REFERENCE = (
     "https://www.juniper.net/documentation/us/en/software/junos/cli-reference/"
     "topics/ref/statement/ssh-edit-system.html"
@@ -124,8 +128,34 @@ class PluginJunOSChecks(BasePlugin):
                     terminal_seen = True
 
     def check_ssh_root(self, parser: BaseDeviceParser) -> None:
-        value, evidence = self._junos(parser).get_ssh_root_login()
-        if not value or value == "deny":
+        junos = self._junos(parser)
+        value, evidence = junos.get_ssh_root_login()
+        if not value:
+            # SC-044 JUN-01: Junos remote access overview, 'The default is deny-password',
+            # which still allows root logins with an SSH key. Only reported when the
+            # service is on and root has a key configured.
+            paths = junos._active_paths()
+            keys = sorted({path[2] for path in paths
+                           if path[:2] == ("system", "root-authentication") and len(path) > 2
+                           and path[2].startswith("ssh-")})
+            if junos.get_services().get("ssh") and keys:
+                self.add_issue(Finding(
+                    rule_id="juniper.junos.ssh.root_login",
+                    device=parser.device_type,
+                    title="SSH Root Login Permitted",
+                    observation=("'root-login' is not configured, so the documented default 'deny-password' applies and "
+                                 f"root can log in over SSH with its configured key ({', '.join(keys)})."),
+                    impact="Direct use of the root identity reduces accountability and increases the impact of key compromise.",
+                    severity=Severity.MEDIUM,
+                    exploitability="An attacker who obtains the root private key gets immediate full privilege.",
+                    recommendation="Configure 'set system services ssh root-login deny' and use named administrative accounts.",
+                    evidence=("system services ssh root-login absent: default deny-password",
+                              *(f"system root-authentication {key} <redacted>" for key in keys)),
+                    references=(JUNIPER_SSH_REFERENCE, JUNIPER_REMOTE_ACCESS_OVERVIEW),
+                    basis=FindingBasis.DOCUMENTED_DEFAULT,
+                ))
+            return
+        if value == "deny":
             return
         detail = (
             "permits root authentication by all configured SSH methods"

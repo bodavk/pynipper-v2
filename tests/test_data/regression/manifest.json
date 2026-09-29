@@ -25,6 +25,7 @@
         "f5.bigip.password_policy.login_lockout_disabled",
         "f5.bigip.snmp.community_access",
         "f5.bigip.snmp.default_community",
+        "f5.bigip.snmp.legacy_version",
         "f5.bigip.snmp.v3_security",
         "f5.bigip.snmp.write_community",
         "f5.bigip.ssh.idle_timeout_disabled",
@@ -32,7 +33,7 @@
         "f5.bigip.vpn.ike_aggressive_mode",
         "f5.bigip.vpn.ikev1"
       ],
-      "expected_finding_count": 26
+      "expected_finding_count": 27
     },
     {
       "name": "f5-bigip-secure",
@@ -149,10 +150,11 @@
         "cisco.ios.ssh.negotiation_timeout",
         "cisco.ios.ssh.protocol_version",
         "cisco.ios.ssh.unrestricted_sources",
+        "cisco.ios.ssh.weak_algorithms",
         "cisco.ios.vty.authentication",
         "cisco.iosxe.crypto.legacy_ikev2"
       ],
-      "expected_finding_count": 23
+      "expected_finding_count": 24
     },
     {
       "name": "cisco-iosxe-secure",
@@ -191,11 +193,12 @@
         "cisco.asa.ntp.authentication",
         "cisco.asa.ssh.weak_algorithms",
         "cisco.asa.threat_detection.basic",
+        "cisco.asa.tls.minimum_version",
         "cisco.asa.tls.weak_cipher",
         "cisco.asa.vpn.ike_aggressive_mode",
         "cisco.asa.vpn.sysopt_permit_vpn"
       ],
-      "expected_finding_count": 21
+      "expected_finding_count": 22
     },
     {
       "name": "cisco-asa-secure",
@@ -393,8 +396,8 @@
       "name": "cisco-iosxe-syntax-variants",
       "device": "IOS_XE",
       "input": "cisco_iosxe/syntax_variants.conf",
-      "expected_rule_ids": ["cisco.ios.services.default_enabled", "cisco.ios.services.dns_lookup", "cisco.ios.services.tcp_keepalives"],
-      "expected_finding_count": 3
+      "expected_rule_ids": ["cisco.ios.services.default_enabled", "cisco.ios.services.dns_lookup", "cisco.ios.services.tcp_keepalives", "cisco.ios.ssh.weak_algorithms"],
+      "expected_finding_count": 4
     },
     {
       "name": "cisco-asa-syntax-variants",

@@ -67,10 +67,12 @@ class PluginHTTP(BasePlugin):
         if method in self._SUPPORTED_AUTHENTICATION:
             return None
 
+        # SC-044 IOS-16: HTTP guide, 'enable' is the default method when no
+        # 'ip http authentication' is configured.
         detail = (
             f"unsupported authentication value {authentication!r}"
             if authentication
-            else "no authentication method"
+            else "no 'ip http authentication' method, so the documented default applies: the shared enable password"
         )
         evidence = (
             (f"ip http authentication {authentication}",)
@@ -84,10 +86,11 @@ class PluginHTTP(BasePlugin):
             observation=f"The enabled HTTP server has {detail}.",
             impact="The management service may use an unintended or weak authentication path.",
             exploitability="A reachable management service can be probed for weak or missing authentication.",
-            recommendation="Configure a supported authentication method with 'ip http authentication local', 'aaa', 'tacacs', or 'enable', or disable HTTP.",
+            recommendation="Configure per-user authentication with 'ip http authentication aaa' or 'local', or disable HTTP.",
             severity=Severity.HIGH,
             evidence=evidence,
             references=(CISCO_IOS_HTTP_GUIDE,),
+            basis=FindingBasis.EXPLICIT_VALUE if authentication else FindingBasis.DOCUMENTED_DEFAULT,
         )
 
     def analyze(self, parser: BaseDeviceParser) -> None:

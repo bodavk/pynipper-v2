@@ -306,7 +306,8 @@ line vty 0 4
 def test_unknown_or_reset_ssh_algorithm_defaults_are_not_asserted(tmp_path):
     parser, _ = _analyze(
         tmp_path,
-        '''version 17.9
+        # 17.10+: SHA-1 KEX/MAC are no longer in the default lists (SC-044 IOS-17).
+        '''version 17.12
 ip ssh version 2
 ip ssh server algorithm encryption 3des-cbc
 default ip ssh server algorithm encryption

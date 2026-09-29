@@ -41,15 +41,16 @@ def test_release_parsing(tmp_path):
 
 
 @pytest.mark.parametrize("version,body,expected", [
-    ("9.2(4)", "http server enable\n", True),
-    ("9.2(4)", "http server enable\nssl server-version tlsv1-only\n", False),
-    ("9.3(2)", "http server enable\n", False),
-    ("9.2(4)", "", False),  # no TLS service
+    ("9.2(4)", "http server enable\n", "High"),  # default any (SSLv3)
+    ("9.2(4)", "http server enable\nssl server-version tlsv1-only\n", None),
+    ("9.3(2)", "http server enable\n", "Medium"),  # default tlsv1
+    ("9.18(4)", "http server enable\nssl server-version tlsv1.2\n", None),
+    ("9.2(4)", "", None),  # no TLS service
 ])
 def test_ssl_server_version_default(tmp_path, version, body, expected):  # ASA-02
     findings = [f for f in _rules(_run(tmp_path, _asa(version, body)), "cisco.asa.tls.minimum_version")
                 if f.basis is FindingBasis.DOCUMENTED_DEFAULT]
-    assert bool(findings) is expected
+    assert (findings[0].severity.value if findings else None) == expected
 
 
 @pytest.mark.parametrize("body,expected", [
@@ -65,9 +66,10 @@ def test_ssl_cipher_default(tmp_path, body, expected):  # ASA-04
 
 
 @pytest.mark.parametrize("version,body,expected", [
-    ("9.8(4)", "", {"key exchange", "encryption"}),
+    ("9.8(4)", "", {"key exchange", "encryption", "integrity"}),
     ("9.12(1)", "", {"encryption"}),
-    ("9.8(4)", "ssh key-exchange group dh-group14-sha1\nssh cipher encryption high\n", set()),
+    ("9.8(4)", "ssh key-exchange group dh-group14-sha1\nssh cipher encryption high\nssh cipher integrity high\n", set()),
+    ("9.2(4)", "", {"key exchange", "encryption"}),  # before the integrity command existed
 ])
 def test_ssh_default_algorithms(tmp_path, version, body, expected):  # ASA-06/08
     text = _asa(version, "ssh 192.0.2.0 255.255.255.0 outside\n" + body)

@@ -52,6 +52,8 @@ COOKIE_ENCODING = "https://my.f5.com/manage/s/article/K6917"
 MONITOR_HTTP = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules/ltm/ltm_monitor_http.html"
 SNMP_LATEST = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules/sys/sys_snmp.html"
 # SC-044 release-default sources (docs/agent_notes/INSECURE_DEFAULTS_BY_RELEASE.md).
+PASSWORD_POLICY_14 = "https://cdn.f5.com/product/bugtracker/ID661909.html"
+COOKIE_ENCRYPTION_DEFAULT = "https://my.f5.com/manage/s/article/K23254150"
 PORT_LOCKDOWN_11 = "https://my.f5.com/manage/s/article/K13250"
 HTTPD_SSLV3 = "https://my.f5.com/manage/s/article/K15702"
 HTTPD_LATEST = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules/sys/sys_httpd.html"
@@ -407,6 +409,18 @@ class PluginF5BIGIPChecks(BasePlugin):
                               Severity.MEDIUM, (virtual.evidence, evidence),
                               (CLIENTSSL_DEFAULT_17, CLIENTSSL_DEFAULT_16, RFC_8996))
 
+        # F5-21: tmsh auth password-policy, policy-enforcement defaults to disabled; from
+        # 14.0.0 (ID661909) the policy is enabled by default, so only earlier releases.
+        if (release < (14, 0, 0) and parser.has_object("auth password-policy")
+                and setting("auth password-policy", "policy-enforcement") is None):
+            self._default(parser, "f5.bigip.password_policy.enforcement_disabled",
+                          "Local password policy enforcement is disabled by default",
+                          f"auth password-policy does not set policy-enforcement; before 14.0.0 the default is disabled (BIG-IP {label}).",
+                          "Locally managed passwords need not satisfy the configured policy constraints.",
+                          "Set 'policy-enforcement enabled' with organization-approved constraints, and upgrade.",
+                          Severity.MEDIUM, ("auth password-policy policy-enforcement absent: default disabled before 14.0.0",),
+                          (PASSWORD, PASSWORD_POLICY_14))
+
         # F5-22: net ipsec ike-peer version defaults to v1.
         for peer in parser.get_ike_peers():
             if peer.enabled and peer.versions == ("v1",):
@@ -509,6 +523,25 @@ class PluginF5BIGIPChecks(BasePlugin):
                     references=(SNMP,),
                     basis=FindingBasis.EXPLICIT_VALUE,
                 ))
+        versions = {name: state for name, state in parser.get_snmp_legacy_versions().items() if state[0] == "enable"}
+        release = parser.get_release()
+        documented = release is not None and (13, 0, 0) <= release < (18, 0, 0)  # tmsh reference v13-v17
+        if communities and versions and (documented or any(evidence for _, evidence in versions.values())):
+            explicit = [evidence for _, evidence in versions.values() if evidence]
+            self.add_issue(Finding(
+                rule_id="f5.bigip.snmp.legacy_version",
+                device=parser.device_type,
+                title="SNMPv1/v2c community access is enabled",
+                observation=(f"Communities are configured and {' and '.join(sorted(versions))} "
+                             + ("is enabled." if explicit else "are not disabled (the documented default is enable).")),
+                impact="Community strings travel in clear text and give no per-user authentication.",
+                exploitability="An attacker who captures or guesses a community can query the device from an allowed address.",
+                recommendation="Set 'snmpv1 disable' and 'snmpv2c disable' under sys snmp and use SNMPv3 users with auth-privacy.",
+                severity=Severity.LOW,
+                evidence=(agent.evidence, *explicit) if explicit else (agent.evidence, "sys snmp snmpv1/snmpv2c absent: default enable"),
+                references=(SNMP_LATEST,),
+                basis=FindingBasis.EXPLICIT_VALUE if explicit else FindingBasis.DOCUMENTED_DEFAULT,
+            ))
         for user in parser.get_snmp_users():
             if user.security_level in {"no-auth-no-privacy", "auth-no-privacy"}:
                 self.add_issue(Finding(
@@ -780,6 +813,22 @@ class PluginF5BIGIPChecks(BasePlugin):
                 evidence=(virtual.evidence, evidence),
                 references=(COOKIE_ENCODING, COOKIE_PERSISTENCE),
                 basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+
+        for virtual, name, method in parser.get_default_unencrypted_cookie_persistence():
+            self.add_issue(Finding(
+                rule_id="f5.bigip.ltm.cookie_unencrypted",
+                device=parser.device_type,
+                title="Persistence cookie reveals internal server addresses",
+                observation=(f"Virtual server {virtual.name} uses cookie persistence profile {name} (method {method}) "
+                             "without 'cookie-encryption'; the documented default is disabled."),
+                impact="The persistence cookie encodes the pool member's internal IP address and port, which any client can decode.",
+                exploitability="An attacker learns internal addressing and server layout from a single response, which helps later targeting.",
+                recommendation=f"Create a cookie profile with 'cookie-encryption required' and a passphrase and attach it instead of {name}.",
+                severity=Severity.LOW,
+                evidence=(virtual.evidence, f"ltm persistence cookie {name} cookie-encryption <absent: default disabled>"),
+                references=(COOKIE_ENCRYPTION_DEFAULT, COOKIE_ENCODING, COOKIE_PERSISTENCE),
+                basis=FindingBasis.DOCUMENTED_DEFAULT,
             ))
 
     def _check_cleartext_extras(self, parser: F5BIGIPParser) -> None:

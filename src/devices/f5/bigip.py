@@ -335,6 +335,7 @@ class F5BIGIPParser(BaseDeviceParser):
         self._version = version.group(1) if version else "?"
         self._settings: dict[tuple[str, str], F5Setting] = {}
         self._scopes_seen: set[str] = set()
+        self._snmp_versions: dict[str, tuple[str, ConfigEvidence]] = {}
         self._client_ssl: dict[str, F5ClientSSLProfile] = {}
         self._virtuals: dict[str, F5Virtual] = {}
         self._user_secret_lines: dict[str, int] = {}
@@ -426,6 +427,8 @@ class F5BIGIPParser(BaseDeviceParser):
                 if name:
                     items = _top_level(tokens[body_start:cursor - 1])
                     self._cookie_persistence[name] = {
+                        "parent": _object_name((items.get("defaults-from", ([""], 0))[0] or [""])[0], name) or "",
+                        "method_set": "method" in items,
                         "method": (items.get("method", (["insert"], 0))[0] or ["insert"])[0],
                         "encryption": (items.get("cookie-encryption", ([""], 0))[0] or [""])[0],
                         "evidence": ConfigEvidence(
@@ -857,6 +860,10 @@ class F5BIGIPParser(BaseDeviceParser):
                     result.append((virtual, profile, weak))
         return tuple(result)
 
+    def get_snmp_legacy_versions(self) -> dict[str, tuple[str, ConfigEvidence | None]]:
+        """``sys snmp snmpv1``/``snmpv2c`` state; tmsh reference default is enable (SC-044 F5-19)."""
+        return {name: self._snmp_versions.get(name, ("enable", None)) for name in ("snmpv1", "snmpv2c")}
+
     def has_object(self, scope: str) -> bool:
         """Whether the export contains the ``scope`` object, so its missing properties are at default."""
         return scope in self._scopes_seen
@@ -905,6 +912,32 @@ class F5BIGIPParser(BaseDeviceParser):
                 profile = self._cookie_persistence.get(name)
                 if profile and profile["encryption"] == "disabled" and profile["method"] in {"insert", "rewrite"}:
                     result.append((virtual, name, profile["evidence"]))
+        return tuple(result)
+
+    def get_default_unencrypted_cookie_persistence(self) -> tuple[tuple[F5Virtual, str, str], ...]:
+        """Enabled virtuals whose cookie persistence profile never sets ``cookie-encryption`` (SC-044 F5-15).
+
+        K23254150: 'Disabled: (Default setting)'. The ``defaults-from`` chain is followed
+        through exported profiles; the built-in ``cookie`` profile uses method insert.
+        Returns (virtual, profile, effective method).
+        """
+        result = []
+        for virtual in self._virtuals.values():
+            if virtual.enabled is False:
+                continue
+            for name in virtual.persist:
+                profile, method, encryption, seen = self._cookie_persistence.get(name), None, "", set()
+                if profile is None and name.rsplit("/", 1)[-1] != "cookie":
+                    continue
+                current = profile
+                while current is not None and id(current) not in seen:
+                    seen.add(id(current))
+                    if method is None and current["method_set"]:
+                        method = current["method"]
+                    encryption = encryption or current["encryption"]
+                    current = self._cookie_persistence.get(current["parent"]) if current["parent"] else None
+                if not encryption and (method or "insert") in {"insert", "rewrite", "passive"}:
+                    result.append((virtual, name, method or "insert"))
         return tuple(result)
 
     def get_snmp_traps(self) -> tuple[tuple[str, str, ConfigEvidence], ...]:
@@ -1003,6 +1036,10 @@ class F5BIGIPParser(BaseDeviceParser):
             if next_index < len(body) and body[next_index].text in {"replace-all-with", "add"}:
                 next_index += 1
             candidate = body[next_index].text if next_index < len(body) else ""
+            if token.text in {"snmpv1", "snmpv2c"} and candidate in {"enable", "disable"}:
+                self._snmp_versions[token.text] = (candidate, ConfigEvidence(
+                    f"sys snmp {token.text} {candidate}", self.config_filepath, token.line))
+                continue
             if token.text == "allowed-addresses":
                 entries = _group_values(body, next_index) if candidate == "{" else [candidate]
                 if entries is None or not entries:

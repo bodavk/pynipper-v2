@@ -354,6 +354,23 @@ class PluginASAChecks(BasePlugin):
                 references=(CISCO_ASA_TLS_REFERENCE,),
                 basis=FindingBasis.DOCUMENTED_DEFAULT,
             ))
+        if policy.server_minimum is None and release >= (9, 3, 2):
+            # Command reference: '9.3(2) ... The default is now tlsv1 instead of any'
+            # ('sh run all ssl' shows 'ssl server-version tlsv1 dtlsv1').
+            self.add_issue(Finding(
+                rule_id="cisco.asa.tls.minimum_version",
+                device=parser.device_type,
+                title="ASA accepts TLS 1.0 and 1.1 by default",
+                observation=("'ssl server-version' is not configured; the documented default is 'tlsv1', so "
+                             + " and ".join(services) + " accept TLS 1.0 and TLS 1.1 clients."),
+                impact="TLS 1.0 and 1.1 are deprecated (RFC 8996) and lack modern cipher suites.",
+                severity=Severity.MEDIUM,
+                exploitability="An on-path attacker may force or exploit a legacy protocol version.",
+                recommendation="Set 'ssl server-version tlsv1.2' (or tlsv1.3 where supported).",
+                evidence=evidence + ("ssl server-version absent: default tlsv1",),
+                references=(CISCO_ASA_TLS_REFERENCE,),
+                basis=FindingBasis.DOCUMENTED_DEFAULT,
+            ))
         if (release >= (9, 3, 2) and "tlsv1.2" not in policy.cipher_protocols
                 and not policy.weak_cipher_commands):
             self.add_issue(Finding(
