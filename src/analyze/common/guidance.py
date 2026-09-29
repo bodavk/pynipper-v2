@@ -153,7 +153,7 @@ _CATALOGUE = (
         "TLS protects the channel but server-only TLS does not authenticate clients. Mandatory client certificates verified against a trusted CA can provide a compensating identity check.",
         "Confirm runtime listener reachability, allowed RPCs, and any out-of-band access restrictions before determining practical impact.",
     )),
-    (r"^(management\.(telnet|http|rest_http|grpc_cleartext|insecure_protocol)|services\.remote_shell|vty\.(telnet|insecure_output_transport)|eapi\.(insecure_http|https_disabled)|http\.(cleartext_service|redirect_disabled))$", _G(
+    (r"^(management\.(telnet|http|rest_http|grpc_cleartext|gnmi_cleartext|insecure_protocol)|services\.remote_shell|vty\.(telnet|insecure_output_transport)|eapi\.(insecure_http|https_disabled)|http\.(cleartext_service|redirect_disabled))$", _G(
         "management-cleartext", "management-access",
         "The device can be managed over an unencrypted protocol such as Telnet or plain HTTP. "
         "Everything typed or sent in such a session, including administrator passwords, crosses "

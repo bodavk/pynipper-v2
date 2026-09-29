@@ -48,6 +48,18 @@ class AristaEAPIEndpoint:
 
 
 @dataclass(frozen=True)
+class AristaGNMITransport:
+    name: str
+    active: bool | None
+    tls_state: str
+    vrf: str | None
+    port: int | None
+    address_state: str
+    ipv4_acl: str | None
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
 class AristaSSHSettings:
     configured: bool
     empty_passwords: str
@@ -909,6 +921,74 @@ class AristaEOSParser(CiscoIOSParser):
                     )
                 )
         return endpoints
+
+    def get_gnmi_transports(self) -> tuple[AristaGNMITransport, ...]:
+        """Resolve explicit EOS gNMI gRPC transport state in source order."""
+        states: dict[str, AristaGNMITransport] = {}
+        for index, parent in enumerate(self.commands):
+            if parent.indent == 0 and re.fullmatch(
+                r"(?:no|default)\s+management\s+api\s+gnmi", parent.text, re.IGNORECASE
+            ):
+                states.clear()
+                continue
+            if parent.indent != 0 or parent.text.casefold() != "management api gnmi":
+                continue
+            children = []
+            for child in self.commands[index + 1:]:
+                if child.indent <= parent.indent:
+                    break
+                children.append(child)
+            transport_indent = min((item.indent for item in children), default=parent.indent + 1)
+            current: str | None = None
+            for child in children:
+                if child.indent == transport_indent:
+                    current = None
+                    removed = re.fullmatch(
+                        r"(?:no|default)\s+transport\s+grpc\s+(\S+)", child.text, re.IGNORECASE
+                    )
+                    if removed:
+                        states.pop(removed.group(1).casefold(), None)
+                        continue
+                    added = re.fullmatch(r"transport\s+grpc\s+(\S+)", child.text, re.IGNORECASE)
+                    if added:
+                        name = added.group(1)
+                        current = name.casefold()
+                        old = states.get(current)
+                        states[current] = replace(
+                            old, evidence=old.evidence + (self._evidence(child),)
+                        ) if old else AristaGNMITransport(
+                            name, None, "unknown", None, None, "not-overridden", None,
+                            (self._evidence(parent), self._evidence(child)),
+                        )
+                    continue
+                if current is None:
+                    continue
+                old = states[current]
+                text = child.text.casefold()
+                changes: dict[str, Any] = {}
+                if text == "no shutdown":
+                    changes["active"] = True
+                elif text == "shutdown":
+                    changes["active"] = False
+                elif text == "no ssl profile":
+                    changes["tls_state"] = "explicit-cleartext"
+                elif text.startswith("ssl profile ") and len(child.text.split()) == 3:
+                    changes["tls_state"] = "profile"
+                elif text == "default ssl profile":
+                    changes["tls_state"] = "unknown"
+                elif match := re.fullmatch(r"vrf\s+(\S+)", child.text, re.IGNORECASE):
+                    changes["vrf"] = match.group(1)
+                elif match := re.fullmatch(r"port\s+(\d+)", child.text, re.IGNORECASE):
+                    port = int(match.group(1)) if len(match.group(1)) <= 5 else 0
+                    changes["port"] = port if 1 <= port <= 65535 else None
+                elif match := re.fullmatch(r"ip\s+access-group\s+(\S+)", child.text, re.IGNORECASE):
+                    changes["ipv4_acl"] = match.group(1)
+                elif text.startswith(("listen ", "address ", "localhost ", "local-interface ")):
+                    changes["address_state"] = "unknown"
+                states[current] = replace(
+                    old, **changes, evidence=old.evidence + (self._evidence(child),)
+                )
+        return tuple(states.values())
 
     def get_remote_authentication(self) -> tuple[str, ...]:
         methods = {

@@ -24,6 +24,8 @@ Junos REST coverage includes explicitly configured HTTP network listeners with s
 
 Junos classic JET gRPC coverage reports clear-text listeners with explicit valid non-loopback addresses and ports, and separately reports `skip-authentication` on a resolved network listener when mandatory verified client certificates are not configured. SSL listeners require an explicit local-certificate to be assessed. Inactive, malformed, inherited and omitted bindings remain ungraded. Certificate validity, individual RPC authorization, newer `system services http servers` instances and actual reachability are not assessed.
 
+EOS gNMI coverage now reports a retained gRPC transport with explicit `no shutdown` and `no ssl profile`. Omitted SSL-profile or enablement state remains ungraded; TLS-profile validity, authentication, and runtime reachability are separate questions.
+
 IOS/IOS-XE management ACL checks assess standard IPv4 ACLs for SSH and HTTP(S), plus bounded named/numbered extended IP/TCP ACLs for SSH. Explicit named IPv6 ACL attachments are assessed independently on SSH VTY for IOS/IOS-XE and WebUI for IOS-XE. Proof requires universal destinations and no port/time predicates; unsupported predicates and unresolved objects remain ungraded. IPv6 applicability is not inferred from an IPv4 attachment, and an ACL finding does not prove end-to-end reachability.
 
 Active IPv4 or IPv6 management ACL attachments that cannot be resolved or evaluated are listed as unassessed manual-review items in report coverage diagnostics. These notes are not vulnerabilities or security passes; disabled services and excluded rule categories do not generate them.

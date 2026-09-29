@@ -44,6 +44,26 @@ class PluginAristaChecks(BasePlugin):
         return parser
 
     def check_management_api(self, parser: BaseDeviceParser) -> None:
+        for transport in self._eos(parser).get_gnmi_transports():
+            if (transport.active is not True or transport.tls_state != "explicit-cleartext"
+                    or transport.address_state == "unknown"):
+                continue
+            self.add_issue(Finding(
+                rule_id="arista.eos.management.gnmi_cleartext",
+                device=parser.device_type,
+                title="gNMI transport explicitly disables TLS",
+                observation=(f"The enabled gNMI gRPC transport '{transport.name}' in VRF "
+                             f"'{transport.vrf or 'default or unspecified'}' explicitly removes its SSL profile. "
+                             f"Configured port: {transport.port or 'default or unspecified'}."),
+                impact="Management credentials and gNMI requests or responses may traverse the network without transport encryption.",
+                exploitability="An attacker must be able to observe or alter the client-to-device traffic path; this export does not prove external reachability or runtime listener state.",
+                recommendation="Attach a valid SSL profile to the gNMI transport and restrict access to approved management clients.",
+                severity=Severity.HIGH,
+                evidence=transport.evidence,
+                references=("https://aristanetworks.github.io/openmgmt/configuration/openconfig/",
+                            "https://www.arista.com/en/support/advisories-notices/security-advisory/19862-security-advisory-0099"),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
         for endpoint in self._eos(parser).get_eapi_endpoints():
             if not endpoint.active:
                 continue
