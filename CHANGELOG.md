@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- SC-047 parser depth: expose typed SRX host-inbound routing-protocol admissions and isolate logical-system zone/interface records from primary-system management checks. Preserve interface override uncertainty, inactive/delete semantics and all/except lists; no new finding is inferred from admission alone.
+
 - SC-011 FortiOS API-user stage: assess explicitly unrestricted IPv4/IPv6 trusted hosts on write-capable API identities with scoped accprofile/VDOM evidence. Resolve exported peer-group/member references without claiming effective certificate authentication. Keep read-only and unresolved profiles ungraded, redact API keys, and add a permanent vulnerable corpus case.
 
 - SC-047: Junos SRX host-inbound admission. Enabled management services admitted by zone or interface `host-inbound-traffic system-services` on an assessed external interface are reported as `juniper.junos.host_inbound.management_exposed`, separately from transit policy. Interface lists override the zone, `all`/`any-service`/`except` are resolved, J-Web listener interfaces are honoured, and attached lo0/interface input filters keep the case unknown unless they provably accept everything.

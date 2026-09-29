@@ -337,7 +337,7 @@ class JunosWebManagementPolicy:
 
 @dataclass(frozen=True)
 class JunosHostInboundAdmission:
-    """Effective SRX ``host-inbound-traffic system-services`` for one zone interface (SC-047).
+    """Effective SRX host-inbound service or protocol list for one zone interface.
 
     ``source`` is ``interface`` when the interface lists its own system services (Juniper:
     'Interface configuration overrides that of the zone'), ``zone`` when the zone list
@@ -353,6 +353,8 @@ class JunosHostInboundAdmission:
     any_service: bool
     exceptions: frozenset[str]
     evidence: tuple[ConfigEvidence, ...]
+    kind: str = "system-services"
+    logical_system: str | None = None
 
     def admits(self, service: str) -> bool:
         if self.source not in {"interface", "zone"}:
@@ -734,52 +736,73 @@ class JunOSParser(BaseDeviceParser):
                 data["evidence"] = statement.evidence
         return list(groups.values())
 
-    def get_host_inbound_admissions(self) -> tuple[JunosHostInboundAdmission, ...]:
-        """Resolve zone/interface host-inbound system-service admission (SC-047).
+    def get_host_inbound_admissions(
+        self, kind: str = "system-services", *, logical_system: str | None = None,
+    ) -> tuple[JunosHostInboundAdmission, ...]:
+        """Resolve zone/interface host-inbound service or protocol admission (SC-047).
 
         Juniper security zone reference: 'By default, a security zone has all system
         services disabled', 'Interface configuration overrides that of the zone', and 'all'
-        ... with 'except' exclusions; 'any-service' admits every port. Covers security zones
-        and the management functional zone. Deactivated/deleted statements are already
+        ... with 'except' exclusions; 'any-service' admits every port for system
+        services only. Covers security zones and the management functional zone.
+        Deactivated/deleted statements are already
         resolved by the statement model; ``apply-groups`` is left to the caller.
         """
+        if kind not in {"system-services", "protocols"}:
+            raise ValueError(f"unsupported host-inbound kind: {kind}")
+        inheritance_unknown = any(
+            statement.active and "apply-groups" in statement.path
+            and ((logical_system is None and statement.path[:1] != ("logical-systems",))
+                 or statement.path[:2] == ("logical-systems", logical_system))
+            for statement in self.statements
+        )
         zone_lists: dict[str, list[JunosStatement]] = {}
         interface_lists: dict[tuple[str, str], list[JunosStatement]] = {}
-        interface_protocols: set[tuple[str, str]] = set()
+        interface_other: set[tuple[str, str]] = set()
         bindings: dict[tuple[str, str], JunosStatement] = {}
         for statement in self.statements:
             path = statement.path
+            if logical_system is None:
+                if path[:1] == ("logical-systems",):
+                    continue
+            else:
+                if path[:2] != ("logical-systems", logical_system):
+                    continue
+                path = path[2:]
             if not statement.active or path[:2] != ("security", "zones") or len(path) < 4:
                 continue
             if path[2] == "security-zone":
                 zone, rest = path[3], path[4:]
             elif path[2:4] == ("functional-zone", "management"):
+                if logical_system is not None:
+                    continue
                 zone, rest = "management (functional zone)", path[4:]
             else:
                 continue
-            if rest[:2] == ("host-inbound-traffic", "system-services") and len(rest) > 2:
+            if rest[:2] == ("host-inbound-traffic", kind) and len(rest) > 2:
                 zone_lists.setdefault(zone, []).append(statement)
             elif rest[:1] == ("interfaces",) and len(rest) > 1:
                 key = (zone, rest[1])
                 bindings.setdefault(key, statement)
                 tail = rest[2:]
-                if tail[:2] == ("host-inbound-traffic", "system-services") and len(tail) > 2:
+                if tail[:2] == ("host-inbound-traffic", kind) and len(tail) > 2:
                     interface_lists.setdefault(key, []).append(statement)
-                elif tail[:2] == ("host-inbound-traffic", "protocols"):
-                    interface_protocols.add(key)
+                elif tail[:2] == ("host-inbound-traffic", "protocols" if kind == "system-services" else "system-services"):
+                    interface_other.add(key)
 
         def resolve(statements: list[JunosStatement]):
             services: set[str] = set()
             exceptions: set[str] = set()
             all_services = any_service = False
             for statement in statements:
-                tail = statement.path[statement.path.index("system-services") + 1:]
+                marker = len(statement.path) - 1 - statement.path[::-1].index("host-inbound-traffic")
+                tail = statement.path[marker + 2:]
                 name = tail[0]
                 if tail[1:2] == ("except",):
                     exceptions.add(name)
                 elif name == "all":
                     all_services = True
-                elif name == "any-service":
+                elif name == "any-service" and kind == "system-services":
                     all_services = any_service = True
                 else:
                     services.add(name)
@@ -789,19 +812,38 @@ class JunOSParser(BaseDeviceParser):
         for (zone, interface), binding in sorted(bindings.items()):
             if (zone, interface) in interface_lists:
                 source, statements = "interface", interface_lists[(zone, interface)]
-            elif (zone, interface) in interface_protocols:
+            elif (zone, interface) in interface_other:
                 source, statements = "unknown", zone_lists.get(zone, [])
             elif zone in zone_lists:
                 source, statements = "zone", zone_lists[zone]
             else:
                 source, statements = "none", []
+            if inheritance_unknown:
+                source = "unknown"
             services, all_services, any_service, exceptions = resolve(statements)
             result.append(JunosHostInboundAdmission(
                 zone=zone, interface=interface, source=source, services=services,
                 all_services=all_services, any_service=any_service, exceptions=exceptions,
                 evidence=(binding.evidence,) + tuple(item.evidence for item in statements),
+                kind=kind, logical_system=logical_system,
             ))
         return tuple(result)
+
+    def get_host_inbound_protocol_admissions(self) -> tuple[JunosHostInboundAdmission, ...]:
+        """Typed protocol admission; not a routing-session or authentication proof."""
+        return self.get_host_inbound_admissions("protocols")
+
+    def get_logical_system_host_inbound_admissions(
+        self, kind: str = "system-services",
+    ) -> tuple[JunosHostInboundAdmission, ...]:
+        """Tenant-local zone admission only; does not infer service/listener scope."""
+        names = sorted({
+            statement.path[1] for statement in self.statements
+            if statement.active and statement.path[:1] == ("logical-systems",)
+            and len(statement.path) > 4 and statement.path[2:4] == ("security", "zones")
+        })
+        return tuple(record for name in names
+                     for record in self.get_host_inbound_admissions(kind, logical_system=name))
 
     _MANAGEMENT_SERVICE_PATHS = {
         "ssh": ("system", "services", "ssh"),

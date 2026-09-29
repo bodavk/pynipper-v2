@@ -201,3 +201,115 @@ def test_accept_all_input_filter_does_not_restrict(tmp_path):
     assert _findings(_parser(tmp_path, restrictive)) == []
     unresolved = body.replace("filter input EDGE", "filter input MISSING")
     assert _findings(_parser(tmp_path, unresolved)) == []
+
+
+def test_routing_protocol_admission_zone_and_interface_override(tmp_path):
+    body = ZONE + (
+        "set security zones security-zone untrust host-inbound-traffic protocols all\n"
+        "set security zones security-zone untrust host-inbound-traffic protocols ospf except\n"
+    )
+    parser = _parser(tmp_path, body)
+    protocol, = parser.get_host_inbound_protocol_admissions()
+    assert protocol.kind == "protocols" and protocol.source == "zone"
+    assert protocol.admits("bgp") and not protocol.admits("ospf")
+    assert protocol.evidence[0].line_number is not None
+    narrowed = body + (
+        "set security zones security-zone untrust interfaces ge-0/0/0.0 "
+        "host-inbound-traffic protocols bgp\n"
+    )
+    protocol, = _parser(tmp_path, narrowed).get_host_inbound_protocol_admissions()
+    assert protocol.source == "interface" and protocol.admits("bgp")
+    assert not protocol.admits("ospf") and not protocol.admits("ldp")
+
+
+def test_protocol_and_service_lists_have_independent_precedence(tmp_path):
+    body = SERVICES + ZONE + (
+        "set security zones security-zone untrust host-inbound-traffic protocols bgp\n"
+        "set security zones security-zone untrust interfaces ge-0/0/0.0 "
+        "host-inbound-traffic system-services ssh\n"
+    )
+    parser = _parser(tmp_path, body)
+    protocol, = parser.get_host_inbound_protocol_admissions()
+    assert protocol.source == "unknown" and not protocol.admits("bgp")
+    assert _services(_findings(parser)[0]) == {"ssh"}
+    removed, = _parser(tmp_path, body + "delete security zones security-zone untrust "
+                       "host-inbound-traffic protocols bgp\n").get_host_inbound_protocol_admissions()
+    assert removed.source == "unknown" and not removed.admits("bgp")
+
+
+def test_protocol_admission_inactive_unknown_and_functional_zone(tmp_path):
+    body = ZONE + (
+        "set security zones security-zone untrust host-inbound-traffic protocols all\n"
+        "deactivate security zones security-zone untrust host-inbound-traffic protocols all\n"
+    )
+    record, = _parser(tmp_path, body).get_host_inbound_protocol_admissions()
+    assert record.source == "none" and not record.admits("bgp")
+    functional = (
+        "set security zones functional-zone management interfaces ge-0/0/0.0\n"
+        "set security zones functional-zone management host-inbound-traffic protocols bgp\n"
+    )
+    record, = _parser(tmp_path, functional).get_host_inbound_protocol_admissions()
+    assert record.zone == "management (functional zone)" and record.admits("bgp")
+    assert _findings(_parser(tmp_path, functional)) == []
+
+
+def test_logical_system_admission_stays_in_its_own_scope(tmp_path):
+    body = SERVICES + ZONE + (
+        "set security zones security-zone untrust host-inbound-traffic system-services ike\n"
+        "set logical-systems TENANT-A security zones security-zone outside "
+        "interfaces ge-0/0/1.0\n"
+        "set logical-systems TENANT-A security zones security-zone outside "
+        "host-inbound-traffic system-services ssh\n"
+        "set logical-systems TENANT-A security zones security-zone outside "
+        "host-inbound-traffic protocols bgp\n"
+        "set logical-systems TENANT-B security zones security-zone outside "
+        "interfaces ge-0/0/2.0\n"
+        "set logical-systems TENANT-B security zones security-zone outside "
+        "host-inbound-traffic system-services telnet\n"
+    )
+    parser = _parser(tmp_path, body, roles={"ge-0/0/0": "external", "ge-0/0/1": "external"})
+    root, = parser.get_host_inbound_admissions()
+    assert root.logical_system is None and root.interface == "ge-0/0/0.0"
+    assert not root.admits("ssh")
+    records = parser.get_logical_system_host_inbound_admissions()
+    assert [(item.logical_system, item.interface) for item in records] == [
+        ("TENANT-A", "ge-0/0/1.0"), ("TENANT-B", "ge-0/0/2.0")]
+    assert records[0].admits("ssh") and not records[0].admits("telnet")
+    assert records[1].admits("telnet") and not records[1].admits("ssh")
+    protocols = parser.get_logical_system_host_inbound_admissions("protocols")
+    assert protocols[0].admits("bgp") and not protocols[1].admits("bgp")
+    # Global service configuration alone does not establish a tenant listener.
+    assert _findings(parser) == []
+
+
+def test_logical_system_inheritance_preserves_unknown_scope(tmp_path):
+    body = ZONE + (
+        "set security zones security-zone untrust host-inbound-traffic protocols ospf\n"
+        "set logical-systems TENANT-A apply-groups INHERITED\n"
+        "set logical-systems TENANT-A security zones security-zone outside "
+        "interfaces ge-0/0/1.0\n"
+        "set logical-systems TENANT-A security zones security-zone outside "
+        "host-inbound-traffic protocols all\n"
+        "set logical-systems TENANT-B security zones security-zone outside "
+        "interfaces ge-0/0/2.0\n"
+        "set logical-systems TENANT-B security zones security-zone outside "
+        "host-inbound-traffic protocols bgp\n"
+    )
+    parser = _parser(tmp_path, body)
+    records = parser.get_logical_system_host_inbound_admissions("protocols")
+    assert records[0].source == "unknown" and not records[0].admits("bgp")
+    assert records[1].source == "zone" and records[1].admits("bgp")
+    root, = parser.get_host_inbound_protocol_admissions()
+    assert root.source == "zone" and root.admits("ospf")
+
+
+def test_protocol_marker_like_names_do_not_shift_rule_tokens(tmp_path):
+    body = (
+        "set logical-systems host-inbound-traffic security zones security-zone "
+        "host-inbound-traffic interfaces ge-0/0/1.0\n"
+        "set logical-systems host-inbound-traffic security zones security-zone "
+        "host-inbound-traffic host-inbound-traffic protocols bgp\n"
+    )
+    record, = _parser(tmp_path, body).get_logical_system_host_inbound_admissions("protocols")
+    assert record.logical_system == "host-inbound-traffic"
+    assert record.zone == "host-inbound-traffic" and record.admits("bgp")
