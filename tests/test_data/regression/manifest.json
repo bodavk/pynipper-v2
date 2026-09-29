@@ -220,6 +220,7 @@
         "fortinet.fortios.admin.mfa",
         "fortinet.fortios.admin.session_timeout",
         "fortinet.fortios.admin.trusted_hosts",
+        "fortinet.fortios.api.trusted_hosts",
         "fortinet.fortios.credentials.private_data_storage",
         "fortinet.fortios.crypto.admin_ssh_v1",
         "fortinet.fortios.crypto.dh_parameters",
@@ -243,7 +244,7 @@
         "fortinet.fortios.tls.minimum_version",
         "fortinet.fortios.vpn.ike_aggressive_mode"
       ],
-      "expected_finding_count": 30
+      "expected_finding_count": 31
     },
     {
       "name": "fortios-secure",

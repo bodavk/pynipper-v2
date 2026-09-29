@@ -65,6 +65,33 @@ def test_ipv6_independent_and_peer_metadata(tmp_path):
     identity, = parser.get_api_identities()
     assert identity.broad_families == ("IPv6",)
     assert identity.peer_group == "clients" and identity.peer_authentication == "enable"
+    assert identity.peer_group_state == "unresolved"
+    assert len(findings) == 1
+
+
+def test_peer_group_reference_resolution_without_authentication_claim(tmp_path):
+    peer = ('config user peer\n edit client-a\n set ca ClientCA\n next\nend\n'
+            'config user peergrp\n edit clients\n set member client-a\n next\nend\n')
+    account = ACCOUNT.replace('set peer-auth disable',
+                              'set peer-auth enable\n  set peer-group clients')
+    parser, findings = scan(tmp_path, PROFILE + peer + account)
+    identity, = parser.get_api_identities()
+    assert identity.peer_group_state == "resolved"
+    assert len(findings) == 1
+    assert "client-a" in repr(identity.evidence)
+    parser, findings = scan(tmp_path, PROFILE + peer.replace('edit client-a', 'edit other') + account)
+    assert parser.get_api_identities()[0].peer_group_state == "unresolved"
+    assert len(findings) == 1
+
+
+def test_peer_group_scope_isolated(tmp_path):
+    group = 'config user peergrp\n edit clients\n set member client-a\n next\nend\n'
+    peer = 'config user peer\n edit client-a\n next\nend\n'
+    account = ACCOUNT.replace('set peer-auth disable',
+                              'set peer-auth enable\n  set peer-group clients')
+    text = 'config vdom\n edit other\n' + peer + group + 'next\n edit tenant\n' + PROFILE + account + 'next\nend\n'
+    parser, findings = scan(tmp_path, text)
+    assert parser.get_api_identities()[0].peer_group_state == "unresolved"
     assert len(findings) == 1
 
 

@@ -107,6 +107,7 @@ class FortiAPIIdentity:
     broad_families: Tuple[str, ...]
     peer_authentication: str
     peer_group: str
+    peer_group_state: str
     evidence: Tuple[ConfigEvidence, ...]
 
 
@@ -901,6 +902,16 @@ class FortiOSParser(BaseDeviceParser):
 
     def get_api_identities(self) -> Tuple[FortiAPIIdentity, ...]:
         """Explicit API privilege/source grants; omitted trusthost defaults stay unknown."""
+        peer_groups = {
+            (scope, str(name).casefold()): (settings, path + (str(name),))
+            for scope, section, path in self._scoped_sections("user peergrp")
+            for name, settings in section.items() if isinstance(settings, dict)
+        }
+        peers = {
+            (scope, str(name).casefold())
+            for scope, section, _ in self._scoped_sections("user peer")
+            for name, settings in section.items() if isinstance(settings, dict)
+        }
         accounts = [
             (scope, str(name), settings, path + (str(name),))
             for scope, section, path in self._scoped_sections("system api-user")
@@ -944,10 +955,29 @@ class FortiOSParser(BaseDeviceParser):
             vdoms = tuple(vdom) if isinstance(vdom, list) else (str(vdom),) if vdom else ()
             for field in ("vdom", "peer-auth", "peer-group"):
                 evidence.extend(self.field_evidence(path + (field,)))
+            peer_auth = str(settings.get("peer-auth", "unknown")).casefold()
+            peer_group = str(settings.get("peer-group", ""))
+            peer_state = "disabled" if peer_auth == "disable" else "unknown"
+            if peer_auth == "enable":
+                peer_state = "unresolved"
+                group = next((peer_groups[(candidate, peer_group.casefold())]
+                              for candidate in (scope, "global")
+                              if (candidate, peer_group.casefold()) in peer_groups), None)
+                if group is not None:
+                    group_settings, group_path = group
+                    raw_members = group_settings.get("member", [])
+                    members = raw_members if isinstance(raw_members, list) else [raw_members]
+                    members = [str(member) for member in members if member]
+                    if members:
+                        peer_state = "resolved" if all(
+                            any((candidate, member.casefold()) in peers
+                                for candidate in (scope, "global"))
+                            for member in members
+                        ) else "unresolved"
+                    evidence.extend(self.field_evidence(group_path + ("member",)))
             identities.append(FortiAPIIdentity(
                 role, vdoms, tuple(sorted(broad)),
-                str(settings.get("peer-auth", "unknown")),
-                str(settings.get("peer-group", "")), tuple(evidence),
+                peer_auth, peer_group, peer_state, tuple(evidence),
             ))
         return tuple(identities)
 
