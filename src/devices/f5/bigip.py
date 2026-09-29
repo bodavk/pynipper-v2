@@ -186,6 +186,7 @@ class F5Virtual:
     evidence: ConfigEvidence
     policies: tuple[str, ...] = ()
     persist: tuple[str, ...] = ()
+    server_profiles: tuple[str, ...] = ()  # context serverside
 
 
 @dataclass(frozen=True)
@@ -337,6 +338,7 @@ class F5BIGIPParser(BaseDeviceParser):
         self._scopes_seen: set[str] = set()
         self._snmp_versions: dict[str, tuple[str, ConfigEvidence]] = {}
         self._client_ssl: dict[str, F5ClientSSLProfile] = {}
+        self._server_ssl: dict[str, dict] = {}
         self._virtuals: dict[str, F5Virtual] = {}
         self._user_secret_lines: dict[str, int] = {}
         self._user_credentials: dict[str, F5UserCredential] = {}
@@ -435,6 +437,15 @@ class F5BIGIPParser(BaseDeviceParser):
                             f"ltm persistence cookie {name} cookie-encryption "
                             f"{(items.get('cookie-encryption', (['<absent>'], 0))[0] or ['<absent>'])[0]}",
                             self.config_filepath, items.get("cookie-encryption", ([], header_line))[1]),
+                    }
+            elif len(header) == 4 and header[:3] == ["ltm", "profile", "server-ssl"]:
+                name = _object_name(header[3])
+                if name:
+                    items = _top_level(tokens[body_start:cursor - 1])
+                    self._server_ssl[name] = {
+                        "parent": _object_name((items.get("defaults-from", ([""], 0))[0] or [""])[0], name) or "",
+                        "peer_cert_mode": (items.get("peer-cert-mode", ([""], 0))[0] or [""])[0],
+                        "line": items.get("peer-cert-mode", ([], header_line))[1],
                     }
             elif len(header) == 3 and header[:2] == ["net", "self"]:
                 self._read_self_ip(header[2], header_line, tokens[body_start:cursor - 1])
@@ -663,6 +674,7 @@ class F5BIGIPParser(BaseDeviceParser):
         previous = self._virtuals.get(name)
         enabled = previous.enabled if previous else None
         profiles = previous.client_profiles if previous else ()
+        server_profiles = previous.server_profiles if previous else ()
         policies = previous.policies if previous else ()
         persist = previous.persist if previous else ()
         depth = 0
@@ -717,6 +729,7 @@ class F5BIGIPParser(BaseDeviceParser):
                     profiles = ()
                     continue
                 selected: list[str] = []
+                server_selected: list[str] = []
                 member_depth = 0
                 for member_index, member in enumerate(members):
                     if member.text == "{":
@@ -726,20 +739,23 @@ class F5BIGIPParser(BaseDeviceParser):
                     elif member_depth == 0 and member_index + 1 < len(members) and members[member_index + 1].text == "{":
                         profile_name = _object_name(member.text, name)
                         attributes = _block_contents(members, member_index + 1)
-                        if profile_name and attributes and any(
-                            attributes[position].text == "context"
-                            and position + 1 < len(attributes)
-                            and attributes[position + 1].text in {"all", "clientside"}
-                            for position in range(len(attributes))
-                        ):
+                        contexts = {
+                            attributes[position + 1].text
+                            for position in range(len(attributes or []) - 1)
+                            if attributes[position].text == "context"
+                        }
+                        if profile_name and contexts & {"all", "clientside"}:
                             selected.append(profile_name)
+                        if profile_name and "serverside" in contexts:
+                            server_selected.append(profile_name)
                 profiles = tuple(selected)
+                server_profiles = tuple(server_selected)
         self._record_virtual_endpoint(name, body)
         self._virtuals[name] = F5Virtual(
             name, enabled, profiles,
             ConfigEvidence(f"ltm virtual {name} {'enabled' if enabled else 'disabled' if enabled is False else '<unknown>'}",
                            self.config_filepath, line_number),
-            policies, persist,
+            policies, persist, server_profiles,
         )
 
     def _record_virtual_endpoint(self, name: str, body: list[_TokenValue]) -> None:
@@ -864,6 +880,10 @@ class F5BIGIPParser(BaseDeviceParser):
         """``sys snmp snmpv1``/``snmpv2c`` state; tmsh reference default is enable (SC-044 F5-19)."""
         return {name: self._snmp_versions.get(name, ("enable", None)) for name in ("snmpv1", "snmpv2c")}
 
+    def has_db_entries(self) -> bool:
+        """Whether the export contains any ``sys db`` objects (a system-level export)."""
+        return bool(self._db)
+
     def has_object(self, scope: str) -> bool:
         """Whether the export contains the ``scope`` object, so its missing properties are at default."""
         return scope in self._scopes_seen
@@ -938,6 +958,32 @@ class F5BIGIPParser(BaseDeviceParser):
                     current = self._cookie_persistence.get(current["parent"]) if current["parent"] else None
                 if not encryption and (method or "insert") in {"insert", "rewrite", "passive"}:
                     result.append((virtual, name, method or "insert"))
+        return tuple(result)
+
+    def get_unverified_server_ssl(self) -> tuple[tuple[F5Virtual, str, str, ConfigEvidence], ...]:
+        """Enabled virtuals whose serverside SSL profile resolves to ``peer-cert-mode ignore`` (SC-044 F5-14).
+
+        tmsh ltm profile server-ssl: 'The default value is ignore.' Only exported
+        server-ssl profiles and the built-in ``serverssl`` profile are resolved.
+        Returns (virtual, profile, mode, evidence).
+        """
+        result = []
+        for virtual in self._virtuals.values():
+            if virtual.enabled is False:
+                continue
+            for name in virtual.server_profiles:
+                profile = self._server_ssl.get(name)
+                if profile is None and name.rsplit("/", 1)[-1] != "serverssl":
+                    continue
+                mode, line, current, seen = "", 0, profile, set()
+                while current is not None and id(current) not in seen and not mode:
+                    seen.add(id(current))
+                    mode, line = current["peer_cert_mode"], current["line"]
+                    current = self._server_ssl.get(current["parent"]) if current["parent"] else None
+                if (mode or "ignore") == "ignore":
+                    result.append((virtual, name, mode or "ignore", ConfigEvidence(
+                        f"ltm profile server-ssl {name} peer-cert-mode {mode or '<absent: default ignore>'}",
+                        self.config_filepath, line or None)))
         return tuple(result)
 
     def get_snmp_traps(self) -> tuple[tuple[str, str, ConfigEvidence], ...]:

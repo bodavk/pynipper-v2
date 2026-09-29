@@ -188,3 +188,16 @@ def test_http_authentication_default(tmp_path):  # IOS-16
     assert findings and findings[0].basis is FindingBasis.DOCUMENTED_DEFAULT
     assert not _rules(_run(tmp_path, _conf("15.2", "ip http server\nip http authentication local\n")),
                       "cisco.ios.http.authentication")
+
+
+@pytest.mark.parametrize("line,basis", [
+    ("logging host 192.0.2.50\n", FindingBasis.DOCUMENTED_DEFAULT),  # SC-032: UDP is the default
+    ("logging host 192.0.2.50 transport tcp port 601\n", FindingBasis.EXPLICIT_VALUE),
+    ("logging host 192.0.2.50 transport beep tls cipher 128 trustpoint LOG-TP\n", None),
+    ("logging host 192.0.2.50 transport tls port 6514\n", None),
+    ("", None),
+])
+def test_ios_syslog_transport(tmp_path, line, basis):
+    findings = _rules(_run(tmp_path, _conf("15.2", line)), "cisco.ios.logging.remote_cleartext")
+    assert (findings[0].basis if findings else None) is basis
+    assert all(guidance_for(f.rule_id) for f in findings)

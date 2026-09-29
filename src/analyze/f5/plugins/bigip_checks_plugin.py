@@ -52,6 +52,8 @@ COOKIE_ENCODING = "https://my.f5.com/manage/s/article/K6917"
 MONITOR_HTTP = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules/ltm/ltm_monitor_http.html"
 SNMP_LATEST = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules/sys/sys_snmp.html"
 # SC-044 release-default sources (docs/agent_notes/INSECURE_DEFAULTS_BY_RELEASE.md).
+SERVER_SSL = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules/ltm/ltm_profile_server-ssl.html"
+ROOT_LOGIN_K15632 = "https://my.f5.com/manage/s/article/K15632"
 PASSWORD_POLICY_14 = "https://cdn.f5.com/product/bugtracker/ID661909.html"
 COOKIE_ENCRYPTION_DEFAULT = "https://my.f5.com/manage/s/article/K23254150"
 PORT_LOCKDOWN_11 = "https://my.f5.com/manage/s/article/K13250"
@@ -735,6 +737,27 @@ class PluginF5BIGIPChecks(BasePlugin):
                 references=(LOCKDOWN_SETTINGS,),
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
+        release = parser.get_release()
+        login = parser.get_setting("sys sshd", "login")
+        if (root is None and release and release >= (11, 6, 0) and parser.has_db_entries()
+                and parser.has_object("sys sshd") and (login is None or login.value == "enabled")):
+            # SC-044 F5-17: K15632, root shell login can be disabled from 11.6.0 and stays
+            # enabled until 'systemauth.disablerootlogin' is set; sys db entries are only
+            # saved when changed, so a system export without the key means the default.
+            self.add_issue(Finding(
+                rule_id="f5.bigip.auth.root_login_enabled",
+                device=parser.device_type,
+                title="Direct root login is allowed",
+                observation=("'sys db systemauth.disablerootlogin' is not in the exported database settings, so the "
+                             "default applies and the root account can log in directly over SSH."),
+                impact="A single shared, all-powerful account can log in without being tied to a person, and its compromise gives full system access.",
+                exploitability="Attackers target the well-known root account with password guessing or reused credentials.",
+                recommendation="Run 'modify sys db systemauth.disablerootlogin value true' and use named administrator accounts.",
+                severity=Severity.MEDIUM,
+                evidence=("sys db systemauth.disablerootlogin absent: default false",),
+                references=(ROOT_LOGIN_K15632, LOCKDOWN_SETTINGS),
+                basis=FindingBasis.DOCUMENTED_DEFAULT,
+            ))
         for name, evidence in parser.get_user_shells().items():
             if not evidence.text.endswith(" shell bash") or name.rsplit("/", 1)[-1] == "root":
                 continue
@@ -829,6 +852,23 @@ class PluginF5BIGIPChecks(BasePlugin):
                 evidence=(virtual.evidence, f"ltm persistence cookie {name} cookie-encryption <absent: default disabled>"),
                 references=(COOKIE_ENCRYPTION_DEFAULT, COOKIE_ENCODING, COOKIE_PERSISTENCE),
                 basis=FindingBasis.DOCUMENTED_DEFAULT,
+            ))
+
+        for virtual, name, mode, evidence in parser.get_unverified_server_ssl():
+            explicit = "<absent" not in evidence.text
+            self.add_issue(Finding(
+                rule_id="f5.bigip.ltm.serverssl_no_cert_validation",
+                device=parser.device_type,
+                title="Server SSL profile does not verify the pool member certificate",
+                observation=(f"Virtual server {virtual.name} re-encrypts to the pool with Server SSL profile {name}, whose "
+                             f"peer-cert-mode is {mode}" + ("." if explicit else " (the documented default).")),
+                impact="The BIG-IP accepts any certificate from the back end, so a host that can intercept that path can read and change the traffic.",
+                exploitability="An attacker on the server-side network can impersonate a pool member with a self-signed certificate.",
+                recommendation=f"Set 'peer-cert-mode require' with a trusted ca-file (and authenticate-name) on {name}, or document why the server-side path is trusted.",
+                severity=Severity.LOW,
+                evidence=(virtual.evidence, evidence),
+                references=(SERVER_SSL,),
+                basis=FindingBasis.EXPLICIT_VALUE if explicit else FindingBasis.DOCUMENTED_DEFAULT,
             ))
 
     def _check_cleartext_extras(self, parser: F5BIGIPParser) -> None:

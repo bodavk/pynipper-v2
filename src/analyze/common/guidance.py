@@ -216,7 +216,7 @@ _CATALOGUE = (
         "separate out-of-band network), and confirm that strong authentication, lockout and "
         "logging are in place for the exposed service.",
     )),
-    (r"^(ssh\.(weak_\w+|protocol_version)|tls\.\w+|management\.(legacy_tls|tls_\w+)|eapi\.(legacy_tls|tls_profile\w*)|admin\.ssh_profile_\w+|crypto\.(strong_crypto|admin_ssh_v1|ssl_static_key_ciphers|ssh_cbc_cipher|ssh_hmac_md5|ssh_kex_sha1|dh_parameters)|https\.(legacy_cipher|global_activation)|http\.(legacy_tls_protocol|weak_cipher_suite)|sslvpn\.(legacy_tls|weak_algorithm)|ltm\.clientssl_(weak_cipher|legacy_tls))$", _G(
+    (r"^(ssh\.(weak_\w+|protocol_version)|tls\.\w+|management\.(legacy_tls|tls_\w+)|eapi\.(legacy_tls|tls_profile\w*)|admin\.ssh_profile_\w+|crypto\.(strong_crypto|admin_ssh_v1|ssl_static_key_ciphers|ssh_cbc_cipher|ssh_hmac_md5|ssh_kex_sha1|dh_parameters)|https\.(legacy_cipher|global_activation)|http\.(legacy_tls_protocol|weak_cipher_suite)|sslvpn\.(legacy_tls|weak_algorithm)|ltm\.(clientssl_(weak_cipher|legacy_tls)|serverssl_no_cert_validation))$", _G(
         "management-crypto", "management-crypto",
         "The encrypted management connection (SSH or HTTPS) still allows outdated protocol "
         "versions or algorithms that are known to be weak.",

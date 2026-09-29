@@ -54,7 +54,7 @@ no service pad
 no ip bootp server
 no ip domain lookup
 service tcp-keepalives-in
-logging host 192.0.2.50
+logging host 192.0.2.50 transport beep tls cipher 128 trustpoint LOG-TP
 logging trap informational
 archive
  log config

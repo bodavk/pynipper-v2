@@ -389,15 +389,15 @@
       "name": "cisco-ios-syntax-variants",
       "device": "IOS_ROUTER",
       "input": "cisco_ios/syntax_variants.conf",
-      "expected_rule_ids": ["cisco.ios.services.default_enabled", "cisco.ios.services.dns_lookup", "cisco.ios.services.tcp_keepalives"],
-      "expected_finding_count": 3
+      "expected_rule_ids": ["cisco.ios.logging.remote_cleartext", "cisco.ios.services.default_enabled", "cisco.ios.services.dns_lookup", "cisco.ios.services.tcp_keepalives"],
+      "expected_finding_count": 4
     },
     {
       "name": "cisco-iosxe-syntax-variants",
       "device": "IOS_XE",
       "input": "cisco_iosxe/syntax_variants.conf",
-      "expected_rule_ids": ["cisco.ios.services.default_enabled", "cisco.ios.services.dns_lookup", "cisco.ios.services.tcp_keepalives", "cisco.ios.ssh.weak_algorithms"],
-      "expected_finding_count": 4
+      "expected_rule_ids": ["cisco.ios.logging.remote_cleartext", "cisco.ios.services.default_enabled", "cisco.ios.services.dns_lookup", "cisco.ios.services.tcp_keepalives", "cisco.ios.ssh.weak_algorithms"],
+      "expected_finding_count": 5
     },
     {
       "name": "cisco-asa-syntax-variants",

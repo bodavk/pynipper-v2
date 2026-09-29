@@ -140,6 +140,7 @@ CISCO_IOS_KEY_LIFETIME_GUIDE = (
     "iproute_pi/command/reference/iri_book/iri_pi2.html"
 )
 # SC-044 release-default sources (docs/agent_notes/INSECURE_DEFAULTS_BY_RELEASE.md).
+CISCO_ESM_CR = "https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/esm/command/esm-cr-book/esm-cr-a1.html"
 CISCO_CAT9200_SSH_1712 = (
     "https://www.cisco.com/c/en/us/td/docs/switches/lan/catalyst9200/software/release/17-12/"
     "configuration_guide/sec/b_1712_sec_9200_cg/secure_shell_version_2_support.html"
@@ -982,6 +983,26 @@ class PluginIOSBaseline(BasePlugin):
                 )
             )
             return
+        # SC-032: ESM command reference, 'transport (Optional) Method of transport to be
+        # used. UDP is the default.' Only BEEP with TLS (or 'transport tls') protects it.
+        cleartext = [line for line in hosts if not re.search(r"\btransport\s+(?:beep\b.*\btls\b|tls\b)", line)]
+        if cleartext:
+            explicit = [line for line in cleartext if re.search(r"\btransport\s+(?:udp|tcp|beep)\b", line)]
+            self.add_issue(Finding(
+                rule_id="cisco.ios.logging.remote_cleartext",
+                device=parser.device_type,
+                title="Remote syslog is sent in clear text",
+                observation=(f"{len(cleartext)} remote logging host(s) use "
+                             + ("an unencrypted transport" if explicit and len(explicit) == len(cleartext)
+                                else "the default transport (UDP 514)") + " without TLS."),
+                impact="Log messages, which can include user names, addresses and configuration changes, can be read or forged on the path to the collector.",
+                exploitability="An attacker on the logging path can capture events or inject false ones to hide activity.",
+                recommendation="Send syslog over a protected path (management network or VPN) or use TLS where the platform supports it ('logging host <ip> transport tls' / BEEP with TLS and a trustpoint).",
+                severity=Severity.LOW,
+                evidence=tuple(cleartext),
+                references=(CISCO_ESM_CR,),
+                basis=FindingBasis.EXPLICIT_VALUE if len(explicit) == len(cleartext) else FindingBasis.DOCUMENTED_DEFAULT,
+            ))
         trap = next((line for line in reversed(lines) if line.startswith("logging trap ")), "")
         levels = {
             "emergencies": 0, "alerts": 1, "critical": 2, "errors": 3,

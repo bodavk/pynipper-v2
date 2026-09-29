@@ -169,3 +169,36 @@ def test_cookie_encryption_default(tmp_path, body, persist, basis):  # F5-15
 ])
 def test_password_policy_default(tmp_path, version, body, expected):  # F5-21
     assert bool(_defaults(_run(tmp_path, _conf(version, body)), "f5.bigip.password_policy.enforcement_disabled")) is expected
+
+
+SYS = "sys sshd {\n    allow { 192.0.2.0/255.255.255.0 }\n    inactivity-timeout 600\n}\nsys db ui.advisory.enabled {\n    value \"true\"\n}\n"
+
+
+@pytest.mark.parametrize("version,body,basis", [
+    ("16.1.5", SYS, FindingBasis.DOCUMENTED_DEFAULT),
+    ("16.1.5", SYS + "sys db systemauth.disablerootlogin {\n    value \"true\"\n}\n", None),
+    ("16.1.5", SYS + "sys db systemauth.disablerootlogin {\n    value \"false\"\n}\n", FindingBasis.EXPLICIT_VALUE),
+    ("16.1.5", "sys sshd {\n    login enabled\n}\n", None),  # no sys db section exported
+    ("11.5.4", SYS, None),
+])
+def test_root_login_default(tmp_path, version, body, basis):  # F5-17
+    findings = [f for f in _run(tmp_path, _conf(version, body)) if f.rule_id == "f5.bigip.auth.root_login_enabled"]
+    assert (findings[0].basis if findings else None) is basis
+
+
+def _serverssl(profile_body, profile="/Common/app_serverssl"):
+    return (f"ltm profile server-ssl /Common/app_serverssl {{\n    defaults-from /Common/serverssl\n{profile_body}}}\n"
+            f"ltm virtual /Common/vs {{\n    destination /Common/192.0.2.10:443\n"
+            f"    profiles {{ /Common/clientssl {{ context clientside }} {profile} {{ context serverside }} }}\n}}\n")
+
+
+@pytest.mark.parametrize("body,profile,basis", [
+    ("", "/Common/app_serverssl", FindingBasis.DOCUMENTED_DEFAULT),
+    ("", "/Common/serverssl", FindingBasis.DOCUMENTED_DEFAULT),
+    ("    peer-cert-mode require\n    ca-file /Common/ca-bundle.crt\n", "/Common/app_serverssl", None),
+    ("    peer-cert-mode ignore\n", "/Common/app_serverssl", FindingBasis.EXPLICIT_VALUE),
+])
+def test_serverssl_peer_cert_mode(tmp_path, body, profile, basis):  # F5-14
+    findings = [f for f in _run(tmp_path, _conf("16.1.5", _serverssl(body, profile)))
+                if f.rule_id == "f5.bigip.ltm.serverssl_no_cert_validation"]
+    assert (findings[0].basis if findings else None) is basis
