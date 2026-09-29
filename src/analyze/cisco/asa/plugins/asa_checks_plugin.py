@@ -3,6 +3,7 @@ import re
 from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.credentials import credential_policy_from_context, evaluate_credential
 from src.analyze.common.issue import Finding, FindingBasis, Severity
+from src.devices.common.models import DefaultCredentialAssessment
 from src.analyze.common.risky_services import CISCO_PORT_NAMES, risky_labels
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.policy_semantics import ProofState, network_covers, service_covers
@@ -32,6 +33,10 @@ CISCO_ASA_TLS_REFERENCE = (
     "https://www.cisco.com/c/en/us/td/docs/security/asa/asa-cli-reference/"
     "S/asa-command-ref-S/so-st-commands.html"
 )
+CISCO_ASA_PASSWD_REFERENCE = (
+    "https://www.cisco.com/c/en/us/td/docs/security/asa/asa-cli-reference/I-R/asa-command-ref-I-R/pa-pn-commands.html"
+)
+CISCO_ASA_912_RN = "https://www.cisco.com/c/en/us/td/docs/security/asa/asa912/release/notes/asarn912.html"
 # SC-044 PIX 6.3 command references (Cisco archive copies).
 CISCO_PIX63_GL_REFERENCE = (
     "https://web.archive.org/web/20111208224049/http://www.cisco.com/en/US/docs/security/pix/"
@@ -102,6 +107,54 @@ class PluginASAChecks(BasePlugin):
                 references=(CISCO_ASA_PASSWORD_REFERENCE,),
             )
         )
+
+    def check_default_passwords(self, parser: BaseDeviceParser) -> None:
+        """SC-044 ASA-10/11: stored enable/login passwords equal to the documented defaults.
+
+        The unsalted 'encrypted' (PIX-MD5) form of a blank or 'cisco' password is
+        recognised by recomputing it; no other value is compared.
+        """
+        asa = self._asa(parser)
+        platform, release = asa.get_release()
+        lines = [raw.strip() for raw in asa.parser.ioscfg]
+        aaa = {protocol for protocol in ("enable", "ssh", "telnet")
+               if any(re.fullmatch(rf"aaa authentication {protocol} console \S+.*", line) for line in lines)}
+        enable = asa.get_enable_credential()
+        if enable is not None and enable.default_assessment == DefaultCredentialAssessment.MATCH and "enable" not in aaa:
+            self.add_issue(Finding(
+                rule_id="cisco.asa.credentials.known_default_value",
+                device=parser.device_type,
+                title="Enable password is still the factory default",
+                observation=("The stored enable password is the documented default (blank, or 'cisco'); the value is "
+                             "recognised from its unsalted hash and is not shown."),
+                impact="Anyone who reaches an administrative login can enter privileged mode without knowing a secret.",
+                severity=Severity.HIGH,
+                exploitability="Default and blank enable passwords are the first values attackers try.",
+                recommendation="Set a unique enable password ('enable password <strong> pbkdf2' on 9.7+), or use 'aaa authentication enable console'.",
+                evidence=tuple(enable.evidence),
+                references=(CISCO_ASA_PASSWORD_REFERENCE, CISCO_ASA_912_RN),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+        login = asa.get_login_password()
+        telnet = bool(asa.get_management_grants("telnet")) and "telnet" not in aaa
+        ssh = (bool(asa.get_management_grants("ssh")) and "ssh" not in aaa
+               and (platform == "PIX" or (release is not None and release < (8, 4, 2))))
+        if login is not None and login.default_value and (telnet or ssh):
+            self.add_issue(Finding(
+                rule_id="cisco.asa.credentials.known_default_value",
+                device=parser.device_type,
+                title="Login password is still the factory default",
+                observation=(f"The 'passwd' login password is the documented default ('{login.default_value}'), and it "
+                             "protects " + " and ".join(name for name, used in (("Telnet", telnet), ("SSH", ssh)) if used)
+                             + " logins without AAA."),
+                impact="Anyone who can reach the management service can log in with the well-known password.",
+                severity=Severity.HIGH,
+                exploitability="The default login password is published and tried by automated tools.",
+                recommendation="Configure 'aaa authentication ssh console LOCAL' with named users, set a unique 'passwd', and remove Telnet access.",
+                evidence=(login.evidence,),
+                references=(CISCO_ASA_PASSWD_REFERENCE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
 
     # Kept as a compatibility entry point for external callers.
     def check_weak_enable_password(self, parser: BaseDeviceParser) -> None:
@@ -657,6 +710,7 @@ class PluginASAChecks(BasePlugin):
     def analyze(self, parser: BaseDeviceParser) -> None:
         self.check_telnet(parser)
         self.check_enable_credential(parser)
+        self.check_default_passwords(parser)
         self.check_snmp(parser)
         self.check_unrestricted_ssh(parser)
         self.check_logging(parser)

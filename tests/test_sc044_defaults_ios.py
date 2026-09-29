@@ -201,3 +201,21 @@ def test_ios_syslog_transport(tmp_path, line, basis):
     findings = _rules(_run(tmp_path, _conf("15.2", line)), "cisco.ios.logging.remote_cleartext")
     assert (findings[0].basis if findings else None) is basis
     assert all(guidance_for(f.rule_id) for f in findings)
+
+
+@pytest.mark.parametrize("version,expected", [("16.1", True), ("16.3", False)])
+def test_iosxe_16_1_finger_default(tmp_path, version, expected):  # IOS-02
+    findings = _rules(_run(tmp_path, _conf(version), "IOS_XE"), "cisco.ios.services.legacy_default")
+    assert any("finger" in f.observation for f in findings) is expected
+
+
+@pytest.mark.parametrize("version,body,expected", [
+    ("12.2", "switch 1 provision ws-c3750-24ps\n", FindingBasis.DOCUMENTED_DEFAULT),
+    ("12.2", "boot system flash:c3560-ipservicesk9-mz.122-55.SE12.bin\n", FindingBasis.DOCUMENTED_DEFAULT),
+    ("12.2", "switch 1 provision ws-c3750-24ps\nno ip http server\n", None),
+    ("15.0", "boot system flash:c2960-lanbasek9-mz.150-2.SE11.bin\n", None),  # 2960 not listed
+    ("12.2", "", None),  # model unknown
+])
+def test_catalyst_clustering_http_default(tmp_path, version, body, expected):  # IOS-14
+    findings = _rules(_run(tmp_path, _conf(version, body), "IOS_SWITCH"), "cisco.ios.http.cleartext_service")
+    assert (findings[0].basis if findings else None) is expected

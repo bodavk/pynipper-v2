@@ -202,3 +202,20 @@ def test_serverssl_peer_cert_mode(tmp_path, body, profile, basis):  # F5-14
     findings = [f for f in _run(tmp_path, _conf("16.1.5", _serverssl(body, profile)))
                 if f.rule_id == "f5.bigip.ltm.serverssl_no_cert_validation"]
     assert (findings[0].basis if findings else None) is basis
+
+
+ADMIN_HASH = "$6$Ab3dEf9h$ojcL1cvX0IaHRu0PeiGsPVFAORKVpsz2Ar8rttbtXPhQKDTKUt1houFPfFFycYDmQT82Bef7B35wxbQXYY.xn/"
+OTHER_HASH = "$6$Ab3dEf9h$dbksKHA3ZfD6nrjagNQ6w.MyTIoJQ6R626DbfYhY5SQbYtbuQBPfMxkmt34hF13CElBXawQ/FtojN6V2pfUbm1"
+
+
+@pytest.mark.parametrize("user,value,expected", [
+    ("admin", ADMIN_HASH, True),
+    ("admin", OTHER_HASH, False),
+    ("operator", ADMIN_HASH, False),  # only the built-in accounts have documented defaults
+    ("admin", "$1$Xy7wQpLm$HHWqZB39GsLnaQGlnZ0uV.", True),
+])
+def test_factory_admin_password(tmp_path, user, value, expected):  # F5-16
+    text = _conf("15.1.8", f'auth user {user} {{\n    encrypted-password "{value}"\n    role admin\n}}\n')
+    findings = [f for f in _run(tmp_path, text) if f.rule_id == "f5.bigip.credentials.known_default_value"]
+    assert bool(findings) is expected
+    assert all(value not in " ".join(map(str, f.evidence)) for f in findings)

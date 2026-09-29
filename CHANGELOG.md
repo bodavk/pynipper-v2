@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - SC-032: IOS/IOS-XE remote syslog without TLS (`cisco.ios.logging.remote_cleartext`; UDP is the documented default).
 
+- SC-044 factory passwords: ASA blank enable and `cisco` login password, BIG-IP `admin`/`root` and PAN-OS `admin` are recognised by recomputing the documented default's hash (new pure-Python `src/common/unix_crypt.py`, no `crypt` module needed). Also IOS-XE 16.1 finger, classic Catalyst HTTP clustering default and AOS-S 16.04 Telnet/HTTP defaults.
+
 - SC-046 coverage stage: JSON/HTML reports now explain when active IOS/XE SSH or HTTP(S) IPv4 ACL attachments are unresolved, empty or unsupported. Sanitized manual-review notes do not imply exposure or safety, honor effective bindings and rule exclusions, and remain stable across repeated report builds.
 
 - SC-046 extended SSH stage: detect named/numbered extended IPv4 ACLs that demonstrably allow every source to SSH through unrestricted IP/TCP rules. Respect ordering, removals and replacements; leave release-dependent destinations and unsupported predicates ungraded. HTTP retains standard-only ACL evaluation. Added adversarial and JSON/HTML regression tests.

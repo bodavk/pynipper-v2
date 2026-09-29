@@ -2,6 +2,7 @@ import re
 import shlex
 import base64
 import ipaddress
+import hashlib
 from dataclasses import dataclass
 from typing import Optional
 from ciscoconfparse import CiscoConfParse
@@ -255,6 +256,45 @@ class ASASSLServicePolicy:
     evidence: tuple[ConfigEvidence, ...]
     cipher_protocols: tuple[str, ...] = ()
     http_server_enabled: bool = False
+
+
+_PIX_ITOA64 = "./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+
+def _pix_md5(password: str) -> str:
+    """Unsalted PIX/ASA ``encrypted`` (MD5) form of a short password (SC-044 ASA-10/11).
+
+    MD5 of the password null-padded to 16 bytes; bytes 0-2, 4-6, 8-10 and 12-14 are
+    encoded little-endian in the crypt alphabet. Used only to recognise the documented
+    default values (blank enable password, 'cisco' login password), never to crack.
+    """
+    digest = hashlib.md5(password.encode()[:16].ljust(16, b"\0")).digest()
+    out = []
+    for index in (0, 4, 8, 12):
+        value = digest[index] | (digest[index + 1] << 8) | (digest[index + 2] << 16)
+        for _ in range(4):
+            out.append(_PIX_ITOA64[value & 0x3F])
+            value >>= 6
+    return "".join(out)
+
+
+# Documented defaults: blank enable password before 9.12(1) (9.12 release notes) and the
+# 'cisco' login password (passwd command reference).
+_PIX_DEFAULT_HASHES = {_pix_md5(""): "blank", _pix_md5("cisco"): "cisco"}
+
+
+@dataclass(frozen=True)
+class ASALoginPassword:
+    """``passwd``/``password`` Telnet and pre-8.4(2) SSH login password (value redacted)."""
+
+    storage_type: str
+    default_value: Optional[str]  # "cisco"/"blank" when the stored hash is that documented default
+    evidence: ConfigEvidence
+
+
+def pix_default_label(value: str) -> Optional[str]:
+    """Name of the documented default an unsalted ``encrypted`` hash represents, if any."""
+    return _PIX_DEFAULT_HASHES.get(value)
 
 
 class CiscoASAParser(BaseDeviceParser):
@@ -1287,10 +1327,13 @@ class CiscoASAParser(BaseDeviceParser):
 
     @staticmethod
     def _default_assessment(
-        storage: CredentialStorageAssessment, value: str
+        storage: CredentialStorageAssessment, value: str, unsalted: bool = False
     ) -> DefaultCredentialAssessment:
         if storage == CredentialStorageAssessment.EMPTY:
             return DefaultCredentialAssessment.MATCH
+        if unsalted and storage == CredentialStorageAssessment.WEAK_HASH:
+            return (DefaultCredentialAssessment.MATCH if value in _PIX_DEFAULT_HASHES
+                    else DefaultCredentialAssessment.NOT_EVALUATED)
         if storage != CredentialStorageAssessment.PLAINTEXT:
             return DefaultCredentialAssessment.NOT_EVALUATED
         return (
@@ -1319,7 +1362,7 @@ class CiscoASAParser(BaseDeviceParser):
                 method="password",
                 storage_type=storage_type,
                 storage_assessment=storage,
-                default_assessment=self._default_assessment(storage, value),
+                default_assessment=self._default_assessment(storage, value, unsalted=True),
                 plaintext_length=(
                     len(value)
                     if storage == CredentialStorageAssessment.PLAINTEXT
@@ -1336,6 +1379,27 @@ class CiscoASAParser(BaseDeviceParser):
                     line_number,
                 ),),
             )
+        return selected
+
+    def get_login_password(self) -> Optional[ASALoginPassword]:
+        """Effective ``passwd``/``password`` line (Telnet and pre-8.4(2) SSH login)."""
+        selected: Optional[ASALoginPassword] = None
+        for line_number, line in enumerate(self._source_lines, start=1):
+            if line[:1].isspace():
+                continue
+            stripped = line.strip()
+            if re.fullmatch(r"no (?:passwd|password)(?:\s+.*)?", stripped):
+                selected = None
+                continue
+            match = re.fullmatch(r"(?:passwd|password)\s+(\S+)(?:\s+(encrypted|pbkdf2))?", stripped)
+            if not match:
+                continue
+            marker = (match.group(2) or "plaintext").lower()
+            value = match.group(1)
+            default = (_PIX_DEFAULT_HASHES.get(value) if marker == "encrypted"
+                       else ("cisco" if marker == "plaintext" and value == "cisco" else None))
+            selected = ASALoginPassword(marker, default, ConfigEvidence(
+                f"{stripped.split()[0]} <redacted> {match.group(2) or ''}".rstrip(), self.config_filepath, line_number))
         return selected
 
     def get_local_credentials(self) -> list[CredentialMetadata]:

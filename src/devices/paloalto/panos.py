@@ -22,6 +22,7 @@ from src.devices.common.policy_semantics import (
     ServiceInterval,
     ServiceSemantics,
 )
+from src.common.unix_crypt import crypt_matches
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.input_scope import contains_unresolved_template
 from src.devices.common.models import (
@@ -529,6 +530,20 @@ class PaloAltoPANOSParser(BaseDeviceParser):
             self.root.findall(".//deviceconfig/system/mgt-config/users/entry")
         )
         return entries
+
+    def get_default_admin_password(self) -> ConfigEvidence | None:
+        """Evidence when the built-in ``admin`` account still has the factory password (SC-044 PAN-02).
+
+        PAN-OS initial configuration guide: 'A username/password of admin/admin'. The
+        stored ``phash`` (crypt(3) MD5 or SHA-256) is recomputed for 'admin' only.
+        """
+        for entry in self._management_user_entries():
+            if (entry.get("name") or "") != "admin":
+                continue
+            phash = self._text(entry.find("phash"))
+            if phash and crypt_matches("admin", phash):
+                return self._evidence("mgt-config users entry admin phash <redacted>", entry.find("phash"))
+        return None
 
     def _authentication_profile_entries(self) -> dict[str, list[ET.Element]]:
         profiles: dict[str, list[ET.Element]] = {}

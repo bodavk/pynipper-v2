@@ -53,6 +53,7 @@ MONITOR_HTTP = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules/ltm/l
 SNMP_LATEST = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules/sys/sys_snmp.html"
 # SC-044 release-default sources (docs/agent_notes/INSECURE_DEFAULTS_BY_RELEASE.md).
 SERVER_SSL = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules/ltm/ltm_profile_server-ssl.html"
+DEFAULT_PASSWORDS_K13121 = "https://my.f5.com/manage/s/article/K13121"
 ROOT_LOGIN_K15632 = "https://my.f5.com/manage/s/article/K15632"
 PASSWORD_POLICY_14 = "https://cdn.f5.com/product/bugtracker/ID661909.html"
 COOKIE_ENCRYPTION_DEFAULT = "https://my.f5.com/manage/s/article/K23254150"
@@ -176,6 +177,21 @@ class PluginF5BIGIPChecks(BasePlugin):
                        recommendation="Set a positive minimum length appropriate to the approved password policy.",
                        severity=Severity.MEDIUM, reference=PASSWORD)
         for credential in parser.get_local_user_credentials():
+            if credential.known_default:
+                self.add_issue(Finding(
+                    rule_id="f5.bigip.credentials.known_default_value",
+                    device=parser.device_type,
+                    title="Built-in account still uses its factory password",
+                    observation=(f"The stored password of '{credential.name}' is the documented factory default "
+                                 "(recognised by recomputing its hash; the value is not shown)."),
+                    impact="Anyone who reaches the Configuration utility, iControl REST or SSH can log in as this administrator.",
+                    exploitability="Factory credentials (admin/admin, root/default) are published and tried first by attackers.",
+                    recommendation="Change the password now ('modify auth user admin prompt-for-password'), and disable or rename unused built-in accounts (K15632).",
+                    severity=Severity.CRITICAL,
+                    evidence=(credential.evidence,),
+                    references=(DEFAULT_PASSWORDS_K13121, ROOT_LOGIN_K15632),
+                    basis=FindingBasis.EXPLICIT_VALUE,
+                ))
             if credential.storage != "plaintext":
                 continue
             self.add_issue(Finding(

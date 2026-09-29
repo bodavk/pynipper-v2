@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 import hashlib
 import re
 
+from src.common.unix_crypt import crypt_matches
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.models import ConfigEvidence, NormalizedConfig, NormalizedValue
 
@@ -38,6 +39,9 @@ _WEAK_SUITE = re.compile(r"(?:^|-)(?:DES-CBC3|DES-CBC|DES|RC4|RC2|NULL|EXP|EXPOR
 _LOOPBACK = {"127", "127.", "127.0.0.1", "127.0.0.0/8", "127.0.0.0/255.0.0.0", "::1", "::1/128"}
 _ANY_ADDRESS = {"0.0.0.0/0", "0.0.0.0/0.0.0.0", "::/0", "any", "all", "0.0.0.0"}
 _DEFAULT_COMMUNITIES = {"public", "private"}
+# K13121: 'On installation, the BIG-IP and BIG-IQ systems create a default root user and a
+# default administrative user' — root/default and admin/admin (SC-044 F5-16).
+_DEFAULT_PASSWORDS = {"admin": "admin", "root": "default"}
 
 
 def resolve_ssl_protocols(value: str) -> tuple[str, ...] | None:
@@ -111,6 +115,7 @@ class F5UserCredential:
     name: str
     storage: str
     evidence: ConfigEvidence
+    known_default: bool = False  # K13121 default (admin/admin, root/default) recognised from the hash
 
 
 @dataclass(frozen=True)
@@ -484,7 +489,13 @@ class F5BIGIPParser(BaseDeviceParser):
                     self._user_secret_lines[name] = token.line
                     masked = candidate.casefold() in {"<redacted>", "redacted", "<hidden>"} or set(candidate) == {"*"}
                     storage = "unknown" if masked else "plaintext" if token.text == "password" else "encrypted"
+                    default = _DEFAULT_PASSWORDS.get(name.rsplit("/", 1)[-1])
+                    known_default = bool(default) and (
+                        candidate.strip('"') == default if storage == "plaintext"
+                        else storage == "encrypted" and crypt_matches(default, candidate)
+                    )
                     self._user_credentials[name] = F5UserCredential(
+                        known_default=known_default,
                         name=name,
                         storage=storage,
                         evidence=ConfigEvidence(

@@ -138,3 +138,36 @@ def test_pix_ssh_and_sysopt(tmp_path):  # PIX-02/03
     assert _rules(findings, "cisco.asa.vpn.sysopt_permit_vpn")[0].basis is FindingBasis.EXPLICIT_VALUE
     asa7 = _run(tmp_path, "PIX Version 7.2(4)\nhostname pix\nssh 192.0.2.0 255.255.255.0 inside\n", "PIX")
     assert not [f for f in _rules(asa7, "cisco.asa.ssh.protocol_version") if "PIX 6" in f.title]
+
+
+def test_pix_md5_reproduces_documented_default_hashes():
+    from src.devices.cisco.asa import _pix_md5
+    # Widely published default lines: blank enable password and 'cisco' login password.
+    assert _pix_md5("") == "8Ry2YjIyt7RRXU24"
+    assert _pix_md5("cisco") == "2KFQnbNIdI.2KYOU"
+
+
+@pytest.mark.parametrize("body,expected", [
+    ("enable password 8Ry2YjIyt7RRXU24 encrypted\n", 1),
+    ("enable password 2KFQnbNIdI.2KYOU encrypted\n", 1),
+    ("enable password 9jNfZuG3TC5tCVH0 encrypted\n", 0),  # some other value
+    ("enable password 8Ry2YjIyt7RRXU24 encrypted\naaa authentication enable console TAC LOCAL\n", 0),
+])
+def test_default_enable_password(tmp_path, body, expected):  # ASA-11
+    findings = [f for f in _run(tmp_path, _asa("9.8(4)", body)) if f.rule_id == "cisco.asa.credentials.known_default_value"]
+    assert len(findings) == expected
+    assert all("8Ry2" not in " ".join(map(str, f.evidence)) for f in findings)
+
+
+@pytest.mark.parametrize("version,body,expected", [
+    ("8.2(5)", "passwd 2KFQnbNIdI.2KYOU encrypted\nssh 192.0.2.0 255.255.255.0 outside\n", True),
+    ("9.8(4)", "passwd 2KFQnbNIdI.2KYOU encrypted\nssh 192.0.2.0 255.255.255.0 outside\n", False),  # SSH needs AAA from 8.4(2)
+    ("9.8(4)", "passwd 2KFQnbNIdI.2KYOU encrypted\ntelnet 192.0.2.0 255.255.255.0 inside\n", True),
+    ("8.2(5)", "passwd 2KFQnbNIdI.2KYOU encrypted\nssh 192.0.2.0 255.255.255.0 outside\naaa authentication ssh console LOCAL\n", False),
+    ("8.2(5)", "passwd abcdefghijklmnop encrypted\ntelnet 192.0.2.0 255.255.255.0 inside\n", False),
+])
+def test_default_login_password(tmp_path, version, body, expected):  # ASA-10
+    findings = [f for f in _run(tmp_path, _asa(version, body))
+                if f.rule_id == "cisco.asa.credentials.known_default_value" and "Login" in f.title]
+    assert bool(findings) is expected
+    assert all("2KFQ" not in " ".join(map(str, f.evidence)) for f in findings)

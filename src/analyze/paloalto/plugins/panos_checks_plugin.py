@@ -40,6 +40,10 @@ PANOS_HIERARCHY_GUIDE = (
     "https://docs.paloaltonetworks.com/ngfw/pan-os-cli-quick-start/"
     "cli-command-hierarchy/pan-os-11-2-configure-cli-command-hierarchy"
 )
+PANOS_INITIAL_CONFIGURATION = (
+    "https://docs.paloaltonetworks.com/pan-os/11-0/pan-os-admin/getting-started/"
+    "integrate-the-firewall-into-your-management-network/perform-initial-configuration"
+)
 PANOS_ADMIN_GUIDE = (
     "https://docs.paloaltonetworks.com/ngfw/administration/firewall-administration/"
     "manage-firewall-administrators/administrative-authentication"
@@ -161,6 +165,21 @@ class PluginPANOSChecks(BasePlugin):
 
     def check_administration(self, parser: BaseDeviceParser) -> None:
         panos = self._panos(parser)
+        default_admin = panos.get_default_admin_password()
+        if default_admin is not None:
+            self.add_issue(Finding(
+                rule_id="paloalto.panos.credentials.known_default_value",
+                device=parser.device_type,
+                title="Built-in admin account still uses its factory password",
+                observation="The stored hash of the 'admin' account is the documented factory password (recognised by recomputing it; the value is not shown).",
+                impact="Anyone who reaches the web interface, API or SSH can log in with full administrative rights.",
+                exploitability="admin/admin is published and is the first credential attackers try.",
+                recommendation="Change the admin password now, or disable the built-in admin after creating named administrators.",
+                severity=Severity.CRITICAL,
+                evidence=(default_admin,),
+                references=(PANOS_INITIAL_CONFIGURATION,),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
         users = panos.get_normalized_config().users.items
         if users and all(user.authentication == "local" for user in users):
             self.add_issue(

@@ -721,6 +721,9 @@ class CiscoIOSParser(BaseDeviceParser):
         result = []
         if train < (12, 1) and "finger" not in disabled and "finger" not in explicit:
             result.append(("finger", f"enabled by default before 12.1(5); train {train[0]}.{train[1]}"))
+        elif train == (16, 1) and "finger" not in disabled and "finger" not in explicit:
+            # SC-044 IOS-02: IOS XE hardening guide, releases 'later than 16.1' disable finger.
+            result.append(("finger", "enabled by default in IOS XE 16.1; train 16.1"))
         for service in ("tcp-small-servers", "udp-small-servers"):
             if service in disabled or service in explicit:
                 continue
@@ -1413,6 +1416,31 @@ class CiscoIOSParser(BaseDeviceParser):
             if match.group("disabled")
             else ConfigurationState.ENABLED
         )
+
+    _CLUSTERING_HTTP_MODEL = re.compile(
+        r"(?i)^(?:switch \d+ provision ws-c(?P<stack>2950|3550|3560|3750|37\d\d)\S*"
+        r"|boot system \S*?c(?P<image>2950|3550|3560|3750)-\S+)"
+    )
+
+    def get_http_platform_default(self) -> Optional[ConfigEvidence]:
+        """Evidence that an absent ``ip http server`` means enabled on this platform (SC-044 IOS-14).
+
+        HTTP Services command reference: 'The HTTP server is enabled for clustering on the
+        following Cisco switches: Catalyst 3700 series, Catalyst 3750 series, Catalyst 3550
+        series, Catalyst 3560 series, and Catalyst 2950 series.' The model must be named by a
+        stack ``switch N provision`` or a ``boot system`` image line of a classic IOS train.
+        """
+        train = self.get_train()
+        if not train or train[0] >= 16 or self.device_type == "IOS_XE":
+            return None
+        for number, raw in enumerate(self._source_lines, start=1):
+            if raw[:1].isspace():
+                continue
+            match = self._CLUSTERING_HTTP_MODEL.match(raw.strip())
+            if match:
+                model = match.group("stack") or match.group("image")
+                return ConfigEvidence(f"Catalyst {model} platform: {raw.strip()}", self.config_filepath, number)
+        return None
 
     def get_https_server_state(self) -> ConfigurationState:
         match = self._last_global_match(r"(?P<disabled>no )?ip http secure-server")

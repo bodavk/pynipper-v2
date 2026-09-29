@@ -146,6 +146,7 @@ class HPProCurveParser(BaseDeviceParser):
 
     device_type = "HP_PROCURVE"
     _SUPPORTED_DEFAULT_RELEASE = re.compile(r"^(?:[A-Z]{2}\.)?16\.10\.", re.IGNORECASE)
+    _HARDENING_1604_RELEASE = re.compile(r"^(?:[A-Z]{2}\.)?16\.04\.", re.IGNORECASE)
     _SUPPORTED_ADMIN_RELEASE = re.compile(r"^(?:[A-Z]{2}\.)?16\.(?:10|11)\.", re.IGNORECASE)
     _DEFAULT_CRYPTO = {
         "cipher": {
@@ -448,6 +449,14 @@ class HPProCurveParser(BaseDeviceParser):
                 defaults[protocol],
                 (ConfigEvidence(f"AOS-S {version} documented default for {protocol}", self.config_filepath),),
                 "AOS-S 16.10 documented default",
+            )
+        if protocol in {"telnet", "http"} and self._HARDENING_1604_RELEASE.match(version):
+            # SC-044 AOS-01: ArubaOS-Switch Hardening Guide for 16.04, 'Out of the box, Aruba
+            # switches enable Telnet, ... and Hypertext Transfer Protocol (HTTP)'.
+            return HPFeature(
+                ConfigurationState.ENABLED,
+                (ConfigEvidence(f"AOS-S {version} documented default for {protocol}", self.config_filepath),),
+                "AOS-S 16.04 hardening guide default",
             )
         return HPFeature(ConfigurationState.UNKNOWN, detail="Release is absent or outside the supported AOS-S 16.10 default table")
 

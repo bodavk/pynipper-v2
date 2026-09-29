@@ -10,6 +10,11 @@ CISCO_IOS_HTTP_GUIDE = (
 )
 
 
+CISCO_IOS_HTTP_SERVICES_CR = (
+    "https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/https/command/nm-https-cr-book/m_nm-https-cr-cl-sh.html"
+)
+
+
 class PluginHTTP(BasePlugin):
     """Evaluate the effective IOS embedded HTTP server configuration."""
 
@@ -23,6 +28,21 @@ class PluginHTTP(BasePlugin):
 
     def get_cisco_ios_http(self, parser: BaseDeviceParser):
         ios = self._ios_parser(parser)
+        platform = ios.get_http_platform_default()
+        if ios.get_http_server_state() == ConfigurationState.ABSENT and platform is not None:
+            return Finding(
+                rule_id="cisco.ios.http.cleartext_service",
+                device=parser.device_type,
+                title="Clear-text HTTP management service enabled",
+                observation="'ip http server' is not configured, and on this Catalyst platform the HTTP server is enabled by default for clustering.",
+                impact="Administrative credentials and sessions can be exposed to interception or modification.",
+                exploitability="An attacker with access to the management traffic path can observe or alter clear-text HTTP traffic.",
+                recommendation="Configure 'no ip http server' (and 'no ip http secure-server' if unused) and manage the switch over SSH.",
+                severity=Severity.HIGH,
+                evidence=(platform, "ip http server absent: platform default enabled"),
+                references=(CISCO_IOS_HTTP_SERVICES_CR, CISCO_IOS_HTTP_GUIDE),
+                basis=FindingBasis.DOCUMENTED_DEFAULT,
+            )
         if ios.get_http_server_state() != ConfigurationState.ENABLED:
             return None
         return Finding(
