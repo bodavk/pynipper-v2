@@ -288,6 +288,7 @@
         "juniper.junos.discovery.lldp.external",
         "juniper.junos.fhrp.authentication",
         "juniper.junos.filter.broad_accept",
+        "juniper.junos.host_inbound.management_exposed",
         "juniper.junos.interfaces.redirects",
         "juniper.junos.logging.remote_destination",
         "juniper.junos.management.grpc_cleartext",
@@ -307,7 +308,7 @@
         "juniper.junos.ssh.root_login",
         "juniper.junos.ssh.weak_ciphers"
       ],
-      "expected_finding_count": 30
+      "expected_finding_count": 31
     },
     {
       "name": "junos-secure",

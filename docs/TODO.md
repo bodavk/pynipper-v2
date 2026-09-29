@@ -18,6 +18,8 @@ SC-044 insecure-default research remains unchanged and separately owned. Detaile
 
 SC-046 progress (2026-09-28): standard IPv4 permit-all ACL detection is implemented for active IOS/XE SSH and HTTP/HTTPS management, including ordered removals and overlapping VTY changes. SSH also supports bounded named/numbered extended IPv4 IP/TCP rules with universal destinations and no port predicates. HTTP stays standard-only. Unresolved and unsupported active IPv4 attachments now produce sanitized manual-review coverage notes in JSON/HTML, not vulnerability findings. Remaining: broader extended predicates, independent IPv6 applicability and other adapters.
 
+SC-047 (2026-09-29): SRX host-inbound admission of enabled management services on assessed external interfaces is implemented, including interface overrides, `all`/`any-service` with exceptions, management functional zone, J-Web listener lists and lo0/interface filter uncertainty. Remaining: routing-protocol admission and logical systems.
+
 SC-026 progress (2026-09-28): Junos REST HTTP and classic JET gRPC clear-text explicit network-listener detection are implemented. gRPC authentication-bypass/TLS interactions, omitted listener defaults, EOS API controls and the other API/DNS stages remain open.
 
 ## Priority: practical-testing defects

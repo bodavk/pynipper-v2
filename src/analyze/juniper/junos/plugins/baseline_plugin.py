@@ -116,6 +116,15 @@ JUNIPER_IDP_RULEBASE_REFERENCE = (
 )
 # IPS rulebase actions that never stop an attack (vendor action reference).
 IDP_NON_BLOCKING_ACTIONS = frozenset({"no-action", "ignore-connection", "mark-diffserv", "class-of-service"})
+JUNIPER_HOST_INBOUND_REFERENCE = (
+    "https://www.juniper.net/documentation/us/en/software/junos/cli-reference/topics/ref/statement/"
+    "security-edit-system-service-zone-host-inbound-traffic.html"
+)
+JUNIPER_ZONE_GUIDE = (
+    "https://www.juniper.net/documentation/us/en/software/junos/security-policies/topics/topic-map/"
+    "security-zone-configuration.html"
+)
+_CLEARTEXT_ADMIN_SERVICES = frozenset({"telnet", "http", "ftp", "xnm-clear-text", "rlogin", "rsh", "finger"})
 JUNIPER_SCREEN_REFERENCE = (
     "https://www.juniper.net/documentation/us/en/software/junos/"
     "cli-reference/topics/ref/statement/security-edit-syn-flood.html"
@@ -1040,6 +1049,69 @@ class PluginJunOSBaseline(BasePlugin):
                 (JUNIPER_LLDP_GUIDE,),
             ))
 
+    def check_host_inbound(self, parser: BaseDeviceParser) -> None:
+        """SC-047: enabled management services admitted to the SRX itself on an assessed external interface.
+
+        Host-inbound admission is device-local and independent of transit security
+        policies. A service is reported only when it is configured (enabled) and the
+        effective zone/interface list admits it. An attached lo0 or interface input filter
+        may restrict the traffic, so those cases stay unknown instead of 'unrestricted'.
+        """
+        junos = self._junos(parser)
+        if (junos.parse_error or not junos.get_model().upper().startswith("SRX")
+                or junos.has_unexpanded_inheritance()):
+            return
+        enabled = junos.get_enabled_management_services()
+        if not enabled:
+            return
+        lo0_filtered = any(
+            not junos.is_accept_all_filter(protection.family, protection.filter_name)
+            for protection in junos.get_routing_engine_protections()
+        )
+        interface_filters = {
+            interface for interface, filters in junos.get_interface_input_filters().items()
+            if not all(junos.is_accept_all_filter(family, name) for family, name in filters)
+        }
+        for admission in junos.get_host_inbound_admissions():
+            physical = admission.interface.split(".", 1)[0]
+            roles = {junos.assessment_context.role_for_interface(admission.interface),
+                     junos.assessment_context.role_for_interface(physical)}
+            if "external" not in roles:
+                continue
+            exposed = sorted(
+                service for service, (listeners, _) in enabled.items()
+                if admission.admits(service)
+                and (listeners is None or admission.interface in listeners or physical in listeners)
+            )
+            if not exposed or lo0_filtered or admission.interface in interface_filters:
+                continue
+            cleartext = [service for service in exposed if service in _CLEARTEXT_ADMIN_SERVICES]
+            scope = ("'any-service'" if admission.any_service else "'all'" if admission.all_services
+                     else "an explicit service list")
+            if admission.exceptions:
+                scope += " except " + ", ".join(sorted(admission.exceptions))
+            evidence = tuple(item for item in admission.evidence) + tuple(
+                item for service in exposed for item in enabled[service][1]
+            ) + (f"assessment policy: {admission.interface} role external",)
+            self.add_issue(self._finding(
+                parser,
+                "juniper.junos.host_inbound.management_exposed",
+                "SRX admits management services on an external interface",
+                (f"Interface {admission.interface} in zone {admission.zone} is classified external; its "
+                 f"{admission.source}-level host-inbound-traffic ({scope}) admits the enabled service(s) "
+                 f"{', '.join(exposed)} to the device itself. Host-inbound admission is not governed by "
+                 "transit security policies, and no lo0 or interface input filter is attached."),
+                "Anyone on the external network can reach the firewall's own management services and attempt logins or exploits"
+                + (" over clear-text protocols that expose credentials." if cleartext else "."),
+                ("Remove the services from the external zone/interface host-inbound-traffic (list only what is needed, "
+                 "for example 'ike' and 'ping'), manage the SRX from an internal or out-of-band interface, and attach a "
+                 "source-restricted lo0 input filter."),
+                Severity.HIGH if cleartext or admission.all_services else Severity.MEDIUM,
+                evidence,
+                (JUNIPER_HOST_INBOUND_REFERENCE, JUNIPER_ZONE_GUIDE),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+
     def check_zone_screens(self, parser: BaseDeviceParser) -> None:
         junos = self._junos(parser)
         if (
@@ -1217,4 +1289,5 @@ class PluginJunOSBaseline(BasePlugin):
         self.check_discovery(parser)
         self.check_access_edge(parser)
         self.check_zone_screens(parser)
+        self.check_host_inbound(parser)
         self.check_idp_actions(parser)

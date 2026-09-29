@@ -336,6 +336,33 @@ class JunosWebManagementPolicy:
 
 
 @dataclass(frozen=True)
+class JunosHostInboundAdmission:
+    """Effective SRX ``host-inbound-traffic system-services`` for one zone interface (SC-047).
+
+    ``source`` is ``interface`` when the interface lists its own system services (Juniper:
+    'Interface configuration overrides that of the zone'), ``zone`` when the zone list
+    applies, ``none`` when neither is configured (default: all dropped) and ``unknown``
+    when only interface-level routing protocols are configured, so precedence is unclear.
+    """
+
+    zone: str
+    interface: str
+    source: str
+    services: frozenset[str]  # explicit service names admitted
+    all_services: bool  # 'all' or 'any-service'
+    any_service: bool
+    exceptions: frozenset[str]
+    evidence: tuple[ConfigEvidence, ...]
+
+    def admits(self, service: str) -> bool:
+        if self.source not in {"interface", "zone"}:
+            return False
+        if self.all_services:
+            return service not in self.exceptions
+        return service in self.services
+
+
+@dataclass(frozen=True)
 class JunosLoginNoticePolicy:
     message_configured: bool
     announcement_configured: bool
@@ -706,6 +733,149 @@ class JunOSParser(BaseDeviceParser):
                 data["auth"] = tail[1]
                 data["evidence"] = statement.evidence
         return list(groups.values())
+
+    def get_host_inbound_admissions(self) -> tuple[JunosHostInboundAdmission, ...]:
+        """Resolve zone/interface host-inbound system-service admission (SC-047).
+
+        Juniper security zone reference: 'By default, a security zone has all system
+        services disabled', 'Interface configuration overrides that of the zone', and 'all'
+        ... with 'except' exclusions; 'any-service' admits every port. Covers security zones
+        and the management functional zone. Deactivated/deleted statements are already
+        resolved by the statement model; ``apply-groups`` is left to the caller.
+        """
+        zone_lists: dict[str, list[JunosStatement]] = {}
+        interface_lists: dict[tuple[str, str], list[JunosStatement]] = {}
+        interface_protocols: set[tuple[str, str]] = set()
+        bindings: dict[tuple[str, str], JunosStatement] = {}
+        for statement in self.statements:
+            path = statement.path
+            if not statement.active or path[:2] != ("security", "zones") or len(path) < 4:
+                continue
+            if path[2] == "security-zone":
+                zone, rest = path[3], path[4:]
+            elif path[2:4] == ("functional-zone", "management"):
+                zone, rest = "management (functional zone)", path[4:]
+            else:
+                continue
+            if rest[:2] == ("host-inbound-traffic", "system-services") and len(rest) > 2:
+                zone_lists.setdefault(zone, []).append(statement)
+            elif rest[:1] == ("interfaces",) and len(rest) > 1:
+                key = (zone, rest[1])
+                bindings.setdefault(key, statement)
+                tail = rest[2:]
+                if tail[:2] == ("host-inbound-traffic", "system-services") and len(tail) > 2:
+                    interface_lists.setdefault(key, []).append(statement)
+                elif tail[:2] == ("host-inbound-traffic", "protocols"):
+                    interface_protocols.add(key)
+
+        def resolve(statements: list[JunosStatement]):
+            services: set[str] = set()
+            exceptions: set[str] = set()
+            all_services = any_service = False
+            for statement in statements:
+                tail = statement.path[statement.path.index("system-services") + 1:]
+                name = tail[0]
+                if tail[1:2] == ("except",):
+                    exceptions.add(name)
+                elif name == "all":
+                    all_services = True
+                elif name == "any-service":
+                    all_services = any_service = True
+                else:
+                    services.add(name)
+            return frozenset(services), all_services, any_service, frozenset(exceptions)
+
+        result = []
+        for (zone, interface), binding in sorted(bindings.items()):
+            if (zone, interface) in interface_lists:
+                source, statements = "interface", interface_lists[(zone, interface)]
+            elif (zone, interface) in interface_protocols:
+                source, statements = "unknown", zone_lists.get(zone, [])
+            elif zone in zone_lists:
+                source, statements = "zone", zone_lists[zone]
+            else:
+                source, statements = "none", []
+            services, all_services, any_service, exceptions = resolve(statements)
+            result.append(JunosHostInboundAdmission(
+                zone=zone, interface=interface, source=source, services=services,
+                all_services=all_services, any_service=any_service, exceptions=exceptions,
+                evidence=(binding.evidence,) + tuple(item.evidence for item in statements),
+            ))
+        return tuple(result)
+
+    _MANAGEMENT_SERVICE_PATHS = {
+        "ssh": ("system", "services", "ssh"),
+        "telnet": ("system", "services", "telnet"),
+        "ftp": ("system", "services", "ftp"),
+        "http": ("system", "services", "web-management", "http"),
+        "https": ("system", "services", "web-management", "https"),
+        "netconf": ("system", "services", "netconf", "ssh"),
+        "xnm-clear-text": ("system", "services", "xnm-clear-text"),
+        "xnm-ssl": ("system", "services", "xnm-ssl"),
+        "rlogin": ("system", "services", "rlogin"),
+        "rsh": ("system", "services", "rsh"),
+        "finger": ("system", "services", "finger"),
+    }
+
+    def get_enabled_management_services(self) -> dict[str, tuple[tuple[str, ...] | None, tuple[ConfigEvidence, ...]]]:
+        """Configured device management services: name -> (listener interfaces or None for all, evidence).
+
+        ``web-management http|https interface`` limits J-Web to the listed interfaces; SNMP
+        counts as enabled when a community or SNMPv3 user is configured.
+        """
+        enabled: dict[str, tuple[tuple[str, ...] | None, tuple[ConfigEvidence, ...]]] = {}
+        for name, prefix in self._MANAGEMENT_SERVICE_PATHS.items():
+            statements = [item for item in self.statements if item.active and self._is_prefix(prefix, item.path)]
+            if not statements:
+                continue
+            listeners = tuple(sorted({
+                item.path[len(prefix) + 1] for item in statements
+                if item.path[len(prefix):len(prefix) + 1] == ("interface",) and len(item.path) > len(prefix) + 1
+            }))
+            enabled[name] = (listeners or None, tuple(item.evidence for item in statements[:3]))
+        snmp = [item for item in self.statements if item.active and item.path[:2] in {("snmp", "community"), ("snmp", "v3")}]
+        if snmp:
+            enabled["snmp"] = (None, (ConfigEvidence("snmp community/v3 configured <redacted>", snmp[0].evidence.source,
+                                                     snmp[0].evidence.line_number),))
+        return enabled
+
+    def get_interface_input_filters(self) -> dict[str, tuple[tuple[str, str], ...]]:
+        """Logical interfaces (``ifd.unit``) with active input filters: (family, filter name)."""
+        filters: dict[str, list[tuple[str, str]]] = {}
+        for statement in self.statements:
+            path = statement.path
+            if (statement.active and path[:1] == ("interfaces",) and len(path) >= 9
+                    and path[2] == "unit" and path[4] == "family" and path[6:8] == ("filter", "input")):
+                filters.setdefault(f"{path[1]}.{path[3]}", []).append((path[5], path[8]))
+        return {key: tuple(value) for key, value in filters.items()}
+
+    def is_accept_all_filter(self, family: str, name: str) -> bool:
+        """True only when the filter's first active term provably accepts every packet.
+
+        The term may match nothing or only ``source-address 0.0.0.0/0`` / ``::/0`` and must
+        end in ``then accept``. Any other condition, a missing filter or an unknown
+        construct returns False (the filter may restrict traffic).
+        """
+        prefix = ("firewall", "family", family, "filter", name, "term")
+        terms: dict[str, list[tuple[str, ...]]] = {}
+        order: list[str] = []
+        for statement in self.statements:
+            if statement.active and self._is_prefix(prefix, statement.path) and len(statement.path) > len(prefix):
+                term = statement.path[len(prefix)]
+                if term not in terms:
+                    order.append(term)
+                terms.setdefault(term, []).append(statement.path[len(prefix) + 1:])
+        if not order:
+            return False
+        tails = terms[order[0]]
+        conditions = [tail[1:] for tail in tails if tail[:1] == ("from",)]
+        actions = [tail[1:] for tail in tails if tail[:1] == ("then",)]
+        if any(tail[:1] not in {("from",), ("then",)} for tail in tails):
+            return False
+        if any(cond not in {("source-address", "0.0.0.0/0"), ("source-address", "::/0")} for cond in conditions):
+            return False
+        return ("accept",) in actions and all(action in {("accept",), ("count",)} or action[:1] == ("count",)
+                                              for action in actions)
 
     def get_zone_screens(self) -> tuple[JunosZoneScreen, ...]:
         """Resolve active zone bindings and explicit SYN-flood screen state."""
