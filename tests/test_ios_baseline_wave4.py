@@ -50,6 +50,10 @@ aaa accounting exec default start-stop group tacacs+
 username admin privilege 15 algorithm-type scrypt secret REDACTED
 enable algorithm-type scrypt secret REDACTED
 no ip source-route
+no service pad
+no ip bootp server
+no ip domain lookup
+service tcp-keepalives-in
 logging host 192.0.2.50
 logging trap informational
 archive
@@ -68,6 +72,7 @@ interface GigabitEthernet0/0
  ip address 198.51.100.1 255.255.255.0
  no ip redirects
  no ip proxy-arp
+ no mop enabled
  no shutdown
 ip access-list extended COPP-MGMT
  permit tcp 192.0.2.0 0.0.0.255 any eq 22
@@ -126,6 +131,9 @@ def test_ios_baseline_vulnerable_rule_snapshot(tmp_path):
         "cisco.ios.ntp.server_exposed",
         "cisco.ios.banner.login",
         "cisco.ios.services.unnecessary",
+        "cisco.ios.services.default_enabled",
+        "cisco.ios.services.dns_lookup",
+        "cisco.ios.services.tcp_keepalives",
         "cisco.ios.ip.source_route",
         "cisco.ios.interface.ip_hardening",
         "cisco.ios.control_plane.copp",

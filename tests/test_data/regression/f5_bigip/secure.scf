@@ -45,6 +45,7 @@ sys syslog {
 ltm profile client-ssl /Common/protected_ssl {
     mode enabled
     allow-non-ssl disabled
+    options { dont-insert-empty-fragments no-tlsv1 no-tlsv1.1 }
 }
 ltm virtual /Common/application {
     enabled

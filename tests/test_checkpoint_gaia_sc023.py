@@ -10,7 +10,9 @@ from src.devices.detection import detect_device_type
 from src.report.secret_evidence import collect_secret_evidence
 
 HEADER = "#\n# Configuration of gw1\n# Language version: 15.0v1\n#\nset hostname gw1\n"
-SAFE_LOCKOUT = "set password-controls deny-on-fail enable on\n"
+SAFE_LOCKOUT = ("set password-controls deny-on-fail enable on\n"
+                "set password-controls deny-on-nonuse enable on\n"  # SC-044 CP-03
+                "set password-controls min-password-length 14\n")  # SC-044 CP-05
 
 
 def _parser(tmp_path, body):

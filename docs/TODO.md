@@ -60,7 +60,7 @@ P2:
 - [ ] [SC-040](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-040) FortiGate maintainer account and USB auto-install. **USB auto-install done 2026-09-26**; maintainer setting not in current CLI reference.
 - [ ] [SC-042](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-042) F5 weak client-side TLS, unvalidated server-side TLS, unencrypted persistence cookies. **Weak client ciphers and cookies done 2026-09-26.**
 - [ ] [SC-043](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-043) Shared risky-service catalogue for firewall policies. Initial Check Point/ASA/FortiOS/F5 integrations are done; **P1 effective-exposure refinements remain**, including F5 protocol identity and policy-order accuracy. See the current queue.
-- [ ] [SC-044](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-044) Release-gated insecure defaults for IOS 12.x, ASA 8.x, PIX, FortiOS 5.x/6.0, BIG-IP 11.x/12.x and FW1 R6x/R7x. **IOS 11.x/12.0 finger and small-server defaults done 2026-09-26.**
+- [ ] [SC-044](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-044) Release-gated insecure defaults for IOS 12.x, ASA 8.x, PIX, FortiOS 5.x/6.0, BIG-IP 11.x/12.x and FW1 R6x/R7x. **IOS 11.x/12.0 finger and small-server defaults done 2026-09-26.** Research table: [INSECURE_DEFAULTS_BY_RELEASE.md](agent_notes/INSECURE_DEFAULTS_BY_RELEASE.md) (2026-09-28). **76 of 109 primary-vendor rows implemented 2026-09-29**; remaining rows are conflicts, unverified hashes, FW1 samples and secondary families.
 - [ ] Gaia OS items (allowed clients, web UI TLS, SSH ciphers, AAA, NTP, syslog) live in [SC-023](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-023); F5 APM in [SC-024](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-024).
 
 ## Detection and parser coverage

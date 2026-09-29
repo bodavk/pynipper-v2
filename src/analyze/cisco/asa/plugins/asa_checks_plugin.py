@@ -32,6 +32,15 @@ CISCO_ASA_TLS_REFERENCE = (
     "https://www.cisco.com/c/en/us/td/docs/security/asa/asa-cli-reference/"
     "S/asa-command-ref-S/so-st-commands.html"
 )
+# SC-044 PIX 6.3 command references (Cisco archive copies).
+CISCO_PIX63_GL_REFERENCE = (
+    "https://web.archive.org/web/20111208224049/http://www.cisco.com/en/US/docs/security/pix/"
+    "pix63/command/reference/gl.html"
+)
+CISCO_PIX63_S_REFERENCE = (
+    "https://web.archive.org/web/20110728200323/http://www.cisco.com/en/US/docs/security/pix/"
+    "pix63/command/reference/s.html"
+)
 CISCO_ASA_ACCESS_RULES_GUIDE = (
     "https://www.cisco.com/c/en/us/td/docs/security/asa/asa92/configuration/"
     "firewall/asa-firewall-cli/access-rules.html"
@@ -313,9 +322,128 @@ class PluginASAChecks(BasePlugin):
                 )
             )
 
+    def _check_ssl_defaults(self, parser: BaseDeviceParser, policy) -> None:
+        """SC-044 ASA-02/ASA-04: 'ssl server-version' and 'ssl cipher' defaults.
+
+        Command reference (so-st): before 9.3(2) the server version default was 'any'
+        (SSLv3 accepted); from 9.3(2) 'The default is medium for all protocol versions.'
+        Both apply to ASDM (HTTP server) and WebVPN.
+        """
+        platform, release = self._asa(parser).get_release()
+        if platform != "ASA" or release is None:
+            return
+        services = [f"WebVPN on {', '.join(policy.active_interfaces)}"] if policy.active_interfaces else []
+        if policy.http_server_enabled:
+            services.append("ASDM (http server enable)")
+        if not services:
+            return
+        evidence = tuple(services)
+        if policy.server_minimum is None and release < (9, 3, 2):
+            self.add_issue(Finding(
+                rule_id="cisco.asa.tls.minimum_version",
+                device=parser.device_type,
+                title="ASA accepts SSLv3 by default on this release",
+                observation=(f"'ssl server-version' is not configured on ASA {release[0]}.{release[1]}({release[2]}); "
+                             "before 9.3(2) the default was 'any', which accepts SSLv3 and TLS 1.0 for "
+                             + " and ".join(services) + "."),
+                impact="SSLv3 and TLS 1.0 have known protocol weaknesses (for example POODLE).",
+                severity=Severity.HIGH,
+                exploitability="An on-path attacker can force or exploit a legacy protocol version.",
+                recommendation="Upgrade to a supported release and set 'ssl server-version tlsv1.2'.",
+                evidence=evidence + ("ssl server-version absent: default any before 9.3(2)",),
+                references=(CISCO_ASA_TLS_REFERENCE,),
+                basis=FindingBasis.DOCUMENTED_DEFAULT,
+            ))
+        if (release >= (9, 3, 2) and "tlsv1.2" not in policy.cipher_protocols
+                and not policy.weak_cipher_commands):
+            self.add_issue(Finding(
+                rule_id="cisco.asa.tls.weak_cipher",
+                device=parser.device_type,
+                title="ASA TLS cipher level is left at the default 'medium'",
+                observation=("No 'ssl cipher tlsv1.2 ...' line is configured, so the documented default cipher level "
+                             "'medium' applies to " + " and ".join(services) + ". This project treats 'medium' as weak, "
+                             "as it does for an explicit 'ssl cipher ... medium'."),
+                impact="The medium level keeps legacy CBC and SHA-1 based suites (3DES on older releases) that clients can negotiate.",
+                severity=Severity.MEDIUM,
+                exploitability="An attacker able to influence negotiation may target an offered legacy suite.",
+                recommendation="Set 'ssl cipher tlsv1.2 high' (or 'fips' or a reviewed custom list) and the same for TLS 1.3 where supported.",
+                evidence=evidence + ("ssl cipher tlsv1.2 absent: default medium",),
+                references=(CISCO_ASA_TLS_REFERENCE,),
+                basis=FindingBasis.DOCUMENTED_DEFAULT,
+            ))
+
+    def check_pix_defaults(self, parser: BaseDeviceParser) -> None:
+        """SC-044 PIX-01/02/03: PIX 6.x defaults from the PIX 6.3 command reference."""
+        asa = self._asa(parser)
+        platform, release = asa.get_release()
+        if platform != "PIX" or release is None or release[0] >= 7:
+            return
+        version = f"PIX Version {release[0]}.{release[1]}({release[2]})"
+        lines = [raw.strip() for raw in asa.parser.ioscfg]
+        if any(re.match(r"isakmp enable\s+\S+", line) for line in lines):
+            policies: dict[str, dict[str, str]] = {}
+            for line in lines:
+                match = re.fullmatch(r"isakmp policy (\d+) (\S+)(?:\s+(\S+))?.*", line)
+                if match:
+                    policies.setdefault(match.group(1), {})[match.group(2)] = match.group(3) or ""
+            weak = []
+            for number, settings in sorted(policies.items()):
+                if settings.get("encryption", "des") in {"des", "3des"}:
+                    weak.append(f"isakmp policy {number} encryption {settings.get('encryption', 'des (default)')}")
+                if settings.get("group", "1") in {"1", "2", "5"}:
+                    weak.append(f"isakmp policy {number} group {settings.get('group', '1 (default)')}")
+            if not policies:
+                weak.append("no isakmp policy: default suite DES, SHA-1, DH group 1")
+            if weak:
+                self.add_issue(Finding(
+                    rule_id="cisco.asa.vpn.ike_weak_policy",
+                    device=parser.device_type,
+                    title="PIX IKE policy uses DES or a weak Diffie-Hellman group",
+                    observation=f"{version} has ISAKMP enabled and its policies resolve to weak values: " + "; ".join(weak) + ".",
+                    impact="DES and DH groups 1/2 can be broken or brute-forced with modest resources, exposing tunnel keys.",
+                    severity=Severity.HIGH,
+                    exploitability="An attacker who records IKE and IPsec traffic can attack the weak key exchange offline.",
+                    recommendation="Replace the PIX with a supported platform; meanwhile set 'isakmp policy <n> encryption aes-256' and 'group 5' or better.",
+                    evidence=(version, *weak),
+                    references=(CISCO_PIX63_GL_REFERENCE,),
+                    basis=(FindingBasis.DOCUMENTED_DEFAULT if any("default" in item for item in weak)
+                           else FindingBasis.EXPLICIT_VALUE),
+                ))
+        ssh = [line for line in lines if re.fullmatch(r"ssh \d+(?:\.\d+){3} \d+(?:\.\d+){3} \S+", line)]
+        if ssh:
+            self.add_issue(Finding(
+                rule_id="cisco.asa.ssh.protocol_version",
+                device=parser.device_type,
+                title="PIX 6.x SSH supports only SSH version 1",
+                observation=f"{version} permits SSH management; PIX 6.x implements SSH version 1 only.",
+                impact="SSH version 1 has obsolete protocol and cryptographic design weaknesses.",
+                severity=Severity.HIGH,
+                exploitability="An on-path attacker can exploit SSHv1 weaknesses to recover or hijack sessions.",
+                recommendation="Replace the PIX with a supported platform that offers SSH version 2.",
+                evidence=(version, *ssh[:5]),
+                references=(CISCO_PIX63_S_REFERENCE,),
+                basis=FindingBasis.DOCUMENTED_DEFAULT,
+            ))
+        sysopt = [line for line in lines if line == "sysopt connection permit-ipsec"]
+        if sysopt:
+            self.add_issue(Finding(
+                rule_id="cisco.asa.vpn.sysopt_permit_vpn",
+                device=parser.device_type,
+                title="Decrypted IPsec traffic bypasses interface access lists",
+                observation=f"{version} has 'sysopt connection permit-ipsec', so traffic from IPsec tunnels is not checked by interface access lists.",
+                impact="A compromised or misconfigured VPN peer can reach any internal address the tunnel covers.",
+                severity=Severity.MEDIUM,
+                exploitability="An attacker who controls a VPN peer or client gains unfiltered access behind the firewall.",
+                recommendation="Remove 'sysopt connection permit-ipsec' and permit tunnel traffic explicitly in the interface access lists.",
+                evidence=(version, *sysopt),
+                references=(CISCO_PIX63_S_REFERENCE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+
     def check_ssl_version(self, parser: BaseDeviceParser) -> None:
         asa = self._asa(parser)
         policy = asa.get_ssl_service_policy()
+        self._check_ssl_defaults(parser, policy)
         if not policy.active_interfaces or asa.get_version() == "?":
             return
         minimum = policy.server_minimum
@@ -516,5 +644,6 @@ class PluginASAChecks(BasePlugin):
         self.check_unrestricted_ssh(parser)
         self.check_logging(parser)
         self.check_ssl_version(parser)
+        self.check_pix_defaults(parser)
         self.check_wide_open_acls(parser)
         self.check_acl_hygiene_and_effectiveness(parser)

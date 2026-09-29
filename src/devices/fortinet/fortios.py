@@ -101,6 +101,16 @@ class FortiAdministratorRole:
 
 
 @dataclass(frozen=True)
+class FortiAPIIdentity:
+    role: FortiAdministratorRole
+    vdoms: Tuple[str, ...]
+    broad_families: Tuple[str, ...]
+    peer_authentication: str
+    peer_group: str
+    evidence: Tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
 class FortiManagementCertificateBinding:
     """Resolved FortiOS administrative HTTPS certificate evidence."""
 
@@ -277,6 +287,7 @@ class FortiOSParser(BaseDeviceParser):
 
     device_type = "FORTIOS"
     _SECRET_FIELDS = {
+        "api-key",
         "auth-password",
         "auth-pwd",
         "key",
@@ -820,6 +831,9 @@ class FortiOSParser(BaseDeviceParser):
 
     def get_administrator_roles(self) -> Tuple[FortiAdministratorRole, ...]:
         """Bind enabled administrators to built-in or exported custom access profiles."""
+        return self._resolve_administrator_roles(self.iter_administrators())
+
+    def _resolve_administrator_roles(self, accounts, *, api: bool = False) -> Tuple[FortiAdministratorRole, ...]:
         profiles = {
             (scope, str(name).casefold()): (settings, path + (str(name),))
             for scope, section, path in self._scoped_sections("system accprofile")
@@ -831,10 +845,10 @@ class FortiOSParser(BaseDeviceParser):
             "sysgrp", "netgrp", "loggrp", "fwgrp", "authgrp", "vpngrp",
             "utmgrp", "wanoptgrp", "secfabgrp", "wifi", "ftviewgrp",
         }
-        for scope, username, settings, path in self.iter_administrators():
+        for scope, username, settings, path in accounts:
             if str(settings.get("status", "enable")).casefold() == "disable":
                 continue
-            profile = str(settings.get("accprofile", "super_admin"))
+            profile = str(settings.get("accprofile", "" if api else "super_admin"))
             name = profile.casefold()
             evidence = list(self.field_evidence(path + ("accprofile",)))
             if name == "super_admin":
@@ -848,7 +862,7 @@ class FortiOSParser(BaseDeviceParser):
             else:
                 match = next(
                     ((candidate, profiles[(candidate, name)])
-                     for candidate in (scope, "global", "root")
+                     for candidate in ((scope, "global") if api else (scope, "global", "root"))
                      if (candidate, name) in profiles),
                     None,
                 )
@@ -862,7 +876,7 @@ class FortiOSParser(BaseDeviceParser):
                     }
                     for group in ("sysgrp", "netgrp", "loggrp", "fwgrp", "utmgrp"):
                         nested = values.get(group + "-permission")
-                        if isinstance(nested, dict) and any(
+                        if (not api or values.get(group) == "custom") and isinstance(nested, dict) and any(
                             str(value).casefold() == "read-write"
                             for value in nested.values() if isinstance(value, str)
                         ):
@@ -884,6 +898,58 @@ class FortiOSParser(BaseDeviceParser):
                 evidence=tuple(evidence),
             ))
         return tuple(result)
+
+    def get_api_identities(self) -> Tuple[FortiAPIIdentity, ...]:
+        """Explicit API privilege/source grants; omitted trusthost defaults stay unknown."""
+        accounts = [
+            (scope, str(name), settings, path + (str(name),))
+            for scope, section, path in self._scoped_sections("system api-user")
+            for name, settings in section.items() if isinstance(settings, dict)
+        ]
+        roles = {(role.scope, role.administrator): role
+                 for role in self._resolve_administrator_roles(accounts, api=True)}
+        identities = []
+        for scope, name, settings, path in accounts:
+            role = roles.get((scope, name))
+            if role is None:
+                continue
+            evidence = list(role.evidence)
+            broad = set()
+            hosts = settings.get("trusthost", {})
+            for identifier, values in hosts.items() if isinstance(hosts, dict) else ():
+                if not isinstance(values, dict):
+                    continue
+                family = values.get("type")
+                if family not in {"ipv4-trusthost", "ipv6-trusthost"}:
+                    continue
+                raw = values.get(family)
+                tokens = raw if isinstance(raw, list) else str(raw or "").split()
+                try:
+                    if family == "ipv4-trusthost" and len(tokens) == 2:
+                        # FortiOS uses a subnet mask, not a Cisco wildcard mask.
+                        if tokens[1] != "0.0.0.0":
+                            continue
+                        network = ipaddress.IPv4Network((tokens[0], tokens[1]), strict=False)
+                    elif family == "ipv6-trusthost" and len(tokens) == 1 and "/" in tokens[0]:
+                        network = ipaddress.IPv6Network(tokens[0], strict=False)
+                    else:
+                        continue
+                except (ValueError, TypeError):
+                    continue
+                if network.prefixlen == 0:
+                    broad.add("IPv4" if network.version == 4 else "IPv6")
+                    for field in ("type", family):
+                        evidence.extend(self.field_evidence(path + ("trusthost", str(identifier), field)))
+            vdom = settings.get("vdom", [])
+            vdoms = tuple(vdom) if isinstance(vdom, list) else (str(vdom),) if vdom else ()
+            for field in ("vdom", "peer-auth", "peer-group"):
+                evidence.extend(self.field_evidence(path + (field,)))
+            identities.append(FortiAPIIdentity(
+                role, vdoms, tuple(sorted(broad)),
+                str(settings.get("peer-auth", "unknown")),
+                str(settings.get("peer-group", "")), tuple(evidence),
+            ))
+        return tuple(identities)
 
     def iter_interfaces(self):
         for scope, section, path in self._scoped_sections("system interface"):

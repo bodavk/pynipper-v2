@@ -18,6 +18,7 @@
         "f5.bigip.http.weak_cipher_suite",
         "f5.bigip.logging.syslog_remote_none",
         "f5.bigip.ltm.clientssl_cleartext_enabled",
+        "f5.bigip.ltm.clientssl_legacy_tls",
         "f5.bigip.management.self_ip_port_lockdown",
         "f5.bigip.ntp.unauthenticated_server",
         "f5.bigip.password_policy.enforcement_disabled",
@@ -28,9 +29,10 @@
         "f5.bigip.snmp.write_community",
         "f5.bigip.ssh.idle_timeout_disabled",
         "f5.bigip.ssh.unrestricted_sources",
-        "f5.bigip.vpn.ike_aggressive_mode"
+        "f5.bigip.vpn.ike_aggressive_mode",
+        "f5.bigip.vpn.ikev1"
       ],
-      "expected_finding_count": 24
+      "expected_finding_count": 26
     },
     {
       "name": "f5-bigip-secure",
@@ -87,7 +89,10 @@
         "cisco.ios.routing.bgp.outbound_policy",
         "cisco.ios.routing.bgp.prefix_limit",
         "cisco.ios.routing.ospf.authentication",
+        "cisco.ios.services.default_enabled",
+        "cisco.ios.services.dns_lookup",
         "cisco.ios.services.remote_shell",
+        "cisco.ios.services.tcp_keepalives",
         "cisco.ios.services.unnecessary",
         "cisco.ios.snmp.default_community",
         "cisco.ios.snmp.legacy_community",
@@ -101,7 +106,7 @@
         "cisco.ios.vty.session_timeout",
         "cisco.ios.vty.telnet"
       ],
-      "expected_finding_count": 45
+      "expected_finding_count": 48
     },
     {
       "name": "cisco-ios-secure",
@@ -136,7 +141,10 @@
         "cisco.ios.layer2.access_edge.source_guard",
         "cisco.ios.logging.remote_destination",
         "cisco.ios.ntp.servers",
+        "cisco.ios.services.default_enabled",
+        "cisco.ios.services.dns_lookup",
         "cisco.ios.services.smart_install",
+        "cisco.ios.services.tcp_keepalives",
         "cisco.ios.ssh.authentication_retries",
         "cisco.ios.ssh.negotiation_timeout",
         "cisco.ios.ssh.protocol_version",
@@ -144,7 +152,7 @@
         "cisco.ios.vty.authentication",
         "cisco.iosxe.crypto.legacy_ikev2"
       ],
-      "expected_finding_count": 20
+      "expected_finding_count": 23
     },
     {
       "name": "cisco-iosxe-secure",
@@ -174,16 +182,20 @@
         "cisco.asa.crypto.legacy_transform",
         "cisco.asa.crypto.legacy_vpn",
         "cisco.asa.failover.authentication",
+        "cisco.asa.interface.icmp_unrestricted",
         "cisco.asa.interface.reverse_path",
         "cisco.asa.logging.missing",
         "cisco.asa.management.certificate",
         "cisco.asa.management.unrestricted_http",
         "cisco.asa.management.unrestricted_ssh",
         "cisco.asa.ntp.authentication",
+        "cisco.asa.ssh.weak_algorithms",
         "cisco.asa.threat_detection.basic",
-        "cisco.asa.vpn.ike_aggressive_mode"
+        "cisco.asa.tls.weak_cipher",
+        "cisco.asa.vpn.ike_aggressive_mode",
+        "cisco.asa.vpn.sysopt_permit_vpn"
       ],
-      "expected_finding_count": 17
+      "expected_finding_count": 21
     },
     {
       "name": "cisco-asa-secure",
@@ -249,8 +261,8 @@
         "policy_version": "regression-v1",
         "protected_aaa_profiles": ["root:LEGACY-PROTECTED"]
       },
-      "expected_rule_ids": ["fortinet.fortios.credentials.private_data_storage"],
-      "expected_finding_count": 1
+      "expected_rule_ids": ["fortinet.fortios.credentials.private_data_storage", "fortinet.fortios.logging.remote_cleartext"],
+      "expected_finding_count": 2
     },
     {
       "name": "junos-vulnerable",
@@ -374,24 +386,28 @@
       "name": "cisco-ios-syntax-variants",
       "device": "IOS_ROUTER",
       "input": "cisco_ios/syntax_variants.conf",
-      "expected_rule_ids": [],
-      "expected_finding_count": 0
+      "expected_rule_ids": ["cisco.ios.services.default_enabled", "cisco.ios.services.dns_lookup", "cisco.ios.services.tcp_keepalives"],
+      "expected_finding_count": 3
     },
     {
       "name": "cisco-iosxe-syntax-variants",
       "device": "IOS_XE",
       "input": "cisco_iosxe/syntax_variants.conf",
-      "expected_rule_ids": [],
-      "expected_finding_count": 0
+      "expected_rule_ids": ["cisco.ios.services.default_enabled", "cisco.ios.services.dns_lookup", "cisco.ios.services.tcp_keepalives"],
+      "expected_finding_count": 3
     },
     {
       "name": "cisco-asa-syntax-variants",
       "device": "ASA",
       "input": "cisco_asa/syntax_variants.conf",
       "expected_rule_ids": [
-        "cisco.asa.interface.reverse_path"
+        "cisco.asa.interface.icmp_unrestricted",
+        "cisco.asa.interface.icmp_unrestricted",
+        "cisco.asa.interface.reverse_path",
+        "cisco.asa.ssh.weak_algorithms",
+        "cisco.asa.tls.weak_cipher"
       ],
-      "expected_finding_count": 1
+      "expected_finding_count": 5
     },
     {
       "name": "fortios-syntax-variants",
@@ -399,11 +415,13 @@
       "input": "fortios/syntax_variants.conf",
       "expected_rule_ids": [
         "fortinet.fortios.admin.centralized_authentication",
+        "fortinet.fortios.admin.maintainer_account",
         "fortinet.fortios.dos.wan_policy_missing",
         "fortinet.fortios.https.management_certificate",
+        "fortinet.fortios.logging.remote_cleartext",
         "fortinet.fortios.policy.disabled_permissive_rule"
       ],
-      "expected_finding_count": 4
+      "expected_finding_count": 6
     },
     {
       "name": "junos-hierarchical-variant",
@@ -607,12 +625,13 @@
         "checkpoint.gaia.password_policy.history_disabled",
         "checkpoint.gaia.password_policy.lockout_disabled",
         "checkpoint.gaia.password_policy.minimum_length",
+        "checkpoint.gaia.password_policy.nonuse_lockout_disabled",
         "checkpoint.gaia.snmp.default_community",
         "checkpoint.gaia.snmp.legacy_version",
         "checkpoint.gaia.snmp.v3_security",
         "checkpoint.gaia.snmp.write_community"
       ],
-      "expected_finding_count": 12
+      "expected_finding_count": 13
     },
     {
       "name": "checkpoint-gaia-secure",
@@ -625,8 +644,8 @@
       "name": "checkpoint-gaia-syntax-variants",
       "device": "CHECKPOINT_GAIA",
       "input": "checkpoint_gaia/syntax_variants.conf",
-      "expected_rule_ids": [],
-      "expected_finding_count": 0
+      "expected_rule_ids": ["checkpoint.gaia.password_policy.nonuse_lockout_disabled"],
+      "expected_finding_count": 1
     }
   ]
 }

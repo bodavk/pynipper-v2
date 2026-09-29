@@ -79,6 +79,33 @@ FORTINET_CA_CERTIFICATE_REFERENCE = (
 )
 NIST_CRYPTO_TRANSITIONS = "https://csrc.nist.gov/pubs/sp/800/131/a/r2/final"
 FORTINET_PRIVATE_DATA_ADVISORY = "https://www.fortiguard.com/psirt/FG-IR-19-007"
+# SC-044 release-default sources (docs/agent_notes/INSECURE_DEFAULTS_BY_RELEASE.md).
+FORTINET_GLOBAL_6414_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/6.4.14/cli-reference/1620/config-system-global"
+)
+FORTINET_GLOBAL_700_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.0.0/cli-reference/1620/config-system-global"
+)
+FORTINET_GLOBAL_720_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.2.0/cli-reference/1620/config-system-global"
+)
+FORTINET_GLOBAL_760_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.6.0/cli-reference/339914554/config-system-global"
+)
+FORTINET_SSH_CIPHERS_702 = (
+    "https://docs.fortinet.com/document/fortigate/7.0.0/new-features/765236/"
+    "enabling-individual-ciphers-in-the-ssh-administrative-access-protocol-7-0-2"
+)
+FORTINET_SSLVPN_700_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.0.0/cli-reference/363620/config-vpn-ssl-settings"
+)
+FORTINET_SYSLOG_6414_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/6.4.14/cli-reference/380620/config-log-syslogd-setting"
+)
+FORTINET_PASSWORD_6414_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/6.4.14/cli-reference/10620/config-system-password-policy"
+)
+FORTINET_BLASTRADIUS_ADVISORY = "https://www.fortiguard.com/psirt/FG-IR-24-255"
 FORTINET_SSLVPN_REFERENCE = (
     "https://docs.fortinet.com/document/fortigate/7.4.4/cli-reference/114404382/config-vpn-ssl-settings"
 )
@@ -220,6 +247,12 @@ class PluginFortiOSBaseline(BasePlugin):
     @staticmethod
     def _enabled(settings: FortiDict) -> bool:
         return PluginFortiOSBaseline._text(settings.get("status"), "enable").lower() != "disable"
+
+    @staticmethod
+    def _release(parser: FortiOSParser):
+        """Exact ``(major, minor, patch)`` from the ``#config-version`` header, or None."""
+        numbers = [int(item) for item in re.findall(r"\d+", parser.get_version())[:3]]
+        return tuple(numbers) if len(numbers) == 3 else None
 
     @staticmethod
     def _supports_default_inference(parser: FortiOSParser) -> bool:
@@ -376,7 +409,9 @@ class PluginFortiOSBaseline(BasePlugin):
     def check_password_and_session_policy(self, parser: BaseDeviceParser) -> None:
         fortios = self._fortios(parser)
         policies = list(fortios.iter_scoped_sections("system password-policy"))
-        if self._supports_default_inference(fortios) and not policies:
+        # SC-044 FOS-12: the 6.4.14 CLI reference also documents status disable.
+        release = self._release(fortios)
+        if (self._supports_default_inference(fortios) or (release and release >= (6, 4, 14))) and not policies:
             self.add_issue(
                 self._finding(
                     parser,
@@ -497,6 +532,8 @@ class PluginFortiOSBaseline(BasePlugin):
                 "ssl-static-key-ciphers": "enable",
                 "admin-ssh-v1": "enable",
                 "ssh-cbc-cipher": "enable",
+                "ssh-hmac-md5": "enable",
+                "ssh-kex-sha1": "enable",
             }
             for field, weak_value in explicit_weak.items():
                 if self._text(settings.get(field)).lower() != weak_value:
@@ -1045,8 +1082,25 @@ class PluginFortiOSBaseline(BasePlugin):
     def check_syslog_transport(self, parser: BaseDeviceParser) -> None:
         """Reliable TCP is not evidence that exported syslog is TLS protected."""
         fortios = self._fortios(parser)
+        release = self._release(fortios)
         for sink in fortios.get_syslog_sinks():
-            if sink.transport_state == "explicit-cleartext":
+            if sink.transport_state == "unknown" and not sink.encryption and release and release >= (6, 4, 14):
+                # SC-044 FOS-11: 6.4.14+ CLI reference, enc-algorithm defaults to disable
+                # (mode udp), so an enabled server without it receives clear text.
+                self.add_issue(self._finding(
+                    parser,
+                    "fortinet.fortios.logging.remote_cleartext",
+                    "Enabled FortiOS remote syslog is not encrypted",
+                    f"Enabled {sink.name} in scope '{sink.scope}' sends to '{sink.server}' without 'enc-algorithm'; "
+                    f"the documented default is 'disable' (mode '{sink.mode or 'udp'}'), so events travel in clear text.",
+                    "Remote audit events may be read or modified in transit.",
+                    "Set 'mode reliable' with 'enc-algorithm high' and a trusted certificate, or document an equivalent protected path.",
+                    Severity.MEDIUM,
+                    tuple(item for item in sink.evidence),
+                    (FORTINET_SYSLOG_TRANSPORT_REFERENCE, FORTINET_SYSLOG_6414_REFERENCE),
+                    basis=FindingBasis.DOCUMENTED_DEFAULT,
+                ))
+            elif sink.transport_state == "explicit-cleartext":
                 self.add_issue(self._finding(
                     parser,
                     "fortinet.fortios.logging.remote_cleartext",
@@ -1711,8 +1765,30 @@ class PluginFortiOSBaseline(BasePlugin):
                 )
             )
 
+    def check_api_identities(self, parser: BaseDeviceParser) -> None:
+        for identity in self._fortios(parser).get_api_identities():
+            if identity.role.privileged_state != "privileged" or not identity.broad_families:
+                continue
+            self.add_issue(Finding(
+                rule_id="fortinet.fortios.api.trusted_hosts",
+                device=parser.device_type,
+                title="Write-capable API account explicitly trusts every source",
+                observation=(f"API account '{identity.role.administrator}' in scope '{identity.role.scope}' "
+                             f"has profile '{identity.role.profile}' with write privileges and an explicit "
+                             f"unrestricted {', '.join(identity.broad_families)} trusted-host entry. "
+                             f"Exported VDOM scope: {', '.join(identity.vdoms) or 'unspecified'}."),
+                impact="The API account's trusted-host list does not limit source addresses in the identified family.",
+                exploitability="A reachable caller still needs valid API credentials and any required peer authentication. Listener reachability, token validity and effective certificate validation are not established by this export.",
+                recommendation="Restrict API trusted hosts to approved automation clients and use the minimum required write permissions.",
+                severity=Severity.HIGH,
+                evidence=identity.evidence,
+                references=("https://docs.fortinet.com/document/fortigate/7.0.13/cli-reference/15620",),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+
     def analyze(self, parser: BaseDeviceParser) -> None:
         self.check_administrators(parser)
+        self.check_api_identities(parser)
         self.check_management_crypto(parser)
         self.check_management_certificates(parser)
         self.check_snmp(parser)
@@ -1737,6 +1813,95 @@ class PluginFortiOSBaseline(BasePlugin):
         self.check_ntp_server_mode(parser)
         self.check_fortianalyzer_transport(parser)
         self.check_admin_password_hashes(parser)
+        self.check_release_defaults(parser)
+
+    def check_release_defaults(self, parser: BaseDeviceParser) -> None:
+        """SC-044 FOS-01/02/03/04/05/07/13: global defaults that differ by release."""
+        fortios = self._fortios(parser)
+        release = self._release(fortios)
+        if not release or release < (6, 4, 14):
+            return  # oldest release with verified Default cells
+        access = set()
+        for _, _, settings, _ in fortios.iter_interfaces():
+            if self._enabled(settings):
+                access.update(value.lower() for value in self._values(settings, "allowaccess"))
+        label = ".".join(map(str, release))
+        for scope, settings, path in fortios.iter_scoped_sections("system global"):
+            if "https" in access and (6, 4, 14) <= release < (7, 0, 0) and not settings.get("admin-https-ssl-versions"):
+                self.add_issue(self._finding(
+                    parser, "fortinet.fortios.tls.minimum_version",
+                    "Administrative HTTPS accepts TLS 1.1 by default",
+                    f"Scope '{scope}' does not set admin-https-ssl-versions; on FortiOS {label} the default is "
+                    "'tlsv1-1 tlsv1-2 tlsv1-3' (7.0.0 removed TLS 1.1).",
+                    "TLS 1.1 is deprecated and lacks modern cipher suites.",
+                    "Set 'admin-https-ssl-versions tlsv1-2 tlsv1-3' and upgrade to a supported release.",
+                    Severity.MEDIUM, ("admin-https-ssl-versions absent: default tlsv1-1 tlsv1-2 tlsv1-3",),
+                    (FORTINET_GLOBAL_6414_REFERENCE, FORTINET_GLOBAL_700_REFERENCE),
+                    basis=FindingBasis.DOCUMENTED_DEFAULT,
+                ))
+            if "https" in access and "ssl-static-key-ciphers" not in settings:
+                self.add_issue(self._finding(
+                    parser, "fortinet.fortios.crypto.ssl_static_key_ciphers",
+                    "Static-key TLS ciphers are allowed by default",
+                    f"Scope '{scope}' does not set ssl-static-key-ciphers; the documented default is 'enable', "
+                    "so administrative HTTPS offers RSA key-exchange suites without forward secrecy.",
+                    "Recorded sessions can be decrypted later if the server private key is ever exposed.",
+                    "Set 'ssl-static-key-ciphers disable' after confirming administrative clients support ECDHE.",
+                    Severity.LOW, ("ssl-static-key-ciphers absent: default enable",),
+                    (FORTINET_GLOBAL_6414_REFERENCE, FORTINET_GLOBAL_760_REFERENCE),
+                    basis=FindingBasis.DOCUMENTED_DEFAULT,
+                ))
+            if "ssh" in access and release < (7, 0, 2):
+                for field, what in (("ssh-cbc-cipher", "CBC-mode ciphers"), ("ssh-hmac-md5", "HMAC-MD5"),
+                                    ("ssh-kex-sha1", "SHA-1 key exchange")):
+                    if field in settings:
+                        continue
+                    self.add_issue(self._finding(
+                        parser, f"fortinet.fortios.crypto.{field.replace('-', '_')}",
+                        f"SSH administration allows {what} by default",
+                        f"Scope '{scope}' does not set {field}; on FortiOS {label} the default is 'enable' "
+                        "(7.0.2 replaced these switches with per-algorithm lists).",
+                        "Legacy SSH algorithms weaken confidentiality, integrity, or key exchange of administrative sessions.",
+                        f"Set '{field} disable', or upgrade to 7.0.2 or later and choose ssh-enc-algo/ssh-mac-algo/ssh-kex-algo explicitly.",
+                        Severity.LOW, (f"{field} absent: default enable",),
+                        (FORTINET_GLOBAL_6414_REFERENCE, FORTINET_SSH_CIPHERS_702),
+                        basis=FindingBasis.DOCUMENTED_DEFAULT,
+                    ))
+            if release < (7, 4, 0) and str(settings.get("admin-maintainer", "enable")).lower() != "disable":
+                explicit = "admin-maintainer" in settings
+                self.add_issue(self._finding(
+                    parser, "fortinet.fortios.admin.maintainer_account",
+                    "Console maintainer account is enabled",
+                    f"Scope '{scope}' {'sets' if explicit else 'does not set'} admin-maintainer"
+                    f"{' enable' if explicit else '; the documented default on this release is enable'}, so anyone at the console "
+                    "can reset the administrator password with the 'maintainer' account shortly after a reboot.",
+                    "Physical or console-server access is enough to take over the firewall.",
+                    "Set 'admin-maintainer disable' where physical access is not fully controlled (keep a tested recovery procedure).",
+                    Severity.LOW,
+                    self._evidence(fortios, path + ("admin-maintainer",), "admin-maintainer absent: default enable"),
+                    (FORTINET_GLOBAL_720_REFERENCE,),
+                    basis=FindingBasis.EXPLICIT_VALUE if explicit else FindingBasis.DOCUMENTED_DEFAULT,
+                ))
+        # FOS-13: FG-IR-24-255, releases before 7.2.11 / 7.4.6 / 7.6.1 cannot enforce the
+        # Message-Authenticator attribute on RADIUS over UDP/TCP.
+        affected = (release < (7, 2, 11) or (7, 4, 0) <= release < (7, 4, 6) or release == (7, 6, 0))
+        if affected:
+            for profile in fortios.get_aaa_server_profiles():
+                if not profile.is_bound_for_administration or profile.transport == "tls":
+                    continue
+                self.add_issue(self._finding(
+                    parser, "fortinet.fortios.aaa.radius_message_authenticator",
+                    "RADIUS responses are not protected against forgery on this release",
+                    f"RADIUS profile '{profile.name}' in scope '{profile.scope}' authenticates administrators over "
+                    f"{profile.transport.upper()}, and FortiOS {label} cannot require the Message-Authenticator attribute "
+                    "(FG-IR-24-255, Blast-RADIUS).",
+                    "An attacker on the path to the RADIUS server can forge an Access-Accept and log in as an administrator.",
+                    "Upgrade to 7.2.11, 7.4.6, 7.6.1 or later (require-message-authenticator then defaults to enable) or use RadSec.",
+                    Severity.HIGH,
+                    tuple(item for item in profile.evidence) or (f"config user radius / edit {profile.name}",),
+                    (FORTINET_BLASTRADIUS_ADVISORY, FORTINET_RADIUS_GUIDE),
+                    basis=FindingBasis.DOCUMENTED_DEFAULT,
+                ))
 
     def check_admin_password_hashes(self, parser: BaseDeviceParser) -> None:
         """SC-035: on FortiOS 7.6.1+ administrator passwords should use PBKDF2 (``ENC PB2``).
@@ -1898,6 +2063,18 @@ class PluginFortiOSBaseline(BasePlugin):
                     "Weak ciphers reduce the protection of VPN sessions against interception.",
                     "Set 'algorithm high' (the default).",
                     Severity.MEDIUM, "algorithm"))
+            release = self._release(fortios)
+            if not values["servercert"] and release and (6, 4, 14) <= release < (7, 2, 0):
+                # SC-044 FOS-09: 6.4.14/7.0 CLI reference, servercert defaults to Fortinet_Factory.
+                self.add_issue(self._finding(
+                    parser, "fortinet.fortios.sslvpn.factory_certificate", "SSL-VPN uses the factory certificate",
+                    f"{where} does not set 'servercert'; on this release the default is the factory certificate Fortinet_Factory.",
+                    "Users cannot verify the gateway and learn to accept certificate warnings, which makes interception and phishing of VPN credentials easier.",
+                    "Install a certificate from a trusted CA for the VPN host name and select it with 'set servercert'.",
+                    Severity.MEDIUM, base + ("servercert absent: default Fortinet_Factory",),
+                    (FORTINET_SSLVPN_REFERENCE, FORTINET_SSLVPN_700_REFERENCE),
+                    basis=FindingBasis.DOCUMENTED_DEFAULT,
+                ))
             if (values["servercert"] or "").strip('"').casefold() in {"fortinet_factory", "self-sign"}:
                 checks.append((
                     "fortinet.fortios.sslvpn.factory_certificate", "SSL-VPN uses the factory certificate",

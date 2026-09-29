@@ -157,6 +157,51 @@ class CheckPointGaiaParser(BaseDeviceParser):
         parts = tuple(name.split())
         return self._setting("set", "password-controls", *parts)
 
+    def get_ssh_server_settings(self) -> dict[str, GaiaSetting]:
+        """`set ssh server <option> <value>` (Gaia R81.20+ syntax), last value per option."""
+        result: dict[str, GaiaSetting] = {}
+        for command in self.commands:
+            words = command.words
+            if words[:3] == ("set", "ssh", "server") and len(words) >= 5:
+                result[words[3]] = GaiaSetting(words[4], self._evidence(command))
+        return result
+
+    def get_cluster_ccp_encryption(self) -> Optional[GaiaSetting]:
+        """`set cluster member ccpenc {on | off}` (ClusterXL R80.30+)."""
+        return self._setting("set", "cluster", "member", "ccpenc")
+
+    def get_remote_syslog(self) -> list[tuple[str, str, ConfigEvidence]]:
+        """`add syslog log-remote-address <ip> ... [protocol {tcp | udp}]`: (address, protocol, evidence).
+
+        The protocol keyword exists from R81.20; UDP is the default and the only
+        transport before it. Returns protocol "" when not stated.
+        """
+        servers: dict[str, tuple[str, str, ConfigEvidence]] = {}
+        for command in self.commands:
+            words = command.words
+            if words[1:3] != ("syslog", "log-remote-address") or len(words) < 4:
+                continue
+            if words[0] == "delete":
+                servers.pop(words[3], None)
+            elif words[0] == "add":
+                protocol = words[words.index("protocol") + 1].lower() if "protocol" in words[:-1] else ""
+                servers[words[3]] = (words[3], protocol, self._evidence(command))
+        return list(servers.values())
+
+    def get_allowed_clients(self) -> list[tuple[str, ConfigEvidence]]:
+        """`add allowed-client host|network ...` entries, minus deletions: (target, evidence)."""
+        clients: dict[str, tuple[str, ConfigEvidence]] = {}
+        for command in self.commands:
+            words = command.words
+            if words[1:2] != ("allowed-client",) or len(words) < 4:
+                continue
+            key = " ".join(words[2:4])
+            if words[0] == "delete":
+                clients.pop(key, None)
+            elif words[0] == "add":
+                clients[key] = (words[3], self._evidence(command))
+        return list(clients.values())
+
     def get_inactivity_timeout(self) -> Optional[GaiaSetting]:
         """`set inactivity-timeout <minutes>` (Clish; default 10)."""
         return self._setting("set", "inactivity-timeout")

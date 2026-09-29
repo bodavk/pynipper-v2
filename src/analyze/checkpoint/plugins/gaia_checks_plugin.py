@@ -13,6 +13,22 @@ SESSION = _GUIDE + "Session.htm"
 MESSAGES = _GUIDE + "Messages.htm"
 USERS = _GUIDE + "Users-Gaia-Clish.htm"
 NIST_PASSWORDS = "https://pages.nist.gov/800-63-4/sp800-63b.html"
+# SC-044 release-default sources (docs/agent_notes/INSECURE_DEFAULTS_BY_RELEASE.md).
+PASSWORD_POLICY_R8030 = (
+    "https://sc1.checkpoint.com/documents/R80.30/WebAdminGuides/EN/CP_R80.30_Gaia_AdminGuide/94483.htm"
+)
+SSH_SERVER_R8120 = (
+    "https://sc1.checkpoint.com/documents/R81.20/WebAdminGuides/EN/CP_R81.20_Gaia_AdminGuide/Content/"
+    "Topics-GAG/Advanced-Gaia-Configuration-SSH-MAC-KEX.htm"
+)
+CLUSTERXL_R8030 = (
+    "https://sc1.checkpoint.com/documents/R80.30/WebAdminGuides/EN/CP_R80.30_ClusterXL_AdminGuide/213846.htm"
+)
+SYSLOG_R8120 = (
+    "https://sc1.checkpoint.com/documents/R81.20/WebAdminGuides/EN/CP_R81.20_Gaia_AdminGuide/Content/"
+    "Topics-GAG/System-Logging-Gaia-Clish.htm"
+)
+ALLOWED_CLIENTS = _GUIDE + "Allowed-Clients-Gaia-Clish.htm"
 DEFAULT_COMMUNITIES = {"public", "private"}
 
 
@@ -34,6 +50,59 @@ class PluginCheckPointGaiaChecks(BasePlugin):
         self._check_password_policy(parser)
         self._check_session(parser)
         self._check_user_shells(parser)
+        self._check_release_defaults(parser)
+
+    def _check_release_defaults(self, parser: CheckPointGaiaParser) -> None:
+        """SC-044 CP-03/05/06/07/08/11."""
+        nonuse = parser.get_password_control("deny-on-nonuse enable")
+        if nonuse is None or nonuse.value == "off":
+            self._emit(parser, "password_policy.nonuse_lockout_disabled", "Unused accounts are not locked",
+                       "'deny-on-nonuse' is off, so accounts that have not logged in for a long time stay usable"
+                       + ("." if nonuse else " (the documented default)."),
+                       "Forgotten accounts of former administrators remain valid targets for password guessing.",
+                       "Run 'set password-controls deny-on-nonuse enable on' with an allowed-no-use period.",
+                       Severity.LOW, ((nonuse.evidence,) if nonuse else ("no set password-controls deny-on-nonuse enable",)),
+                       (PASSWORD_POLICY, PASSWORD_POLICY_R8030),
+                       FindingBasis.EXPLICIT_VALUE if nonuse else FindingBasis.DOCUMENTED_DEFAULT)
+        if parser.get_password_control("min-password-length") is None:
+            self._emit(parser, "password_policy.minimum_length", "Minimum password length is short",
+                       "'min-password-length' is not in the export; the documented default is 6 characters.",
+                       "Short passwords can be guessed or cracked quickly.",
+                       "Set 'set password-controls min-password-length' to at least 8, preferably 14 or more.",
+                       Severity.MEDIUM, ("min-password-length absent: default 6",),
+                       (PASSWORD_POLICY_R8030, NIST_PASSWORDS), FindingBasis.DOCUMENTED_DEFAULT)
+        ssh = parser.get_ssh_server_settings()
+        root = ssh.get("permit-root-login")
+        if (root and root.value.lower() == "yes") or (ssh and root is None):
+            self._emit(parser, "ssh.root_login_permitted", "SSH login as root is permitted",
+                       ("'set ssh server permit-root-login yes' is configured." if root else
+                        "The export uses the R81.20+ 'set ssh server' settings but not permit-root-login; the documented default is 'yes'."),
+                       "A root password can be guessed or reused over SSH, giving a full shell without a personal account.",
+                       "Run 'set ssh server permit-root-login no' and use named administrators.",
+                       Severity.MEDIUM, (root.evidence,) if root else tuple(item.evidence for item in list(ssh.values())[:3]),
+                       (SSH_SERVER_R8120,), FindingBasis.EXPLICIT_VALUE if root else FindingBasis.DOCUMENTED_DEFAULT)
+        ccp = parser.get_cluster_ccp_encryption()
+        if ccp and ccp.value.lower() == "off":
+            self._emit(parser, "cluster.ccp_encryption_disabled", "ClusterXL control protocol is not encrypted",
+                       "'set cluster member ccpenc off' sends Cluster Control Protocol (CCP) messages without encryption.",
+                       "An attacker on the synchronisation network can read or forge cluster state messages.",
+                       "Run 'set cluster member ccpenc on' on every member and keep the sync network isolated.",
+                       Severity.MEDIUM, (ccp.evidence,), (CLUSTERXL_R8030,), FindingBasis.EXPLICIT_VALUE)
+        for address, protocol, evidence in parser.get_remote_syslog():
+            if protocol in {"", "udp"}:
+                self._emit(parser, "syslog.remote_udp", "Remote syslog uses UDP",
+                           f"Remote syslog server {address} uses UDP" + (" (the documented default)." if not protocol else "."),
+                           "UDP syslog can be lost silently or spoofed, and is unencrypted.",
+                           "Use 'protocol tcp' (R81.20+) or forward logs through the management server, over a protected path.",
+                           Severity.LOW, (evidence,), (SYSLOG_R8120,),
+                           FindingBasis.DOCUMENTED_DEFAULT if not protocol else FindingBasis.EXPLICIT_VALUE)
+        for target, evidence in parser.get_allowed_clients():
+            if target in {"any-host", "any"}:
+                self._emit(parser, "management.unrestricted_allowed_client", "Gaia management accepts any client host",
+                           "'allowed-client host any-host' lets any address connect to the Gaia Portal, SSH and other management services.",
+                           "More hosts can attempt administrative logins or exploit management-plane vulnerabilities.",
+                           "Delete 'any-host' and add only the management networks ('add allowed-client network ...').",
+                           Severity.MEDIUM, (evidence,), (ALLOWED_CLIENTS,), FindingBasis.EXPLICIT_VALUE)
 
     def _check_user_shells(self, parser: CheckPointGaiaParser) -> None:
         """SC-030: users whose login shell is bash (Expert mode) instead of Clish."""

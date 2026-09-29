@@ -45,7 +45,7 @@ def _audit(tmp_path, device, relative):
             "cisco.ios.vty.telnet": "explicit-value",  # transport input all
             "cisco.ios.ssh.protocol_version": "explicit-value",
             "cisco.ios.ssh.authentication_retries": "explicit-value",
-            "cisco.ios.ip.source_route": "missing-explicit-setting",
+            "cisco.ios.ip.source_route": "documented-default",  # SC-044 IOS-06
         }),
         ("ASA", "cisco_asa/vulnerable.conf", {
             "cisco.asa.management.certificate": "missing-explicit-setting",

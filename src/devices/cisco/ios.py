@@ -490,6 +490,20 @@ class CiscoIOSParser(BaseDeviceParser):
             return version[0].re_match_typed(r"^version\s+(\S+)", default="") or "?"
         return "?"
 
+    def get_train(self) -> Optional[tuple[int, int]]:
+        """``major.minor`` from the ``version`` line (SC-044); None when missing.
+
+        The running configuration names only the train (``12.4``, ``15.2``, ``17.9``),
+        so gates inside a train (12.1(5), 15.4(3)M4, 16.6.4) cannot be decided here.
+        """
+        match = re.match(r"^(\d+)\.(\d+)", self.get_version())
+        return (int(match.group(1)), int(match.group(2))) if match else None
+
+    def is_iosxe(self) -> bool:
+        """IOS-XE device type or an IOS-XE 16+ train (IOS-XE 3.x reports 15.x trains)."""
+        train = self.get_train()
+        return self.device_type == "IOS_XE" or bool(train and train[0] >= 16)
+
     def get_explicit_boot_config_retrievals(self) -> list[IOSConfigRetrieval]:
         """Return current explicit boot host/network fetches on qualified releases."""
         version = re.match(r"^(\d+)\.(\d+)", self.get_version())
@@ -693,10 +707,9 @@ class CiscoIOSParser(BaseDeviceParser):
         just major.minor, so only trains that are entirely older qualify: finger for
         11.x/12.0 and the small servers for 11.x. Returns (service, reason).
         """
-        match = re.match(r"^(\d+)\.(\d+)", self.get_version())
-        if not match:
+        train = self.get_train()
+        if not train:
             return []
-        train = (int(match.group(1)), int(match.group(2)))
         disabled = set()
         for line in self._global_lines():
             folded = re.sub(r"\s+", " ", line.casefold())
@@ -709,8 +722,61 @@ class CiscoIOSParser(BaseDeviceParser):
         if train < (12, 1) and "finger" not in disabled and "finger" not in explicit:
             result.append(("finger", f"enabled by default before 12.1(5); train {train[0]}.{train[1]}"))
         for service in ("tcp-small-servers", "udp-small-servers"):
-            if train < (12, 0) and service not in disabled and service not in explicit:
+            if service in disabled or service in explicit:
+                continue
+            if train < (12, 0):
                 result.append((service, f"enabled by default before 12.0; train {train[0]}.{train[1]}"))
+            elif (16, 0) <= train < (16, 6):
+                # SC-044 IOS-01: IOS XE hardening guide, disabled by default from 16.6.4.
+                result.append((service, f"enabled by default before IOS XE 16.6.4; train {train[0]}.{train[1]}"))
+        return result
+
+    def get_default_enabled_services(self) -> list[tuple[str, str]]:
+        """Services on by default in every documented release that the export leaves on (SC-044).
+
+        IOS-05 ``service pad`` (WAN command reference: all PAD commands and connections
+        are enabled), IOS-11 ``ip bootp server`` (Fundamentals command reference: enabled,
+        and ``no ip bootp server`` appears when disabled) and IOS-10 ``mop enabled`` on
+        routed Ethernet interfaces of classic IOS (Interface command reference: enabled on
+        Ethernet interfaces). Explicitly enabled services are reported by
+        :meth:`get_legacy_services`. Returns (service, reason).
+        """
+        state: dict[str, bool] = {}
+        for line in self._global_lines():
+            folded = re.sub(r"\s+", " ", line.casefold())
+            negated = folded.startswith(("no ", "default "))
+            command = folded.split(" ", 1)[1] if negated else folded
+            if command in {"service pad", "ip bootp server"}:
+                state[command] = not negated
+            elif command == "ip dhcp bootp ignore":
+                state["bootp ignore"] = not negated
+        result = []
+        if "service pad" not in state:
+            result.append(("pad", "'no service pad' absent; PAD is enabled by default"))
+        if "ip bootp server" not in state and not state.get("bootp ignore"):
+            result.append(("bootp server", "'no ip bootp server' absent; BOOTP service is enabled by default"))
+        if not self.is_iosxe():
+            mop = []
+            for header, _, children in self._indented_blocks("interface "):
+                name = header.split(None, 1)[1] if " " in header else header
+                if not re.match(r"(?i)(?:fast|gigabit|tengigabit|ten|fortygigabit|hundredgig\w*)?ethernet", name):
+                    continue
+                enabled, shutdown, routed = True, False, False
+                for _, _, command in children:
+                    if command == "shutdown":
+                        shutdown = True
+                    elif command == "no shutdown":
+                        shutdown = False
+                    elif command == "no mop enabled":
+                        enabled = False
+                    elif command == "mop enabled":
+                        enabled = False  # explicit form is reported by get_legacy_services
+                    elif command.startswith("ip address ") and "negotiated" not in command:
+                        routed = True
+                if enabled and routed and not shutdown:
+                    mop.append(name)
+            if mop:
+                result.append(("mop", "'no mop enabled' absent on Ethernet interface(s) " + ", ".join(mop)))
         return result
 
     def get_file_and_shell_servers(self) -> list[tuple[str, ConfigEvidence]]:

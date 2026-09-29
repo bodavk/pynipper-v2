@@ -139,6 +139,44 @@ CISCO_IOS_KEY_LIFETIME_GUIDE = (
     "https://www.cisco.com/c/en/us/td/docs/ios/"
     "iproute_pi/command/reference/iri_book/iri_pi2.html"
 )
+# SC-044 release-default sources (docs/agent_notes/INSECURE_DEFAULTS_BY_RELEASE.md).
+CISCO_TERMINAL_SERVICES_CR = (
+    "https://www.cisco.com/c/en/us/td/docs/ios/termserv/command/reference/tsv_book/tsv_s1.html"
+)
+CISCO_IP_ADDRESSING_CR = (
+    "https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/ipaddr/command/ipaddr-cr-book/ipaddr-i4.html"
+)
+CISCO_IP_ADDRESSING_CR_I3 = (
+    "https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/ipaddr/command/ipaddr-cr-book/ipaddr-i3.html"
+)
+CISCO_IP_APP_SERVICES_CR = (
+    "https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/ipapp/command/iap-cr-book/iap-i1.html"
+)
+CISCO_WAN_CR = "https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/wan/command/wan-cr-book/wan-s1.html"
+CISCO_FUNDAMENTALS_CR_FK = (
+    "https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/fundamentals/command/cf_command_ref/F_through_K.html"
+)
+CISCO_FUNDAMENTALS_CR_RS = (
+    "https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/fundamentals/command/cf_command_ref/R_through_setup.html"
+)
+CISCO_INTERFACE_CR_L2 = (
+    "https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/interface/command/ir-cr-book/ir-l2.html"
+)
+CISCO_SECURITY_CR_E1 = (
+    "https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/security/d1/sec-d1-cr-book/sec-cr-e1.html"
+)
+CISCO_FLEXVPN_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/sec_conn_ike2vpn/configuration/xe-16-10/"
+    "sec-flex-vpn-xe-16-10-book/sec-cfg-ikev2-flex.html"
+)
+CISCO_VTP_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/switches/lan/catalyst9300/software/release/17-13/"
+    "configuration_guide/vlan/b_1713_vlan_9300_cg/configuring_vtp.html"
+)
+CISCO_INSECURE_FEATURE_RESTRICTIONS = (
+    "https://www.cisco.com/c/en/us/about/trust-center/resilient-infrastructure/"
+    "insecure-feature-restrictions-on-ios-xe.html"
+)
 CISCO_IOS_HTTPS_TRUSTPOINT_GUIDE = (
     "https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/https/"
     "command/nm-https-cr-book/nm-https-cr-cl-sh.html"
@@ -317,6 +355,10 @@ class PluginIOSBaseline(BasePlugin):
                     evidence,
                 ))
 
+        # SC-044 IOS-03: Terminal Services CR, 'transport input all' was the default
+        # before 15.4(3)M4, so trains up to 15.3 accept Telnet when the line is absent.
+        train = ios.get_train()
+        legacy_vty_default = bool(train and train < (15, 4) and not ios.is_iosxe())
         for line in ios.get_management_lines("vty"):
             evidence = tuple(item for item in line.evidence)
             if line.transports is None or any(
@@ -331,9 +373,18 @@ class PluginIOSBaseline(BasePlugin):
                         "Remote administrative credentials and commands may traverse the network without encryption.",
                         "Configure 'transport input ssh' on every VTY range.",
                         Severity.HIGH,
-                        evidence or (line.line,),
+                        (evidence or (line.line,)) + (
+                            (f"version {ios.get_version()}: default 'transport input all' before 15.4(3)M4",)
+                            if line.transports is None and legacy_vty_default else ()
+                        ),
+                        references=(
+                            (CISCO_IOS_HARDENING_GUIDE, CISCO_TERMINAL_SERVICES_CR)
+                            if line.transports is None and legacy_vty_default
+                            else (CISCO_IOS_HARDENING_GUIDE,)
+                        ),
                         basis=(
-                            FindingBasis.MISSING_EXPLICIT_SETTING
+                            (FindingBasis.DOCUMENTED_DEFAULT if legacy_vty_default
+                             else FindingBasis.MISSING_EXPLICIT_SETTING)
                             if line.transports is None
                             else FindingBasis.EXPLICIT_VALUE
                         ),
@@ -1094,7 +1145,7 @@ class PluginIOSBaseline(BasePlugin):
                 recommendation="Add 'no service finger' and 'no service tcp-small-servers' / 'no service udp-small-servers', and plan an upgrade from this unsupported release.",
                 severity=Severity.MEDIUM,
                 evidence=(f"version {ios.get_version()}",),
-                references=(CISCO_IOS_HARDENING_GUIDE,),
+                references=(CISCO_IOS_HARDENING_GUIDE, CISCO_IOS_ROUTING_HARDENING_GUIDE),
                 basis=FindingBasis.DOCUMENTED_DEFAULT,
             ))
         servers = ios.get_file_and_shell_servers()
@@ -1245,20 +1296,25 @@ class PluginIOSBaseline(BasePlugin):
 
     def check_interface_protections(self, parser: BaseDeviceParser) -> None:
         lines = self._global_lines(parser)
+        train = self._ios(parser).get_train()
         if "no ip source-route" not in lines:
+            # SC-044 IOS-06: IP Addressing CR, Command Default "Enabled"; the IOS XE
+            # hardening guide states it is enabled in all IOS XE releases.
             self.add_issue(
                 self._finding(
                     parser,
                     "cisco.ios.ip.source_route",
                     "IP source routing is not explicitly disabled",
-                    "The configuration does not contain the IOS 'no ip source-route' hardening command.",
-                    "Source-routed packets can bypass expected routing paths and trust boundaries on applicable releases.",
+                    "The configuration does not contain 'no ip source-route', so IP source routing is enabled (the documented default).",
+                    "Source-routed packets can bypass expected routing paths and trust boundaries.",
                     "Configure 'no ip source-route'.",
                     Severity.MEDIUM,
                     ("no ip source-route absent",),
-                    basis=FindingBasis.MISSING_EXPLICIT_SETTING,
+                    references=(CISCO_IOS_HARDENING_GUIDE, CISCO_IP_ADDRESSING_CR, CISCO_IOS_ROUTING_HARDENING_GUIDE),
+                    basis=FindingBasis.DOCUMENTED_DEFAULT,
                 )
             )
+        proxy_arp_disabled = self._effective_toggle(lines, r"ip arp proxy disable", r"no ip arp proxy disable")
         for interface in parser.get_native_config().find_objects(r"^interface\s+"):
             children = self._children(interface)
             if "shutdown" in children or not any(line.startswith("ip address ") for line in children):
@@ -1266,19 +1322,25 @@ class PluginIOSBaseline(BasePlugin):
             missing = []
             if "no ip redirects" not in children:
                 missing.append("no ip redirects")
-            if "no ip proxy-arp" not in children:
+            if "no ip proxy-arp" not in children and not proxy_arp_disabled:
                 missing.append("no ip proxy-arp")
+            # SC-044 IOS-07: IP Application Services CR, directed broadcasts are
+            # dropped by default only from 12.0.
+            if train and train < (12, 0) and "no ip directed-broadcast" not in children:
+                missing.append("no ip directed-broadcast")
             if missing:
                 self.add_issue(
                     self._finding(
                         parser,
                         "cisco.ios.interface.ip_hardening",
                         "Layer-3 interface hardening is incomplete",
-                        f"{interface.text.strip()} lacks {', '.join(missing)}.",
-                        "Redirects or proxy ARP can enable traffic redirection and weaken local network trust assumptions.",
-                        "Disable redirects and proxy ARP on routed interfaces unless explicitly required.",
+                        f"{interface.text.strip()} lacks {', '.join(missing)}, so the documented defaults (enabled) apply.",
+                        "Redirects, proxy ARP or directed broadcasts can enable traffic redirection, reflection attacks and weaken local network trust assumptions.",
+                        "Disable redirects and proxy ARP (and directed broadcasts on releases before 12.0) on routed interfaces unless explicitly required.",
                         Severity.MEDIUM,
                         (interface.text.strip(), *missing),
+                        references=(CISCO_IOS_HARDENING_GUIDE, CISCO_IP_ADDRESSING_CR, CISCO_IP_APP_SERVICES_CR),
+                        basis=FindingBasis.DOCUMENTED_DEFAULT,
                     )
                 )
 
@@ -1554,6 +1616,11 @@ class PluginIOSBaseline(BasePlugin):
 
     def check_crypto(self, parser: BaseDeviceParser) -> None:
         native = parser.get_native_config()
+        ios = self._ios(parser)
+        # SC-044 IOS-23: Security CR c4, an ISAKMP policy defaults to 56-bit DES and
+        # 768-bit DH group 1. Classic IOS only: the IOS-XE plugin already treats
+        # missing parameters as weak.
+        classic = not ios.is_iosxe() and ios.get_train() is not None
         for policy in native.find_objects(r"^crypto (?:isakmp|ikev1) policy\s+"):
             children = self._children(policy)
             weak = [
@@ -1562,6 +1629,28 @@ class PluginIOSBaseline(BasePlugin):
                 or re.fullmatch(r"hash (?:md5|sha)", line)
                 or re.fullmatch(r"group (?:1|2|5|14)", line)
             ]
+            defaults = []
+            if classic:
+                if not any(line.startswith("encryption ") for line in children):
+                    defaults.append("encryption absent: default 56-bit DES")
+                if not any(line.startswith("group ") for line in children):
+                    defaults.append("group absent: default DH group 1 (768-bit)")
+            if defaults:
+                self.add_issue(
+                    self._finding(
+                        parser,
+                        "cisco.ios.crypto.legacy_ike",
+                        "IKE policy uses legacy algorithms",
+                        f"{policy.text.strip()} omits parameters whose documented defaults are weak: {'; '.join(defaults)}.",
+                        "Weak encryption, hashing, or Diffie-Hellman groups reduce VPN security.",
+                        "Set 'encryption aes 256', 'hash sha256' or stronger and 'group 19' or stronger explicitly in every ISAKMP policy.",
+                        Severity.HIGH,
+                        (policy.text.strip(), *weak, *defaults),
+                        references=(CISCO_IOS_AGGRESSIVE_MODE_REFERENCE,),
+                        basis=FindingBasis.DOCUMENTED_DEFAULT,
+                    )
+                )
+                continue
             if weak:
                 self.add_issue(
                     self._finding(
@@ -1590,6 +1679,172 @@ class PluginIOSBaseline(BasePlugin):
                         (transform.text.strip(),),
                     )
                 )
+
+    def _ikev1_in_use(self, parser: BaseDeviceParser) -> tuple[str, ...]:
+        evidence = []
+        for line in self._global_lines(parser):
+            folded = re.sub(r"\s+", " ", line.casefold())
+            if re.match(r"crypto (?:isakmp key |keyring |isakmp profile |isakmp client configuration group )", folded) \
+                    or re.match(r"crypto map \S+ \d+ ipsec-isakmp", folded):
+                evidence.append(re.sub(r"(?i)^(crypto isakmp key)\s+(?:\d\s+)?\S+", r"\1 <redacted>", line))
+        return tuple(evidence)
+
+    def check_release_defaults(self, parser: BaseDeviceParser) -> None:
+        """SC-044: settings whose documented IOS default is insecure and that the export leaves at default."""
+        ios = self._ios(parser)
+        lines = self._global_lines(parser)
+        folded = [re.sub(r"\s+", " ", line.casefold()) for line in lines]
+        train = ios.get_train()
+
+        services = ios.get_default_enabled_services()
+        if services:
+            self.add_issue(Finding(
+                rule_id="cisco.ios.services.default_enabled",
+                device=parser.device_type,
+                title="Unneeded services are left at their enabled default",
+                observation="The export does not disable services that IOS enables by default: "
+                            + "; ".join(f"{name} ({reason})" for name, reason in services) + ".",
+                impact="PAD, BOOTP and MOP are legacy services that are rarely needed; each listener adds attack surface and BOOTP can hand out boot files to anyone who asks.",
+                exploitability="A host on an attached network can reach the default-enabled service without credentials.",
+                recommendation="Configure 'no service pad', 'no ip bootp server' and 'no mop enabled' on Ethernet interfaces unless a documented need exists.",
+                severity=Severity.LOW,
+                evidence=tuple(f"{name}: {reason}" for name, reason in services),
+                references=(CISCO_IOS_HARDENING_GUIDE, CISCO_WAN_CR, CISCO_FUNDAMENTALS_CR_FK, CISCO_INTERFACE_CR_L2),
+                basis=FindingBasis.DOCUMENTED_DEFAULT,
+            ))
+
+        lookup = self._effective_toggle(folded, r"ip domain[ -]lookup(?: .*)?", r"no ip domain[ -]lookup")
+        if not any(re.fullmatch(r"(?:no )?ip domain[ -]lookup(?: .*)?", line) for line in folded):
+            lookup = True  # IOS-12: IP Addressing CR i3, DNS lookup is enabled by default
+        if lookup and train:
+            self.add_issue(Finding(
+                rule_id="cisco.ios.services.dns_lookup",
+                device=parser.device_type,
+                title="DNS lookup of mistyped commands is enabled",
+                observation="'no ip domain lookup' is absent, so DNS-based host name translation is enabled (the documented default).",
+                impact="A mistyped exec command is treated as a host name, which delays the session and sends DNS queries (broadcast when no name server is set) that reveal typed text.",
+                exploitability="Low: only disclosure of mistyped words to hosts that can see the DNS queries.",
+                recommendation="Configure 'no ip domain lookup' unless the device resolves names, or set 'transport preferred none' on the lines.",
+                severity=Severity.INFORMATIONAL,
+                evidence=("ip domain lookup: default enabled",),
+                references=(CISCO_IP_ADDRESSING_CR_I3,),
+                basis=FindingBasis.DOCUMENTED_DEFAULT,
+            ))
+
+        if train and not self._effective_toggle(folded, r"service tcp-keepalives-in", r"no service tcp-keepalives-in"):
+            self.add_issue(Finding(
+                rule_id="cisco.ios.services.tcp_keepalives",
+                device=parser.device_type,
+                title="TCP keepalives for incoming sessions are disabled",
+                observation="'service tcp-keepalives-in' is absent; the documented default is disabled.",
+                impact="Sessions whose remote end disappears are not detected, so orphaned management sessions keep VTY lines busy.",
+                exploitability="An attacker who opens and abandons sessions can exhaust the VTY lines and lock out administrators.",
+                recommendation="Configure 'service tcp-keepalives-in' (and 'service tcp-keepalives-out').",
+                severity=Severity.LOW,
+                evidence=("service tcp-keepalives-in absent",),
+                references=(CISCO_FUNDAMENTALS_CR_RS, CISCO_IOS_HARDENING_GUIDE),
+                basis=FindingBasis.DOCUMENTED_DEFAULT,
+            ))
+
+        # IOS-21: Security CR e1, without enable credentials the console password acts
+        # as the enable password for all VTY sessions.
+        credentials = (*parser.get_credential_metadata(), *ios.get_additional_credential_metadata())
+        console = [item for item in credentials
+                   if item.context == "line_password" and item.account.casefold().startswith("line con")]
+        aaa = self._effective_toggle(lines, r"aaa new-model", r"no aaa new-model")
+        if console and not aaa and not any(item.context == "enable" for item in credentials):
+            self.add_issue(Finding(
+                rule_id="cisco.ios.credentials.enable_missing",
+                device=parser.device_type,
+                title="No enable secret: the console password grants privileged mode",
+                observation="Neither 'enable secret' nor 'enable password' is configured and the console line has a password, "
+                            "so that console password serves as the enable password for all VTY sessions (documented behaviour).",
+                impact="Anyone who knows the console password can reach privileged EXEC remotely; console passwords are often shared and weakly stored.",
+                exploitability="An attacker with a VTY login and the console password gets full control.",
+                recommendation="Configure a unique 'enable algorithm-type scrypt secret' or central AAA with privilege control.",
+                severity=Severity.MEDIUM,
+                evidence=tuple(item for credential in console for item in credential.evidence) + ("enable secret/password absent",),
+                references=(CISCO_SECURITY_CR_E1,),
+                basis=FindingBasis.DOCUMENTED_DEFAULT,
+            ))
+
+        # IOS-22: Security CR c4, eight built-in ISAKMP policies (some with 3DES, MD5
+        # and DH group 2) apply when no policy is configured. Introduced in 12.4(20)T,
+        # so only trains from 15.x are decided.
+        ikev1 = self._ikev1_in_use(parser)
+        if (ikev1 and train and (train >= (15, 0) or ios.is_iosxe())
+                and not parser.get_native_config().find_objects(r"^crypto (?:isakmp|ikev1) policy\s+")
+                and "no crypto isakmp default policy" not in folded):
+            self.add_issue(self._finding(
+                parser,
+                "cisco.ios.crypto.legacy_ike",
+                "IKEv1 relies on the built-in default ISAKMP policies",
+                "IKEv1 is configured, no 'crypto isakmp policy' exists and the default policies are not disabled, "
+                "so the eight built-in policies apply, including 3DES, MD5/SHA-1 and DH group 2 proposals.",
+                "Weak encryption, hashing, or Diffie-Hellman groups reduce VPN security.",
+                "Configure explicit ISAKMP policies with AES-256, SHA-256 or stronger and DH group 19 or stronger, and add 'no crypto isakmp default policy'.",
+                Severity.HIGH,
+                ikev1[:5] + ("crypto isakmp policy absent", "no crypto isakmp default policy absent"),
+                references=(CISCO_IOS_AGGRESSIVE_MODE_REFERENCE,),
+                basis=FindingBasis.DOCUMENTED_DEFAULT,
+            ))
+
+        # IOS-25: FlexVPN guide, IKEv2 smart defaults apply when no proposal is
+        # configured and are not shown in 'show running-config'.
+        native = parser.get_native_config()
+        if (native.find_objects(r"^crypto ikev2 profile\s+")
+                and not native.find_objects(r"^crypto ikev2 proposal\s+")
+                and "no crypto ikev2 proposal default" not in folded):
+            self.add_issue(self._finding(
+                parser,
+                "cisco.ios.crypto.ikev2_default_proposal",
+                "IKEv2 uses the built-in default proposal",
+                "An IKEv2 profile exists but no 'crypto ikev2 proposal' is configured, so the smart-default proposal is used; "
+                "on documented releases it includes DH group 5 and SHA-1 based transforms.",
+                "Legacy Diffie-Hellman groups and SHA-1 weaken the key exchange and integrity of the tunnel.",
+                "Configure an explicit IKEv2 proposal (AES-GCM or AES-256, SHA-256 or stronger, DH group 19 or stronger) and a policy that references it; add 'no crypto ikev2 proposal default'.",
+                Severity.LOW,
+                tuple(obj.text.strip() for obj in native.find_objects(r"^crypto ikev2 profile\s+"))[:5]
+                + ("crypto ikev2 proposal absent",),
+                references=(CISCO_FLEXVPN_GUIDE,),
+                basis=FindingBasis.DOCUMENTED_DEFAULT,
+            ))
+
+        # IOS-27: VTP server is the default mode; only transparent/off are saved.
+        if parser.device_type in {"IOS_SWITCH", "IOS_CATALYST"}:
+            modes = [line for line in folded if line.startswith("vtp mode ")]
+            mode = modes[-1].split()[2] if modes else "server"
+            if mode not in {"transparent", "off"}:
+                self.add_issue(self._finding(
+                    parser,
+                    "cisco.ios.vtp.mode",
+                    "Switch takes part in VTP",
+                    f"VTP mode is {mode}" + (" (the documented default; only transparent or off mode is saved in the configuration)." if not modes else "."),
+                    "A switch with a higher configuration revision in the same VTP domain can overwrite or delete the VLAN database of every server and client switch.",
+                    "Use 'vtp mode transparent' or 'vtp mode off' unless VTP is managed deliberately (VTPv3 with a primary server and password).",
+                    Severity.LOW,
+                    tuple(line for line in lines if line.casefold().startswith("vtp ") and "password" not in line.casefold())
+                    or ("vtp mode absent: default server",),
+                    references=(CISCO_VTP_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE if modes else FindingBasis.DOCUMENTED_DEFAULT,
+                ))
+
+        # IOS-30: IOS-XE 26.1.1+ writes 'system mode insecure' to keep deprecated features.
+        insecure = [line for line in lines if re.fullmatch(r"system mode insecure", line.strip(), re.I)]
+        if insecure:
+            self.add_issue(self._finding(
+                parser,
+                "cisco.ios.system.insecure_mode",
+                "Insecure feature restrictions are switched off",
+                "'system mode insecure' is configured, so features that IOS XE 26.1.1 and later block by default "
+                "(clear-text and deprecated protocols and algorithms) remain available.",
+                "Deprecated protocols such as Telnet, HTTP and weak SSH or SNMP algorithms can still be enabled.",
+                "Remove the insecure features the device still uses, then remove 'system mode insecure'.",
+                Severity.LOW,
+                tuple(insecure),
+                references=(CISCO_INSECURE_FEATURE_RESTRICTIONS,),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
 
     def check_routing(self, parser: BaseDeviceParser) -> None:
         ios = self._ios(parser)
@@ -2010,6 +2265,7 @@ class PluginIOSBaseline(BasePlugin):
         self.check_interface_protections(parser)
         self.check_control_plane(parser)
         self.check_crypto(parser)
+        self.check_release_defaults(parser)
         self.check_routing(parser)
         self.check_discovery(parser)
         self.check_switch_edge(parser)

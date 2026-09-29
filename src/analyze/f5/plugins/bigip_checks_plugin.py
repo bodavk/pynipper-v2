@@ -51,6 +51,14 @@ COOKIE_PERSISTENCE = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules
 COOKIE_ENCODING = "https://my.f5.com/manage/s/article/K6917"
 MONITOR_HTTP = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules/ltm/ltm_monitor_http.html"
 SNMP_LATEST = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules/sys/sys_snmp.html"
+# SC-044 release-default sources (docs/agent_notes/INSECURE_DEFAULTS_BY_RELEASE.md).
+PORT_LOCKDOWN_11 = "https://my.f5.com/manage/s/article/K13250"
+HTTPD_SSLV3 = "https://my.f5.com/manage/s/article/K15702"
+HTTPD_LATEST = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules/sys/sys_httpd.html"
+CLIENTSSL_DEFAULT_SSLV3 = "https://my.f5.com/manage/s/article/K15022"
+CLIENTSSL_DEFAULT_CIPHERS = "https://my.f5.com/manage/s/article/K13156"
+CLIENTSSL_DEFAULT_17 = "https://my.f5.com/manage/s/article/K000134647"
+CLIENTSSL_DEFAULT_16 = "https://my.f5.com/manage/s/article/K72605755"
 _ANY_SOURCE = re.compile(r"^(0\.0\.0\.0(%\d+)?/0|::(%\d+)?/0|any)$")
 
 
@@ -114,6 +122,7 @@ class PluginF5BIGIPChecks(BasePlugin):
         self._check_admin_access(parser)
         self._check_data_plane(parser)
         self._check_cleartext_extras(parser)
+        self._check_release_defaults(parser)
         console = setting("sys global-settings", "console-inactivity-timeout")
         if console and console.value == 0:
             self._emit(parser, console, rule_id="f5.bigip.console.idle_timeout_disabled",
@@ -272,6 +281,146 @@ class PluginF5BIGIPChecks(BasePlugin):
                 evidence=(virtual.evidence, profile.evidence),
                 references=(VIRTUAL, CLIENT_SSL),
             ))
+
+    def _default(self, parser: F5BIGIPParser, rule_id: str, title: str, observation: str, impact: str,
+                 recommendation: str, severity: Severity, evidence: tuple, references: tuple) -> None:
+        self.add_issue(Finding(
+            rule_id=rule_id, device=parser.device_type, title=title, observation=observation, impact=impact,
+            exploitability="An attacker who can reach the service can use the weakness left by the documented default.",
+            recommendation=recommendation, severity=severity, evidence=evidence, references=references,
+            basis=FindingBasis.DOCUMENTED_DEFAULT,
+        ))
+
+    def _check_release_defaults(self, parser: F5BIGIPParser) -> None:
+        """SC-044 F5-01..08, F5-10..13, F5-22: settings left at a documented insecure default."""
+        release = parser.get_release()
+        if release is None:
+            return
+        label = ".".join(map(str, release))
+        setting = parser.get_setting
+        tmsh_documented = (13, 0, 0) <= release < (18, 0, 0)  # tmsh reference v13-v17 default cells
+
+        # F5-01: K13250, port lockdown default was Allow Default on 11.0.0-11.5.2.
+        if (11, 0, 0) <= release < (11, 5, 3):
+            for self_ip in parser.get_self_ips():
+                if self_ip.allow_service:
+                    continue
+                self._default(parser, "f5.bigip.management.self_ip_port_lockdown", "Self IP allows management services",
+                              f"Self IP {self_ip.name} (VLAN {self_ip.vlan or 'unknown'}) sets no allow-service; on BIG-IP {label} "
+                              "the default port lockdown is Allow Default, which includes SSH (TCP 22) and HTTPS (TCP 443).",
+                              "SSH, the Configuration utility and iControl REST can be reached on this traffic VLAN.",
+                              "Set 'allow-service none' (or a custom list without TCP 22 and 443) and upgrade to a supported release.",
+                              Severity.MEDIUM, (self_ip.evidence, f"BIG-IP {label}: default allow-service default before 11.5.3"),
+                              (PORT_LOCKDOWN_11, PORT_LOCKDOWN, ICONTROL_CVE_2022_1388))
+
+        # Properties are only read as defaults when their object is in the export, so a
+        # partial snippet without 'sys httpd { }' is not treated as all-default.
+        http_allow = setting("sys httpd", "allow")
+        httpd_on = not (http_allow and http_allow.value == "none")
+        if httpd_on and parser.has_object("sys httpd"):
+            # F5-02/03: K15702 (SSLv3 until 12.0.0) and ID668624 (TLS 1.0 off from 14.0.0);
+            # TLS 1.1 stays enabled by default through 17.x.
+            if setting("sys httpd", "ssl-protocol") is None and release < (18, 0, 0):
+                if release < (12, 0, 0):
+                    legacy, severity = "SSLv3, TLS 1.0 and TLS 1.1", Severity.HIGH
+                elif release < (14, 0, 0):
+                    legacy, severity = "TLS 1.0 and TLS 1.1", Severity.MEDIUM
+                else:
+                    legacy, severity = "TLS 1.1", Severity.LOW
+                self._default(parser, "f5.bigip.http.legacy_tls_protocol",
+                              "Configuration utility accepts legacy SSL/TLS versions by default",
+                              f"sys httpd ssl-protocol is not set, so the BIG-IP {label} default applies and the configuration utility accepts {legacy}.",
+                              "Administrative HTTPS sessions can be negotiated with deprecated protocol versions.",
+                              "Set ssl-protocol to 'all -SSLv2 -SSLv3 -TLSv1 -TLSv1.1'.",
+                              severity, (f"sys httpd ssl-protocol absent (BIG-IP {label})",),
+                              (HTTPD_SSLV3, HTTPD_TLS_DEFAULT, HTTPD_LATEST, RFC_8996))
+            # F5-04: tmsh sys httpd, the default suite list ends with three DES-CBC3 suites.
+            if setting("sys httpd", "ssl-ciphersuite") is None and tmsh_documented:
+                self._default(parser, "f5.bigip.http.weak_cipher_suite",
+                              "Configuration utility offers 3DES suites by default",
+                              "sys httpd ssl-ciphersuite is not set; the documented default list ends with "
+                              "ECDHE-RSA-DES-CBC3-SHA, ECDHE-ECDSA-DES-CBC3-SHA and DES-CBC3-SHA.",
+                              "3DES has a 64-bit block size and is vulnerable to birthday attacks (SWEET32) on long sessions.",
+                              "Set an explicit ssl-ciphersuite with only ECDHE AES-GCM suites.",
+                              Severity.LOW, ("sys httpd ssl-ciphersuite absent",), (HTTPD_LATEST, NIST_TLS))
+            # F5-05: 'The default value is All.'
+            if http_allow is None and tmsh_documented:
+                self._default(parser, "f5.bigip.http.unrestricted_sources",
+                              "Configuration utility accepts any source address by default",
+                              "sys httpd allow is not set; the documented default is All, so any address that reaches the "
+                              "management interface (or a self IP that allows HTTPS) can open the configuration utility.",
+                              "More hosts can attempt to log in to or exploit the configuration utility and iControl REST.",
+                              "Set 'sys httpd allow' to the management networks only.",
+                              Severity.MEDIUM, ("sys httpd allow absent: default All",), (HTTPD_LATEST, LOCKDOWN_SETTINGS))
+
+        login = setting("sys sshd", "login")
+        ssh_on = login is None or login.value == "enabled"  # 'The default value is enabled.'
+        if ssh_on and tmsh_documented and parser.has_object("sys sshd"):
+            if setting("sys sshd", "allow") is None:
+                self._default(parser, "f5.bigip.ssh.unrestricted_sources", "SSH accepts any source address by default",
+                              "sys sshd allow is not set; the documented default is all, so any address that reaches the "
+                              "management interface can attempt SSH logins.",
+                              "More hosts can attempt administrative SSH authentication.",
+                              "Set 'sys sshd allow' to the management networks only.",
+                              Severity.MEDIUM, ("sys sshd allow absent: default all",), (SSHD, LOCKDOWN_SETTINGS))
+            if setting("sys sshd", "inactivity-timeout") is None:
+                self._default(parser, "f5.bigip.ssh.idle_timeout_disabled", "SSH idle timeout is disabled by default",
+                              "sys sshd inactivity-timeout is not set; the documented default is 0, which disables the timeout.",
+                              "An unattended administrative session can remain open.",
+                              "Set a finite SSH inactivity timeout (for example 900 seconds or less).",
+                              Severity.LOW, ("sys sshd inactivity-timeout absent: default 0",), (SSHD,))
+        if (tmsh_documented and parser.has_object("sys global-settings")
+                and setting("sys global-settings", "console-inactivity-timeout") is None):
+            self._default(parser, "f5.bigip.console.idle_timeout_disabled", "Console idle timeout is disabled by default",
+                          "sys global-settings console-inactivity-timeout is not set; the documented default is 0 (no timeout).",
+                          "An unattended console session can remain open.",
+                          "Set a finite console inactivity timeout.",
+                          Severity.LOW, ("console-inactivity-timeout absent: default 0",), (CONSOLE,))
+
+        # F5-10/11/12/13: the built-in DEFAULT cipher string (K15022, K13156, K000134647).
+        for virtual, profile, options, evidence in parser.get_bound_default_cipher_profiles():
+            weak = []
+            if release < (11, 5, 0):
+                weak.append("SSLv3 (DEFAULT before 11.5.0)")
+            if (11, 2, 0) <= release < (11, 6, 0):
+                weak.append("RC4-SHA (DEFAULT 11.2.0-11.5.x)")
+            if release < (13, 1, 0):
+                weak.append("3DES (DEFAULT before 13.1.0)")
+            if weak:
+                self._default(parser, "f5.bigip.ltm.clientssl_weak_cipher",
+                              "Client SSL profile uses a DEFAULT cipher string that includes weak suites",
+                              f"Enabled virtual server '{virtual.name}' uses Client SSL profile '{profile}', which resolves to the "
+                              f"built-in DEFAULT cipher string; on BIG-IP {label} that includes " + ", ".join(weak) + ".",
+                              "Clients can negotiate obsolete protocols or ciphers for application traffic.",
+                              "Set an explicit cipher string or cipher group (for example 'ECDHE+AES-GCM:!SSLv3:!RC4:!3DES') and upgrade.",
+                              Severity.HIGH if release < (11, 6, 0) else Severity.MEDIUM,
+                              (virtual.evidence, evidence), (CLIENTSSL_DEFAULT_SSLV3, CLIENTSSL_DEFAULT_CIPHERS))
+            lowered = {item.casefold() for item in options}
+            if not {"no-tlsv1", "no-tlsv1.1"} <= lowered:
+                missing = [item for item in ("no-tlsv1", "no-tlsv1.1") if item not in lowered]
+                self._default(parser, "f5.bigip.ltm.clientssl_legacy_tls",
+                              "Client SSL profile accepts TLS 1.0/1.1",
+                              f"Enabled virtual server '{virtual.name}' uses Client SSL profile '{profile}' with the DEFAULT cipher "
+                              f"string and without the {' and '.join(missing)} option(s), so TLS 1.0/1.1 clients are accepted.",
+                              "TLS 1.0 and 1.1 are deprecated (RFC 8996) and lack modern cipher suites.",
+                              "Add 'options { no-tlsv1 no-tlsv1.1 }' (keep other needed options) or use a cipher rule/group that excludes them.",
+                              Severity.MEDIUM, (virtual.evidence, evidence),
+                              (CLIENTSSL_DEFAULT_17, CLIENTSSL_DEFAULT_16, RFC_8996))
+
+        # F5-22: net ipsec ike-peer version defaults to v1.
+        for peer in parser.get_ike_peers():
+            if peer.enabled and peer.versions == ("v1",):
+                self.add_issue(Finding(
+                    rule_id="f5.bigip.vpn.ikev1", device=parser.device_type,
+                    title="IPsec peer uses IKEv1",
+                    observation=f"IKE peer {peer.name} negotiates only IKEv1"
+                                + ("." if peer.version_explicit else " (version not set; the documented default is v1)."),
+                    impact="IKEv1 lacks the protections of IKEv2 (for example against reflection and some downgrade attacks) and is being retired by vendors.",
+                    exploitability="Mainly a hardening gap; weak IKEv1 settings are reported separately.",
+                    recommendation="Use 'version { v2 }' when the peer supports IKEv2.",
+                    severity=Severity.LOW, evidence=(peer.evidence,), references=(IKE_PEER,),
+                    basis=FindingBasis.EXPLICIT_VALUE if peer.version_explicit else FindingBasis.DOCUMENTED_DEFAULT,
+                ))
 
     def _check_management_tls(self, parser: F5BIGIPParser) -> None:
         protocol = parser.get_setting("sys httpd", "ssl-protocol")

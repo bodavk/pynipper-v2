@@ -19,6 +19,7 @@ def _issues(tmp_path, config):
 SECURE_CONFIG = '''#config-version=FGT100F-7.2.11-FW-build0001-240101:opmode=0:vdom=1:user=admin
 config system global
 set hostname edge-fw
+set admin-maintainer disable
 set strong-crypto enable
 set ssl-static-key-ciphers disable
 set dh-params 4096
@@ -83,6 +84,8 @@ end
 config log syslogd setting
 set status enable
 set server 192.0.2.20
+set mode reliable
+set enc-algorithm high
 end
 config log syslogd filter
 set anomaly enable
@@ -384,7 +387,9 @@ end
         "fortinet.fortios.dos.wan_policy_missing",
     } <= seven_ids
 
-    six = seven.replace("7.4.5", "6.4.15").replace(
+    # SC-044: 6.4.14+ has verified default cells (password policy, maintainer);
+    # releases before 6.4.14 stay explicit-only.
+    six = seven.replace("7.4.5", "6.4.13").replace(
         "config system interface",
         "config system global\nset strong-crypto disable\nend\nconfig system interface",
     )

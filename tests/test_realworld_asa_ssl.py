@@ -131,6 +131,7 @@ def test_old_client_only_setting_does_not_describe_inbound_webvpn(tmp_path):
 {INTERFACE}ssl server-version tlsv1.2
 ssl client-version tlsv1
 ssl cipher default low
+ssl cipher tlsv1.2 high
 webvpn
  enable outside
 !

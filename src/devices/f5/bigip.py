@@ -174,6 +174,8 @@ class F5ClientSSLProfile:
     evidence: ConfigEvidence
     ciphers: str = ""
     ciphers_evidence: ConfigEvidence | None = None
+    parent: str = ""  # defaults-from
+    options: tuple[str, ...] | None = None  # None when not set on this profile
 
 
 @dataclass(frozen=True)
@@ -215,6 +217,7 @@ class F5IKEPeer:
     versions: tuple[str, ...]
     enabled: bool
     evidence: ConfigEvidence
+    version_explicit: bool = True
 
 
 @dataclass(frozen=True)
@@ -331,6 +334,7 @@ class F5BIGIPParser(BaseDeviceParser):
         version = _VERSION.search(content)
         self._version = version.group(1) if version else "?"
         self._settings: dict[tuple[str, str], F5Setting] = {}
+        self._scopes_seen: set[str] = set()
         self._client_ssl: dict[str, F5ClientSSLProfile] = {}
         self._virtuals: dict[str, F5Virtual] = {}
         self._user_secret_lines: dict[str, int] = {}
@@ -384,6 +388,7 @@ class F5BIGIPParser(BaseDeviceParser):
             scope = " ".join(item.lstrip("/") for item in header)
             if scope in _FIELDS:
                 recognized = True
+                self._scopes_seen.add(scope)
                 self._read_settings(scope, tokens[body_start:cursor - 1])
             elif scope == "sys snmp":
                 recognized = True
@@ -615,12 +620,20 @@ class F5BIGIPParser(BaseDeviceParser):
         cleartext = previous.allow_non_ssl if previous else None
         ciphers = previous.ciphers if previous else ""
         ciphers_evidence = previous.ciphers_evidence if previous else None
+        parent = previous.parent if previous else ""
+        options = previous.options if previous else None
         depth = 0
         for index, token in enumerate(body):
             if token.text == "{":
                 depth += 1
             elif token.text == "}":
                 depth -= 1
+            elif depth == 0 and token.text == "defaults-from" and index + 1 < len(body):
+                parent = _object_name(body[index + 1].text, name) or ""
+            elif depth == 0 and token.text == "options" and index + 1 < len(body):
+                members = _block_contents(body, index + 1)
+                options = (tuple(member.text for member in members if member.text not in {"{", "}"})
+                           if members is not None else (body[index + 1].text,))
             elif depth == 0 and token.text == "ciphers" and index + 1 < len(body):
                 ciphers = body[index + 1].text
                 ciphers_evidence = ConfigEvidence(
@@ -636,7 +649,7 @@ class F5BIGIPParser(BaseDeviceParser):
             name, mode, cleartext,
             ConfigEvidence(f"ltm profile client-ssl {name} allow-non-ssl {'enabled' if cleartext else 'disabled' if cleartext is False else '<unknown>'}",
                            self.config_filepath, line_number),
-            ciphers, ciphers_evidence,
+            ciphers, ciphers_evidence, parent, options,
         )
 
     def _read_virtual(self, raw_name: str, line_number: int,
@@ -791,7 +804,7 @@ class F5BIGIPParser(BaseDeviceParser):
         evidence_line = items["mode"][1] if "mode" in items else line_number
         self._ike_peers[name] = F5IKEPeer(name, mode, auth, versions, enabled, ConfigEvidence(
             f"net ipsec ike-peer {name} mode {mode} phase1-auth-method {auth} version {' '.join(versions)}",
-            self.config_filepath, evidence_line))
+            self.config_filepath, evidence_line), "version" in items)
 
     def get_ike_peers(self) -> tuple[F5IKEPeer, ...]:
         return tuple(self._ike_peers.values())
@@ -842,6 +855,43 @@ class F5BIGIPParser(BaseDeviceParser):
                 )
                 if weak:
                     result.append((virtual, profile, weak))
+        return tuple(result)
+
+    def has_object(self, scope: str) -> bool:
+        """Whether the export contains the ``scope`` object, so its missing properties are at default."""
+        return scope in self._scopes_seen
+
+    def get_release(self) -> tuple[int, int, int] | None:
+        """Exact ``(major, minor, patch)`` from ``#TMSH-VERSION`` (SC-044), or None."""
+        numbers = [int(item) for item in re.findall(r"\d+", self._version)[:3]]
+        return tuple(numbers) if len(numbers) == 3 else None
+
+    def get_bound_default_cipher_profiles(self) -> tuple[tuple[F5Virtual, str, tuple[str, ...], ConfigEvidence], ...]:
+        """Enabled virtuals whose clientside SSL profile resolves to the built-in ``DEFAULT`` ciphers (SC-044).
+
+        The ``defaults-from`` chain is followed through exported profiles; a chain that ends
+        at a built-in parent (for example ``/Common/clientssl``) or sets no ``ciphers`` uses
+        ``DEFAULT``. Returns (virtual, profile, effective options, evidence); options are
+        ``()`` when no profile in the chain sets them (built-in value not asserted).
+        """
+        result = []
+        for virtual in self._virtuals.values():
+            if virtual.enabled is False:
+                continue
+            for name in virtual.client_profiles:
+                profile = self._client_ssl.get(name)
+                if profile is None and name.rsplit("/", 1)[-1] != "clientssl":
+                    continue  # not a client-ssl profile we can resolve
+                ciphers, options, seen, current = "", None, set(), profile
+                while current is not None and current.name not in seen:
+                    seen.add(current.name)
+                    ciphers = ciphers or current.ciphers
+                    options = options if options is not None else current.options
+                    current = self._client_ssl.get(current.parent) if current.parent else None
+                if (ciphers or "DEFAULT").strip('"').upper() != "DEFAULT":
+                    continue
+                evidence = (profile.ciphers_evidence or profile.evidence) if profile else virtual.evidence
+                result.append((virtual, name, options or (), evidence))
         return tuple(result)
 
     def get_unencrypted_cookie_persistence(self) -> tuple[tuple[F5Virtual, str, ConfigEvidence], ...]:

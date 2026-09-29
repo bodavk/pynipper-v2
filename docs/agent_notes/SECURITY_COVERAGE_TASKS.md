@@ -1225,6 +1225,10 @@ Protocol-correct catalogue matches and proven policy outcomes are required. Pote
 
 **Status:** First stage implemented 2026-09-26 for IOS: `cisco.ios.services.legacy_default` when the `version` train is older than 12.1 (finger on by default before 12.1(5)) or 11.x (TCP/UDP small servers on by default before 12.0) and the export does not disable them (Cisco IOS hardening guide). Remaining: ASA 8.x, PIX, FortiOS 5.x/6.0, BIG-IP 11.x/12.x and FW1 default tables.
 
+**Research table (2026-09-28):** [INSECURE_DEFAULTS_BY_RELEASE.md](INSECURE_DEFAULTS_BY_RELEASE.md) — per-vendor, per-release default settings with sources, confidence and implementation status (IOS/IOS-XE, ASA/PIX, FortiOS, BIG-IP, Check Point Gaia/FW1; secondary Junos/PAN-OS/AOS/EOS). It lists vendor conflicts and existing rules whose absence logic needs a release gate. Use it as the input for the remaining stages.
+
+**Update 2026-09-29:** Second stage implemented from the research table: 76 of the 109 primary-vendor rows are `impl` (IOS/IOS-XE, ASA/PIX, FortiOS 6.4.14+, BIG-IP, Gaia), each emitting `FindingBasis.DOCUMENTED_DEFAULT` with the row's source. Tests: `tests/test_sc044_defaults_{ios,asa,fortios,f5,gaia}.py`. Remaining: rows marked CONFLICT (ASA-07, F5-15, F5-21, IOS-XE VTY), unverified hash comparisons (ASA-10/11, F5-16, PAN-02), FortiOS < 6.4.14, sample-dependent FW1 rows (CP-12–17) and the secondary families.
+
 **Source of Truth:** Candidates: IOS 12.x configuration guides (`ip http server`, `service pad`, `ip bootp server`, `mop enabled`, `vstack` defaults); ASA 8.x/9.x (`ssl server-version`, `ssh version`, `crypto ikev1 am-disable`, blank enable password); PIX 6.x (see [SC-020](#sc-020)); FortiOS 5.x/6.0 (`strong-crypto`, `admin-https-ssl-versions`, `AK1` hashes); BIG-IP 11.x/12.x (client SSL `DEFAULT` cipher string including SSLv3, self-IP lockdown default); Check Point FW1 R6x/R7x policy defaults (see [SC-017](#sc-017)).
 
 **Linked Findings:** Release gating already used for FortiOS 7.x defaults and AOS-S 16.10/16.11.

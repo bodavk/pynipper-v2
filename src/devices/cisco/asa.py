@@ -253,6 +253,8 @@ class ASASSLServicePolicy:
     weak_cipher_commands: tuple[str, ...]
     unknown_cipher_commands: tuple[str, ...]
     evidence: tuple[ConfigEvidence, ...]
+    cipher_protocols: tuple[str, ...] = ()
+    http_server_enabled: bool = False
 
 
 class CiscoASAParser(BaseDeviceParser):
@@ -858,6 +860,18 @@ class CiscoASAParser(BaseDeviceParser):
                     raw_line=line,
                 )
         return list(bindings.values())
+
+    def get_release(self) -> tuple[str, Optional[tuple[int, int, int]]]:
+        """Platform ("ASA"/"PIX") and exact ``(major, minor, maintenance)`` from the header (SC-044).
+
+        Only the ``ASA Version 9.16(4)`` / ``PIX Version 6.3(5)`` header is trusted; an
+        interim build such as ``9.8(4)32`` keeps its maintenance number.
+        """
+        for raw in self._source_lines[:40]:
+            match = re.match(r"\s*(ASA|PIX) Version\s+(\d+)\.(\d+)\((\d+)", raw)
+            if match:
+                return match.group(1), (int(match.group(2)), int(match.group(3)), int(match.group(4)))
+        return "ASA", None
 
     @staticmethod
     def _release_tuple(version: str) -> Optional[tuple[int, int]]:
@@ -1951,7 +1965,16 @@ class CiscoASAParser(BaseDeviceParser):
 
         for key, command in active.items():
             evidence.append(ConfigEvidence(command, self.config_filepath, None))
+        http_server = False
+        for raw in self._source_lines:
+            line = raw.strip()
+            if re.fullmatch(r"http server enable(?:\s+\d+)?", line):
+                http_server = True
+            elif line == "no http server enable":
+                http_server = False
         return ASASSLServicePolicy(
+            cipher_protocols=tuple(sorted(protocol_ciphers)),
+            http_server_enabled=http_server,
             active_interfaces=tuple(configured_interfaces[key] for key in active),
             server_minimum=server_minimum,
             server_minimum_valid=server_minimum_valid,

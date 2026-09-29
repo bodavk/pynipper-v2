@@ -50,6 +50,9 @@ aaa accounting ssh console TACACS
 aaa accounting http console TACACS
 aaa-server TACACS protocol tacacs+
 console timeout 15
+ssh cipher encryption high
+icmp permit any unreachable outside
+icmp deny any outside
 ssl trust-point MGMT-CERT outside
 crypto ca trustpoint MGMT-CERT
  enrollment terminal
@@ -85,6 +88,9 @@ def test_asa_baseline_vulnerable_rule_snapshot_and_redaction(tmp_path):
         "cisco.asa.crypto.legacy_transform",
         "cisco.asa.failover.authentication",
         "cisco.asa.console.session_timeout",
+        "cisco.asa.ssh.weak_algorithms",  # SC-044 ASA-08 default encryption
+        "cisco.asa.vpn.sysopt_permit_vpn",  # SC-044 ASA-01
+        "cisco.asa.interface.icmp_unrestricted",  # SC-044 ASA-19
     }
     assert all("cisco" not in " ".join(issue.evidence).casefold() for issue in issues)
 

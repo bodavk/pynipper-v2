@@ -69,6 +69,19 @@ RFC_8907 = "https://www.rfc-editor.org/rfc/rfc8907#section-4.5"
 CISCO_ASA_LDAP_OVER_SSL_REFERENCE = (
     "https://www.cisco.com/c/en/us/td/docs/security/asa/asa-cli-reference/I-R/asa-command-ref-I-R/m_l2-lof.html"
 )
+# SC-044 release-default sources (docs/agent_notes/INSECURE_DEFAULTS_BY_RELEASE.md).
+CISCO_ASA_SYSOPT_REFERENCE = (
+    "https://www.cisco.com/c/en/us/td/docs/security/asa/asa-cli-reference/S/asa-command-ref-S/su-sz-commands.html",
+)
+CISCO_ASA_912_RELEASE_NOTES = (
+    "https://www.cisco.com/c/en/us/td/docs/security/asa/asa912/release/notes/asarn912.html"
+)
+CISCO_ASA_ICMP_REFERENCE = (
+    "https://www.cisco.com/c/en/us/td/docs/security/asa/asa-cli-reference/I-R/asa-command-ref-I-R/ia-inr-commands.html",
+)
+CISCO_ASA_91_IKE_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/security/asa/asa91/configuration/vpn/asa_91_vpn_config/vpn_ike.html"
+)
 CISCO_ASA_MASTER_PASSPHRASE_REFERENCE = (
     "https://www.cisco.com/c/en/us/td/docs/security/asa/asa918/configuration/general/"
     "asa-918-general-config/basic-hostname-pw.html"
@@ -210,6 +223,32 @@ class PluginASABaseline(BasePlugin):
                 Severity.HIGH,
                 tuple(item for item in policy.evidence) or (f"ASA {asa.get_version()} SSH default",),
                 CISCO_ASA_SSH_REFERENCE,
+                basis=(FindingBasis.EXPLICIT_VALUE if policy.version_source == "explicit"
+                       else FindingBasis.DOCUMENTED_DEFAULT),
+            ))
+        # SC-044 ASA-06/ASA-08: default SSH algorithms. Command reference so-st:
+        # '(9.10 and earlier) By default, the dh-group1-sha1 is used' (9.12(1) release
+        # notes: new default group 14 SHA-256) and 'Medium is the default' encryption
+        # level, which includes CBC-mode ciphers.
+        _, release = asa.get_release()
+        defaults = []
+        if release is not None and policy.key_exchange is None and release < (9, 12, 1):
+            defaults.append("key exchange: dh-group1-sha1 (default before 9.12(1))")
+        if release is not None and policy.encryption is None:
+            defaults.append("encryption: medium level with CBC-mode ciphers (default)")
+        if defaults:
+            self.add_issue(self._finding(
+                parser,
+                "cisco.asa.ssh.weak_algorithms",
+                "ASA SSH relies on weak default algorithms",
+                "SSH management is enabled and the export does not set these algorithms, so the documented defaults apply: "
+                + "; ".join(defaults) + ".",
+                "Diffie-Hellman group 1 (768-bit) and CBC-mode ciphers weaken the key exchange and confidentiality of administrative sessions.",
+                "Set 'ssh key-exchange group ecdh-group14-sha256' or 'dh-group14-sha256' (or stronger) and 'ssh cipher encryption high'.",
+                Severity.LOW,
+                (f"ASA Version {asa.get_version()}", *defaults),
+                CISCO_ASA_SSH_REFERENCE + (CISCO_ASA_912_RELEASE_NOTES,),
+                basis=FindingBasis.DOCUMENTED_DEFAULT,
             ))
 
         weak = []
@@ -506,6 +545,7 @@ class PluginASABaseline(BasePlugin):
         native = parser.get_native_config()
         blocks = native.find_objects(r"^crypto (?:ikev1|isakmp) policy\s+")
         blocks += native.find_objects(r"^crypto ikev2 policy\s+")
+        _, release = self._asa(parser).get_release()
         for block in blocks:
             children = [child.text.strip().lower() for child in block.children]
             weak = [
@@ -514,6 +554,27 @@ class PluginASABaseline(BasePlugin):
                 or re.fullmatch(r"group (?:1|2|5|14)", line)
                 or line == "integrity sha"
             ]
+            # SC-044 ASA-14: 9.1 VPN guide, IKEv1 policy defaults are 3DES and DH
+            # group 2; by 9.17 they are AES-128 and group 14 (change release not
+            # verified), so only releases up to 9.12 are decided.
+            defaults = []
+            if (release is not None and release < (9, 13)
+                    and not block.text.strip().lower().startswith("crypto ikev2")):
+                if not any(line.startswith("encryption ") for line in children):
+                    defaults.append("encryption absent: default 3des")
+                if not any(line.startswith("group ") for line in children):
+                    defaults.append("group absent: default DH group 2")
+            if defaults:
+                self.add_issue(self._finding(
+                    parser, "cisco.asa.crypto.legacy_vpn", "VPN policy uses legacy cryptography",
+                    f"{block.text.strip()} omits parameters whose documented defaults on this release are weak: {'; '.join(defaults)}.",
+                    "Weak VPN algorithms reduce confidentiality, integrity, or key-exchange strength.",
+                    "Set AES-256 (or AES-GCM), SHA-256 or stronger and DH group 14 or stronger explicitly in every IKE policy.",
+                    Severity.HIGH, (block.text.strip(), *weak, *defaults),
+                    (CISCO_ASA_91_IKE_GUIDE,),
+                    basis=FindingBasis.DOCUMENTED_DEFAULT,
+                ))
+                continue
             if weak:
                 self.add_issue(self._finding(
                     parser, "cisco.asa.crypto.legacy_vpn", "VPN policy uses legacy cryptography",
@@ -567,6 +628,54 @@ class PluginASABaseline(BasePlugin):
                 "New IPsec keys are derived with a weak key exchange, reducing forward secrecy for protected traffic.",
                 "Set PFS to an approved modern group such as 19, 20 or 21, supported by the peer.",
                 Severity.HIGH, tuple(pfs.evidence), (CISCO_ASA_CRYPTO_MAP_REFERENCE,),
+            ))
+
+    def check_release_defaults(self, parser: BaseDeviceParser) -> None:
+        """SC-044 ASA-01 and ASA-19: behaviour that applies unless the export turns it off."""
+        asa = self._asa(parser)
+        lines = self._lines(parser)
+        vpn = [line for line in lines if re.fullmatch(r"crypto map \S+ interface \S+", line)
+               or re.fullmatch(r"crypto (?:ikev1|ikev2|isakmp) enable \S+.*", line)]
+        vpn += [f"webvpn enable {name}" for name in asa.get_ssl_service_policy().active_interfaces]
+        permit_vpn = True
+        for line in lines:
+            if line == "no sysopt connection permit-vpn":
+                permit_vpn = False
+            elif line == "sysopt connection permit-vpn":
+                permit_vpn = True
+        if vpn and permit_vpn:
+            explicit = "sysopt connection permit-vpn" in lines
+            self.add_issue(self._finding(
+                parser, "cisco.asa.vpn.sysopt_permit_vpn",
+                "Decrypted VPN traffic bypasses interface access lists",
+                "VPN termination is configured and 'no sysopt connection permit-vpn' is absent, so traffic from VPN tunnels "
+                "is not checked by the interface access lists (enabled by default).",
+                "A compromised VPN client or peer can reach every address its tunnel covers, regardless of the interface ACL.",
+                "Configure 'no sysopt connection permit-vpn' and permit tunnel traffic in the outside ACL, or restrict each tunnel with a vpn-filter.",
+                Severity.MEDIUM,
+                tuple(vpn[:5]) + (("sysopt connection permit-vpn",) if explicit else ("no sysopt connection permit-vpn absent",)),
+                CISCO_ASA_SYSOPT_REFERENCE,
+                basis=FindingBasis.EXPLICIT_VALUE if explicit else FindingBasis.DOCUMENTED_DEFAULT,
+            ))
+        icmp_interfaces = {
+            match.group(1).casefold()
+            for line in lines
+            if (match := re.fullmatch(r"icmp (?:permit|deny) .+ (\S+)", line))
+        }
+        for interface in asa.get_interfaces():
+            if interface["security_level"] != 0 or interface["nameif"].casefold() in icmp_interfaces:
+                continue
+            self.add_issue(self._finding(
+                parser, "cisco.asa.interface.icmp_unrestricted",
+                "All ICMP to the firewall is accepted on an outside interface",
+                f"Interface {interface['nameif']} (security level 0) has no 'icmp' rules, so the ASA answers all ICMP "
+                "sent to that interface (the documented default).",
+                "Echo, timestamp and mask requests let anyone map and fingerprint the firewall and add to reconnaissance.",
+                f"Add 'icmp permit' lines for the needed types (for example unreachable and time-exceeded) followed by 'icmp deny any {interface['nameif']}'.",
+                Severity.LOW,
+                (f"interface {interface['name']}", f"nameif {interface['nameif']}", "icmp rules absent"),
+                CISCO_ASA_ICMP_REFERENCE,
+                basis=FindingBasis.DOCUMENTED_DEFAULT,
             ))
 
     def check_remote_access_authentication(self, parser: BaseDeviceParser) -> None:
@@ -731,3 +840,4 @@ class PluginASABaseline(BasePlugin):
         self.check_vpn_crypto(parser)
         self.check_remote_access_authentication(parser)
         self.check_failover(parser)
+        self.check_release_defaults(parser)

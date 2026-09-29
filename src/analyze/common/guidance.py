@@ -200,7 +200,7 @@ _CATALOGUE = (
         "cannot see iRules or client behaviour.",
         "Check whether an iRule or upstream component redirects or rejects clear-text requests.",
     )),
-    (r"^(management\.(unrestricted_\w+|source_restriction|external_interface|auxiliary_services|http_sources|self_ip_port_lockdown)|http\.(access_restriction|unrestricted_sources)|ssh\.(source_restriction|unrestricted_sources|vty_access_restriction)|eapi\.source_restriction|admin\.trusted_hosts|administration\.manager_sources|local_in\.unrestricted_management|layer\.stealth_rule_missing|auxiliary\.enabled)$", _G(
+    (r"^(management\.(unrestricted_\w+|source_restriction|external_interface|auxiliary_services|http_sources|self_ip_port_lockdown)|http\.(access_restriction|unrestricted_sources)|ssh\.(source_restriction|unrestricted_sources|vty_access_restriction)|eapi\.source_restriction|(?:admin|api)\.trusted_hosts|administration\.manager_sources|local_in\.unrestricted_management|layer\.stealth_rule_missing|auxiliary\.enabled)$", _G(
         "management-exposure", "management-access",
         "The device's management interfaces (SSH, web GUI, API) accept connections from any "
         "address, or from an untrusted/external network, instead of only from administrator "
@@ -216,7 +216,7 @@ _CATALOGUE = (
         "separate out-of-band network), and confirm that strong authentication, lockout and "
         "logging are in place for the exposed service.",
     )),
-    (r"^(ssh\.(weak_\w+|protocol_version)|tls\.\w+|management\.(legacy_tls|tls_\w+)|eapi\.(legacy_tls|tls_profile\w*)|admin\.ssh_profile_\w+|crypto\.(strong_crypto|admin_ssh_v1|ssl_static_key_ciphers|ssh_cbc_cipher|dh_parameters)|https\.(legacy_cipher|global_activation)|http\.(legacy_tls_protocol|weak_cipher_suite)|sslvpn\.(legacy_tls|weak_algorithm)|ltm\.clientssl_weak_cipher)$", _G(
+    (r"^(ssh\.(weak_\w+|protocol_version)|tls\.\w+|management\.(legacy_tls|tls_\w+)|eapi\.(legacy_tls|tls_profile\w*)|admin\.ssh_profile_\w+|crypto\.(strong_crypto|admin_ssh_v1|ssl_static_key_ciphers|ssh_cbc_cipher|ssh_hmac_md5|ssh_kex_sha1|dh_parameters)|https\.(legacy_cipher|global_activation)|http\.(legacy_tls_protocol|weak_cipher_suite)|sslvpn\.(legacy_tls|weak_algorithm)|ltm\.clientssl_(weak_cipher|legacy_tls))$", _G(
         "management-crypto", "management-crypto",
         "The encrypted management connection (SSH or HTTPS) still allows outdated protocol "
         "versions or algorithms that are known to be weak.",
@@ -246,7 +246,7 @@ _CATALOGUE = (
         "replace the certificate with one issued by your internal CA for the correct name.",
     )),
     # Authentication and authorization -----------------------------------------------
-    (r"^(ssh\.(empty_passwords|root_login)|(vty|console|auxiliary|http)\.authentication|authentication\.(super_user|unauthenticated_method)|admin\.unauthenticated_method|vty\.(authorization_bypass|aaa_server_group_unusable)|aaa\.(new_model|login_authentication|management_authentication)|admin\.authentication_profile_unresolved|auth\.active_remote_servers_none|authentication\.server_reference|remote_access\.client_certificate_missing)$", _G(
+    (r"^(ssh\.(empty_passwords|root_login|root_login_permitted)|(vty|console|auxiliary|http)\.authentication|authentication\.(super_user|unauthenticated_method)|admin\.(unauthenticated_method|maintainer_account)|vty\.(authorization_bypass|aaa_server_group_unusable)|aaa\.(new_model|login_authentication|management_authentication)|admin\.authentication_profile_unresolved|auth\.active_remote_servers_none|authentication\.server_reference|remote_access\.client_certificate_missing)$", _G(
         "authentication-missing", "authentication",
         "A way to log in to the device is not protected by a proper authentication method: it "
         "may allow an empty password, a direct root login, a method that always succeeds, or "
@@ -361,7 +361,7 @@ _CATALOGUE = (
         "Check where configuration backups are stored and who can read them, and rotate any "
         "credential that has been stored weakly.",
     )),
-    (r"^(credentials\.(password_complexity|password_history_disabled|username_inclusion_allowed)|password\.(complexity|minimum_length)|password_policy\.\w+|admin\.(local_password_minimum\w*|manager_credential_missing))$", _G(
+    (r"^(credentials\.(password_complexity|password_history_disabled|username_inclusion_allowed)|password\.(complexity|minimum_length)|password_policy\.\w+|admin\.(local_password_minimum\w*|manager_credential_missing)|credentials\.enable_missing)$", _G(
         "password-policy", "credentials",
         "The device does not enforce a reasonable password policy for local accounts (length, "
         "complexity, reuse), or a local credential is missing.",
@@ -423,7 +423,7 @@ _CATALOGUE = (
         "vendor default) and whether logs from it correlate correctly.",
     )),
     # Logging and configuration management ---------------------------------------------------
-    (r"^(logging\.\w+|dos\.logging|cli\.audit_disabled)$", _G(
+    (r"^(logging\.\w+|syslog\.remote_udp|dos\.logging|cli\.audit_disabled)$", _G(
         "logging", "logging-audit",
         "Security-relevant events are not sent to a central log server, some important events "
         "are filtered out, or the log transport is not protected.",
@@ -499,7 +499,7 @@ _CATALOGUE = (
         "Check for upstream DDoS protection and whether management and routing traffic are "
         "prioritized.",
     )),
-    (r"^(interface\.(ip_hardening|reverse_path|unused_enabled)|interfaces\.redirects|ip\.source_route|services\.(unnecessary|legacy|legacy_default|tftp_server)|ntp\.server_exposed|system\.usb_auto_install|ha\.heartbeat_protection)$", _G(
+    (r"^(interface\.(ip_hardening|reverse_path|unused_enabled|icmp_unrestricted)|interfaces\.redirects|ip\.source_route|services\.(unnecessary|legacy|legacy_default|tftp_server|default_enabled|dns_lookup|tcp_keepalives)|system\.insecure_mode|ntp\.server_exposed|system\.usb_auto_install|ha\.heartbeat_protection|cluster\.ccp_encryption_disabled)$", _G(
         "service-hardening", "control-plane",
         "Legacy IP features or services that are rarely needed are still enabled (for example "
         "source routing, ICMP redirects, proxy ARP, small servers), or anti-spoofing is missing.",
@@ -510,7 +510,7 @@ _CATALOGUE = (
         "Check whether any application genuinely depends on the feature before disabling it.",
     )),
     # Access edge ---------------------------------------------------------------------------------
-    (r"^(layer2\.[\w.]+|discovery\.[\w.]+|macsec\.\w+)$", _G(
+    (r"^(layer2\.[\w.]+|discovery\.[\w.]+|macsec\.\w+|vtp\.mode)$", _G(
         "access-edge", "access-edge",
         "A switch port that connects end devices lacks a standard protection (DHCP snooping, "
         "ARP inspection, BPDU guard, 802.1X, port security), or leaks discovery information to "
@@ -524,7 +524,7 @@ _CATALOGUE = (
         "enforced elsewhere.",
     )),
     # VPN -----------------------------------------------------------------------------------------
-    (r"^(crypto\.(legacy_\w+|ike_dh_policy|unresolved_transform)|vpn\.\w+)$", _G(
+    (r"^(crypto\.(legacy_\w+|ike_dh_policy|unresolved_transform|ikev2_default_proposal)|vpn\.\w+)$", _G(
         "vpn-crypto", "vpn",
         "An active VPN tunnel can negotiate outdated encryption, hashing or key-exchange "
         "settings (such as DES/3DES, MD5/SHA-1, or small Diffie-Hellman groups), or references "
