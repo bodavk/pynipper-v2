@@ -27,6 +27,10 @@ CISCO_IOSXE_GNMI_GUIDE = (
     "https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/prog/configuration/179/b_179_programmability_cg/"
     "m_178_prog_gnmi.html"
 )
+CISCO_IOSXE_SERVICE_ACL_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/prog/configuration/179/"
+    "b_179_programmability_cg/m_179_prog_service-level_acls.html"
+)
 CISCO_IOSXE_SECURITY_WARNINGS = (
     "https://www.cisco.com/c/en/us/about/trust-center/resilient-infrastructure/"
     "resilient-infrastructure-security-warnings-reference.html"
@@ -1269,6 +1273,47 @@ class PluginIOSBaseline(BasePlugin):
             basis=FindingBasis.EXPLICIT_VALUE,
         ))
 
+    def check_programmability_api_acls(self, parser: BaseDeviceParser) -> None:
+        """SC-026: attached NETCONF/RESTCONF ACLs that provably admit every source."""
+        ios = self._ios(parser)
+        for api in ios.get_programmability_apis():
+            for family, name in (("ipv4", api.ipv4_acl), ("ipv6", api.ipv6_acl)):
+                if not name:
+                    continue
+                acl = (ios.get_management_ipv4_acl(name, allow_extended=True)
+                       if family == "ipv4" else ios.get_management_ipv6_acl(name))
+                if acl.state != "permit-all":
+                    continue
+                if api.service == "RESTCONF":
+                    shared_name = (ios.get_http_access_class() if family == "ipv4"
+                                   else ios.get_http_ipv6_access_class())
+                    if shared_name:
+                        shared = (ios.get_management_ipv4_acl(shared_name)
+                                  if family == "ipv4" else ios.get_management_ipv6_acl(shared_name))
+                        if shared.state != "permit-all":
+                            # A restrictive WebUI ACL may protect the HTTPS process.
+                            # Unresolved/unsupported shared ACLs also prevent proof.
+                            continue
+                service = api.service.casefold()
+                family_label = "IPv4" if family == "ipv4" else "IPv6"
+                rule_id = (f"cisco.ios.management.{service}_unrestricted_sources"
+                           if family == "ipv4" else
+                           f"cisco.ios.management.{service}_ipv6_unrestricted_sources")
+                self.add_issue(Finding(
+                    rule_id=rule_id,
+                    device=parser.device_type,
+                    title=f"{api.service} service ACL permits every {family_label} source",
+                    observation=(f"The active {api.service} {api.transport} service binds {family_label} "
+                                 f"ACL '{name}', whose effective first-match rules permit every source."),
+                    impact="The attached service ACL does not restrict management API clients in this address family.",
+                    exploitability="A client still needs network reachability and valid authentication; upstream or interface restrictions are not proven by this export.",
+                    recommendation=f"Restrict the {api.service} service ACL to approved management sources.",
+                    severity=Severity.HIGH,
+                    evidence=api.evidence + acl.evidence,
+                    references=(CISCO_IOSXE_SERVICE_ACL_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
+                ))
+
     def check_https_public_certificate(self, parser: BaseDeviceParser) -> None:
         binding = self._ios(parser).get_https_selected_public_certificate()
         if binding is None:
@@ -2361,6 +2406,7 @@ class PluginIOSBaseline(BasePlugin):
         self.check_ntp(parser)
         self.check_banner(parser)
         self.check_unnecessary_services(parser)
+        self.check_programmability_api_acls(parser)
         self.check_smart_install(parser)
         self.check_ike_aggressive_mode(parser)
         self.check_tacacs_keys(parser)

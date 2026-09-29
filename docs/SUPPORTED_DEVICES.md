@@ -26,6 +26,8 @@ Junos classic JET gRPC coverage reports clear-text listeners with explicit valid
 
 EOS gNMI coverage now reports a retained gRPC transport with explicit `no shutdown` and `no ssl profile`. Omitted SSL-profile or enablement state remains ungraded; TLS-profile validity, authentication, and runtime reachability are separate questions.
 
+IOS-XE NETCONF/RESTCONF coverage resolves explicit service enablement and attached IPv4/IPv6 service ACLs. A permit-all ACL is reported only where its first-match behavior is proven; RESTCONF also considers a restrictive shared HTTP access class. Missing service ACLs, unresolved ACL contents, authentication and upstream reachability are not asserted as vulnerabilities.
+
 IOS/IOS-XE management ACL checks assess standard IPv4 ACLs for SSH and HTTP(S), plus bounded named/numbered extended IP/TCP ACLs for SSH. Explicit named IPv6 ACL attachments are assessed independently on SSH VTY for IOS/IOS-XE and WebUI for IOS-XE. Proof requires universal destinations and no port/time predicates; unsupported predicates and unresolved objects remain ungraded. IPv6 applicability is not inferred from an IPv4 attachment, and an ACL finding does not prove end-to-end reachability.
 
 Active IPv4 or IPv6 management ACL attachments that cannot be resolved or evaluated are listed as unassessed manual-review items in report coverage diagnostics. These notes are not vulnerabilities or security passes; disabled services and excluded rule categories do not generate them.

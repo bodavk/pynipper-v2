@@ -207,7 +207,7 @@ _CATALOGUE = (
         "cannot see iRules or client behaviour.",
         "Check whether an iRule or upstream component redirects or rejects clear-text requests.",
     )),
-    (r"^(management\.(unrestricted_\w+|source_restriction|external_interface|auxiliary_services|http_sources|self_ip_port_lockdown)|host_inbound\.management_exposed|http\.(access_restriction|(?:ipv6_)?unrestricted_sources)|ssh\.(source_restriction|(?:ipv6_)?unrestricted_sources|vty_access_restriction)|eapi\.source_restriction|(?:admin|api)\.trusted_hosts|administration\.manager_sources|local_in\.unrestricted_management|layer\.stealth_rule_missing|auxiliary\.enabled)$", _G(
+    (r"^(management\.(unrestricted_\w+|(?:netconf|restconf)(?:_ipv6)?_unrestricted_sources|source_restriction|external_interface|auxiliary_services|http_sources|self_ip_port_lockdown)|host_inbound\.management_exposed|http\.(access_restriction|(?:ipv6_)?unrestricted_sources)|ssh\.(source_restriction|(?:ipv6_)?unrestricted_sources|vty_access_restriction)|eapi\.source_restriction|(?:admin|api)\.trusted_hosts|administration\.manager_sources|local_in\.unrestricted_management|layer\.stealth_rule_missing|auxiliary\.enabled)$", _G(
         "management-exposure", "management-access",
         "The device's management interfaces (SSH, web GUI, API) accept connections from any "
         "address, or from an untrusted/external network, instead of only from administrator "

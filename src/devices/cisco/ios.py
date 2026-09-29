@@ -433,6 +433,16 @@ class IOSManagementACL:
     evidence: tuple[ConfigEvidence, ...]
 
 
+@dataclass(frozen=True)
+class IOSProgrammabilityAPI:
+    service: str
+    transport: str
+    ipv4_acl: str | None
+    ipv6_acl: str | None
+    port: int | None
+    evidence: tuple[ConfigEvidence, ...]
+
+
 class CiscoIOSParser(BaseDeviceParser):
 
     device_type = "IOS_ROUTER"
@@ -1581,6 +1591,88 @@ class CiscoIOSParser(BaseDeviceParser):
                     value = None
         return value
 
+    def get_programmability_apis(self) -> tuple[IOSProgrammabilityAPI, ...]:
+        """Explicit IOS-XE NETCONF/RESTCONF listeners and service ACL bindings."""
+        if self.device_type != "IOS_XE":
+            return ()
+        enabled = {"netconf": False, "restconf": False}
+        bindings: dict[str, dict[str, str | None]] = {
+            service: {"ipv4": None, "ipv6": None} for service in enabled
+        }
+        binding_evidence: dict[str, dict[str, ConfigEvidence | None]] = {
+            service: {"ipv4": None, "ipv6": None} for service in enabled
+        }
+        enable_evidence: dict[str, ConfigEvidence | None] = {
+            service: None for service in enabled
+        }
+        port: int | None = None
+        port_evidence: ConfigEvidence | None = None
+        external_disabled = False
+        external_evidence: ConfigEvidence | None = None
+        for number, raw in enumerate(self._source_lines, 1):
+            if raw[:1].isspace():
+                continue
+            line = raw.strip()
+            lowered = line.casefold()
+            if lowered in {"netconf-yang", "no netconf-yang", "default netconf-yang"}:
+                enabled["netconf"] = lowered == "netconf-yang"
+                enable_evidence["netconf"] = (
+                    ConfigEvidence(line, self.config_filepath, number) if enabled["netconf"] else None
+                )
+                continue
+            if lowered in {"restconf", "no restconf", "default restconf"}:
+                enabled["restconf"] = lowered == "restconf"
+                enable_evidence["restconf"] = (
+                    ConfigEvidence(line, self.config_filepath, number) if enabled["restconf"] else None
+                )
+                continue
+            if lowered in {"netconf-yang ssh port disable", "netconf-yang ssh port-disable"}:
+                external_disabled = True
+                external_evidence = ConfigEvidence(line, self.config_filepath, number)
+                continue
+            if lowered in {"no netconf-yang ssh port disable", "no netconf-yang ssh port-disable"}:
+                external_disabled = False
+                external_evidence = ConfigEvidence(line, self.config_filepath, number)
+                continue
+            port_match = re.fullmatch(r"netconf-yang ssh port (\d+)", lowered)
+            if port_match:
+                raw_port = port_match.group(1)
+                port = int(raw_port) if len(raw_port) <= 5 and 1 <= int(raw_port) <= 65535 else None
+                port_evidence = ConfigEvidence(line, self.config_filepath, number)
+                continue
+            if re.fullmatch(r"(?:no|default) netconf-yang ssh port(?: \d+)?", lowered):
+                port = None
+                port_evidence = None
+                continue
+            match = re.fullmatch(
+                r"(?:(no|default) )?(netconf-yang ssh|restconf) (ipv4|ipv6) access-list(?: name)?(?: (\S+))?",
+                line, re.IGNORECASE,
+            )
+            if match:
+                service = "netconf" if match.group(2).casefold().startswith("netconf") else "restconf"
+                family = match.group(3).casefold()
+                bindings[service][family] = None if match.group(1) else match.group(4)
+                binding_evidence[service][family] = (
+                    None if match.group(1) else ConfigEvidence(line, self.config_filepath, number)
+                )
+        def active_evidence(service: str) -> tuple[ConfigEvidence, ...]:
+            parts = [enable_evidence[service], *binding_evidence[service].values()]
+            if service == "netconf":
+                parts.extend((port_evidence, external_evidence))
+            return tuple(item for item in parts if item is not None)
+        records = []
+        if enabled["netconf"] and not external_disabled:
+            records.append(IOSProgrammabilityAPI(
+                "NETCONF", "SSH", bindings["netconf"]["ipv4"],
+                bindings["netconf"]["ipv6"], port, active_evidence("netconf"),
+            ))
+        if enabled["restconf"] and self.get_https_server_state() == ConfigurationState.ENABLED:
+            records.append(IOSProgrammabilityAPI(
+                "RESTCONF", "HTTPS", bindings["restconf"]["ipv4"],
+                bindings["restconf"]["ipv6"], None, active_evidence("restconf"),
+            ))
+        return tuple(records)
+
     def get_management_ipv6_acl(self, name: str) -> IOSManagementACL:
         """Prove only first-match, universal IPv6 source permits in a named ACL.
 
@@ -1854,6 +1946,17 @@ class CiscoIOSParser(BaseDeviceParser):
                 ):
                     if state == ConfigurationState.ENABLED:
                         describe(service, "global listener", acl6, "IPv6")
+        for api in self.get_programmability_apis():
+            service = api.service.casefold()
+            for family, name in (("ipv4", api.ipv4_acl), ("ipv6", api.ipv6_acl)):
+                rule_id = (f"cisco.ios.management.{service}_unrestricted_sources"
+                           if family == "ipv4" else
+                           f"cisco.ios.management.{service}_ipv6_unrestricted_sources")
+                if not name or not self.assessment_context.permits_rule(rule_id):
+                    continue
+                acl = (self.get_management_ipv4_acl(name, allow_extended=True)
+                       if family == "ipv4" else self.get_management_ipv6_acl(name))
+                describe(api.service, "service-level listener", acl, family.upper())
         return diagnostics
 
     def get_ssh_state(self) -> ConfigurationState:
