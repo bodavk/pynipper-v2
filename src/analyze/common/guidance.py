@@ -146,6 +146,13 @@ _CATALOGUE = (
         "another control (proxy, endpoint protection, upstream IPS) inspects the same traffic.",
     )),
     # Management access -----------------------------------------------------------
+    (r"^management\.grpc_skip_authentication$", _G(
+        "grpc-client-authentication-bypass", "management-access",
+        "A network-bound gRPC listener explicitly skips normal client authentication and does not show mandatory, verified client certificates.",
+        "A client that can reach the listener may invoke exposed gRPC services without supplying the usual per-RPC user credentials, depending on service-specific controls.",
+        "TLS protects the channel but server-only TLS does not authenticate clients. Mandatory client certificates verified against a trusted CA can provide a compensating identity check.",
+        "Confirm runtime listener reachability, allowed RPCs, and any out-of-band access restrictions before determining practical impact.",
+    )),
     (r"^(management\.(telnet|http|rest_http|grpc_cleartext|insecure_protocol)|services\.remote_shell|vty\.(telnet|insecure_output_transport)|eapi\.(insecure_http|https_disabled)|http\.(cleartext_service|redirect_disabled))$", _G(
         "management-cleartext", "management-access",
         "The device can be managed over an unencrypted protocol such as Telnet or plain HTTP. "

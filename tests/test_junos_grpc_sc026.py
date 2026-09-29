@@ -21,9 +21,57 @@ def test_explicit_network_listener_with_vrf_and_authentication_metadata(tmp_path
                             f"set {PREFIX} skip-authentication\n")
     state = parser.get_grpc_cleartext_listener()
     assert state.routing_instance == "mgmt_junos" and state.skip_authentication
-    assert len(findings) == 1
-    assert findings[0].rule_id == "juniper.junos.management.grpc_cleartext"
-    assert findings[0].evidence_locations
+    assert {item.rule_id for item in findings} == {
+        "juniper.junos.management.grpc_cleartext",
+        "juniper.junos.management.grpc_skip_authentication",
+    }
+    assert all(item.evidence_locations for item in findings)
+
+
+SSL = (f"set {PREFIX} ssl address 2001:db8::1\n"
+       f"set {PREFIX} ssl port 50051\n"
+       f"set {PREFIX} ssl local-certificate grpc-server\n")
+
+
+@pytest.mark.parametrize("body,expected", [
+    (SSL + f"set {PREFIX} skip-authentication\n", True),
+    (SSL + f"set {PREFIX} skip-authentication\n"
+     f"set {PREFIX} ssl mutual-authentication client-certificate-request request-certificate-and-verify\n"
+     f"set {PREFIX} ssl mutual-authentication certificate-authority grpc-ca\n", True),
+    (SSL + f"set {PREFIX} skip-authentication\n"
+     f"set {PREFIX} ssl mutual-authentication client-certificate-request require-certificate-and-verify\n"
+     f"set {PREFIX} ssl mutual-authentication certificate-authority grpc-ca\n"
+     "set security pki ca-profile grpc-ca ca-identity example-ca\n", False),
+    (SSL + f"set {PREFIX} skip-authentication\n"
+     f"set {PREFIX} ssl mutual-authentication client-certificate-request require-certificate-and-verify\n", True),
+    (SSL + f"set {PREFIX} skip-authentication\n"
+     f"set {PREFIX} ssl mutual-authentication client-certificate-request require-certificate-and-verify\n"
+     f"set {PREFIX} ssl mutual-authentication certificate-authority missing-ca\n", True),
+    (SSL + f"set {PREFIX} skip-authentication\n"
+     f"set {PREFIX} ssl mutual-authentication client-certificate-request require-certificate\n"
+     f"set {PREFIX} ssl mutual-authentication certificate-authority grpc-ca\n", True),
+    (SSL, False),
+    (SSL.replace("2001:db8::1", "::1") + f"set {PREFIX} skip-authentication\n", False),
+    (SSL.replace("2001:db8::1", "invalid") + f"set {PREFIX} skip-authentication\n", False),
+    (SSL.replace("ssl port 50051", "ssl port invalid") + f"set {PREFIX} skip-authentication\n", False),
+    (SSL.replace(f"set {PREFIX} ssl local-certificate grpc-server\n", "")
+     + f"set {PREFIX} skip-authentication\n", False),
+    (SSL + f"set {PREFIX} skip-authentication\nset system apply-groups shared\n", False),
+    (SSL + f"set {PREFIX} skip-authentication\ndeactivate {PREFIX} ssl\n", False),
+])
+def test_ssl_authentication_bypass_requires_resolved_network_listener(tmp_path, body, expected):
+    parser, findings = scan(tmp_path, body)
+    assert any(item.rule_id == "juniper.junos.management.grpc_skip_authentication"
+               for item in findings) is expected
+    assert all(item.rule_id != "juniper.junos.management.grpc_cleartext" for item in findings)
+    if expected:
+        assert parser.get_grpc_listeners()[0].transport == "ssl"
+
+
+def test_deleted_skip_authentication_is_not_reported(tmp_path):
+    _, findings = scan(tmp_path, BOUND + f"set {PREFIX} skip-authentication\n"
+                       f"delete {PREFIX} skip-authentication\n")
+    assert [item.rule_id for item in findings] == ["juniper.junos.management.grpc_cleartext"]
 
 
 @pytest.mark.parametrize("body", [
@@ -55,8 +103,9 @@ def test_hierarchical_equivalent(tmp_path):
 
 @pytest.mark.parametrize("format", ["JSON", "HTML"])
 def test_public_report(tmp_path, format):
-    scan(tmp_path, BOUND)
+    scan(tmp_path, BOUND + f"set {PREFIX} skip-authentication\n")
     output = tmp_path / ("report." + format.lower())
     assert main(["-d", "junos", "-i", str(tmp_path / "grpc.conf"), "-o", format,
                  "-f", str(output)]) == 0
     assert "gRPC service uses clear-text network transport" in output.read_text(encoding="utf-8")
+    assert "Network gRPC listener skips client authentication" in output.read_text(encoding="utf-8")

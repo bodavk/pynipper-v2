@@ -61,10 +61,12 @@ class JunosRESTListener:
 
 @dataclass(frozen=True)
 class JunosGRPCListener:
+    transport: str
     address: str | None
     port: int | None
     routing_instance: str | None
     skip_authentication: bool
+    client_certificate_verification_required: bool
     resolution_state: str
     evidence: tuple[ConfigEvidence, ...]
 
@@ -1653,13 +1655,10 @@ class JunOSParser(BaseDeviceParser):
             )
         return list(credentials.values())
 
-    def get_grpc_cleartext_listener(self) -> JunosGRPCListener | None:
-        """Explicit classic JET clear-text listener; no default binding inference."""
+    def get_grpc_listeners(self) -> tuple[JunosGRPCListener, ...]:
+        """Explicit classic JET bindings; omitted addresses/ports stay unresolved."""
         prefix = ("system", "services", "extension-service", "request-response", "grpc")
         statements = self.get_active_statements(prefix)
-        clear = [item for item in statements if item.path[5:6] == ("clear-text",)]
-        if not clear:
-            return None
         def value(suffix):
             matches = [item.path[len(prefix) + len(suffix):] for item in statements
                        if item.path[5:5 + len(suffix)] == suffix]
@@ -1668,34 +1667,69 @@ class JunOSParser(BaseDeviceParser):
             values = set(item[0] for item in matches)
             return next(iter(values)) if len(values) == 1 else None
 
-        address = value(("clear-text", "address"))
-        raw_port = value(("clear-text", "port"))
-        port = (int(raw_port) if raw_port and raw_port.isascii() and raw_port.isdigit()
-                and len(raw_port) <= 5 and 1 <= int(raw_port) <= 65535 else None)
-        try:
-            parsed = ipaddress.ip_address(address) if address else None
-        except ValueError:
-            parsed = None
-        unknown = any(
-            len(item.path) > 6 and item.path[6] not in {"address", "port"}
-            for item in clear
-        ) or any(len(item.path) > 5 and item.path[5] not in {
-            "clear-text", "ssl", "max-connections", "routing-instance", "skip-authentication"
-        } for item in statements)
-        state = (
-            "inheritance-unknown" if self.has_unexpanded_inheritance()
-            else "unknown" if parsed is None or port is None or unknown
-            else "local-only" if parsed.is_loopback
-            else "network"
-        )
         metadata = [item for item in statements if item.path[5:6] in {
             ("routing-instance",), ("skip-authentication",)
         }]
-        return JunosGRPCListener(
-            address, port, value(("routing-instance",)),
-            any(item.path == prefix + ("skip-authentication",) for item in metadata),
-            state, tuple(item.evidence for item in clear + metadata),
-        )
+        listeners = []
+        for transport in ("clear-text", "ssl"):
+            selected = [item for item in statements if item.path[5:6] == (transport,)]
+            if not selected:
+                continue
+            address = value((transport, "address"))
+            raw_port = value((transport, "port"))
+            port = (int(raw_port) if raw_port and raw_port.isascii() and raw_port.isdigit()
+                    and len(raw_port) <= 5 and 1 <= int(raw_port) <= 65535 else None)
+            try:
+                parsed = ipaddress.ip_address(address) if address else None
+            except ValueError:
+                parsed = None
+            allowed = ({"address", "port"} if transport == "clear-text" else {
+                "address", "port", "local-certificate", "mutual-authentication",
+                "use-pki", "hot-reloading"
+            })
+            unknown = any(
+                len(item.path) > 6 and item.path[6] not in allowed
+                for item in selected
+            ) or any(len(item.path) > 5 and item.path[5] not in {
+                "clear-text", "ssl", "max-connections", "routing-instance", "skip-authentication"
+            } for item in statements)
+            if transport == "ssl":
+                unknown = unknown or value(("ssl", "local-certificate")) is None
+                unknown = unknown or any(
+                    item.path[6:7] == ("mutual-authentication",) and
+                    (len(item.path) != 9 or item.path[7] not in {
+                        "certificate-authority", "client-certificate-request"
+                    }) for item in selected
+                )
+            modes = {item.path[8] for item in selected
+                     if item.path[6:8] == ("mutual-authentication", "client-certificate-request")
+                     and len(item.path) == 9}
+            if len(modes) > 1 or any(mode not in {
+                "no-certificate", "request-certificate", "request-certificate-and-verify",
+                "require-certificate", "require-certificate-and-verify"
+            } for mode in modes):
+                unknown = True
+            ca_profile = value(("ssl", "mutual-authentication", "certificate-authority"))
+            verification_required = (transport == "ssl" and modes == {"require-certificate-and-verify"}
+                        and ca_profile is not None and bool(self.get_active_statements(
+                            ("security", "pki", "ca-profile", ca_profile)
+                        )))
+            state = (
+                "inheritance-unknown" if self.has_unexpanded_inheritance()
+                else "unknown" if parsed is None or port is None or unknown
+                else "local-only" if parsed.is_loopback
+                else "network"
+            )
+            listeners.append(JunosGRPCListener(
+                transport, address, port, value(("routing-instance",)),
+                any(item.path == prefix + ("skip-authentication",) for item in metadata),
+                verification_required, state, tuple(item.evidence for item in selected + metadata),
+            ))
+        return tuple(listeners)
+
+    def get_grpc_cleartext_listener(self) -> JunosGRPCListener | None:
+        return next((item for item in self.get_grpc_listeners()
+                     if item.transport == "clear-text"), None)
 
     def get_rest_listeners(self) -> tuple[JunosRESTListener, ...]:
         """Explicit REST listener bindings; omitted binding defaults stay unknown."""

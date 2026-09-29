@@ -572,22 +572,37 @@ class PluginJunOSBaseline(BasePlugin):
             ))
 
     def check_grpc_listener(self, parser: BaseDeviceParser) -> None:
-        listener = self._junos(parser).get_grpc_cleartext_listener()
-        if listener is None or listener.resolution_state != "network":
-            return
-        self.add_issue(Finding(
-            rule_id="juniper.junos.management.grpc_cleartext",
-            device=parser.device_type,
-            title="gRPC service uses clear-text network transport",
-            observation=f"The JET request-response gRPC clear-text listener is configured at {listener.address}, port {listener.port}; routing instance: {listener.routing_instance or 'unspecified or unresolved'}.",
-            impact="Management or telemetry data carried by this connection lacks transport encryption and can be observed or altered on an unprotected path.",
-            exploitability="An attacker must be able to observe or modify the connection path. Actual reachability, service operation and RPC authorization are not proven by this export.",
-            recommendation="Replace the clear-text listener with a release-supported TLS listener and validate the server identity and client authentication requirements.",
-            severity=Severity.HIGH,
-            evidence=listener.evidence,
-            references=("https://www.juniper.net/documentation/us/en/software/junos/interfaces-telemetry/interfaces-telemetry.pdf",),
-            basis=FindingBasis.EXPLICIT_VALUE,
-        ))
+        for listener in self._junos(parser).get_grpc_listeners():
+            if listener.resolution_state != "network":
+                continue
+            if listener.transport == "clear-text":
+                self.add_issue(Finding(
+                    rule_id="juniper.junos.management.grpc_cleartext",
+                    device=parser.device_type,
+                    title="gRPC service uses clear-text network transport",
+                    observation=f"The JET request-response gRPC clear-text listener is configured at {listener.address}, port {listener.port}; routing instance: {listener.routing_instance or 'unspecified or unresolved'}.",
+                    impact="Management or telemetry data carried by this connection lacks transport encryption and can be observed or altered on an unprotected path.",
+                    exploitability="An attacker must be able to observe or modify the connection path. Actual reachability, service operation and RPC authorization are not proven by this export.",
+                    recommendation="Replace the clear-text listener with a release-supported TLS listener and validate the server identity and client authentication requirements.",
+                    severity=Severity.HIGH,
+                    evidence=listener.evidence,
+                    references=("https://www.juniper.net/documentation/us/en/software/junos/interfaces-telemetry/interfaces-telemetry.pdf",),
+                    basis=FindingBasis.EXPLICIT_VALUE,
+                ))
+            if listener.skip_authentication and not listener.client_certificate_verification_required:
+                self.add_issue(Finding(
+                    rule_id="juniper.junos.management.grpc_skip_authentication",
+                    device=parser.device_type,
+                    title="Network gRPC listener skips client authentication",
+                    observation=f"The JET request-response gRPC {listener.transport} listener is explicitly bound at {listener.address}, port {listener.port}, with skip-authentication enabled and without an explicit mandatory client-certificate verification path in this export.",
+                    impact="Clients admitted to this listener may be able to call gRPC services without normal per-RPC user authentication, subject to service-specific authorization and network controls.",
+                    exploitability="The export does not prove the listener is reachable or which RPCs are available. Server-only TLS encrypts traffic but does not authenticate the client; a required and verified client certificate is treated as a compensating control.",
+                    recommendation="Remove skip-authentication where per-RPC user credentials are required, or require and verify client certificates through a trusted CA; restrict listener access to approved management clients.",
+                    severity=Severity.HIGH,
+                    evidence=listener.evidence,
+                    references=("https://www.juniper.net/documentation/us/en/software/junos/grpc-network-services/topics/topic-map/grpc-services-configuring.html",),
+                    basis=FindingBasis.EXPLICIT_VALUE,
+                ))
 
     def check_snmp(self, parser: BaseDeviceParser) -> None:
         communities: dict[str, list[JunosStatement]] = defaultdict(list)
