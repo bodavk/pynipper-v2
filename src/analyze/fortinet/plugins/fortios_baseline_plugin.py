@@ -149,6 +149,13 @@ MICROSOFT_PPTP_DEPRECATION = (
 FORTINET_HA_REFERENCE = (
     "https://docs.fortinet.com/document/fortigate/7.4.2/cli-reference/22620/config-system-ha"
 )
+FORTINET_HA_DEFAULT_REFERENCES = (
+    "https://docs.fortinet.com/document/fortigate/6.4.15/cli-reference/20620/config-system-ha",
+    "https://docs.fortinet.com/document/fortigate/7.0.14/cli-reference/857448677/config-system-ha",
+    "https://docs.fortinet.com/document/fortigate/7.2.5/cli-reference/22620/config-system-ha",
+    FORTINET_HA_REFERENCE,
+    "https://docs.fortinet.com/document/fortigate/7.6.1/cli-reference/857448677/config-system-ha",
+)
 FORTINET_AUTO_INSTALL_REFERENCE = (
     "https://docs.fortinet.com/document/fortigate/7.4.1/cli-reference/109620/config-system-auto-install"
 )
@@ -2076,30 +2083,23 @@ class PluginFortiOSBaseline(BasePlugin):
                 ))
 
     def check_ha_protection(self, parser: BaseDeviceParser) -> None:
-        """SC-038: active HA cluster with heartbeat authentication or encryption off (default disable)."""
-        fortios = self._fortios(parser)
-        for scope, settings, path in fortios.iter_scoped_sections("system ha"):
-            mode = self._text(settings.get("mode"), "standalone").lower()
-            if mode not in {"a-p", "a-a"}:
-                continue
-            missing = [field for field in ("authentication", "encryption")
-                       if self._text(settings.get(field), "disable").lower() != "enable"]
-            if not missing:
-                continue
-            explicit = [field for field in missing if field in settings]
-            evidence = tuple(item for field in ("mode", *missing) for item in fortios.field_evidence(path + (field,)))
+        """SC-038: active HA cluster with proven unprotected heartbeat traffic."""
+        for heartbeat in self._fortios(parser).get_ha_weak_heartbeats():
+            disabled = " and ".join(heartbeat.disabled_controls)
             self.add_issue(self._finding(
                 parser,
                 "fortinet.fortios.ha.heartbeat_protection",
                 "HA heartbeat is not authenticated or encrypted",
-                (f"HA mode {mode} in scope '{scope}' has heartbeat {' and '.join(missing)} disabled"
-                 + ("." if len(explicit) == len(missing) else " (the default for settings that are not set).")),
+                (f"HA mode {heartbeat.mode} in scope '{heartbeat.scope}' has heartbeat {disabled} disabled"
+                 + (" by a documented default or explicit setting." if heartbeat.default_inferred else " explicitly.")),
                 "Heartbeat and session/configuration synchronisation traffic can be read or spoofed on the HA link, including synchronised secrets.",
                 "Enable 'set authentication enable' and 'set encryption enable' under 'config system ha', and keep HA links on a dedicated, isolated network.",
                 Severity.MEDIUM,
-                evidence or ("config system ha",),
-                (FORTINET_HA_REFERENCE,),
-                basis=FindingBasis.EXPLICIT_VALUE if len(explicit) == len(missing) else FindingBasis.DOCUMENTED_DEFAULT,
+                tuple(heartbeat.evidence) or ("config system ha",),
+                (FORTINET_HA_DEFAULT_REFERENCES if heartbeat.default_inferred
+                 else (FORTINET_HA_REFERENCE,)),
+                basis=(FindingBasis.DOCUMENTED_DEFAULT if heartbeat.default_inferred
+                       else FindingBasis.EXPLICIT_VALUE),
             ))
 
     def check_usb_auto_install(self, parser: BaseDeviceParser) -> None:
@@ -2124,27 +2124,19 @@ class PluginFortiOSBaseline(BasePlugin):
             ))
 
     def check_ntp_server_mode(self, parser: BaseDeviceParser) -> None:
-        """SC-033: FortiGate NTP server mode on a WAN-role interface."""
-        fortios = self._fortios(parser)
-        wan = {
-            name.casefold() for _, name, settings, _ in fortios.iter_interfaces()
-            if self._text(settings.get("role")).lower() == "wan" or name.lower().startswith("wan")
-        }
-        for scope, settings, path in fortios.iter_scoped_sections("system ntp"):
-            if self._text(settings.get("server-mode")).lower() != "enable":
-                continue
-            exposed = [name for name in self._values(settings, "interface") if name.casefold() in wan]
-            if not exposed:
-                continue
+        """SC-033: explicit NTP server mode on an assessed external interface."""
+        for listener in self._fortios(parser).get_ntp_server_exposures():
             self.add_issue(self._finding(
                 parser,
                 "fortinet.fortios.ntp.server_exposed",
-                "FortiGate answers NTP on a WAN interface",
-                f"NTP server mode in scope '{scope}' is enabled on WAN interface(s) {', '.join(exposed)}.",
-                "Internet hosts can query the firewall's time service, which can be abused for reflection traffic and reveals device information.",
+                "FortiGate serves NTP on an assessed external interface",
+                f"NTP server mode in scope '{listener.scope}' explicitly listens on configured-up "
+                f"interface '{listener.interface}', which the assessment classifies as external. "
+                "This does not prove Internet reachability or successful queries.",
+                "Clients that can reach this interface may query the firewall's time service, which can be abused for reflection traffic or reveal device information.",
                 "Limit 'set interface' under 'config system ntp' to internal interfaces or disable server-mode.",
                 Severity.LOW,
-                tuple(item for field in ("server-mode", "interface") for item in fortios.field_evidence(path + (field,))) or ("set server-mode enable",),
+                tuple(listener.evidence) + (f"assessment policy: {listener.interface} role external",),
                 (FORTINET_NTP_REFERENCE,),
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
@@ -2369,6 +2361,22 @@ class PluginFortiOSBaseline(BasePlugin):
                     Severity.MEDIUM,
                     tuple(server["identity_evidence"]) or evidence,
                     (FORTINET_LDAP_REFERENCE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
+                ))
+            if (server["secure"] in {"ldaps", "starttls"}
+                    and server["ssl_minimum"] in {"sslv3", "tlsv1", "tlsv1-1"}):
+                self.add_issue(self._finding(
+                    parser,
+                    "fortinet.fortios.aaa.ldap_weak_tls",
+                    "LDAP authentication permits an obsolete TLS version",
+                    f"LDAP server '{server['name']}' in scope '{server['scope']}' is used by "
+                    f"group(s) {groups} with {server['secure']} and explicitly sets "
+                    f"ssl-min-proto-version {server['ssl_minimum']}.",
+                    "The LDAP connection may negotiate an obsolete protocol version, weakening protection for authentication traffic.",
+                    "Require TLS 1.2 or newer on the FortiGate and LDAP server, subject to the approved crypto policy.",
+                    Severity.MEDIUM,
+                    tuple(server["ssl_minimum_evidence"]) + evidence,
+                    (FORTINET_LDAP_REFERENCE, NIST_CRYPTO_TRANSITIONS),
                     basis=FindingBasis.EXPLICIT_VALUE,
                 ))
 

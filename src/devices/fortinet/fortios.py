@@ -138,6 +138,22 @@ class FortiDNSBroadResolver:
 
 
 @dataclass(frozen=True)
+class FortiNTPServerExposure:
+    scope: str
+    interface: str
+    evidence: Tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class FortiHAWeakHeartbeat:
+    scope: str
+    mode: str
+    disabled_controls: Tuple[str, ...]
+    default_inferred: bool
+    evidence: Tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
 class FortiSSLVPNPasswordOnlyUser:
     scope: str
     username: str
@@ -1076,6 +1092,67 @@ class FortiOSParser(BaseDeviceParser):
                 if isinstance(settings, dict):
                     yield scope, str(name), settings, path + (str(name),)
 
+    def get_ntp_server_exposures(self) -> Tuple[FortiNTPServerExposure, ...]:
+        """Explicit NTP listeners on configured-up, assessed external interfaces."""
+        interfaces = {
+            (scope.casefold(), name.casefold()): (settings, path)
+            for scope, name, settings, path in self.iter_interfaces()
+        }
+        exposures: List[FortiNTPServerExposure] = []
+        for scope, settings, path in self._scoped_sections("system ntp"):
+            if str(settings.get("server-mode", "")).casefold() != "enable":
+                continue
+            for name in self._as_list(settings.get("interface")):
+                if self.assessment_context.role_for_interface(name) != "external":
+                    continue
+                interface = interfaces.get((scope.casefold(), name.casefold()))
+                if interface is None or str(interface[0].get("status", "")).casefold() != "up":
+                    continue
+                exposures.append(FortiNTPServerExposure(
+                    scope=scope,
+                    interface=name,
+                    evidence=(self._field_evidence(path + ("server-mode",))
+                              + self._field_evidence(path + ("interface",))
+                              + self._field_evidence(interface[1] + ("status",))),
+                ))
+        return tuple(exposures)
+
+    def get_ha_weak_heartbeats(self) -> Tuple[FortiHAWeakHeartbeat, ...]:
+        """HA protection disabled explicitly or by a release-qualified default."""
+        parts = re.findall(r"\d+", self.get_version())[:3]
+        release = tuple(int(part) for part in parts) if len(parts) == 3 else None
+        # The cited 6.4.15 and 7.0/7.2/7.4/7.6 CLI references list disable
+        # defaults. Older exports and future major releases stay unknown.
+        known_default = bool(release and (
+            (release[:2] == (6, 4) and release[2] >= 15)
+            or (release[0] == 7 and release[1] in {0, 2, 4, 6})
+        ))
+        result: List[FortiHAWeakHeartbeat] = []
+        for scope, settings, path in self._scoped_sections("system ha"):
+            mode = str(settings.get("mode", "")).casefold()
+            if mode not in {"a-p", "a-a"}:
+                continue
+            disabled: List[str] = []
+            default_inferred = False
+            for field in ("authentication", "encryption"):
+                value = str(settings.get(field, "")).casefold()
+                if value == "disable":
+                    disabled.append(field)
+                elif not value and known_default:
+                    disabled.append(field)
+                    default_inferred = True
+            if not disabled:
+                continue
+            result.append(FortiHAWeakHeartbeat(
+                scope=scope,
+                mode=mode,
+                disabled_controls=tuple(disabled),
+                default_inferred=default_inferred,
+                evidence=tuple(item for field in ("mode", *disabled)
+                               for item in self._field_evidence(path + (field,))),
+            ))
+        return tuple(result)
+
     def _supports_radsec(self) -> bool:
         numbers = re.findall(r"\d+", self.get_version())
         return len(numbers) >= 2 and (int(numbers[0]), int(numbers[1])) >= (7, 4)
@@ -1365,10 +1442,12 @@ class FortiOSParser(BaseDeviceParser):
                     "name": str(name),
                     "secure": str(settings.get("secure", "disable")).lower(),
                     "secure_explicit": "secure" in settings,
+                    "ssl_minimum": str(settings.get("ssl-min-proto-version", "")).casefold(),
                     "server_identity_check": str(settings.get("server-identity-check", "enable")).lower(),
                     "groups": tuple(sorted(references.get((scope, str(name)), []))),
                     "evidence": secure_evidence or self._field_evidence(path + ("server",)) or self._field_evidence(path),
                     "identity_evidence": self._field_evidence(path + ("server-identity-check",)),
+                    "ssl_minimum_evidence": self._field_evidence(path + ("ssl-min-proto-version",)),
                 })
         return servers
 

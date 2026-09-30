@@ -13,6 +13,7 @@ from src.analyze.common.issue import FindingBasis
 from src.analyze.common.risky_services import is_risky_port, risky_labels
 from src.analyze.f5.core.process_bigip_conf import process_bigip_conf
 from src.analyze.fortinet.core.process_fortios_conf import process_fortios_conf
+from src.common.assessment import AssessmentContext
 from src.devices import get_parser
 
 
@@ -104,12 +105,20 @@ def test_ios_ntp_access(tmp_path):
 
 
 def test_fortios_ntp_server_mode(tmp_path):
-    base = (FORTI + 'config system interface\n    edit "wan1"\n        set role wan\n    next\n'
-            '    edit "internal"\n        set role lan\n    next\nend\n')
+    base = (FORTI + 'config system interface\n    edit "wan1"\n        set status up\n    next\n'
+            '    edit "internal"\n        set status up\n    next\nend\n')
     exposed = base + 'config system ntp\n    set server-mode enable\n    set interface "wan1"\nend\n'
     internal = base + 'config system ntp\n    set server-mode enable\n    set interface "internal"\nend\n'
-    assert _rules(_run(tmp_path, "FORTIOS", exposed, process_fortios_conf), "fortinet.fortios.ntp.server_exposed")
-    assert not _rules(_run(tmp_path, "FORTIOS", internal, process_fortios_conf), "fortinet.fortios.ntp.server_exposed")
+    def scan(config):
+        path = tmp_path / "fortios-ntp.conf"
+        path.write_text(config, encoding="utf-8")
+        parser = get_parser("FORTIOS", str(path))
+        parser.set_assessment_context(AssessmentContext.from_mapping({
+            "interface_roles": {"wan1": "external", "internal": "internal"},
+        }))
+        return _rules(process_fortios_conf(parser).values(), "fortinet.fortios.ntp.server_exposed")
+    assert scan(exposed)
+    assert not scan(internal)
 
 
 # --- SC-036 / SC-037 -----------------------------------------------------------------
