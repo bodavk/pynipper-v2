@@ -113,6 +113,10 @@ FORTINET_SSLVPN_ACCESS_GUIDE = (
     "https://docs.fortinet.com/document/fortigate/7.4.2/administration-guide/"
     "947829/ssl-vpn-security-best-practices"
 )
+FORTINET_SSLVPN_PORTAL_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.4.1/cli-reference/321620/"
+    "config-vpn-ssl-web-portal"
+)
 FORTINET_DNS_SERVER_REFERENCE = (
     "https://docs.fortinet.com/document/fortigate/7.4.1/cli-reference/087620/"
     "config-system-dns-server"
@@ -1269,7 +1273,8 @@ class PluginFortiOSBaseline(BasePlugin):
 
             if (
                 policy.action == "accept"
-                and policy.source_networks.any
+                and policy.proof_eligible
+                and policy.source_unrestricted
                 and not policy.source_negated
                 and not policy.service_negated
                 and not policy.services.any
@@ -1308,8 +1313,8 @@ class PluginFortiOSBaseline(BasePlugin):
                     self.add_issue(self._finding(
                         parser,
                         "fortinet.fortios.policy.risky_service_exposure",
-                        "Risky service is allowed from any source",
-                        f"Enabled {policy.family} accept policy '{policy.name}' in scope '{policy.scope}' allows {', '.join(risky)} from source 'all'.",
+                        "Risky service is allowed from all source addresses",
+                        f"Enabled {policy.family} accept policy '{policy.name}' in scope '{policy.scope}' allows {', '.join(risky)} from source objects covering every address in the policy family.",
                         "Clear-text logins, file sharing, remote administration and database services are common targets for credential theft and exploitation.",
                         "Restrict the source to the hosts that need the service, and replace clear-text protocols with encrypted alternatives.",
                         Severity.HIGH,
@@ -1820,8 +1825,8 @@ class PluginFortiOSBaseline(BasePlugin):
                 device=parser.device_type,
                 title="Write-capable API account explicitly trusts every source",
                 observation=(f"API account '{identity.role.administrator}' in scope '{identity.role.scope}' "
-                             f"has profile '{identity.role.profile}' with write privileges and an explicit "
-                             f"unrestricted {', '.join(identity.broad_families)} trusted-host entry. "
+                             f"has profile '{identity.role.profile}' with write privileges and explicit "
+                             f"trusted-host entries collectively covering every {', '.join(identity.broad_families)} source. "
                              f"Exported VDOM scope: {', '.join(identity.vdoms) or 'unspecified'}."),
                 impact="The API account's trusted-host list does not limit source addresses in the identified family.",
                 exploitability="A reachable caller still needs valid API credentials and any required peer authentication. Listener reachability, token validity and effective certificate validation are not established by this export.",
@@ -2142,13 +2147,32 @@ class PluginFortiOSBaseline(BasePlugin):
     def check_sslvpn(self, parser: BaseDeviceParser) -> None:
         """SC-039: explicit weak settings on an active SSL-VPN portal."""
         fortios = self._fortios(parser)
+        for default in fortios.get_sslvpn_active_default_portals():
+            self.add_issue(self._finding(
+                parser,
+                "fortinet.fortios.sslvpn.active_default_portal",
+                "SSL-VPN fallback portal has an enabled access mode",
+                (f"Active SSL-VPN in scope '{default.scope}' selects '{default.portal}' as its default "
+                 f"portal, which explicitly enables {', '.join(default.enabled_modes)}. "
+                 "Authenticated users not matched by a specific portal rule may receive this fallback portal; "
+                 "the export does not prove successful login or access to protected resources."),
+                "A permissive fallback can grant VPN capabilities to identities outside the intended portal mappings.",
+                "Use a dedicated default portal with web, IPv4 tunnel and IPv6 tunnel modes disabled; map approved users and groups explicitly.",
+                Severity.MEDIUM,
+                default.evidence,
+                (FORTINET_SSLVPN_ACCESS_GUIDE, FORTINET_SSLVPN_PORTAL_REFERENCE,
+                 FORTINET_SSLVPN_REFERENCE),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
         for user in fortios.get_sslvpn_password_only_users():
+            binding = (f"maps group '{user.group}' containing enabled local password user '{user.username}'"
+                       if user.group else f"directly maps enabled local password user '{user.username}'")
             self.add_issue(self._finding(
                 parser,
                 "fortinet.fortios.sslvpn.password_only_local_user",
                 "SSL-VPN rule admits a local password user without MFA or a client certificate",
-                (f"SSL-VPN authentication rule '{user.auth_rule}' in scope '{user.scope}' directly "
-                 f"maps enabled local password user '{user.username}' to a portal. The export explicitly "
+                (f"SSL-VPN authentication rule '{user.auth_rule}' in scope '{user.scope}' "
+                 f"{binding} to a portal. The export explicitly "
                  "disables that user's two-factor method and both global and rule-level client-certificate requirements. "
                  "This establishes a configured password-only path, not successful authentication or transit access."),
                 "Compromise or guessing of the user's password could permit VPN portal authentication without another factor.",
@@ -2156,7 +2180,8 @@ class PluginFortiOSBaseline(BasePlugin):
                 Severity.HIGH,
                 user.evidence,
                 (FORTINET_SSLVPN_REFERENCE, FORTINET_SSLVPN_ACCESS_GUIDE,
-                 "https://docs.fortinet.com/document/fortigate/7.4.1/cli-reference/480620"),
+                 "https://docs.fortinet.com/document/fortigate/7.4.1/cli-reference/480620",
+                 "https://docs.fortinet.com/document/fortigate/7.4.2/administration-guide/559546"),
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
         for vpn in fortios.get_sslvpn_settings():
@@ -2182,6 +2207,25 @@ class PluginFortiOSBaseline(BasePlugin):
                     "Restrict SSL-VPN source addresses to approved networks, or verify a compensating local-in/VIP policy and upstream controls.",
                     Severity.MEDIUM,
                     base + tuple(vpn["source_evidence"])
+                    + tuple(f"assessment policy: {interface} role external" for interface in external),
+                    (FORTINET_SSLVPN_REFERENCE, FORTINET_SSLVPN_ACCESS_GUIDE),
+                    basis=FindingBasis.EXPLICIT_VALUE,
+                ))
+            if (external and vpn["source_unrestricted6"]
+                    and vpn["source_address6_negated"] == "disable"):
+                self.add_issue(self._finding(
+                    parser,
+                    "fortinet.fortios.sslvpn.unrestricted_sources6",
+                    "SSL-VPN global IPv6 source restriction admits all addresses",
+                    (f"{where} has an explicit source-address6 selection resolving to every IPv6 address "
+                     "with source-address6-negate disabled; "
+                     f"assessment policy classifies {', '.join(external)} as external. "
+                     "This is a broad global IPv6 source gate, not proof of IPv6 reachability or successful authentication; "
+                     "local-in policies and upstream controls require separate review."),
+                    "Unauthorised IPv6 clients that can reach the listener may be able to attempt SSL-VPN authentication.",
+                    "Restrict SSL-VPN IPv6 source addresses to approved networks, or verify effective compensating controls.",
+                    Severity.MEDIUM,
+                    base + tuple(vpn["source_evidence6"])
                     + tuple(f"assessment policy: {interface} role external" for interface in external),
                     (FORTINET_SSLVPN_REFERENCE, FORTINET_SSLVPN_ACCESS_GUIDE),
                     basis=FindingBasis.EXPLICIT_VALUE,

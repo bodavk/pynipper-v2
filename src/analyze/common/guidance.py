@@ -580,12 +580,26 @@ _CATALOGUE = (
         "A broad source gate increases the population able to probe the VPN listener and attempt logins.",
         "Limit source addresses to approved networks or verify and document an effective compensating local-in or upstream restriction.",
     )),
+    (r"^sslvpn\.unrestricted_sources6$", _G(
+        "vpn-broad-ipv6-source-admission", "management-access",
+        "The SSL-VPN global IPv6 source setting admits all addresses on an interface assessed as external.",
+        "IPv6 clients that can reach that interface may attempt VPN authentication; local-in and upstream controls are not resolved.",
+        "A broad IPv6 source gate increases the population able to probe the VPN listener.",
+        "Limit IPv6 sources to approved networks or verify an effective compensating local-in or upstream restriction.",
+    )),
     (r"^sslvpn\.password_only_local_user$", _G(
         "vpn-password-only-local-user", "vpn",
-        "An enabled local password account is directly mapped to an SSL-VPN portal with MFA and client certificates explicitly disabled.",
+        "An enabled local password account is mapped directly or through a firewall group to an SSL-VPN portal with MFA and client certificates explicitly disabled.",
         "The export proves a configured password-only authentication path, but not successful login or access through a firewall policy.",
         "A stolen or guessed password can be sufficient to authenticate to the VPN portal.",
         "Enable user MFA or require a validated client certificate on the VPN path.",
+    )),
+    (r"^sslvpn\.active_default_portal$", _G(
+        "vpn-active-fallback-portal", "vpn",
+        "An active SSL-VPN listener selects a default portal with an explicitly enabled access mode.",
+        "Users not matched by a specific portal mapping may receive this fallback; login and resource access are not proven.",
+        "A permissive fallback can expose VPN capabilities to more authenticated users than intended.",
+        "Select a dedicated fallback portal with all access modes disabled and map approved identities explicitly.",
     )),
     (r"^dns\.broad_resolution_service$", _G(
         "dns-broad-resolution", "control-plane",

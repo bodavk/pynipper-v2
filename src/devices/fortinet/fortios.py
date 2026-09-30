@@ -142,6 +142,15 @@ class FortiSSLVPNPasswordOnlyUser:
     scope: str
     username: str
     auth_rule: str
+    group: str | None
+    evidence: Tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class FortiSSLVPNActiveDefaultPortal:
+    scope: str
+    portal: str
+    enabled_modes: Tuple[str, ...]
     evidence: Tuple[ConfigEvidence, ...]
 
 
@@ -227,6 +236,17 @@ class FortiFirewallPolicy:
     unsupported_predicates: Tuple[str, ...]
     behavior_signature: Tuple[Tuple[str, str], ...]
     evidence: Tuple[ConfigEvidence, ...]
+
+    @property
+    def source_unrestricted(self) -> bool:
+        """Whether resolved source objects cover the whole policy address family."""
+        family = 4 if self.family == "ipv4" else 6 if self.family == "ipv6" else None
+        if family is None:
+            return False
+        universe = NetworkSemantics(intervals=(
+            AddressInterval(family, 0, (1 << (32 if family == 4 else 128)) - 1),
+        ))
+        return network_covers(self.source_networks, universe) == ProofState.PROVEN
 
     @property
     def proof_eligible(self) -> bool:
@@ -961,6 +981,8 @@ class FortiOSParser(BaseDeviceParser):
                 continue
             evidence = list(role.evidence)
             broad = set()
+            trusted_ranges: dict[int, list[AddressInterval]] = {4: [], 6: []}
+            trusted_evidence: dict[int, list[ConfigEvidence]] = {4: [], 6: []}
             hosts = settings.get("trusthost", {})
             for identifier, values in hosts.items() if isinstance(hosts, dict) else ():
                 if not isinstance(values, dict):
@@ -973,8 +995,6 @@ class FortiOSParser(BaseDeviceParser):
                 try:
                     if family == "ipv4-trusthost" and len(tokens) == 2:
                         # FortiOS uses a subnet mask, not a Cisco wildcard mask.
-                        if tokens[1] != "0.0.0.0":
-                            continue
                         network = ipaddress.IPv4Network((tokens[0], tokens[1]), strict=False)
                     elif family == "ipv6-trusthost" and len(tokens) == 1 and "/" in tokens[0]:
                         network = ipaddress.IPv6Network(tokens[0], strict=False)
@@ -982,10 +1002,20 @@ class FortiOSParser(BaseDeviceParser):
                         continue
                 except (ValueError, TypeError):
                     continue
-                if network.prefixlen == 0:
-                    broad.add("IPv4" if network.version == 4 else "IPv6")
-                    for field in ("type", family):
-                        evidence.extend(self.field_evidence(path + ("trusthost", str(identifier), field)))
+                trusted_ranges[network.version].append(AddressInterval(
+                    network.version, int(network.network_address), int(network.broadcast_address)
+                ))
+                for field in ("type", family):
+                    trusted_evidence[network.version].extend(
+                        self.field_evidence(path + ("trusthost", str(identifier), field))
+                    )
+            for family in (4, 6):
+                networks = NetworkSemantics(intervals=tuple(trusted_ranges[family]))
+                covers_all = (self._covers_every_ipv4_address(networks) if family == 4
+                              else self._covers_every_ipv6_address(networks))
+                if covers_all:
+                    broad.add("IPv4" if family == 4 else "IPv6")
+                    evidence.extend(trusted_evidence[family])
             vdom = settings.get("vdom", [])
             vdoms = tuple(vdom) if isinstance(vdom, list) else (str(vdom),) if vdom else ()
             for field in ("vdom", "peer-auth", "peer-group"):
@@ -1156,6 +1186,8 @@ class FortiOSParser(BaseDeviceParser):
             interfaces = self._as_list(settings.get("source-interface"))
             source_addresses = self._as_list(settings.get("source-address"))
             source_networks = self._combine_network_members(source_addresses, scope, 4)
+            source_addresses6 = self._as_list(settings.get("source-address6"))
+            source_networks6 = self._combine_network_members(source_addresses6, scope, 6)
             active = bool(interfaces) and str(settings.get("status", "enable")).lower() != "disable"
             values = {
                 field: (" ".join(self._as_list(settings[field])) if field in settings else None)
@@ -1169,16 +1201,20 @@ class FortiOSParser(BaseDeviceParser):
                 "source_networks": source_networks,
                 "source_unrestricted": self._covers_every_ipv4_address(source_networks),
                 "source_address_negated": str(settings.get("source-address-negate", "")).casefold(),
+                "source_unrestricted6": self._covers_every_ipv6_address(source_networks6),
+                "source_address6_negated": str(settings.get("source-address6-negate", "")).casefold(),
                 "values": values,
                 "evidence": {field: self._field_evidence(path + (field,)) for field in values},
                 "interface_evidence": self._field_evidence(path + ("source-interface",)),
                 "source_evidence": (self._field_evidence(path + ("source-address",))
                                     + self._field_evidence(path + ("source-address-negate",))),
+                "source_evidence6": (self._field_evidence(path + ("source-address6",))
+                                     + self._field_evidence(path + ("source-address6-negate",))),
             })
         return results
 
     def get_sslvpn_password_only_users(self) -> tuple[FortiSSLVPNPasswordOnlyUser, ...]:
-        """Prove a directly mapped local user has an explicit password-only VPN path."""
+        """Prove a mapped local user has an explicit password-only VPN path."""
         release = tuple(int(part) for part in re.findall(r"\d+", self.get_version())[:3])
         if len(release) != 3 or not (7, 0, 0) <= release < (7, 5, 0):
             return ()
@@ -1202,7 +1238,22 @@ class FortiOSParser(BaseDeviceParser):
                 rule_interfaces = {item.casefold() for item in self._as_list(rule.get("source-interface"))}
                 if rule_interfaces and listener_interfaces.isdisjoint(rule_interfaces):
                     continue
-                for username in self._as_list(rule.get("users")):
+                rule_path = path + ("authentication-rule", str(rule_name))
+                user_bindings = [(name, None, self._field_evidence(rule_path + ("users",)))
+                                 for name in self._as_list(rule.get("users"))]
+                for group_name in self._as_list(rule.get("groups")):
+                    resolved_group = self._resolve_scoped_object("user group", group_name, scope)
+                    if resolved_group is None:
+                        continue
+                    _, group_settings, group_path = resolved_group
+                    if str(group_settings.get("group-type", "firewall")).casefold() != "firewall":
+                        continue
+                    group_evidence = (self._field_evidence(rule_path + ("groups",))
+                                      + self._field_evidence(group_path + ("group-type",))
+                                      + self._field_evidence(group_path + ("member",)))
+                    user_bindings.extend((name, group_name, group_evidence)
+                                         for name in self._as_list(group_settings.get("member")))
+                for username, group_name, binding_evidence in user_bindings:
                     resolved = self._resolve_scoped_object("user local", username, scope)
                     if resolved is None:
                         continue
@@ -1211,7 +1262,6 @@ class FortiOSParser(BaseDeviceParser):
                             or str(user.get("type", "")).casefold() != "password"
                             or str(user.get("two-factor", "")).casefold() != "disable"):
                         continue
-                    rule_path = path + ("authentication-rule", str(rule_name))
                     evidence = (
                         self._field_evidence(path + ("status",))
                         + self._field_evidence(path + ("source-interface",))
@@ -1219,7 +1269,7 @@ class FortiOSParser(BaseDeviceParser):
                         + self._field_evidence(rule_path + ("auth",))
                         + self._field_evidence(rule_path + ("client-cert",))
                         + self._field_evidence(rule_path + ("source-interface",))
-                        + self._field_evidence(rule_path + ("users",))
+                        + binding_evidence
                         + self._field_evidence(rule_path + ("portal",))
                         + self._field_evidence(user_path + ("status",))
                         + self._field_evidence(user_path + ("type",))
@@ -1227,8 +1277,37 @@ class FortiOSParser(BaseDeviceParser):
                     )
                     found.setdefault((scope.casefold(), username.casefold()),
                                      FortiSSLVPNPasswordOnlyUser(
-                                         scope, username, str(rule_name), evidence))
+                                         scope, username, str(rule_name), group_name, evidence))
         return tuple(found.values())
+
+    def get_sslvpn_active_default_portals(self) -> tuple[FortiSSLVPNActiveDefaultPortal, ...]:
+        """Resolve explicitly enabled access modes on an active VPN fallback portal."""
+        release = tuple(int(part) for part in re.findall(r"\d+", self.get_version())[:3])
+        if len(release) != 3 or not (7, 0, 0) <= release < (7, 5, 0):
+            return ()
+        result = []
+        for scope, settings, path in self._scoped_sections("vpn ssl settings"):
+            if (str(settings.get("status", "")).casefold() != "enable"
+                    or not self._as_list(settings.get("source-interface"))):
+                continue
+            portals = self._as_list(settings.get("default-portal"))
+            if len(portals) != 1:
+                continue
+            resolved = self._resolve_scoped_object("vpn ssl web portal", portals[0], scope)
+            if resolved is None:
+                continue
+            _, portal, portal_path = resolved
+            modes = tuple(field for field in ("web-mode", "tunnel-mode", "ipv6-tunnel-mode")
+                          if str(portal.get(field, "")).casefold() == "enable")
+            if not modes:
+                continue
+            evidence = (self._field_evidence(path + ("status",))
+                        + self._field_evidence(path + ("source-interface",))
+                        + self._field_evidence(path + ("default-portal",)))
+            for mode in modes:
+                evidence += self._field_evidence(portal_path + (mode,))
+            result.append(FortiSSLVPNActiveDefaultPortal(scope, portals[0], modes, evidence))
+        return tuple(result)
 
     def get_ldap_servers(self) -> list[dict]:
         """LDAP servers with their transport and the user groups that reference them.
@@ -1660,6 +1739,11 @@ class FortiOSParser(BaseDeviceParser):
     @staticmethod
     def _covers_every_ipv4_address(networks: NetworkSemantics) -> bool:
         universe = NetworkSemantics(intervals=(AddressInterval(4, 0, (1 << 32) - 1),))
+        return network_covers(networks, universe) == ProofState.PROVEN
+
+    @staticmethod
+    def _covers_every_ipv6_address(networks: NetworkSemantics) -> bool:
+        universe = NetworkSemantics(intervals=(AddressInterval(6, 0, (1 << 128) - 1),))
         return network_covers(networks, universe) == ProofState.PROVEN
 
     @staticmethod
@@ -2565,6 +2649,7 @@ __all__ = [
     "FortiPPTPClient",
     "FortiDNSBroadResolver",
     "FortiSSLVPNPasswordOnlyUser",
+    "FortiSSLVPNActiveDefaultPortal",
     "FortiOSParseError",
     "FortiOSParser",
 ]

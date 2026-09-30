@@ -69,6 +69,36 @@ def test_ipv6_independent_and_peer_metadata(tmp_path):
     assert len(findings) == 1
 
 
+@pytest.mark.parametrize("entries,family", [
+    (("0.0.0.0 128.0.0.0", "128.0.0.0 128.0.0.0"), "IPv4"),
+    (("::/1", "8000::/1"), "IPv6"),
+])
+def test_multiple_explicit_trusthosts_can_collectively_cover_all_sources(tmp_path, entries, family):
+    address_type = "ipv4-trusthost" if family == "IPv4" else "ipv6-trusthost"
+    account = ACCOUNT.replace(
+        '    set ipv4-trusthost 0.0.0.0 0.0.0.0',
+        f'    set {address_type} {entries[0]}\n   next\n'
+        f'   edit 2\n    set type {address_type}\n    set {address_type} {entries[1]}',
+    ).replace('set type ipv4-trusthost', f'set type {address_type}')
+    parser, findings = scan(tmp_path, PROFILE + account)
+    assert parser.get_api_identities()[0].broad_families == (family,)
+    assert len(findings) == 1
+    assert "collectively covering every" in findings[0].observation
+    assert "NeverExposeThisToken" not in str(findings[0])
+
+
+def test_incomplete_or_malformed_trusthost_union_does_not_imply_every_source(tmp_path):
+    account = ACCOUNT.replace(
+        '    set ipv4-trusthost 0.0.0.0 0.0.0.0',
+        '    set ipv4-trusthost 0.0.0.0 128.0.0.0\n   next\n'
+        '   edit 2\n    set type ipv4-trusthost\n'
+        '    set ipv4-trusthost invalid 128.0.0.0',
+    )
+    parser, findings = scan(tmp_path, PROFILE + account)
+    assert parser.get_api_identities()[0].broad_families == ()
+    assert findings == []
+
+
 def test_peer_group_reference_resolution_without_authentication_claim(tmp_path):
     peer = ('config user peer\n edit client-a\n set ca ClientCA\n next\nend\n'
             'config user peergrp\n edit clients\n set member client-a\n next\nend\n')

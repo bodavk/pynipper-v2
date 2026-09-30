@@ -76,3 +76,45 @@ def test_matching_rule_source_interface_retains_password_only_path(tmp_path):
                       'set client-cert disable\n            set source-interface "wan1"')
     _, findings = _scan(tmp_path, USER + vpn)
     assert len(findings) == 1
+
+
+@pytest.mark.parametrize("group_type", ["", "        set group-type firewall\n"])
+def test_local_user_mapped_through_firewall_group(tmp_path, group_type):
+    group = ('config user group\n    edit "vpn-users"\n' + group_type
+             + '        set member "alice"\n    next\nend\n')
+    vpn = VPN.replace('set users "alice"', 'set groups "vpn-users"')
+    parser, findings = _scan(tmp_path, USER + group + vpn)
+    assert len(findings) == 1
+    assert parser.get_sslvpn_password_only_users()[0].group == "vpn-users"
+    assert "group 'vpn-users'" in findings[0].observation
+    assert "TopSecret42" not in str(findings[0])
+
+
+@pytest.mark.parametrize("group", [
+    'config user group\n    edit "vpn-users"\n'
+    '        set group-type fsso-service\n        set member "alice"\n    next\nend\n',
+    'config user group\n    edit "vpn-users"\n'
+    '        set member "bob"\n    next\nend\n',
+])
+def test_unrelated_or_non_firewall_group_does_not_imply_local_vpn_path(tmp_path, group):
+    vpn = VPN.replace('set users "alice"', 'set groups "vpn-users"')
+    _, findings = _scan(tmp_path, USER + group + vpn)
+    assert findings == []
+
+
+def test_direct_and_group_binding_reports_one_user_once(tmp_path):
+    group = ('config user group\n    edit "vpn-users"\n'
+             '        set member "alice"\n    next\nend\n')
+    vpn = VPN.replace('set users "alice"', 'set users "alice"\n            set groups "vpn-users"')
+    _, findings = _scan(tmp_path, USER + group + vpn)
+    assert len(findings) == 1
+
+
+def test_group_member_is_not_borrowed_from_another_vdom(tmp_path):
+    group = ('config user group\n    edit "vpn-users"\n'
+             '        set member "alice"\n    next\nend\n')
+    vpn = VPN.replace('set users "alice"', 'set groups "vpn-users"')
+    body = ('config vdom\n    edit "other"\n' + USER + group
+            + '    next\n    edit "tenant"\n' + vpn + '    next\nend\n')
+    _, findings = _scan(tmp_path, body)
+    assert findings == []
