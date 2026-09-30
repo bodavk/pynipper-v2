@@ -2095,7 +2095,7 @@ class PluginFortiOSBaseline(BasePlugin):
                 "fortinet.fortios.dns.broad_resolution_service",
                 "DNS resolution or forwarding is broadly admitted on an external interface",
                 (f"FortiGate scope '{resolver.scope}' configures {resolver.mode} DNS on "
-                 f"externally assessed interface '{resolver.interface}'. Its first active IPv4 "
+                 f"externally assessed interface '{resolver.interface}'. Its first potentially applicable IPv4 "
                  f"local-in policy '{resolver.policy_name}' explicitly accepts every source for UDP DNS. "
                  "This is configured device-local permission, not proof of Internet reachability or a successful query."),
                 "Untrusted clients that can reach the interface may use the firewall as a DNS resolver or forwarding service.",
@@ -2142,6 +2142,23 @@ class PluginFortiOSBaseline(BasePlugin):
     def check_sslvpn(self, parser: BaseDeviceParser) -> None:
         """SC-039: explicit weak settings on an active SSL-VPN portal."""
         fortios = self._fortios(parser)
+        for user in fortios.get_sslvpn_password_only_users():
+            self.add_issue(self._finding(
+                parser,
+                "fortinet.fortios.sslvpn.password_only_local_user",
+                "SSL-VPN rule admits a local password user without MFA or a client certificate",
+                (f"SSL-VPN authentication rule '{user.auth_rule}' in scope '{user.scope}' directly "
+                 f"maps enabled local password user '{user.username}' to a portal. The export explicitly "
+                 "disables that user's two-factor method and both global and rule-level client-certificate requirements. "
+                 "This establishes a configured password-only path, not successful authentication or transit access."),
+                "Compromise or guessing of the user's password could permit VPN portal authentication without another factor.",
+                "Enable a supported second factor for this user or require and validate client certificates for the VPN path.",
+                Severity.HIGH,
+                user.evidence,
+                (FORTINET_SSLVPN_REFERENCE, FORTINET_SSLVPN_ACCESS_GUIDE,
+                 "https://docs.fortinet.com/document/fortigate/7.4.1/cli-reference/480620"),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
         for vpn in fortios.get_sslvpn_settings():
             if not vpn["active"]:
                 continue

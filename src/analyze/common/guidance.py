@@ -580,6 +580,13 @@ _CATALOGUE = (
         "A broad source gate increases the population able to probe the VPN listener and attempt logins.",
         "Limit source addresses to approved networks or verify and document an effective compensating local-in or upstream restriction.",
     )),
+    (r"^sslvpn\.password_only_local_user$", _G(
+        "vpn-password-only-local-user", "vpn",
+        "An enabled local password account is directly mapped to an SSL-VPN portal with MFA and client certificates explicitly disabled.",
+        "The export proves a configured password-only authentication path, but not successful login or access through a firewall policy.",
+        "A stolen or guessed password can be sufficient to authenticate to the VPN portal.",
+        "Enable user MFA or require a validated client certificate on the VPN path.",
+    )),
     (r"^dns\.broad_resolution_service$", _G(
         "dns-broad-resolution", "control-plane",
         "A FortiGate is configured to resolve or forward DNS queries on an externally assessed interface, with a broad first local-in allow rule.",

@@ -94,6 +94,33 @@ def test_earlier_local_in_rule_keeps_dns_permission_unknown(tmp_path):
     assert findings == []
 
 
+@pytest.mark.parametrize("earlier_fields", [
+    'set intf "lan1"\n        set service "DNS"',
+    'set intf "wan1"\n        set service "HTTPS"\n        set service-negate disable',
+])
+def test_explicitly_unrelated_local_in_rule_does_not_hide_broad_dns_allow(
+    tmp_path, earlier_fields
+):
+    earlier = ('config firewall local-in-policy\n    edit 0\n'
+               '        set status enable\n        ' + earlier_fields + '\n'
+               '        set srcaddr "all"\n        set dstaddr "all"\n'
+               '        set schedule "always"\n        set action deny\n'
+               '    next\nend\n')
+    _, findings = _scan(tmp_path, INTERFACE + DNS + earlier + ALLOW)
+    assert len(findings) == 1
+
+
+def test_unknown_or_negated_earlier_service_remains_a_dns_blocker(tmp_path):
+    earlier = ('config firewall local-in-policy\n    edit 0\n'
+               '        set status enable\n        set intf "wan1"\n'
+               '        set srcaddr "all"\n        set dstaddr "all"\n'
+               '        set service "HTTPS"\n        set service-negate enable\n'
+               '        set schedule "always"\n        set action deny\n'
+               '    next\nend\n')
+    _, findings = _scan(tmp_path, INTERFACE + DNS + earlier + ALLOW)
+    assert findings == []
+
+
 def test_dns_broad_resolver_does_not_assume_later_release_local_in_state(tmp_path):
     header = HEADER.replace("7.4.1", "7.6.1")
     _, findings = _scan(tmp_path, INTERFACE + DNS + ALLOW, header=header)

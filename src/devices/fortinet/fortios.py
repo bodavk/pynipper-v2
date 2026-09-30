@@ -138,6 +138,14 @@ class FortiDNSBroadResolver:
 
 
 @dataclass(frozen=True)
+class FortiSSLVPNPasswordOnlyUser:
+    scope: str
+    username: str
+    auth_rule: str
+    evidence: Tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
 class FortiManagementCertificateBinding:
     """Resolved FortiOS administrative HTTPS certificate evidence."""
 
@@ -1059,11 +1067,13 @@ class FortiOSParser(BaseDeviceParser):
             return ()  # Later releases can have a built-in, non-exported local-in deny.
         interfaces = {(scope.casefold(), name.casefold()): (settings, path)
                       for scope, name, settings, path in self.iter_interfaces()}
-        local_in: dict[str, tuple[str, FortiDict, tuple[str, ...]]] = {}
+        local_in: dict[str, list[tuple[str, FortiDict, tuple[str, ...]]]] = {}
         for scope, section, path in self._scoped_sections("firewall local-in-policy"):
             for name, settings in section.items():
                 if isinstance(settings, dict) and str(settings.get("status", "")).casefold() != "disable":
-                    local_in.setdefault(scope.casefold(), (str(name), settings, path + (str(name),)))
+                    local_in.setdefault(scope.casefold(), []).append(
+                        (str(name), settings, path + (str(name),))
+                    )
         result = []
         dns_udp = ServiceSemantics(intervals=(ServiceInterval("udp", 53, 53),))
         allowed_fields = {"status", "intf", "srcaddr", "dstaddr", "service", "schedule",
@@ -1083,7 +1093,25 @@ class FortiOSParser(BaseDeviceParser):
                 if not interface_entry or str(interface_entry[0].get("status", "")).casefold() != "up":
                     continue
                 _, interface_path = interface_entry
-                first = local_in.get(scope.casefold())
+                first = None
+                for candidate in local_in.get(scope.casefold(), ()):
+                    candidate_settings = candidate[1]
+                    candidate_interface = str(candidate_settings.get("intf", "")).casefold()
+                    if candidate_interface and candidate_interface not in {"any", interface.casefold()}:
+                        continue
+                    # A complete, non-negated service set excluding UDP/53 cannot
+                    # intercept DNS; unresolved or inverted sets remain blockers.
+                    if str(candidate_settings.get("service-negate", "")).casefold() == "disable":
+                        services = self._combine_service_members(
+                            self._as_list(candidate_settings.get("service")), scope
+                        )
+                        if (services.complete and not services.any
+                                and not any(item.protocol.casefold() == "udp"
+                                            and item.first_port <= 53 <= item.last_port
+                                            for item in services.intervals)):
+                            continue
+                    first = candidate
+                    break
                 if first is None:
                     continue
                 policy_name, policy, policy_path = first
@@ -1148,6 +1176,59 @@ class FortiOSParser(BaseDeviceParser):
                                     + self._field_evidence(path + ("source-address-negate",))),
             })
         return results
+
+    def get_sslvpn_password_only_users(self) -> tuple[FortiSSLVPNPasswordOnlyUser, ...]:
+        """Prove a directly mapped local user has an explicit password-only VPN path."""
+        release = tuple(int(part) for part in re.findall(r"\d+", self.get_version())[:3])
+        if len(release) != 3 or not (7, 0, 0) <= release < (7, 5, 0):
+            return ()
+        found: dict[tuple[str, str], FortiSSLVPNPasswordOnlyUser] = {}
+        for scope, settings, path in self._scoped_sections("vpn ssl settings"):
+            if (not self._as_list(settings.get("source-interface"))
+                    or str(settings.get("status", "")).casefold() != "enable"
+                    or str(settings.get("reqclientcert", "")).casefold() != "disable"):
+                continue
+            rules = settings.get("authentication-rule")
+            if not isinstance(rules, dict):
+                continue
+            listener_interfaces = {item.casefold() for item in self._as_list(settings.get("source-interface"))}
+            for rule_name, rule in rules.items():
+                if (not isinstance(rule, dict)
+                        or str(rule.get("auth", "")).casefold() != "local"
+                        or str(rule.get("client-cert", "")).casefold() != "disable"
+                        or rule.get("user-peer")
+                        or not self._as_list(rule.get("portal"))):
+                    continue
+                rule_interfaces = {item.casefold() for item in self._as_list(rule.get("source-interface"))}
+                if rule_interfaces and listener_interfaces.isdisjoint(rule_interfaces):
+                    continue
+                for username in self._as_list(rule.get("users")):
+                    resolved = self._resolve_scoped_object("user local", username, scope)
+                    if resolved is None:
+                        continue
+                    _, user, user_path = resolved
+                    if (str(user.get("status", "")).casefold() != "enable"
+                            or str(user.get("type", "")).casefold() != "password"
+                            or str(user.get("two-factor", "")).casefold() != "disable"):
+                        continue
+                    rule_path = path + ("authentication-rule", str(rule_name))
+                    evidence = (
+                        self._field_evidence(path + ("status",))
+                        + self._field_evidence(path + ("source-interface",))
+                        + self._field_evidence(path + ("reqclientcert",))
+                        + self._field_evidence(rule_path + ("auth",))
+                        + self._field_evidence(rule_path + ("client-cert",))
+                        + self._field_evidence(rule_path + ("source-interface",))
+                        + self._field_evidence(rule_path + ("users",))
+                        + self._field_evidence(rule_path + ("portal",))
+                        + self._field_evidence(user_path + ("status",))
+                        + self._field_evidence(user_path + ("type",))
+                        + self._field_evidence(user_path + ("two-factor",))
+                    )
+                    found.setdefault((scope.casefold(), username.casefold()),
+                                     FortiSSLVPNPasswordOnlyUser(
+                                         scope, username, str(rule_name), evidence))
+        return tuple(found.values())
 
     def get_ldap_servers(self) -> list[dict]:
         """LDAP servers with their transport and the user groups that reference them.
@@ -2483,6 +2564,7 @@ __all__ = [
     "FortiPPTPGateway",
     "FortiPPTPClient",
     "FortiDNSBroadResolver",
+    "FortiSSLVPNPasswordOnlyUser",
     "FortiOSParseError",
     "FortiOSParser",
 ]
