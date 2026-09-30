@@ -2,6 +2,7 @@ from src.analyze.arista.core.process_arista_conf import process_arista_conf
 from src.analyze.arista.plugins.arista_checks_plugin import PluginAristaChecks
 from src.devices.arista.eos import AristaEOSParser
 from src.devices.common.models import KnowledgeState
+from src.report.coverage import build_report_context
 
 
 VULNERABLE = """! device: edge-leaf (DCS-7050SX3-48YC8, EOS-4.29.2F)
@@ -172,6 +173,94 @@ def test_eapi_service_acl_attachment_removal_restores_missing_acl_check(tmp_path
                 if issue.rule_id == "arista.eos.eapi.source_restriction"]
     assert len(findings) == 1
     assert "no IPv4 or IPv6 access-group" in findings[0].observation
+
+
+def test_ssh_attached_service_acl_first_permit_any(tmp_path):
+    config = """ip access-list standard SSH-WIDE
+   10 permit any
+management ssh
+   ip access-group SSH-WIDE in vrf MGMT
+"""
+    parser = _parse(tmp_path, config)
+    assert parser.get_ssh_settings().acl_bindings == (("ip", "mgmt", "SSH-WIDE"),)
+    findings = [issue for issue in _issues(parser)
+                if issue.rule_id == "arista.eos.ssh.source_restriction"]
+    assert len(findings) == 1
+    assert "SSH-WIDE" in findings[0].observation
+
+
+def test_ssh_service_acl_replacement_and_removal_are_effective(tmp_path):
+    config = """ip access-list standard SSH-WIDE
+   10 permit any
+ip access-list standard SSH-NARROW
+   10 permit host 198.51.100.10
+management ssh
+   ip access-group SSH-WIDE in vrf MGMT
+   ip access-group SSH-NARROW in vrf MGMT
+"""
+    parser = _parse(tmp_path, config)
+    assert parser.get_ssh_settings().ipv4_acls == ("SSH-NARROW",)
+    assert not [issue for issue in _issues(parser)
+                if issue.rule_id == "arista.eos.ssh.source_restriction"]
+    removed = config + "management ssh\n   no ip access-group SSH-NARROW in vrf MGMT\n"
+    parser = _parse(tmp_path, removed)
+    assert parser.get_ssh_settings().ipv4_acls == ()
+    findings = [issue for issue in _issues(parser)
+                if issue.rule_id == "arista.eos.ssh.source_restriction"]
+    assert len(findings) == 1
+    assert "without an IPv4 or IPv6" in findings[0].observation
+
+
+def test_undefined_eapi_and_ssh_acl_references_are_redacted_coverage_notes(tmp_path):
+    config = """management api http-commands
+   vrf MGMT
+      ip access-group CLIENT-SECRET-EAPI in
+      no shutdown
+management ssh
+   ipv6 access-group CLIENT-SECRET-SSH in vrf MGMT
+"""
+    parser = _parse(tmp_path, config)
+    notes = build_report_context(parser)["coverage"]["diagnostics"]
+    assert len(notes) == 2
+    assert any("eAPI IP" in item for item in notes)
+    assert any("SSH IPV6" in item for item in notes)
+    assert "CLIENT-SECRET" not in " ".join(notes)
+
+
+def test_shutdown_ssh_service_does_not_report_access_acl(tmp_path):
+    config = """ip access-list standard SSH-WIDE
+   10 permit any
+management ssh
+   ip access-group SSH-WIDE in
+   shutdown
+"""
+    parser = _parse(tmp_path, config)
+    assert parser.get_ssh_settings().active is False
+    assert not [issue for issue in _issues(parser)
+                if issue.rule_id == "arista.eos.ssh.source_restriction"]
+    assert not [note for note in build_report_context(parser)["coverage"]["diagnostics"]
+                if "SSH IP" in note]
+    parser = _parse(tmp_path, config + "management ssh\n   no shutdown\n")
+    assert parser.get_ssh_settings().active is True
+    assert [issue for issue in _issues(parser)
+            if issue.rule_id == "arista.eos.ssh.source_restriction"]
+
+
+def test_removed_ssh_management_block_discards_old_acl_attachment(tmp_path):
+    config = """ip access-list standard SSH-WIDE
+   10 permit any
+management ssh
+   ip access-group SSH-WIDE in
+no management ssh
+"""
+    parser = _parse(tmp_path, config)
+    assert parser.get_ssh_settings().configured is False
+    assert not [issue for issue in _issues(parser)
+                if issue.rule_id == "arista.eos.ssh.source_restriction"]
+    parser = _parse(tmp_path, config + "management ssh\n   ip access-group SSH-WIDE in\n")
+    assert parser.get_ssh_settings().configured is True
+    assert [issue for issue in _issues(parser)
+            if issue.rule_id == "arista.eos.ssh.source_restriction"]
 
 
 def test_shutdown_and_absent_eapi_blocks_are_not_exposed(tmp_path):

@@ -77,6 +77,8 @@ class AristaSSHSettings:
     key_exchanges: tuple[str, ...]
     macs: tuple[str, ...]
     evidence: tuple[ConfigEvidence, ...]
+    acl_bindings: tuple[tuple[str, str, str], ...] = ()  # family, VRF, ACL name
+    active: bool = True
 
 
 @dataclass(frozen=True)
@@ -625,6 +627,30 @@ class AristaEOSParser(CiscoIOSParser):
         state = ("permit-all" if self._is_unconditional_acl_permit(first)
                  else "restrictive-or-unknown")
         return AristaServiceACLAssessment(family, name, state, evidence)
+
+    @property
+    def diagnostics(self) -> list[str]:
+        """Report undefined active management ACL references without exposing names."""
+        notes: list[str] = []
+        if self.assessment_context.permits_rule("arista.eos.eapi.source_restriction"):
+            for endpoint in self.get_eapi_endpoints():
+                if not endpoint.active:
+                    continue
+                for family, name in (("ip", endpoint.ipv4_acl), ("ipv6", endpoint.ipv6_acl)):
+                    if name and self.assess_service_acl(family, name).state == "undefined":
+                        notes.append(
+                            f"eAPI {family.upper()} service ACL is attached but its definition is absent; "
+                            "source restriction is unassessed and requires manual review."
+                        )
+        ssh = self.get_ssh_settings()
+        if ssh.active and self.assessment_context.permits_rule("arista.eos.ssh.source_restriction"):
+            for family, _, name in ssh.acl_bindings:
+                if self.assess_service_acl(family, name).state == "undefined":
+                    notes.append(
+                        f"SSH {family.upper()} service ACL is attached but its definition is absent; "
+                        "source restriction is unassessed and requires manual review."
+                    )
+        return notes
 
     def get_control_plane_acls(self) -> tuple[AristaControlPlaneACL, ...]:
         """Resolve only ACLs that are actively attached to the EOS control plane."""
@@ -1469,13 +1495,22 @@ class AristaEOSParser(CiscoIOSParser):
 
     def get_ssh_settings(self) -> AristaSSHSettings:
         blocks = self._blocks("management ssh")
+        resets = (
+            command.line_number for command in self.commands
+            if command.indent == 0 and re.fullmatch(
+                r"(?:no|default)\s+management\s+ssh", command.text, re.IGNORECASE
+            )
+        )
+        last_reset = max(resets, default=0)
+        blocks = [(parent, children) for parent, children in blocks
+                  if parent.line_number > last_reset]
         if not blocks:
             return AristaSSHSettings(False, "unknown", (), (), (), (), (), ())
 
         evidence: list[ConfigEvidence] = []
         empty_passwords = "auto"
-        ipv4_acls: dict[tuple[str, str], str] = {}
-        ipv6_acls: dict[tuple[str, str], str] = {}
+        active = True
+        acl_bindings: dict[tuple[str, str], str] = {}
         algorithms: dict[str, set[str]] = {
             "cipher": set(),
             "key-exchange": set(),
@@ -1487,12 +1522,24 @@ class AristaEOSParser(CiscoIOSParser):
                 text = command.text
                 if match := re.fullmatch(r"authentication\s+empty-passwords\s+(auto|deny|permit)", text, re.IGNORECASE):
                     empty_passwords = match.group(1).casefold()
+                elif re.fullmatch(r"shutdown", text, re.IGNORECASE):
+                    active = False
+                elif re.fullmatch(r"(?:no|default)\s+shutdown", text, re.IGNORECASE):
+                    active = True
                 elif re.fullmatch(r"(?:no|default)\s+authentication(?:\s+empty-passwords)?", text, re.IGNORECASE):
                     empty_passwords = "auto"
-                elif match := re.fullmatch(r"ip\s+access-group\s+(\S+)\s+in(?:\s+vrf\s+(\S+))?", text, re.IGNORECASE):
-                    ipv4_acls[(match.group(2) or "default", match.group(1))] = match.group(1)
-                elif match := re.fullmatch(r"ipv6\s+access-group\s+(\S+)\s+in(?:\s+vrf\s+(\S+))?", text, re.IGNORECASE):
-                    ipv6_acls[(match.group(2) or "default", match.group(1))] = match.group(1)
+                elif match := re.fullmatch(
+                    r"(ip|ipv6)\s+access-group\s+(\S+)(?:\s+in(?:\s+vrf\s+(\S+))?|\s+vrf\s+(\S+)\s+in)",
+                    text, re.IGNORECASE,
+                ):
+                    acl_bindings[(match.group(1).casefold(), (match.group(3) or match.group(4) or "default").casefold())] = match.group(2)
+                elif match := re.fullmatch(
+                    r"(?:no|default)\s+(ip|ipv6)\s+access-group(?:\s+(\S+?))?(?:\s+in(?:\s+vrf\s+(\S+))?|\s+vrf\s+(\S+)\s+in)?",
+                    text, re.IGNORECASE,
+                ):
+                    key = (match.group(1).casefold(), (match.group(3) or match.group(4) or "default").casefold())
+                    if not match.group(2) or acl_bindings.get(key, "").casefold() == match.group(2).casefold():
+                        acl_bindings.pop(key, None)
                 elif match := re.fullmatch(r"(?P<no>no\s+)?(?P<kind>cipher|key-exchange|mac)\s+(?P<value>\S+)", text, re.IGNORECASE):
                     kind = match.group("kind").casefold()
                     value = match.group("value").casefold()
@@ -1505,12 +1552,14 @@ class AristaEOSParser(CiscoIOSParser):
         return AristaSSHSettings(
             configured=True,
             empty_passwords=empty_passwords,
-            ipv4_acls=tuple(ipv4_acls.values()),
-            ipv6_acls=tuple(ipv6_acls.values()),
+            ipv4_acls=tuple(name for (family, _), name in acl_bindings.items() if family == "ip"),
+            ipv6_acls=tuple(name for (family, _), name in acl_bindings.items() if family == "ipv6"),
             ciphers=tuple(sorted(algorithms["cipher"])),
             key_exchanges=tuple(sorted(algorithms["key-exchange"])),
             macs=tuple(sorted(algorithms["mac"])),
             evidence=tuple(evidence),
+            acl_bindings=tuple((family, vrf, name) for (family, vrf), name in acl_bindings.items()),
+            active=active,
         )
 
     def _local_users(self) -> list[LocalUser]:

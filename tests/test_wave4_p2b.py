@@ -147,6 +147,35 @@ def test_fortios_pptp_gateway_requires_effective_explicit_enable(tmp_path, comma
         assert "reachability" in findings[0].observation
 
 
+@pytest.mark.parametrize("commands,expected", [
+    ("set pptp-client enable\n        set status up\n        set pptp-server-ip 192.0.2.10\n"
+     "        set pptp-user alice\n        set pptp-password secret123", True),
+    ("set pptp-client enable\n        set status up\n        set pptp-server-ip 192.0.2.10\n"
+     "        set pptp-user alice\n        set pptp-password secret123\n        set pptp-client disable", False),
+    ("set pptp-client enable\n        set status down\n        set pptp-server-ip 192.0.2.10\n"
+     "        set pptp-user alice\n        set pptp-password secret123", False),
+    ("set pptp-client enable\n        set status up\n        set pptp-server-ip 0.0.0.0\n"
+     "        set pptp-user alice\n        set pptp-password secret123", False),
+    ("set pptp-client enable\n        set status up\n        set pptp-server-ip 192.0.2.10\n"
+     "        set pptp-user alice", False),
+    ("set pptp-client enable\n        set status up\n        set pptp-server-ip 192.0.2.10\n"
+     "        set pptp-user alice\n        set pptp-password secret123\n        unset pptp-password", False),
+])
+def test_fortios_pptp_client_requires_active_complete_interface(tmp_path, commands, expected):
+    text = ("#config-version=FGT60F-7.4.10-FW-build1517-230606:opmode=0:vdom=0:user=admin\n"
+            f'config system interface\n    edit "wan1"\n        {commands}\n    next\nend\n')
+    findings = _rules(_run(tmp_path, "FORTIOS", text, process_fortios_conf),
+                      "fortinet.fortios.vpn.pptp_client")
+    assert bool(findings) is expected
+    if findings:
+        finding = findings[0]
+        assert finding.basis == FindingBasis.EXPLICIT_VALUE
+        assert guidance_for(finding.rule_id) is not None
+        assert "negotiated session" in finding.observation
+        assert "alice" not in " ".join(finding.evidence)
+        assert "secret123" not in " ".join(finding.evidence)
+
+
 @pytest.mark.parametrize("version,body,expected", [
     ("12.0", "", {"finger"}),
     ("11.3", "", {"finger", "tcp-small-servers", "udp-small-servers"}),

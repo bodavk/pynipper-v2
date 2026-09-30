@@ -119,6 +119,13 @@ class FortiPPTPGateway:
 
 
 @dataclass(frozen=True)
+class FortiPPTPClient:
+    scope: str
+    interface: str
+    evidence: Tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
 class FortiManagementCertificateBinding:
     """Resolved FortiOS administrative HTTPS certificate evidence."""
 
@@ -1007,6 +1014,28 @@ class FortiOSParser(BaseDeviceParser):
                 continue
             result.append(FortiPPTPGateway(
                 scope, status == "enable", self._field_evidence(path + ("status",))
+            ))
+        return tuple(result)
+
+    def get_pptp_clients(self) -> tuple[FortiPPTPClient, ...]:
+        """Explicitly active, fully configured interface PPTP clients only."""
+        result = []
+        for scope, name, settings, path in self.iter_interfaces():
+            if (str(settings.get("pptp-client", "")).casefold() != "enable"
+                    or str(settings.get("status", "")).casefold() != "up"):
+                continue
+            server = str(settings.get("pptp-server-ip", ""))
+            try:
+                if ipaddress.ip_address(server).version != 4 or server == "0.0.0.0":
+                    continue
+            except ValueError:
+                continue
+            if not self._as_list(settings.get("pptp-user")) or not self._as_list(settings.get("pptp-password")):
+                continue
+            result.append(FortiPPTPClient(
+                scope, name,
+                tuple(item for field in ("pptp-client", "status", "pptp-server-ip")
+                      for item in self._field_evidence(path + (field,))),
             ))
         return tuple(result)
 
@@ -2357,6 +2386,7 @@ __all__ = [
     "FortiConfigurationBackup",
     "FortiFirewallPolicy",
     "FortiPPTPGateway",
+    "FortiPPTPClient",
     "FortiOSParseError",
     "FortiOSParser",
 ]

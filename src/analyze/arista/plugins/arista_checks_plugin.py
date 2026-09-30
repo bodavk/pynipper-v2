@@ -441,7 +441,7 @@ class PluginAristaChecks(BasePlugin):
     def check_ssh_and_authorization(self, parser: BaseDeviceParser) -> None:
         eos = self._eos(parser)
         ssh = eos.get_ssh_settings()
-        if ssh.configured:
+        if ssh.configured and ssh.active:
             evidence = tuple(item for item in ssh.evidence)
             if ssh.empty_passwords == "permit":
                 self.add_issue(
@@ -495,6 +495,24 @@ class PluginAristaChecks(BasePlugin):
                         references=(ARISTA_ACL_GUIDE, ARISTA_SESSION_GUIDE),
                     )
                 )
+            for family, vrf, name in ssh.acl_bindings:
+                assessment = eos.assess_service_acl(family, name)
+                if assessment.state != "permit-all":
+                    continue
+                self.add_issue(Finding(
+                    rule_id="arista.eos.ssh.source_restriction",
+                    device=parser.device_type,
+                    title="SSH service ACL permits every source",
+                    observation=(f"Management SSH in VRF '{vrf}' attaches {family.upper()} ACL "
+                                 f"'{name}', whose first effective entry permits any source."),
+                    impact="The attached SSH service ACL does not restrict source addresses for this address family.",
+                    exploitability="Any routed client in this VRF and address family may attempt SSH authentication, subject to other controls.",
+                    recommendation="Replace the universal permit with reviewed source-specific SSH access.",
+                    severity=Severity.MEDIUM,
+                    evidence=evidence + assessment.evidence,
+                    references=(ARISTA_ACL_GUIDE, ARISTA_SESSION_GUIDE),
+                    basis=FindingBasis.EXPLICIT_VALUE,
+                ))
 
         if eos.get_remote_authentication() and not eos.has_exec_authorization():
             self.add_issue(

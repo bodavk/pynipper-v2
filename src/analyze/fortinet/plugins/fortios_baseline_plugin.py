@@ -110,6 +110,7 @@ FORTINET_SSLVPN_REFERENCE = (
     "https://docs.fortinet.com/document/fortigate/7.4.4/cli-reference/114404382/config-vpn-ssl-settings"
 )
 FORTINET_PPTP_REFERENCE = "https://docs.fortinet.com/document/fortigate/7.4.1/cli-reference/336620/config-vpn-pptp"
+FORTINET_PPTP_CLIENT_REFERENCE = "https://docs.fortinet.com/document/fortigate/7.4.10/cli-reference/317104469/config-system-interface"
 MICROSOFT_PPTP_DEPRECATION = (
     "https://techcommunity.microsoft.com/blog/windowsservernewsandbestpractices/"
     "pptp-and-l2tp-deprecation-a-new-era-of-secure-connectivity/4263956"
@@ -2047,7 +2048,8 @@ class PluginFortiOSBaseline(BasePlugin):
 
     def check_pptp_gateway(self, parser: BaseDeviceParser) -> None:
         """SC-013: an explicitly enabled legacy VPN gateway, not reachability proof."""
-        for gateway in self._fortios(parser).get_pptp_gateways():
+        fortios = self._fortios(parser)
+        for gateway in fortios.get_pptp_gateways():
             if not gateway.enabled:
                 continue
             self.add_issue(self._finding(
@@ -2060,6 +2062,19 @@ class PluginFortiOSBaseline(BasePlugin):
                 Severity.HIGH,
                 gateway.evidence,
                 (FORTINET_PPTP_REFERENCE, MICROSOFT_PPTP_DEPRECATION),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+        for client in fortios.get_pptp_clients():
+            self.add_issue(self._finding(
+                parser,
+                "fortinet.fortios.vpn.pptp_client",
+                "Interface is configured as an active PPTP VPN client",
+                f"Interface '{client.interface}' in scope '{client.scope}' explicitly enables a PPTP client, is configured up, and has a server address and client credentials. The export does not prove a negotiated session or external reachability.",
+                "A configured PPTP client may rely on a legacy VPN protocol with weaker security than modern alternatives.",
+                "Migrate this interface's remote connection to a supported secure VPN such as IKEv2/IPsec and disable PPTP client mode.",
+                Severity.MEDIUM,
+                client.evidence,
+                (FORTINET_PPTP_CLIENT_REFERENCE, MICROSOFT_PPTP_DEPRECATION),
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
 

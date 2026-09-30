@@ -566,6 +566,13 @@ _CATALOGUE = (
         "PPTP has been superseded by stronger VPN protocols. Enabling the gateway is a configuration risk even though user authentication and network exposure require separate assessment.",
         "Confirm whether any clients still depend on PPTP, migrate them to a supported secure VPN, and disable the gateway.",
     )),
+    (r"^vpn\.pptp_client$", _G(
+        "legacy-pptp-client", "vpn",
+        "A FortiGate interface explicitly enables a PPTP client, is up, and has a server address and credentials configured.",
+        "The export does not prove a negotiated session or that the server is reachable, but an active interface may establish a legacy VPN connection.",
+        "PPTP is a legacy VPN protocol that has been superseded by stronger alternatives.",
+        "Confirm whether this client connection is needed, migrate it to a supported secure VPN, and disable PPTP client mode.",
+    )),
     (r"^(crypto\.(legacy_\w+|ike_dh_policy|unresolved_transform|ikev2_default_proposal)|vpn\.\w+)$", _G(
         "vpn-crypto", "vpn",
         "An active VPN tunnel can negotiate outdated encryption, hashing or key-exchange "
