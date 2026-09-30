@@ -200,6 +200,7 @@ class FortiFirewallPolicy:
     destination_networks: NetworkSemantics
     services: ServiceSemantics
     schedule: str
+    schedule_explicit: bool
     source_negated: bool
     destination_negated: bool
     service_negated: bool
@@ -1684,6 +1685,7 @@ class FortiOSParser(BaseDeviceParser):
                             self._as_list(settings.get("service")), scope
                         ),
                         schedule=str(settings.get("schedule", "always")),
+                        schedule_explicit="schedule" in settings,
                         source_negated=str(settings.get("srcaddr-negate", "disable")).casefold() == "enable",
                         destination_negated=str(settings.get("dstaddr-negate", "disable")).casefold() == "enable",
                         service_negated=str(settings.get("service-negate", "disable")).casefold() == "enable",

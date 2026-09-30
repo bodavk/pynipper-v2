@@ -266,3 +266,78 @@ def test_fortios_risky_service(tmp_path):
                     '        set schedule "always"\n        set service "HTTPS"\n    next\nend\n')
     findings = _rules(_run(tmp_path, "FORTIOS", text, process_fortios_conf), "fortinet.fortios.policy.risky_service_exposure")
     assert len(findings) == 1 and "Telnet" in findings[0].observation
+
+
+@pytest.mark.parametrize("earlier,expected,explicit_schedule", [
+    ("set action deny\n        set srcaddr all\n        set dstaddr all\n"
+     "        set service TELNET", False, True),
+    ("set action deny\n        set srcaddr all\n        set dstaddr all\n"
+     "        set service TELNET", True, False),
+    ("set action deny\n        set srcaddr all\n        set dstaddr all\n"
+     "        set service HTTPS", True, True),
+    ("set action deny\n        set srcaddr all\n        set dstaddr all\n"
+     "        set service TELNET\n        set status disable", True, True),
+    ("set action deny\n        set srcaddr LIMITED\n        set dstaddr all\n"
+     "        set service TELNET", True, True),
+])
+def test_fortios_risky_service_respects_proven_prior_deny(tmp_path, earlier, expected, explicit_schedule):
+    schedule_line = '        set schedule always\n' if explicit_schedule else ''
+    text = (FORTI + 'config firewall service custom\n    edit "TELNET"\n'
+            '        set tcp-portrange 23\n    next\n'
+            '    edit "HTTPS"\n        set tcp-portrange 443\n    next\nend\n'
+            'config firewall address\n    edit "LIMITED"\n'
+            '        set subnet 198.51.100.0 255.255.255.0\n    next\nend\n'
+            'config firewall policy\n    edit 1\n'
+            '        set srcintf "wan1"\n        set dstintf "lan"\n'
+            f'        {earlier}\n{schedule_line}    next\n'
+            '    edit 2\n        set srcintf "wan1"\n        set dstintf "lan"\n'
+            '        set srcaddr all\n        set dstaddr all\n'
+            '        set action accept\n        set schedule always\n'
+            '        set service TELNET\n    next\nend\n')
+    findings = _rules(_run(tmp_path, "FORTIOS", text, process_fortios_conf),
+                      "fortinet.fortios.policy.risky_service_exposure")
+    assert bool(findings) is expected
+
+
+def test_fortios_prior_accept_prevents_false_deny_shadow_proof(tmp_path):
+    text = (FORTI + 'config firewall service custom\n    edit "TELNET"\n'
+            '        set tcp-portrange 23\n    next\nend\n'
+            'config firewall policy\n'
+            '    edit 1\n        set srcintf wan1\n        set dstintf lan\n'
+            '        set srcaddr all\n        set dstaddr all\n'
+            '        set action accept\n        set schedule always\n'
+            '        set service TELNET\n    next\n'
+            '    edit 2\n        set srcintf wan1\n        set dstintf lan\n'
+            '        set srcaddr all\n        set dstaddr all\n'
+            '        set action deny\n        set schedule always\n'
+            '        set service TELNET\n    next\n'
+            '    edit 3\n        set srcintf wan1\n        set dstintf lan\n'
+            '        set srcaddr all\n        set dstaddr all\n'
+            '        set action accept\n        set schedule always\n'
+            '        set service TELNET\n    next\nend\n')
+    findings = _rules(_run(tmp_path, "FORTIOS", text, process_fortios_conf),
+                      "fortinet.fortios.policy.risky_service_exposure")
+    assert {"1", "3"}.issubset({
+        name for finding in findings for name in ("1", "3")
+        if f"policy '{name}'" in finding.observation
+    })
+
+
+def test_fortios_risky_service_uses_effective_move_order(tmp_path):
+    body = ('config firewall service custom\n    edit "TELNET"\n'
+            '        set tcp-portrange 23\n    next\nend\n'
+            'config firewall policy\n'
+            '    edit 1\n        set srcintf wan1\n        set dstintf lan\n'
+            '        set srcaddr all\n        set dstaddr all\n'
+            '        set action accept\n        set schedule always\n'
+            '        set service TELNET\n    next\n'
+            '    edit 2\n        set srcintf wan1\n        set dstintf lan\n'
+            '        set srcaddr all\n        set dstaddr all\n'
+            '        set action deny\n        set schedule always\n'
+            '        set service TELNET\n    next\n')
+    before = _rules(_run(tmp_path, "FORTIOS", FORTI + body + 'end\n', process_fortios_conf),
+                    "fortinet.fortios.policy.risky_service_exposure")
+    after = _rules(_run(tmp_path, "FORTIOS", FORTI + body + '    move 2 before 1\nend\n',
+                        process_fortios_conf), "fortinet.fortios.policy.risky_service_exposure")
+    assert len(before) == 1
+    assert after == []

@@ -2158,6 +2158,15 @@ class PluginIOSBaseline(BasePlugin):
             ))
 
         for admission in ios.get_isis_authentication():
+            if admission.state == "configured-md5":
+                scope = (
+                    f"IS-IS {admission.instance or 'default instance'} {admission.level} "
+                    f"{admission.scope} authentication on {admission.interface}"
+                )
+                report_unusable_key_lifetime(
+                    scope, admission.key_reference,
+                    tuple(item for item in admission.evidence),
+                )
             if admission.state not in {"send-only", "text-mode", "unresolved"}:
                 continue
             scope = (

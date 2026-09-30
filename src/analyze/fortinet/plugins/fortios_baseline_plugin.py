@@ -1201,6 +1201,7 @@ class PluginFortiOSBaseline(BasePlugin):
 
         fortios = self._fortios(parser)
         prior_by_scope: dict[tuple[str, str], list] = defaultdict(list)
+        seen_by_scope: dict[tuple[str, str], list] = defaultdict(list)
         references = (
             FORTINET_HARDENING,
             FORTINET_ADDRESS_REFERENCE,
@@ -1209,6 +1210,7 @@ class PluginFortiOSBaseline(BasePlugin):
             FORTINET_SERVICE_GROUP_REFERENCE,
         )
         for policy in fortios.get_firewall_policy_semantics():
+            key = (policy.scope.casefold(), policy.family)
             evidence = tuple(item for item in policy.evidence) or (
                 f"firewall policy {policy.name}",
             )
@@ -1264,7 +1266,33 @@ class PluginFortiOSBaseline(BasePlugin):
                     label for interval in policy.services.intervals
                     for label in risky_labels(interval.protocol, interval.first_port, interval.last_port)
                 })
-                if risky:
+                # First-match policy order can make the later allow unreachable.
+                # An earlier accept, even if not statically resolvable, prevents
+                # us from proving that a subsequent covering deny blocks it.
+                earlier_rules = seen_by_scope[key]
+                blocked_by_prior_deny = (
+                    policy.proof_eligible
+                    and all(earlier.action == "deny" for earlier in earlier_rules)
+                    and any(
+                        earlier.proof_eligible
+                        and earlier.schedule_explicit
+                        and all(state == ProofState.PROVEN for state in (
+                            static_values_cover(
+                                earlier.source_interfaces, policy.source_interfaces,
+                                any_value="any",
+                            ),
+                            static_values_cover(
+                                earlier.destination_interfaces, policy.destination_interfaces,
+                                any_value="any",
+                            ),
+                            network_covers(earlier.source_networks, policy.source_networks),
+                            network_covers(earlier.destination_networks, policy.destination_networks),
+                            service_covers(earlier.services, policy.services),
+                        ))
+                        for earlier in earlier_rules
+                    )
+                )
+                if risky and not blocked_by_prior_deny:
                     self.add_issue(self._finding(
                         parser,
                         "fortinet.fortios.policy.risky_service_exposure",
@@ -1278,7 +1306,7 @@ class PluginFortiOSBaseline(BasePlugin):
                         basis=FindingBasis.EXPLICIT_VALUE,
                     ))
 
-            key = (policy.scope.casefold(), policy.family)
+            seen_by_scope[key].append(policy)
             if not policy.proof_eligible:
                 continue
             for earlier in prior_by_scope[key]:

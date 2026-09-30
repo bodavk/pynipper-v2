@@ -47,6 +47,62 @@ def test_expired_eigrp_key_lifetime(tmp_path):
     assert "syntheticprivate" not in " ".join(findings[0].evidence)
 
 
+@pytest.mark.parametrize("scope,expected", [
+    ("hello", True),
+    ("database", True),
+    ("passive", False),
+])
+def test_isis_md5_key_lifetime_is_checked_for_active_scope(tmp_path, scope, expected):
+    process_auth = (" authentication mode md5 level-2\n"
+                    " authentication key-chain EDGE level-2\n") if scope == "database" else ""
+    interface_auth = (" isis authentication mode md5 level-2\n"
+                      " isis authentication key-chain EDGE level-2\n") if scope in {"hello", "passive"} else ""
+    passive = " passive-interface GigabitEthernet0/0\n" if scope == "passive" else ""
+    config = (
+        "version 17.9\nclock timezone UTC 0\nkey chain EDGE\n"
+        " key 1\n  key-string 7 syntheticprivate\n" + EXPIRED
+        + "router isis CORE\n net 49.0001.1921.6800.1001.00\n"
+        " is-type level-2-only\n" + process_auth + passive
+        + "interface GigabitEthernet0/0\n ip router isis CORE\n" + interface_auth
+    )
+    parser, findings = _scan(tmp_path, config)
+    assert bool(findings) is expected
+    if findings:
+        assert f"{scope} authentication" in findings[0].observation
+        assert "syntheticprivate" not in " ".join(findings[0].evidence)
+        assert parser.get_routing_key_lifetime_states()["edge"][0] == "unusable"
+
+
+def test_isis_valid_rollover_key_is_not_reported(tmp_path):
+    config = (
+        "version 17.9\nclock timezone UTC 0\nkey chain EDGE\n"
+        " key 1\n  key-string 7 oldsecret\n" + EXPIRED
+        + " key 2\n  key-string 7 newsecret\n" + FUTURE
+        + "router isis CORE\n net 49.0001.1921.6800.1001.00\n"
+        " is-type level-2-only\n"
+        "interface GigabitEthernet0/0\n ip router isis CORE\n"
+        " isis authentication mode md5 level-2\n"
+        " isis authentication key-chain EDGE level-2\n"
+    )
+    _, findings = _scan(tmp_path, config)
+    assert findings == []
+
+
+def test_isis_expired_key_without_qualified_clock_stays_unknown(tmp_path):
+    config = (
+        "version 17.9\nkey chain EDGE\n"
+        " key 1\n  key-string 7 syntheticprivate\n" + EXPIRED
+        + "router isis CORE\n net 49.0001.1921.6800.1001.00\n"
+        " is-type level-2-only\n"
+        "interface GigabitEthernet0/0\n ip router isis CORE\n"
+        " isis authentication mode md5 level-2\n"
+        " isis authentication key-chain EDGE level-2\n"
+    )
+    parser, findings = _scan(tmp_path, config)
+    assert parser.get_routing_key_lifetime_states() == {}
+    assert findings == []
+
+
 @pytest.mark.parametrize("protocol", ["rip", "ospf"])
 def test_other_active_routing_key_bindings(tmp_path, protocol):
     interface = (
