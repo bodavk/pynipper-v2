@@ -615,6 +615,13 @@ _CATALOGUE = (
         "Unrestricted recursive or forwarding service can be abused for DNS reflection and can consume device resources.",
         "Limit the DNS listener to trusted internal interfaces or restrict client sources with effective local-in policy.",
     )),
+    (r"^vpn\.dialup_psk_only$", _G(
+        "dialup-psk-only", "vpn",
+        "A configured IKEv1 dial-up peer accepts any peer ID using a shared pre-shared key, with XAuth explicitly disabled.",
+        "The export does not prove listener reachability, successful negotiation, or access through phase2 and firewall policy.",
+        "Exposure of the shared key may let another party impersonate a dial-up peer without an individual identity check.",
+        "Bind peers to explicit identities and user authentication, or use certificate-based peer authentication.",
+    )),
     (r"^(crypto\.(legacy_\w+|ike_dh_policy|unresolved_transform|ikev2_default_proposal)|vpn\.\w+)$", _G(
         "vpn-crypto", "vpn",
         "An active VPN tunnel can negotiate outdated encryption, hashing or key-exchange "

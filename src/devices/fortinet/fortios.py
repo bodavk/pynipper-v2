@@ -129,6 +129,14 @@ class FortiPPTPClient:
 
 
 @dataclass(frozen=True)
+class FortiDialupPSKOnly:
+    scope: str
+    name: str
+    interface: str
+    evidence: Tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
 class FortiDNSBroadResolver:
     scope: str
     interface: str
@@ -1354,6 +1362,11 @@ class FortiOSParser(BaseDeviceParser):
         """``config vpn ssl settings`` per scope: active when enabled (default) and bound to a
         ``source-interface``. Values are the explicit ones; absent fields are ``None``."""
         results = []
+        down_interfaces = {
+            (scope.casefold(), name.casefold())
+            for scope, name, settings, _ in self.iter_interfaces()
+            if str(settings.get("status", "")).casefold() == "down"
+        }
         for scope, settings, path in self._scoped_sections("vpn ssl settings"):
             interfaces = self._as_list(settings.get("source-interface"))
             source_addresses = self._as_list(settings.get("source-address"))
@@ -1370,6 +1383,10 @@ class FortiOSParser(BaseDeviceParser):
                 "scope": scope,
                 "active": active,
                 "interfaces": tuple(interfaces),
+                "configured_down_interfaces": tuple(
+                    name for name in interfaces
+                    if (scope.casefold(), name.casefold()) in down_interfaces
+                ),
                 "source_addresses": tuple(source_addresses),
                 "source_networks": source_networks,
                 "source_unrestricted": self._covers_every_ipv4_address(source_networks),
@@ -2293,6 +2310,38 @@ class FortiOSParser(BaseDeviceParser):
                         )
                     )
         return tuple(tunnels)
+
+    def get_dialup_psk_only(self) -> Tuple[FortiDialupPSKOnly, ...]:
+        """Explicit IKEv1 dial-up peer with broad identity and no XAuth."""
+        result: List[FortiDialupPSKOnly] = []
+        for section_name in ("vpn ipsec phase1-interface", "vpn ipsec phase1"):
+            for scope, entries, path in self._scoped_sections(section_name):
+                for name, settings in entries.items():
+                    if not isinstance(settings, dict):
+                        continue
+                    required = {
+                        "type": "dynamic", "ike-version": "1", "authmethod": "psk",
+                        "authmethod-remote": "psk", "peertype": "any", "xauthtype": "disable",
+                    }
+                    if any(str(settings.get(field, "")).casefold() != value
+                           for field, value in required.items()):
+                        continue
+                    interfaces = self._as_list(settings.get("interface"))
+                    secret = self._as_list(settings.get("psksecret"))
+                    secret_present = bool(secret) and secret[0] not in {"*****", "<redacted>"}
+                    if secret and secret[0] == "ENC":
+                        secret_present = len(secret) >= 2
+                    if (len(interfaces) != 1 or not secret_present
+                            or str(settings.get("status", "")).casefold() == "disable"
+                            or any(settings.get(field) for field in (
+                                "peer", "peergrp", "peerid", "certificate"
+                            ))):
+                        continue
+                    entry_path = path + (str(name),)
+                    evidence = tuple(item for field in (*required, "interface")
+                                     for item in self._field_evidence(entry_path + (field,)))
+                    result.append(FortiDialupPSKOnly(scope, str(name), interfaces[0], evidence))
+        return tuple(result)
 
     @classmethod
     def inspection_profile_fields(cls) -> Tuple[str, ...]:

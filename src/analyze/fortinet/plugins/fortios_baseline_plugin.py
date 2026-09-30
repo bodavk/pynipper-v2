@@ -9,6 +9,8 @@ from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.analyze.common.risky_services import risky_labels
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.policy_semantics import (
+    AddressInterval,
+    NetworkSemantics,
     ProofState,
     network_covers,
     service_covers,
@@ -1354,13 +1356,11 @@ class PluginFortiOSBaseline(BasePlugin):
                 # An earlier accept, even if not statically resolvable, prevents
                 # us from proving that a subsequent covering deny blocks it.
                 earlier_rules = seen_by_scope[key]
-                blocked_by_prior_deny = (
-                    policy.proof_eligible
-                    and all(earlier.action == "deny" for earlier in earlier_rules)
-                    and any(
-                        earlier.proof_eligible
-                        and earlier.schedule_explicit
-                        and all(state == ProofState.PROVEN for state in (
+                covering_denies = (
+                    [earlier for earlier in earlier_rules
+                     if earlier.proof_eligible and earlier.action == "deny"
+                     and earlier.schedule_explicit and earlier.source_networks.complete
+                     and all(state == ProofState.PROVEN for state in (
                             static_values_cover(
                                 earlier.source_interfaces, policy.source_interfaces,
                                 any_value="any",
@@ -1369,12 +1369,22 @@ class PluginFortiOSBaseline(BasePlugin):
                                 earlier.destination_interfaces, policy.destination_interfaces,
                                 any_value="any",
                             ),
-                            network_covers(earlier.source_networks, policy.source_networks),
                             network_covers(earlier.destination_networks, policy.destination_networks),
                             service_covers(earlier.services, policy.services),
-                        ))
-                        for earlier in earlier_rules
-                    )
+                        ))]
+                    if all(earlier.action == "deny" for earlier in earlier_rules) else []
+                )
+                denied_sources = NetworkSemantics(
+                    any=any(earlier.source_networks.any for earlier in covering_denies),
+                    intervals=tuple(item for earlier in covering_denies
+                                    for item in earlier.source_networks.intervals),
+                )
+                source_target = (NetworkSemantics(intervals=(AddressInterval(
+                    4 if policy.family == "ipv4" else 6, 0,
+                    (1 << (32 if policy.family == "ipv4" else 128)) - 1,
+                ),)) if policy.source_networks.any else policy.source_networks)
+                blocked_by_prior_deny = bool(covering_denies) and (
+                    network_covers(denied_sources, source_target) == ProofState.PROVEN
                 )
                 if risky and not blocked_by_prior_deny:
                     self.add_issue(self._finding(
@@ -1925,6 +1935,7 @@ class PluginFortiOSBaseline(BasePlugin):
         self.check_ipsec_tunnels(parser)
         self.check_private_data_encryption(parser)
         self.check_ike_aggressive_mode(parser)
+        self.check_dialup_psk_only(parser)
         self.check_ldap_transport(parser)
         self.check_pptp_gateway(parser)
         self.check_sslvpn(parser)
@@ -2254,8 +2265,10 @@ class PluginFortiOSBaseline(BasePlugin):
             values, evidence = vpn["values"], vpn["evidence"]
             where = f"SSL-VPN in scope '{vpn['scope']}' (listening on {', '.join(vpn['interfaces'])})"
             base = tuple(vpn["interface_evidence"])
+            down = {name.casefold() for name in vpn["configured_down_interfaces"]}
             external = tuple(interface for interface in vpn["interfaces"]
-                             if fortios.assessment_context.role_for_interface(interface) == "external")
+                             if interface.casefold() not in down
+                             and fortios.assessment_context.role_for_interface(interface) == "external")
             if (external and vpn["source_unrestricted"]
                     and vpn["source_address_negated"] == "disable"):
                 self.add_issue(self._finding(
@@ -2421,6 +2434,26 @@ class PluginFortiOSBaseline(BasePlugin):
                  else (FORTINET_PHASE1_REFERENCE,)) + ("https://www.rfc-editor.org/rfc/rfc2409",),
                 basis=(FindingBasis.DOCUMENTED_DEFAULT if phase1.default_inferred
                        else FindingBasis.EXPLICIT_VALUE),
+            ))
+
+    def check_dialup_psk_only(self, parser: BaseDeviceParser) -> None:
+        """SC-013: explicit dial-up IKEv1 peer accepts any ID with PSK alone."""
+        for peer in self._fortios(parser).get_dialup_psk_only():
+            self.add_issue(self._finding(
+                parser,
+                "fortinet.fortios.vpn.dialup_psk_only",
+                "Dial-up IPsec peer relies on a shared pre-shared key alone",
+                (f"IKEv1 dial-up phase1 '{peer.name}' in scope '{peer.scope}' is configured on "
+                 f"interface '{peer.interface}' with PSK authentication, any peer ID and XAuth disabled. "
+                 "This proves a configured phase1 authentication path, not a reachable listener, "
+                 "successful negotiation or access through a phase2/firewall policy."),
+                "Anyone obtaining the shared key may impersonate a dial-up peer without a distinct peer identity or user authentication exchange.",
+                "Require a peer identity and XAuth where appropriate, or migrate dial-up peers to certificate-based authentication.",
+                Severity.MEDIUM,
+                peer.evidence,
+                ("https://docs.fortinet.com/document/fortigate/7.4.10/cli-reference/305883427/config-vpn-ipsec-phase1-interface",
+                 "https://docs.fortinet.com/document/fortigate/7.4.0/administration-guide/560886/pre-shared-key-vs-digital-certificates"),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
     def check_private_data_encryption(self, parser: BaseDeviceParser) -> None:
