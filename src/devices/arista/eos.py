@@ -48,6 +48,14 @@ class AristaEAPIEndpoint:
 
 
 @dataclass(frozen=True)
+class AristaServiceACLAssessment:
+    family: str
+    name: str
+    state: str  # permit-all | restrictive-or-unknown | undefined
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
 class AristaGNMITransport:
     name: str
     active: bool | None
@@ -571,6 +579,53 @@ class AristaEOSParser(CiscoIOSParser):
             body = body[:-1]
         return body in (["any"], ["ip", "any", "any"], ["ipv6", "any", "any"])
 
+    def assess_service_acl(self, family: str, name: str) -> AristaServiceACLAssessment:
+        """Prove a named service ACL starts with a universal permit.
+
+        Other sequences are deliberately not classified as restrictive: they
+        may contain unsupported predicates or permits for large source ranges.
+        """
+        definitions: dict[tuple[str, str], tuple[tuple[str, ...], tuple[ConfigEvidence, ...]]] = {}
+        for index, command in enumerate(self.commands):
+            removed = re.fullmatch(
+                r"(?:no|default)\s+(ip|ipv6)\s+access-list\s+(?:standard\s+|extended\s+)?(\S+)",
+                command.text, re.IGNORECASE,
+            )
+            if command.indent == 0 and removed:
+                definitions.pop((removed.group(1).casefold(), removed.group(2).casefold()), None)
+                continue
+            match = re.fullmatch(
+                r"(ip|ipv6)\s+access-list\s+(?:standard\s+|extended\s+)?(\S+)",
+                command.text, re.IGNORECASE,
+            )
+            if command.indent != 0 or not match:
+                continue
+            children = []
+            for child in self.commands[index + 1:]:
+                if child.indent <= command.indent:
+                    break
+                children.append(child)
+            key = (match.group(1).casefold(), match.group(2).casefold())
+            previous = definitions.get(key)
+            entries = self._active_acl_entries(children, previous[0] if previous else ())
+            definitions[key] = (entries, (self._evidence(command),)
+                                + tuple(self._evidence(item) for item in children))
+
+        definition = definitions.get((family.casefold(), name.casefold()))
+        if definition is None:
+            return AristaServiceACLAssessment(family, name, "undefined", ())
+        entries, evidence = definition
+        # EOS sequence numbers control evaluation order. Mixed numbered and
+        # unnumbered exports are not assigned an invented ordering.
+        if entries and all(re.match(r"^\d+\s+", item) for item in entries):
+            entries = tuple(sorted(entries, key=lambda item: int(item.split(maxsplit=1)[0])))
+        elif any(re.match(r"^\d+\s+", item) for item in entries):
+            return AristaServiceACLAssessment(family, name, "restrictive-or-unknown", evidence)
+        first = [token.casefold() for token in self._tokens(entries[0])] if entries else []
+        state = ("permit-all" if self._is_unconditional_acl_permit(first)
+                 else "restrictive-or-unknown")
+        return AristaServiceACLAssessment(family, name, state, evidence)
+
     def get_control_plane_acls(self) -> tuple[AristaControlPlaneACL, ...]:
         """Resolve only ACLs that are actively attached to the EOS control plane."""
 
@@ -873,6 +928,10 @@ class AristaEOSParser(CiscoIOSParser):
                     ipv4_acl = match.group(1)
                 elif match := re.fullmatch(r"ipv6\s+access-group\s+(\S+)(?:\s+in)?", command.text, re.IGNORECASE):
                     ipv6_acl = match.group(1)
+                elif re.fullmatch(r"(?:no|default)\s+ip\s+access-group(?:\s+\S+)?(?:\s+in)?", command.text, re.IGNORECASE):
+                    ipv4_acl = ""
+                elif re.fullmatch(r"(?:no|default)\s+ipv6\s+access-group(?:\s+\S+)?(?:\s+in)?", command.text, re.IGNORECASE):
+                    ipv6_acl = ""
 
             vrf_indexes = [index for index, item in enumerate(children) if item.text.lower().startswith("vrf ")]
             if not vrf_indexes:
@@ -906,6 +965,10 @@ class AristaEOSParser(CiscoIOSParser):
                         scope_ipv4 = match.group(1)
                     elif match := re.fullmatch(r"ipv6\s+access-group\s+(\S+)(?:\s+in)?", command.text, re.IGNORECASE):
                         scope_ipv6 = match.group(1)
+                    elif re.fullmatch(r"(?:no|default)\s+ip\s+access-group(?:\s+\S+)?(?:\s+in)?", command.text, re.IGNORECASE):
+                        scope_ipv4 = ""
+                    elif re.fullmatch(r"(?:no|default)\s+ipv6\s+access-group(?:\s+\S+)?(?:\s+in)?", command.text, re.IGNORECASE):
+                        scope_ipv6 = ""
                 endpoints.append(
                     AristaEAPIEndpoint(
                         scope=vrf_command.text.split(maxsplit=1)[1],
@@ -2209,6 +2272,7 @@ __all__ = [
     "AristaBannerPolicy",
     "AristaCommand",
     "AristaEAPIEndpoint",
+    "AristaServiceACLAssessment",
     "AristaEOSParser",
     "AristaLockoutPolicy",
     "AristaManagementSession",

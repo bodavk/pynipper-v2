@@ -62,6 +62,58 @@ def test_f5_virtual_risky_service(tmp_path, destination, source, expected):
     assert bool(findings) is expected
     if findings:
         assert guidance_for(findings[0].rule_id) is not None
+        assert findings[0].basis == FindingBasis.DOCUMENTED_DEFAULT
+
+
+@pytest.mark.parametrize("protocol,port,expected_label", [
+    ("tcp", "23", "Telnet"),
+    ("udp", "23", None),
+    ("udp", "69", "TFTP"),
+    ("tcp", "69", None),
+    ("any", "23", "Telnet"),
+    ("icmp", "23", None),
+    ("17", "23", None),
+])
+def test_f5_virtual_risky_service_preserves_transport(tmp_path, protocol, port, expected_label):
+    text = (F5 + "ltm virtual /Common/vs {\n"
+            f"    destination /Common/192.0.2.20:{port}\n"
+            f"    ip-protocol {protocol}\n    source 0.0.0.0/0\n}}\n")
+    findings = _rules(_run(tmp_path, "F5_BIGIP", text, process_bigip_conf),
+                      "f5.bigip.ltm.risky_service_exposure")
+    assert bool(findings) is (expected_label is not None)
+    if expected_label:
+        assert expected_label in findings[0].observation
+        assert findings[0].basis == FindingBasis.EXPLICIT_VALUE
+        assert "clear-text" not in findings[0].impact.casefold()
+
+
+def test_f5_virtual_unknown_release_does_not_assume_protocol_default(tmp_path):
+    text = "ltm virtual /Common/vs {\n    destination /Common/192.0.2.20:23\n}\n"
+    assert not _rules(_run(tmp_path, "F5_BIGIP", text, process_bigip_conf),
+                      "f5.bigip.ltm.risky_service_exposure")
+
+
+@pytest.mark.parametrize("release,expected", [("13.1.0", True), ("14.1.0", True),
+                                               ("16.1.5", False), ("17.0.0", False)])
+def test_f5_virtual_omitted_source_is_release_gated(tmp_path, release, expected):
+    text = (f"#TMSH-VERSION: {release}\n"
+            "ltm virtual /Common/vs {\n    destination /Common/192.0.2.20:23\n"
+            "    ip-protocol tcp\n}\n")
+    findings = _rules(_run(tmp_path, "F5_BIGIP", text, process_bigip_conf),
+                      "f5.bigip.ltm.risky_service_exposure")
+    assert bool(findings) is expected
+    if findings:
+        assert findings[0].basis == FindingBasis.DOCUMENTED_DEFAULT
+
+
+@pytest.mark.parametrize("mode", ["internal", "reject"])
+def test_f5_non_listening_virtual_does_not_expose_risky_port(tmp_path, mode):
+    text = (F5 + "ltm virtual /Common/vs {\n"
+            "    destination /Common/192.0.2.20:23\n"
+            "    ip-protocol tcp\n    source 0.0.0.0/0\n"
+            f"    {mode}\n}}\n")
+    assert not _rules(_run(tmp_path, "F5_BIGIP", text, process_bigip_conf),
+                      "f5.bigip.ltm.risky_service_exposure")
 
 
 @pytest.mark.parametrize("version,hash_value,expected", [
@@ -74,6 +126,25 @@ def test_fortios_admin_hash(tmp_path, version, hash_value, expected):
             f'config system admin\n    edit "admin"\n        set password ENC {hash_value}\n    next\nend\n')
     findings = _rules(_run(tmp_path, "FORTIOS", text, process_fortios_conf), "fortinet.fortios.credentials.admin_hash_storage")
     assert bool(findings) is expected
+
+
+@pytest.mark.parametrize("commands,expected", [
+    ("set status enable", True),
+    ("set status enable\n    set status disable", False),
+    ("set status enable\n    unset status", False),
+    ("set status disable\n    set status enable", True),
+    ("set usrgrp remote-users", False),
+])
+def test_fortios_pptp_gateway_requires_effective_explicit_enable(tmp_path, commands, expected):
+    text = ("#config-version=FGT60F-7.4.1-FW-build1517-230606:opmode=0:vdom=0:user=admin\n"
+            f"config vpn pptp\n    {commands}\nend\n")
+    findings = _rules(_run(tmp_path, "FORTIOS", text, process_fortios_conf),
+                      "fortinet.fortios.vpn.pptp_gateway")
+    assert bool(findings) is expected
+    if findings:
+        assert findings[0].basis == FindingBasis.EXPLICIT_VALUE
+        assert guidance_for(findings[0].rule_id) is not None
+        assert "reachability" in findings[0].observation
 
 
 @pytest.mark.parametrize("version,body,expected", [

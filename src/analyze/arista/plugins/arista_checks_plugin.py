@@ -113,6 +113,26 @@ class PluginAristaChecks(BasePlugin):
                         references=(ARISTA_ACL_GUIDE,),
                     )
                 )
+            for family, name in (("ip", endpoint.ipv4_acl), ("ipv6", endpoint.ipv6_acl)):
+                if not name:
+                    continue
+                assessment = self._eos(parser).assess_service_acl(family, name)
+                if assessment.state != "permit-all":
+                    continue
+                self.add_issue(Finding(
+                    rule_id="arista.eos.eapi.source_restriction",
+                    device=parser.device_type,
+                    title="eAPI service ACL permits every source",
+                    observation=(f"Active eAPI endpoint in VRF '{endpoint.scope}' attaches "
+                                 f"{family.upper()} ACL '{name}', whose first effective entry permits any source."),
+                    impact="The attached service ACL does not restrict source addresses for this address family.",
+                    exploitability="Any routed client in this VRF and address family may attempt API authentication, subject to other controls.",
+                    recommendation="Place reviewed source-specific permits before an implicit deny in the eAPI service ACL.",
+                    severity=Severity.MEDIUM,
+                    evidence=evidence + assessment.evidence,
+                    references=(ARISTA_ACL_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
+                ))
 
     def check_authentication(self, parser: BaseDeviceParser) -> None:
         eos = self._eos(parser)

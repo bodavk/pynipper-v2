@@ -112,6 +112,13 @@ class FortiAPIIdentity:
 
 
 @dataclass(frozen=True)
+class FortiPPTPGateway:
+    scope: str
+    enabled: bool
+    evidence: Tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
 class FortiManagementCertificateBinding:
     """Resolved FortiOS administrative HTTPS certificate evidence."""
 
@@ -990,6 +997,18 @@ class FortiOSParser(BaseDeviceParser):
     def _supports_radsec(self) -> bool:
         numbers = re.findall(r"\d+", self.get_version())
         return len(numbers) >= 2 and (int(numbers[0]), int(numbers[1])) >= (7, 4)
+
+    def get_pptp_gateways(self) -> tuple[FortiPPTPGateway, ...]:
+        """Only explicit effective PPTP gateway status, scoped to root/VDOM."""
+        result = []
+        for scope, settings, path in self._scoped_sections("vpn pptp"):
+            status = str(settings.get("status", "")).casefold()
+            if status not in {"enable", "disable"}:
+                continue
+            result.append(FortiPPTPGateway(
+                scope, status == "enable", self._field_evidence(path + ("status",))
+            ))
+        return tuple(result)
 
     def get_sslvpn_settings(self) -> list[dict]:
         """``config vpn ssl settings`` per scope: active when enabled (default) and bound to a
@@ -2337,6 +2356,7 @@ __all__ = [
     "FortiAAAServerProfile",
     "FortiConfigurationBackup",
     "FortiFirewallPolicy",
+    "FortiPPTPGateway",
     "FortiOSParseError",
     "FortiOSParser",
 ]

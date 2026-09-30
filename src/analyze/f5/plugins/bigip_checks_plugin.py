@@ -23,6 +23,10 @@ AUTH_CERT_LDAP = "https://clouddocs.f5.com/cli/tmsh-reference/v16/modules/auth/a
 SYSLOG = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules/sys/sys_syslog.html"
 CLIENT_SSL = "https://clouddocs.f5.com/cli/tmsh-reference/v16/modules/ltm/ltm_profile_client-ssl.html"
 VIRTUAL = "https://clouddocs.f5.com/cli/tmsh-reference/latest/modules/ltm/ltm_virtual.html"
+VIRTUAL_SOURCE_DEFAULT = {
+    13: "https://techdocs.f5.com/kb/en-us/products/big-ip_ltm/manuals/product/ltm-basics-13-0-0/2.html",
+    14: "https://techdocs.f5.com/kb/en-us/products/big-ip_ltm/manuals/product/big-ip-local-traffic-management-basics-14-0-0/02.html",
+}
 HTTPD_TLS_DEFAULT = "https://cdn.f5.com/product/bugtracker/ID668624.html"
 RFC_8996 = "https://www.rfc-editor.org/rfc/rfc8996"
 NIST_TLS = "https://csrc.nist.gov/pubs/sp/800/52/r2/final"
@@ -918,25 +922,38 @@ class PluginF5BIGIPChecks(BasePlugin):
                 references=(SNMP_LATEST,),
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
-        for virtual, port, source, evidence in parser.get_virtual_endpoints():
-            if not _ANY_SOURCE.match(source.casefold()):
+        for endpoint in parser.get_virtual_endpoints():
+            if not _ANY_SOURCE.match(endpoint.source.casefold()) or endpoint.protocol == "unknown":
                 continue
-            number = int(port) if port.isdigit() else CISCO_PORT_NAMES.get(port.casefold())
+            number = (int(endpoint.port) if endpoint.port.isdigit()
+                      else CISCO_PORT_NAMES.get(endpoint.port.casefold()))
             if number is None:
                 continue
-            labels = sorted(risky_labels("tcp", number, number) | risky_labels("udp", number, number))
+            labels = sorted(risky_labels(endpoint.protocol, number, number))
             if not labels:
                 continue
+            release = parser.get_release()
+            references = [VIRTUAL]
+            if not endpoint.protocol_explicit and release:
+                references.append(
+                    f"https://clouddocs.f5.com/cli/tmsh-reference/v{release[0]}/modules/ltm/ltm_virtual.html"
+                )
+            if not endpoint.source_explicit and release:
+                references.append(VIRTUAL_SOURCE_DEFAULT[release[0]])
             self.add_issue(Finding(
                 rule_id="f5.bigip.ltm.risky_service_exposure",
                 device=parser.device_type,
-                title="Virtual server publishes a risky service to any source",
-                observation=f"Enabled virtual server {virtual.name} listens on port {port} ({', '.join(labels)}) for source {source}.",
-                impact="Clear-text logins, file sharing, remote administration or database services become reachable from any client network.",
-                exploitability="Any host that reaches the virtual address can attempt to log in or exploit the published service.",
-                recommendation="Restrict the virtual server's source addresses, or publish an encrypted alternative (SFTP, HTTPS, SSH) instead.",
+                title="Virtual server publishes a potentially risky service to any source",
+                observation=(f"Enabled virtual server {endpoint.virtual.name} listens on "
+                             f"{endpoint.protocol.upper()}/{endpoint.port} "
+                             f"({', '.join(labels)}) for source {endpoint.source}. "
+                             "Port identity does not establish the application protocol or encryption."),
+                impact="A sensitive service may be reachable from broad client networks if the destination uses the catalogued protocol.",
+                exploitability="A client that can reach the virtual address may be able to probe the published service; application behavior and upstream controls are not established by this export.",
+                recommendation="Verify the application on this port and its transport security, and restrict the virtual server's source addresses where appropriate.",
                 severity=Severity.MEDIUM,
-                evidence=(evidence,),
-                references=(VIRTUAL,),
-                basis=FindingBasis.EXPLICIT_VALUE,
+                evidence=(endpoint.evidence,),
+                references=tuple(dict.fromkeys(references)),
+                basis=(FindingBasis.EXPLICIT_VALUE if endpoint.protocol_explicit and endpoint.source_explicit
+                       else FindingBasis.DOCUMENTED_DEFAULT),
             ))

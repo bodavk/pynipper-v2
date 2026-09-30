@@ -195,6 +195,17 @@ class F5Virtual:
 
 
 @dataclass(frozen=True)
+class F5VirtualEndpoint:
+    virtual: F5Virtual
+    port: str
+    source: str
+    source_explicit: bool
+    protocol: str  # tcp | udp | any | unknown
+    protocol_explicit: bool
+    evidence: ConfigEvidence
+
+
+@dataclass(frozen=True)
 class F5ASMPolicy:
     """`asm policy`: tmsh reference — `[active | inactive]` (default inactive),
     `blocking-mode [enabled | disabled]` (disabled = transparent, violations only logged)."""
@@ -771,15 +782,37 @@ class F5BIGIPParser(BaseDeviceParser):
 
     def _record_virtual_endpoint(self, name: str, body: list[_TokenValue]) -> None:
         items = _top_level(body)
+        # Internal virtuals do not accept client connections; reject virtuals
+        # explicitly reject traffic instead of publishing the destination port.
+        if "internal" in items or "reject" in items:
+            return
         destination, destination_line = items.get("destination", ([], 0))
         if not destination:
             return
         target = destination[0]
         address, _, port = target.rpartition(":") if target.count(":") == 1 else target.rpartition(".")
-        source = (items.get("source", (["0.0.0.0/0"], 0))[0] or ["0.0.0.0/0"])[0]
+        release = self.get_release()
+        source_values = items.get("source", ([], 0))[0]
+        source_explicit = "source" in items
+        # F5 LTM Basics documents the unrestricted source default for v13/v14.
+        # Later releases need release-specific evidence before using absence.
+        source = (source_values[0] if source_values else
+                  "0.0.0.0/0" if not source_explicit and release and release[0] in {13, 14}
+                  else "unknown")
+        protocol_values = items.get("ip-protocol", ([], 0))[0]
+        protocol_explicit = "ip-protocol" in items
+        raw_protocol = protocol_values[0].casefold() if protocol_values else ""
+        protocol = {"6": "tcp", "17": "udp"}.get(raw_protocol, raw_protocol)
+        if protocol not in {"tcp", "udp", "any"}:
+            # The v13-v17 tmsh references document `any` as the default.
+            # Never infer it for an export without a supported release header.
+            protocol = "any" if not protocol_explicit and release and 13 <= release[0] <= 17 else "unknown"
         self._virtual_endpoints[name] = {
-            "port": port, "source": source,
-            "evidence": ConfigEvidence(f"ltm virtual {name} destination {target} source {source}",
+            "port": port, "source": source, "source_explicit": source_explicit,
+            "protocol": protocol,
+            "protocol_explicit": protocol_explicit,
+            "evidence": ConfigEvidence(f"ltm virtual {name} destination {target} source {source} "
+                                       f"ip-protocol {protocol if protocol_explicit else '<absent>'}",
                                        self.config_filepath, destination_line),
         }
 
@@ -1005,14 +1038,17 @@ class F5BIGIPParser(BaseDeviceParser):
         """HTTP/HTTPS monitors whose send string carries an ``Authorization: Basic`` header."""
         return tuple(self._monitor_basic_auth)
 
-    def get_virtual_endpoints(self) -> tuple[tuple[F5Virtual, str, str, ConfigEvidence], ...]:
-        """Enabled virtual servers as (virtual, destination port, source, evidence)."""
+    def get_virtual_endpoints(self) -> tuple[F5VirtualEndpoint, ...]:
+        """Enabled virtual servers with parser-resolved IP protocol and evidence."""
         result = []
         for name, endpoint in self._virtual_endpoints.items():
             virtual = self._virtuals.get(name)
             if virtual is None or virtual.enabled is False:
                 continue
-            result.append((virtual, endpoint["port"], endpoint["source"], endpoint["evidence"]))
+            result.append(F5VirtualEndpoint(virtual, endpoint["port"], endpoint["source"],
+                                            endpoint["source_explicit"], endpoint["protocol"],
+                                            endpoint["protocol_explicit"],
+                                            endpoint["evidence"]))
         return tuple(result)
 
     def get_user_shells(self) -> dict[str, ConfigEvidence]:

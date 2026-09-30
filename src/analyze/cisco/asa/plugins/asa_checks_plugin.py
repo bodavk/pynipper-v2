@@ -639,15 +639,33 @@ class PluginASAChecks(BasePlugin):
                         references=(CISCO_ASA_ACCESS_RULES_GUIDE,),
                     ))
                 risky = self._risky_entry_services(entry)
+                # ASA ACLs stop at the first match. A preceding static deny that
+                # covers this ACE makes it unreachable only when no earlier
+                # permit could have accepted a subset of the same traffic.
+                if risky and all(earlier.action == "deny" for _, earlier in previous):
+                    current_source = asa.resolve_acl_network(entry.source)
+                    current_destination = asa.resolve_acl_network(entry.destination)
+                    current_service = asa.resolve_acl_service(entry)
+                    if any(
+                        not earlier.time_range
+                        and not earlier.unsupported_predicates
+                        and all(state == ProofState.PROVEN for state in (
+                            network_covers(asa.resolve_acl_network(earlier.source), current_source),
+                            network_covers(asa.resolve_acl_network(earlier.destination), current_destination),
+                            service_covers(asa.resolve_acl_service(earlier), current_service),
+                        ))
+                        for _, earlier in previous
+                    ):
+                        risky = []
                 if risky:
                     self.add_issue(Finding(
                         rule_id="cisco.asa.acl.risky_service_exposure",
                         device=parser.device_type,
-                        title="Risky service is permitted from any source",
-                        observation=f"Entry {position} in ACL '{entry.acl_name}' on '{binding['interface']}' permits {', '.join(risky)} from any source.",
-                        impact="Clear-text logins, file sharing, remote administration and database services are common targets for credential theft and exploitation.",
-                        exploitability="Any host that reaches the interface can connect to the permitted service.",
-                        recommendation="Restrict the source to the hosts that need the service, and replace clear-text protocols with encrypted alternatives.",
+                        title="ACL may expose a risky service to broad sources",
+                        observation=f"Entry {position} in ACL '{entry.acl_name}' on '{binding['interface']}' permits the {', '.join(risky)} port from any source; upstream controls and application transport are not established.",
+                        impact="Sensitive services on these ports may be reachable by broad source networks; the port alone does not prove cleartext traffic.",
+                        exploitability="Sources that can reach the bound interface and are not excluded by earlier ACL entries may probe the service.",
+                        recommendation="Verify the application and transport security, and restrict the permitted source to the hosts that need access.",
                         severity=Severity.HIGH,
                         evidence=evidence,
                         references=(CISCO_ASA_ACCESS_RULES_GUIDE,),

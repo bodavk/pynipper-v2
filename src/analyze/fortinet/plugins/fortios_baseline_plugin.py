@@ -109,6 +109,11 @@ FORTINET_BLASTRADIUS_ADVISORY = "https://www.fortiguard.com/psirt/FG-IR-24-255"
 FORTINET_SSLVPN_REFERENCE = (
     "https://docs.fortinet.com/document/fortigate/7.4.4/cli-reference/114404382/config-vpn-ssl-settings"
 )
+FORTINET_PPTP_REFERENCE = "https://docs.fortinet.com/document/fortigate/7.4.1/cli-reference/336620/config-vpn-pptp"
+MICROSOFT_PPTP_DEPRECATION = (
+    "https://techcommunity.microsoft.com/blog/windowsservernewsandbestpractices/"
+    "pptp-and-l2tp-deprecation-a-new-era-of-secure-connectivity/4263956"
+)
 FORTINET_HA_REFERENCE = (
     "https://docs.fortinet.com/document/fortigate/7.4.2/cli-reference/22620/config-system-ha"
 )
@@ -1807,6 +1812,7 @@ class PluginFortiOSBaseline(BasePlugin):
         self.check_private_data_encryption(parser)
         self.check_ike_aggressive_mode(parser)
         self.check_ldap_transport(parser)
+        self.check_pptp_gateway(parser)
         self.check_sslvpn(parser)
         self.check_ha_protection(parser)
         self.check_usb_auto_install(parser)
@@ -2036,6 +2042,24 @@ class PluginFortiOSBaseline(BasePlugin):
                 Severity.LOW,
                 tuple(item for field in ("server-mode", "interface") for item in fortios.field_evidence(path + (field,))) or ("set server-mode enable",),
                 (FORTINET_NTP_REFERENCE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+
+    def check_pptp_gateway(self, parser: BaseDeviceParser) -> None:
+        """SC-013: an explicitly enabled legacy VPN gateway, not reachability proof."""
+        for gateway in self._fortios(parser).get_pptp_gateways():
+            if not gateway.enabled:
+                continue
+            self.add_issue(self._finding(
+                parser,
+                "fortinet.fortios.vpn.pptp_gateway",
+                "Legacy PPTP VPN gateway is enabled",
+                f"PPTP gateway status is explicitly enabled in scope '{gateway.scope}'; external reachability and client authentication are not established by this export.",
+                "PPTP is a legacy remote-access protocol with weaker security than modern VPN alternatives.",
+                "Migrate remote access to a supported VPN such as IKEv2/IPsec and disable the PPTP gateway.",
+                Severity.HIGH,
+                gateway.evidence,
+                (FORTINET_PPTP_REFERENCE, MICROSOFT_PPTP_DEPRECATION),
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
 

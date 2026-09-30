@@ -121,6 +121,59 @@ def test_secure_eos_has_no_findings(tmp_path):
     assert _issues(_parse(tmp_path, SECURE)) == []
 
 
+def test_eapi_attached_acl_first_permit_any_is_not_a_source_restriction(tmp_path):
+    config = """! device: eapi-leaf (DCS-7050, EOS-4.29.2F)
+ip access-list standard EAPI-V4
+   20 deny host 198.51.100.1
+   10 permit any
+ipv6 access-list EAPI-V6
+   10 deny ipv6 any any
+   20 permit ipv6 any any
+management api http-commands
+   vrf MGMT
+      ip access-group EAPI-V4 in
+      ipv6 access-group EAPI-V6 in
+      no shutdown
+"""
+    parser = _parse(tmp_path, config)
+    assert parser.assess_service_acl("ip", "EAPI-V4").state == "permit-all"
+    assert parser.assess_service_acl("ipv6", "EAPI-V6").state == "restrictive-or-unknown"
+    findings = [issue for issue in _issues(parser)
+                if issue.rule_id == "arista.eos.eapi.source_restriction"]
+    assert len(findings) == 1
+    assert "IP ACL 'EAPI-V4'" in findings[0].observation
+
+
+def test_eapi_acl_removal_and_undefined_attachment_are_not_permit_all(tmp_path):
+    config = """ip access-list standard EAPI
+   10 permit any
+no ip access-list standard EAPI
+management api http-commands
+   vrf MGMT
+      ip access-group EAPI in
+      no shutdown
+"""
+    parser = _parse(tmp_path, config)
+    assert parser.assess_service_acl("ip", "EAPI").state == "undefined"
+    assert not [issue for issue in _issues(parser)
+                if issue.rule_id == "arista.eos.eapi.source_restriction"]
+
+
+def test_eapi_service_acl_attachment_removal_restores_missing_acl_check(tmp_path):
+    config = """management api http-commands
+   vrf MGMT
+      ip access-group EAPI in
+      no ip access-group EAPI in
+      no shutdown
+"""
+    parser = _parse(tmp_path, config)
+    assert parser.get_eapi_endpoints()[0].ipv4_acl == ""
+    findings = [issue for issue in _issues(parser)
+                if issue.rule_id == "arista.eos.eapi.source_restriction"]
+    assert len(findings) == 1
+    assert "no IPv4 or IPv6 access-group" in findings[0].observation
+
+
 def test_shutdown_and_absent_eapi_blocks_are_not_exposed(tmp_path):
     for config in (
         "hostname absent\nprotocol https\n",

@@ -239,6 +239,22 @@ def test_asa_risky_service(tmp_path):
     assert len(findings) == 1 and "Telnet" in findings[0].observation
 
 
+@pytest.mark.parametrize("prefix,expected", [
+    ("access-list OUTSIDE extended deny tcp any host 192.0.2.10 eq telnet\n", False),
+    ("access-list OUTSIDE extended deny tcp host 198.51.100.1 host 192.0.2.10 eq telnet\n", True),
+    ("access-list OUTSIDE extended deny tcp any host 192.0.2.11 eq telnet\n", True),
+    ("access-list OUTSIDE extended deny tcp any host 192.0.2.10 eq telnet inactive\n", True),
+    ("access-list OUTSIDE extended permit tcp host 198.51.100.1 host 192.0.2.10 eq telnet\n"
+     "access-list OUTSIDE extended deny tcp any host 192.0.2.10 eq telnet\n", True),
+])
+def test_asa_risky_service_respects_prior_deny(tmp_path, prefix, expected):
+    text = ASA + prefix + ("access-list OUTSIDE extended permit tcp any host 192.0.2.10 eq telnet\n"
+                           "access-group OUTSIDE in interface outside\n")
+    findings = _rules(_run(tmp_path, "ASA", text, process_asa_conf),
+                      "cisco.asa.acl.risky_service_exposure")
+    assert bool(findings) is expected
+
+
 def test_fortios_risky_service(tmp_path):
     text = FORTI + ('config firewall service custom\n    edit "TELNET"\n        set tcp-portrange 23\n    next\n'
                     '    edit "HTTPS"\n        set tcp-portrange 443\n    next\nend\n'

@@ -559,6 +559,13 @@ _CATALOGUE = (
         "enforced elsewhere.",
     )),
     # VPN -----------------------------------------------------------------------------------------
+    (r"^vpn\.pptp_gateway$", _G(
+        "legacy-pptp-gateway", "vpn",
+        "The FortiGate is explicitly configured to act as a PPTP VPN gateway.",
+        "A client that can reach the gateway may negotiate a legacy VPN protocol; this export does not prove that the listener is reachable or that a login succeeds.",
+        "PPTP has been superseded by stronger VPN protocols. Enabling the gateway is a configuration risk even though user authentication and network exposure require separate assessment.",
+        "Confirm whether any clients still depend on PPTP, migrate them to a supported secure VPN, and disable the gateway.",
+    )),
     (r"^(crypto\.(legacy_\w+|ike_dh_policy|unresolved_transform|ikev2_default_proposal)|vpn\.\w+)$", _G(
         "vpn-crypto", "vpn",
         "An active VPN tunnel can negotiate outdated encryption, hashing or key-exchange "
