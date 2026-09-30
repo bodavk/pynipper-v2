@@ -154,6 +154,21 @@ class FortiHAWeakHeartbeat:
 
 
 @dataclass(frozen=True)
+class FortiAggressivePSK:
+    scope: str
+    name: str
+    default_inferred: bool
+    evidence: Tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class FortiPrivateDataProtection:
+    state: str
+    default_inferred: bool
+    evidence: Tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
 class FortiSSLVPNPasswordOnlyUser:
     scope: str
     username: str
@@ -1153,6 +1168,62 @@ class FortiOSParser(BaseDeviceParser):
             ))
         return tuple(result)
 
+    def _documented_default_release(self, *, private_data: bool = False) -> bool:
+        """Only release trains with Fortinet CLI tables for the relevant defaults."""
+        parts = re.findall(r"\d+", self.get_version())[:3]
+        if len(parts) != 3:
+            return False
+        major, minor, patch = (int(part) for part in parts)
+        if (major, minor) == (6, 4):
+            return patch >= (10 if private_data else 15)
+        if major == 7 and minor in {0, 2, 4}:
+            return True
+        return major == 7 and minor == 6 and patch >= 1
+
+    def get_ike_aggressive_psk(self) -> Tuple[FortiAggressivePSK, ...]:
+        """Explicit aggressive mode with proven IKEv1 and PSK authentication."""
+        known_default = self._documented_default_release()
+        result: List[FortiAggressivePSK] = []
+        for section in ("vpn ipsec phase1-interface", "vpn ipsec phase1"):
+            for scope, entries, path in self._scoped_sections(section):
+                for name, settings in entries.items():
+                    if not isinstance(settings, dict) or str(settings.get("mode", "")).casefold() != "aggressive":
+                        continue
+                    version = str(settings.get("ike-version", "")).casefold()
+                    method = str(settings.get("authmethod", "")).casefold()
+                    if version not in ({"1", ""} if known_default else {"1"}):
+                        continue
+                    if method not in ({"psk", ""} if known_default else {"psk"}):
+                        continue
+                    entry_path = path + (str(name),)
+                    result.append(FortiAggressivePSK(
+                        scope, str(name), not version or not method,
+                        self._field_evidence(entry_path + ("mode",))
+                        + self._field_evidence(entry_path + ("ike-version",))
+                        + self._field_evidence(entry_path + ("authmethod",)),
+                    ))
+        return tuple(result)
+
+    def get_private_data_protection(self) -> FortiPrivateDataProtection:
+        """Effective explicit private-data switch, or qualified absent default."""
+        settings = [
+            (section.get("private-data-encryption"), path)
+            for _, section, path in self._scoped_sections("system global")
+            if "private-data-encryption" in section
+        ]
+        values = {str(value).casefold() for value, _ in settings}
+        if len(values) == 1 and values <= {"enable", "disable"}:
+            return FortiPrivateDataProtection(
+                values.pop(), False,
+                tuple(item for _, path in settings
+                      for item in self._field_evidence(path + ("private-data-encryption",))),
+            )
+        if settings:
+            return FortiPrivateDataProtection("unknown", False, ())
+        if self._documented_default_release(private_data=True):
+            return FortiPrivateDataProtection("disable", True, ())
+        return FortiPrivateDataProtection("unknown", False, ())
+
     def _supports_radsec(self) -> bool:
         numbers = re.findall(r"\d+", self.get_version())
         return len(numbers) >= 2 and (int(numbers[0]), int(numbers[1])) >= (7, 4)
@@ -1292,7 +1363,8 @@ class FortiOSParser(BaseDeviceParser):
             active = bool(interfaces) and str(settings.get("status", "enable")).lower() != "disable"
             values = {
                 field: (" ".join(self._as_list(settings[field])) if field in settings else None)
-                for field in ("ssl-min-proto-ver", "algorithm", "servercert", "login-attempt-limit")
+                for field in ("ssl-min-proto-ver", "algorithm", "servercert", "login-attempt-limit",
+                              "auth-timeout")
             }
             results.append({
                 "scope": scope,

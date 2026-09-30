@@ -231,6 +231,21 @@ FORTINET_PHASE1_REFERENCE = (
     "https://docs.fortinet.com/document/fortigate/7.2.0/cli-reference/365620/"
     "config-vpn-ipsec-phase1"
 )
+FORTINET_PHASE1_DEFAULT_REFERENCES = (
+    "https://docs.fortinet.com/document/fortigate/6.4.15/cli-reference/312620/config-vpn-ipsec-phase1-interface",
+    "https://docs.fortinet.com/document/fortigate/7.0.7/cli-reference/371620/config-vpn-ipsec-phase1-interface",
+    "https://docs.fortinet.com/document/fortigate/7.2.5/cli-reference/325620/config-vpn-ipsec-phase1-interface",
+    "https://docs.fortinet.com/document/fortigate/7.4.10/cli-reference/305883427/config-vpn-ipsec-phase1-interface",
+    "https://docs.fortinet.com/document/fortigate/7.6.1/cli-reference/305883427/config-vpn-ipsec-phase1-interface",
+)
+FORTINET_PRIVATE_DATA_DEFAULT_REFERENCES = (
+    "https://docs.fortinet.com/document/fortigate/6.4.10/cli-reference/1620/config-system-global",
+    "https://docs.fortinet.com/document/fortigate/7.0.0/cli-reference/001620/config-system-global",
+    "https://docs.fortinet.com/document/fortigate/7.2.5/cli-reference/1620/config-system-global",
+    "https://docs.fortinet.com/document/fortigate/7.4.0/cli-reference/001620/config-system-global",
+    "https://community.fortinet.com/fortigate-3/technical-tip-hardening-improve-private-data-encryption-to-limit-enable-disable-to-super-admin-users-on-v7-2-11-7-4-6-and-7-6-1-182185",
+    "https://docs.fortinet.com/document/fortigate/7.6.0/new-features/723457/use-per-fortigate-generated-random-password-for-private-data-encryption-7-6-1",
+)
 FORTINET_PHASE2_REFERENCE = (
     "https://docs.fortinet.com/document/fortigate/7.2.2/cli-reference/372620/"
     "config-vpn-ipsec-phase2-interface"
@@ -2320,6 +2335,14 @@ class PluginFortiOSBaseline(BasePlugin):
                     "Password guessing against VPN accounts is not slowed down.",
                     "Set a small login-attempt-limit (default 2) with a login-block-time, and require MFA for VPN users.",
                     Severity.MEDIUM, "login-attempt-limit"))
+            if values["auth-timeout"] == "0":
+                checks.append((
+                    "fortinet.fortios.sslvpn.auth_timeout_disabled",
+                    "SSL-VPN authentication timeout is disabled",
+                    f"{where} explicitly sets auth-timeout 0, which disables the authentication timeout. Other idle or logout controls are not assessed by this finding.",
+                    "A stolen or abandoned authenticated VPN session may remain usable longer than intended.",
+                    "Set a finite SSL-VPN auth-timeout appropriate to the organization's session policy.",
+                    Severity.MEDIUM, "auth-timeout"))
             for rule, title, observation, impact, recommendation, severity, field in checks:
                 self.add_issue(self._finding(
                     parser, rule, title, observation, impact, recommendation, severity,
@@ -2381,34 +2404,24 @@ class PluginFortiOSBaseline(BasePlugin):
                 ))
 
     def check_ike_aggressive_mode(self, parser: BaseDeviceParser) -> None:
-        """SC-034: explicit IKEv1 aggressive mode with pre-shared-key authentication.
-
-        CLI reference defaults: mode main, ike-version 1, authmethod psk.
-        """
-        fortios = self._fortios(parser)
-        for section in ("vpn ipsec phase1-interface", "vpn ipsec phase1"):
-            for scope, entries, path in fortios.iter_scoped_sections(section):
-                for name, settings in entries.items():
-                    if not isinstance(settings, dict):
-                        continue
-                    if self._text(settings.get("mode"), "main").lower() != "aggressive":
-                        continue
-                    if self._text(settings.get("ike-version"), "1") != "1":
-                        continue
-                    if self._text(settings.get("authmethod"), "psk").lower() != "psk":
-                        continue
-                    self.add_issue(self._finding(
-                        parser,
-                        "fortinet.fortios.vpn.ike_aggressive_mode",
-                        "IKEv1 aggressive mode with a pre-shared key",
-                        f"Phase1 '{name}' in scope '{scope}' uses IKEv1 aggressive mode with pre-shared-key authentication.",
-                        "Aggressive mode sends a hash derived from the pre-shared key before the peer is authenticated, so it can be captured and cracked offline.",
-                        "Use main mode or IKEv2 ('set ike-version 2'), or certificate authentication; if aggressive mode is required, use a long random pre-shared key.",
-                        Severity.MEDIUM,
-                        self._evidence(fortios, path + (str(name), "mode"), "set mode aggressive"),
-                        (FORTINET_PHASE1_REFERENCE, "https://www.rfc-editor.org/rfc/rfc2409"),
-                        basis=FindingBasis.EXPLICIT_VALUE,
-                    ))
+        """SC-034: aggressive IKEv1/PSK, with release-qualified defaults."""
+        for phase1 in self._fortios(parser).get_ike_aggressive_psk():
+            self.add_issue(self._finding(
+                parser,
+                "fortinet.fortios.vpn.ike_aggressive_mode",
+                "IKEv1 aggressive mode with a pre-shared key",
+                (f"Phase1 '{phase1.name}' in scope '{phase1.scope}' explicitly uses aggressive mode "
+                 "with IKEv1 and pre-shared-key authentication"
+                 + (" (including documented defaults for omitted fields)." if phase1.default_inferred else ".")),
+                "Aggressive mode sends a hash derived from the pre-shared key before the peer is authenticated, so it can be captured and cracked offline.",
+                "Use main mode or IKEv2 ('set ike-version 2'), or certificate authentication; if aggressive mode is required, use a long random pre-shared key.",
+                Severity.MEDIUM,
+                phase1.evidence,
+                (FORTINET_PHASE1_DEFAULT_REFERENCES if phase1.default_inferred
+                 else (FORTINET_PHASE1_REFERENCE,)) + ("https://www.rfc-editor.org/rfc/rfc2409",),
+                basis=(FindingBasis.DOCUMENTED_DEFAULT if phase1.default_inferred
+                       else FindingBasis.EXPLICIT_VALUE),
+            ))
 
     def check_private_data_encryption(self, parser: BaseDeviceParser) -> None:
         """SC-035: reversible secrets protected only by the built-in FortiOS key."""
@@ -2416,31 +2429,26 @@ class PluginFortiOSBaseline(BasePlugin):
         secrets = fortios.get_reversible_secret_evidence()
         if not secrets:
             return
-        globals_ = list(fortios.iter_scoped_sections("system global"))
-        explicit = [
-            (settings, path) for _, settings, path in globals_
-            if settings.get("private-data-encryption") is not None
-        ]
-        if any(self._text(settings.get("private-data-encryption")).lower() == "enable" for settings, _ in explicit):
+        protection = fortios.get_private_data_protection()
+        if protection.state != "disable":
             return
-        setting_evidence = tuple(
-            item for _, path in explicit
-            for item in fortios.field_evidence(path + ("private-data-encryption",))
-        )
         self.add_issue(self._finding(
             parser,
             "fortinet.fortios.credentials.private_data_storage",
             "Stored secrets use the built-in FortiOS encryption key",
             (f"{len(secrets)} secret field(s) such as VPN pre-shared keys or server passwords are stored as "
              "'ENC' values while private-data-encryption is "
-             + ("disabled." if explicit else "not enabled (disabled by default).")),
+             + ("disabled explicitly." if not protection.default_inferred
+                else "not enabled (disabled by a documented default).")),
             "Anyone who obtains the configuration file or a backup can decrypt these secrets, because the default key is the same on every FortiGate (CVE-2019-6693).",
             ("On FortiOS 5.6.11, 6.0.7, 6.2.1 or later run 'config system global', 'set private-data-encryption enable' and set a unique key, "
              "protect configuration backups with a password, and rotate secrets that may have been exposed."),
             Severity.MEDIUM,
-            setting_evidence + tuple(secrets[:3]),
-            (FORTINET_PRIVATE_DATA_ADVISORY,),
-            basis=FindingBasis.EXPLICIT_VALUE if explicit else FindingBasis.DOCUMENTED_DEFAULT,
+            protection.evidence + tuple(secrets[:3]),
+            ((FORTINET_PRIVATE_DATA_DEFAULT_REFERENCES if protection.default_inferred else ())
+             + (FORTINET_PRIVATE_DATA_ADVISORY,)),
+            basis=(FindingBasis.DOCUMENTED_DEFAULT if protection.default_inferred
+                   else FindingBasis.EXPLICIT_VALUE),
         ))
 
 

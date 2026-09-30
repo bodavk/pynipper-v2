@@ -178,6 +178,7 @@ def _sslvpn(settings, interface=True):
     ("    set algorithm low\n", "fortinet.fortios.sslvpn.weak_algorithm"),
     ('    set servercert "Fortinet_Factory"\n', "fortinet.fortios.sslvpn.factory_certificate"),
     ("    set login-attempt-limit 0\n", "fortinet.fortios.sslvpn.unlimited_login_attempts"),
+    ("    set auth-timeout 0\n", "fortinet.fortios.sslvpn.auth_timeout_disabled"),
 ])
 def test_sslvpn_weak_settings(tmp_path, setting, rule):
     findings = _rules(_run(tmp_path, "FORTIOS", _sslvpn(setting), process_fortios_conf), rule)
@@ -188,7 +189,8 @@ def test_sslvpn_weak_settings(tmp_path, setting, rule):
 
 def test_sslvpn_secure_settings(tmp_path):
     text = _sslvpn('    set servercert "vpn.example.com"\n    set ssl-min-proto-ver tls1-2\n'
-                   "    set algorithm high\n    set login-attempt-limit 3\n")
+                   "    set algorithm high\n    set login-attempt-limit 3\n"
+                   "    set auth-timeout 3600\n")
     findings = _run(tmp_path, "FORTIOS", text, process_fortios_conf)
     assert not [f for f in findings if f.rule_id.startswith("fortinet.fortios.sslvpn")]
 

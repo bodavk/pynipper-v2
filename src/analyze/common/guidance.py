@@ -587,6 +587,13 @@ _CATALOGUE = (
         "A broad IPv6 source gate increases the population able to probe the VPN listener.",
         "Limit IPv6 sources to approved networks or verify an effective compensating local-in or upstream restriction.",
     )),
+    (r"^sslvpn\.auth_timeout_disabled$", _G(
+        "vpn-authentication-timeout-disabled", "vpn",
+        "An active SSL-VPN listener explicitly disables the authentication timeout.",
+        "Other session idle and logout controls may still end a session; the export does not prove how long a live session persists.",
+        "A stolen or abandoned authenticated session may remain usable longer than the intended maximum.",
+        "Set a finite authentication timeout that matches the organization's VPN session policy.",
+    )),
     (r"^sslvpn\.password_only_local_user$", _G(
         "vpn-password-only-local-user", "vpn",
         "An enabled local password account is mapped directly or through a firewall group to an SSL-VPN portal with MFA and client certificates explicitly disabled.",
