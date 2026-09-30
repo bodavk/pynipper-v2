@@ -420,13 +420,12 @@
       "input": "fortios/syntax_variants.conf",
       "expected_rule_ids": [
         "fortinet.fortios.admin.centralized_authentication",
-        "fortinet.fortios.admin.maintainer_account",
         "fortinet.fortios.dos.wan_policy_missing",
         "fortinet.fortios.https.management_certificate",
         "fortinet.fortios.logging.remote_cleartext",
         "fortinet.fortios.policy.disabled_permissive_rule"
       ],
-      "expected_finding_count": 6
+      "expected_finding_count": 5
     },
     {
       "name": "junos-hierarchical-variant",

@@ -69,9 +69,11 @@ def test_ssh_explicit_weak_switch(tmp_path):
 
 
 @pytest.mark.parametrize("version,settings,basis", [
-    ("7.2.5", "", FindingBasis.DOCUMENTED_DEFAULT),
-    ("7.2.5", "    set admin-maintainer enable\n", FindingBasis.EXPLICIT_VALUE),
-    ("7.2.5", "    set admin-maintainer disable\n", None),
+    ("7.2.3", "", FindingBasis.DOCUMENTED_DEFAULT),
+    ("7.2.3", "    set admin-maintainer enable\n", FindingBasis.EXPLICIT_VALUE),
+    ("7.2.3", "    set admin-maintainer disable\n", None),
+    ("7.2.4", "", None),
+    ("7.2.5", "    set admin-maintainer enable\n", None),
     ("7.4.4", "", None),
 ])
 def test_admin_maintainer(tmp_path, version, settings, basis):  # FOS-07

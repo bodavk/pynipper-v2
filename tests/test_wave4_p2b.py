@@ -119,6 +119,8 @@ def test_f5_non_listening_virtual_does_not_expose_risky_port(tmp_path, mode):
 @pytest.mark.parametrize("version,hash_value,expected", [
     ("7.6.2", "SH2abcdef", True),
     ("7.6.2", "PB2abcdef", False),
+    ("7.6.2", "AK1abcdef", False),
+    ("7.6.2", "XYZabcdef", False),
     ("7.4.4", "SH2abcdef", False),
 ])
 def test_fortios_admin_hash(tmp_path, version, hash_value, expected):

@@ -89,6 +89,9 @@ FORTINET_GLOBAL_700_REFERENCE = (
 FORTINET_GLOBAL_720_REFERENCE = (
     "https://docs.fortinet.com/document/fortigate/7.2.0/cli-reference/1620/config-system-global"
 )
+FORTINET_MAINTAINER_REMOVAL_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.2.0/new-features/482897/remove-maintainer-account-7-2-4"
+)
 FORTINET_GLOBAL_760_REFERENCE = (
     "https://docs.fortinet.com/document/fortigate/7.6.0/cli-reference/339914554/config-system-global"
 )
@@ -101,6 +104,18 @@ FORTINET_SSLVPN_700_REFERENCE = (
 )
 FORTINET_SYSLOG_6414_REFERENCE = (
     "https://docs.fortinet.com/document/fortigate/6.4.14/cli-reference/380620/config-log-syslogd-setting"
+)
+FORTINET_SYSLOG_FILTER_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.4.7/cli-reference/273422104/config-log-syslogd-filter"
+)
+FORTINET_SYSLOG_OVERRIDE_FILTER_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.4.0/cli-reference/408620/config-log-syslogd-override-filter"
+)
+FORTINET_FAZ_FILTER_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.4.2/cli-reference/454620/config-log-fortianalyzer-filter"
+)
+FORTINET_FAZ_OVERRIDE_FILTER_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/6.4.9/cli-reference/468620/config-log-fortianalyzer-override-filter"
 )
 FORTINET_PASSWORD_6414_REFERENCE = (
     "https://docs.fortinet.com/document/fortigate/6.4.14/cli-reference/10620/config-system-password-policy"
@@ -142,6 +157,9 @@ FORTINET_NTP_REFERENCE = (
 )
 FORTINET_FAZ_REFERENCE = (
     "https://docs.fortinet.com/document/fortigate/7.4.0/cli-reference/443620/config-log-fortianalyzer-setting"
+)
+FORTINET_FAZ_OVERRIDE_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.4.0/cli-reference/444620/config-log-fortianalyzer-override-setting"
 )
 FORTINET_ADMIN_HASH_REFERENCE = (
     "https://docs.fortinet.com/document/fortigate/7.6.2/administration-guide/548023/"
@@ -1150,6 +1168,33 @@ class PluginFortiOSBaseline(BasePlugin):
                     (FORTINET_SYSLOG_TRANSPORT_REFERENCE, NIST_CRYPTO_TRANSITIONS),
                 ))
 
+    def check_syslog_severity(self, parser: BaseDeviceParser) -> None:
+        """Flag an explicit threshold that excludes error-level remote events."""
+        fortios = self._fortios(parser)
+        gaps = fortios.get_syslog_severity_gaps() + fortios.get_fortianalyzer_severity_gaps()
+        for gap in gaps:
+            is_faz = "fortianalyzer" in gap.destination
+            is_override = "override-setting" in gap.destination
+            reference = (
+                FORTINET_FAZ_OVERRIDE_FILTER_REFERENCE if is_override else FORTINET_FAZ_FILTER_REFERENCE
+            ) if is_faz else (
+                FORTINET_SYSLOG_OVERRIDE_FILTER_REFERENCE if is_override else FORTINET_SYSLOG_FILTER_REFERENCE
+            )
+            self.add_issue(self._finding(
+                parser,
+                "fortinet.fortios.logging.error_severity_filtered",
+                "FortiOS remote log filter excludes error-level events",
+                f"Enabled {gap.destination} in scope '{gap.scope}' sends to '{gap.server}', "
+                f"but its explicit severity threshold is '{gap.threshold}', which excludes "
+                "error-level and lower-severity events from this destination.",
+                "This destination may miss security-relevant error events; other destinations are not assessed by this finding.",
+                "Set this destination's severity threshold to 'error' or a lower level appropriate to the audit policy.",
+                Severity.MEDIUM,
+                tuple(gap.evidence),
+                (reference,),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+
     def check_ips_selector_actions(self, parser: BaseDeviceParser) -> None:
         """Report only a proven first broad passing high/critical IPS filter."""
         fortios = self._fortios(parser)
@@ -1845,6 +1890,7 @@ class PluginFortiOSBaseline(BasePlugin):
         self.check_snmp(parser)
         self.check_logging_and_policy_profiles(parser)
         self.check_syslog_transport(parser)
+        self.check_syslog_severity(parser)
         self.check_ips_selector_actions(parser)
         self.check_policy_effectiveness(parser)
         self.check_configuration_backups(parser)
@@ -1920,7 +1966,9 @@ class PluginFortiOSBaseline(BasePlugin):
                         (FORTINET_GLOBAL_6414_REFERENCE, FORTINET_SSH_CIPHERS_702),
                         basis=FindingBasis.DOCUMENTED_DEFAULT,
                     ))
-            if release < (7, 4, 0) and str(settings.get("admin-maintainer", "enable")).lower() != "disable":
+            # Fortinet removed the account in 7.2.4, even if an old line
+            # survives in an upgraded/exported configuration.
+            if release < (7, 2, 4) and str(settings.get("admin-maintainer", "enable")).lower() != "disable":
                 explicit = "admin-maintainer" in settings
                 self.add_issue(self._finding(
                     parser, "fortinet.fortios.admin.maintainer_account",
@@ -1932,7 +1980,7 @@ class PluginFortiOSBaseline(BasePlugin):
                     "Set 'admin-maintainer disable' where physical access is not fully controlled (keep a tested recovery procedure).",
                     Severity.LOW,
                     self._evidence(fortios, path + ("admin-maintainer",), "admin-maintainer absent: default enable"),
-                    (FORTINET_GLOBAL_720_REFERENCE,),
+                    (FORTINET_GLOBAL_720_REFERENCE, FORTINET_MAINTAINER_REMOVAL_REFERENCE),
                     basis=FindingBasis.EXPLICIT_VALUE if explicit else FindingBasis.DOCUMENTED_DEFAULT,
                 ))
         # FOS-13: FG-IR-24-255, releases before 7.2.11 / 7.4.6 / 7.6.1 cannot enforce the
@@ -1969,7 +2017,9 @@ class PluginFortiOSBaseline(BasePlugin):
             return
         for scope, username, settings, path in fortios.iter_administrators():
             words = self._values(settings, "password")
-            if len(words) < 2 or words[0] != "ENC" or words[1].startswith("PB2"):
+            # Fortinet documents SH2 as the pre-PBKDF2 SHA256 format. Other
+            # prefixes (including older AK1) are not classified by this source.
+            if len(words) < 2 or words[0] != "ENC" or not words[1].startswith("SH2"):
                 continue
             self.add_issue(self._finding(
                 parser,
@@ -1987,36 +2037,43 @@ class PluginFortiOSBaseline(BasePlugin):
     def check_fortianalyzer_transport(self, parser: BaseDeviceParser) -> None:
         """SC-032: FortiAnalyzer log transport with low encryption or no certificate verification."""
         fortios = self._fortios(parser)
-        for section in ("log fortianalyzer setting", "log fortianalyzer2 setting", "log fortianalyzer3 setting"):
-            for scope, settings, path in fortios.iter_scoped_sections(section):
-                if self._text(settings.get("status")).lower() != "enable":
-                    continue
-                if self._text(settings.get("enc-algorithm")).lower() in {"low", "disable"}:
-                    self.add_issue(self._finding(
-                        parser,
-                        "fortinet.fortios.logging.remote_weak_tls",
-                        "FortiAnalyzer logging allows weak encryption",
-                        f"Enabled '{section}' in scope '{scope}' sets enc-algorithm {self._text(settings.get('enc-algorithm'))} (default high).",
-                        "Logs sent to FortiAnalyzer may be protected only by weak cipher suites.",
-                        "Set 'enc-algorithm high' (the default).",
-                        Severity.MEDIUM,
-                        self._evidence(fortios, path + ("enc-algorithm",), "set enc-algorithm low"),
-                        (FORTINET_FAZ_REFERENCE,),
-                        basis=FindingBasis.EXPLICIT_VALUE,
-                    ))
-                if self._text(settings.get("certificate-verification")).lower() == "disable":
-                    self.add_issue(self._finding(
-                        parser,
-                        "fortinet.fortios.logging.remote_identity_unverified",
-                        "FortiAnalyzer identity is not verified",
-                        f"Enabled '{section}' in scope '{scope}' sets certificate-verification disable (default enable).",
-                        "A system that can intercept the connection can impersonate the FortiAnalyzer and receive or suppress logs.",
-                        "Set 'certificate-verification enable' and configure the FortiAnalyzer serial number or CA.",
-                        Severity.MEDIUM,
-                        self._evidence(fortios, path + ("certificate-verification",), "set certificate-verification disable"),
-                        (FORTINET_FAZ_REFERENCE,),
-                        basis=FindingBasis.EXPLICIT_VALUE,
-                    ))
+        for sink in fortios.get_fortianalyzer_sinks():
+            reference = (FORTINET_FAZ_OVERRIDE_REFERENCE if "override-setting" in sink.name
+                         else FORTINET_FAZ_REFERENCE)
+            weak_tls = sink.tls_minimum in {"sslv3", "tlsv1", "tlsv1-1"}
+            if sink.encryption == "low" or weak_tls:
+                weaknesses = []
+                if sink.encryption == "low":
+                    weaknesses.append("enc-algorithm low")
+                if weak_tls:
+                    weaknesses.append(f"ssl-min-proto-version {sink.tls_minimum}")
+                self.add_issue(self._finding(
+                    parser,
+                    "fortinet.fortios.logging.remote_weak_tls",
+                    "FortiAnalyzer logging allows weak encryption",
+                    f"Enabled '{sink.name}' in scope '{sink.scope}' sends to '{sink.server}' "
+                    f"with explicit {' and '.join(weaknesses)}.",
+                    "Logs sent to FortiAnalyzer may use weak cipher suites or obsolete TLS versions.",
+                    "Set 'enc-algorithm high' and require TLS 1.2 or later, subject to the approved crypto policy.",
+                    Severity.MEDIUM,
+                    tuple(sink.evidence),
+                    (reference,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
+                ))
+            if sink.certificate_verification == "disable":
+                self.add_issue(self._finding(
+                    parser,
+                    "fortinet.fortios.logging.remote_identity_unverified",
+                    "FortiAnalyzer identity is not verified",
+                    f"Enabled '{sink.name}' in scope '{sink.scope}' sends to '{sink.server}' "
+                    "with certificate-verification disable (default enable).",
+                    "A system that can intercept the connection can impersonate the FortiAnalyzer and receive or suppress logs.",
+                    "Set 'certificate-verification enable' and configure the FortiAnalyzer serial number or CA.",
+                    Severity.MEDIUM,
+                    tuple(sink.evidence),
+                    (reference,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
+                ))
 
     def check_ha_protection(self, parser: BaseDeviceParser) -> None:
         """SC-038: active HA cluster with heartbeat authentication or encryption off (default disable)."""

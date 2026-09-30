@@ -191,6 +191,30 @@ class FortiSyslogSink:
 
 
 @dataclass(frozen=True)
+class FortiLogSeverityGap:
+    """Explicit severity threshold on a proven active remote destination."""
+
+    destination: str
+    scope: str
+    server: str
+    threshold: str
+    evidence: Tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class FortiAnalyzerSink:
+    """Explicit active FortiAnalyzer destination and transport settings."""
+
+    name: str
+    scope: str
+    server: str
+    encryption: str
+    tls_minimum: str
+    certificate_verification: str
+    evidence: Tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
 class FortiInspectionProfile:
     profile_type: str
     name: str
@@ -2448,6 +2472,91 @@ class FortiOSParser(BaseDeviceParser):
                         ),
                     ))
         return tuple(result)
+
+    def get_syslog_severity_gaps(self) -> Tuple[FortiLogSeverityGap, ...]:
+        """Find active syslog sinks whose explicit filter excludes error events.
+
+        A filter is paired only with its own sink and scope. In particular,
+        an inactive VDOM override or an unrelated global filter is not proof
+        of the active destination's event threshold.
+        """
+        gaps: List[FortiLogSeverityGap] = []
+        for sink in self.get_syslog_sinks():
+            filter_name = sink.name.replace(" setting", " filter").replace(
+                " override-setting", " override-filter"
+            )
+            for scope, settings, path in self._scoped_sections(filter_name):
+                if scope != sink.scope:
+                    continue
+                threshold = str(settings.get("severity", "")).casefold()
+                if threshold not in {"emergency", "alert", "critical"}:
+                    continue
+                gaps.append(FortiLogSeverityGap(
+                    destination=sink.name,
+                    scope=scope,
+                    server=sink.server,
+                    threshold=threshold,
+                    evidence=sink.evidence + self._field_evidence(path + ("severity",)),
+                ))
+        return tuple(gaps)
+
+    def get_fortianalyzer_sinks(self) -> Tuple[FortiAnalyzerSink, ...]:
+        """Resolve enabled destinations, respecting explicit VDOM FAZ overrides."""
+        override_scopes = {
+            scope for scope, settings, _ in self._scoped_sections("log setting")
+            if str(settings.get("faz-override", "")).casefold() == "enable"
+        }
+        sinks: List[FortiAnalyzerSink] = []
+        for number in ("", "2", "3"):
+            base = f"log fortianalyzer{number}"
+            for override in (False, True):
+                section_name = f"{base} {'override-setting' if override else 'setting'}"
+                for scope, settings, setting_path in self._scoped_sections(section_name):
+                    if override and scope not in override_scopes:
+                        continue
+                    if not override and (scope in override_scopes or (scope == "global" and override_scopes)):
+                        continue
+                    if str(settings.get("status", "")).casefold() != "enable":
+                        continue
+                    server = " ".join(self._as_list(settings.get("server")))
+                    if not server:
+                        continue
+                    sinks.append(FortiAnalyzerSink(
+                        name=section_name,
+                        scope=scope,
+                        server=server,
+                        encryption=str(settings.get("enc-algorithm", "")).casefold(),
+                        tls_minimum=str(settings.get("ssl-min-proto-version", "")).casefold(),
+                        certificate_verification=str(settings.get("certificate-verification", "")).casefold(),
+                        evidence=(self._field_evidence(setting_path + ("status",))
+                                  + self._field_evidence(setting_path + ("server",))
+                                  + self._field_evidence(setting_path + ("enc-algorithm",))
+                                  + self._field_evidence(setting_path + ("ssl-min-proto-version",))
+                                  + self._field_evidence(setting_path + ("certificate-verification",))),
+                    ))
+        return tuple(sinks)
+
+    def get_fortianalyzer_severity_gaps(self) -> Tuple[FortiLogSeverityGap, ...]:
+        """Resolve explicit FortiAnalyzer thresholds on active scoped destinations."""
+        gaps: List[FortiLogSeverityGap] = []
+        for sink in self.get_fortianalyzer_sinks():
+            filter_name = sink.name.replace(" override-setting", " override-filter").replace(
+                " setting", " filter"
+            )
+            for scope, settings, path in self._scoped_sections(filter_name):
+                if scope != sink.scope:
+                    continue
+                threshold = str(settings.get("severity", "")).casefold()
+                if threshold not in {"emergency", "alert", "critical"}:
+                    continue
+                gaps.append(FortiLogSeverityGap(
+                    destination=sink.name,
+                    scope=scope,
+                    server=sink.server,
+                    threshold=threshold,
+                    evidence=sink.evidence + self._field_evidence(path + ("severity",)),
+                ))
+        return tuple(gaps)
 
     def get_native_config(self) -> object:
         return self.config
