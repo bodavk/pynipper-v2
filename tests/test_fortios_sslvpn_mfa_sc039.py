@@ -78,6 +78,32 @@ def test_matching_rule_source_interface_retains_password_only_path(tmp_path):
     assert len(findings) == 1
 
 
+def test_down_listener_interface_has_no_password_only_path(tmp_path):
+    interface = ('config system interface\n    edit "wan1"\n'
+                 '        set status down\n    next\nend\n')
+    parser, findings = _scan(tmp_path, USER + interface + VPN)
+    assert parser.get_sslvpn_password_only_users() == ()
+    assert findings == []
+
+
+def test_rule_bound_to_down_listener_interface_has_no_password_only_path(tmp_path):
+    interfaces = ('config system interface\n    edit "wan1"\n'
+                  '        set status down\n    next\nend\n')
+    vpn = VPN.replace('set source-interface "wan1"', 'set source-interface "wan1" "wan2"', 1)
+    vpn = vpn.replace('set client-cert disable',
+                      'set client-cert disable\n            set source-interface "wan1"')
+    _, findings = _scan(tmp_path, USER + interfaces + vpn)
+    assert findings == []
+
+
+def test_other_up_listener_retains_password_only_path(tmp_path):
+    interfaces = ('config system interface\n    edit "wan1"\n'
+                  '        set status down\n    next\nend\n')
+    vpn = VPN.replace('set source-interface "wan1"', 'set source-interface "wan1" "wan2"', 1)
+    _, findings = _scan(tmp_path, USER + interfaces + vpn)
+    assert len(findings) == 1
+
+
 @pytest.mark.parametrize("group_type", ["", "        set group-type firewall\n"])
 def test_local_user_mapped_through_firewall_group(tmp_path, group_type):
     group = ('config user group\n    edit "vpn-users"\n' + group_type

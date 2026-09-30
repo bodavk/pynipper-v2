@@ -74,3 +74,19 @@ def test_default_portal_is_not_borrowed_from_another_vdom(tmp_path):
             + '    next\n    edit "tenant"\n' + VPN + '    next\nend\n')
     _, findings = _scan(tmp_path, body)
     assert findings == []
+
+
+def test_all_down_listener_interfaces_suppress_fallback_path(tmp_path):
+    interface = ('config system interface\n    edit "wan1"\n'
+                 '        set status down\n    next\nend\n')
+    parser, findings = _scan(tmp_path, interface + VPN + PORTAL)
+    assert parser.get_sslvpn_active_default_portals() == ()
+    assert findings == []
+
+
+def test_other_up_listener_retains_fallback_path(tmp_path):
+    interface = ('config system interface\n    edit "wan1"\n'
+                 '        set status down\n    next\nend\n')
+    vpn = VPN.replace('set source-interface "wan1"', 'set source-interface "wan1" "wan2"')
+    _, findings = _scan(tmp_path, interface + vpn + PORTAL)
+    assert len(findings) == 1

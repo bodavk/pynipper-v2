@@ -2263,9 +2263,10 @@ class PluginFortiOSBaseline(BasePlugin):
             if not vpn["active"]:
                 continue
             values, evidence = vpn["values"], vpn["evidence"]
-            where = f"SSL-VPN in scope '{vpn['scope']}' (listening on {', '.join(vpn['interfaces'])})"
-            base = tuple(vpn["interface_evidence"])
             down = {name.casefold() for name in vpn["configured_down_interfaces"]}
+            active_interfaces = tuple(name for name in vpn["interfaces"] if name.casefold() not in down)
+            where = f"SSL-VPN in scope '{vpn['scope']}' (listening on {', '.join(active_interfaces)})"
+            base = tuple(vpn["interface_evidence"])
             external = tuple(interface for interface in vpn["interfaces"]
                              if interface.casefold() not in down
                              and fortios.assessment_context.role_for_interface(interface) == "external")

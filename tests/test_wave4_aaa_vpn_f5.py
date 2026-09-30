@@ -187,6 +187,18 @@ def test_sslvpn_weak_settings(tmp_path, setting, rule):
     assert not _rules(inactive, rule)
 
 
+@pytest.mark.parametrize("setting,rule", [
+    ("    set ssl-min-proto-ver tls1-1\n", "fortinet.fortios.sslvpn.legacy_tls"),
+    ("    set auth-timeout 0\n", "fortinet.fortios.sslvpn.auth_timeout_disabled"),
+])
+def test_all_down_listener_interfaces_suppress_sslvpn_setting_findings(tmp_path, setting, rule):
+    interface = ('config system interface\n    edit "wan1"\n'
+                 '        set status down\n    next\nend\n')
+    text = FORTI + interface + _sslvpn(setting).removeprefix(FORTI)
+    findings = _run(tmp_path, "FORTIOS", text, process_fortios_conf)
+    assert not _rules(findings, rule)
+
+
 def test_sslvpn_secure_settings(tmp_path):
     text = _sslvpn('    set servercert "vpn.example.com"\n    set ssl-min-proto-ver tls1-2\n'
                    "    set algorithm high\n    set login-attempt-limit 3\n"

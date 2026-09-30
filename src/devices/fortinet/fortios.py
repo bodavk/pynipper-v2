@@ -1373,7 +1373,11 @@ class FortiOSParser(BaseDeviceParser):
             source_networks = self._combine_network_members(source_addresses, scope, 4)
             source_addresses6 = self._as_list(settings.get("source-address6"))
             source_networks6 = self._combine_network_members(source_addresses6, scope, 6)
-            active = bool(interfaces) and str(settings.get("status", "enable")).lower() != "disable"
+            active_interfaces = tuple(
+                name for name in interfaces
+                if (scope.casefold(), name.casefold()) not in down_interfaces
+            )
+            active = bool(active_interfaces) and str(settings.get("status", "enable")).lower() != "disable"
             values = {
                 field: (" ".join(self._as_list(settings[field])) if field in settings else None)
                 for field in ("ssl-min-proto-ver", "algorithm", "servercert", "login-attempt-limit",
@@ -1384,8 +1388,7 @@ class FortiOSParser(BaseDeviceParser):
                 "active": active,
                 "interfaces": tuple(interfaces),
                 "configured_down_interfaces": tuple(
-                    name for name in interfaces
-                    if (scope.casefold(), name.casefold()) in down_interfaces
+                    name for name in interfaces if name not in active_interfaces
                 ),
                 "source_addresses": tuple(source_addresses),
                 "source_networks": source_networks,
@@ -1408,6 +1411,11 @@ class FortiOSParser(BaseDeviceParser):
         release = tuple(int(part) for part in re.findall(r"\d+", self.get_version())[:3])
         if len(release) != 3 or not (7, 0, 0) <= release < (7, 5, 0):
             return ()
+        down_interfaces = {
+            (scope.casefold(), name.casefold())
+            for scope, name, interface, _ in self.iter_interfaces()
+            if str(interface.get("status", "")).casefold() == "down"
+        }
         found: dict[tuple[str, str], FortiSSLVPNPasswordOnlyUser] = {}
         for scope, settings, path in self._scoped_sections("vpn ssl settings"):
             if (not self._as_list(settings.get("source-interface"))
@@ -1417,7 +1425,12 @@ class FortiOSParser(BaseDeviceParser):
             rules = settings.get("authentication-rule")
             if not isinstance(rules, dict):
                 continue
-            listener_interfaces = {item.casefold() for item in self._as_list(settings.get("source-interface"))}
+            listener_interfaces = {
+                item.casefold() for item in self._as_list(settings.get("source-interface"))
+                if (scope.casefold(), item.casefold()) not in down_interfaces
+            }
+            if not listener_interfaces:
+                continue
             for rule_name, rule in rules.items():
                 if (not isinstance(rule, dict)
                         or str(rule.get("auth", "")).casefold() != "local"
@@ -1475,10 +1488,18 @@ class FortiOSParser(BaseDeviceParser):
         release = tuple(int(part) for part in re.findall(r"\d+", self.get_version())[:3])
         if len(release) != 3 or not (7, 0, 0) <= release < (7, 5, 0):
             return ()
+        down_interfaces = {
+            (scope.casefold(), name.casefold())
+            for scope, name, interface, _ in self.iter_interfaces()
+            if str(interface.get("status", "")).casefold() == "down"
+        }
         result = []
         for scope, settings, path in self._scoped_sections("vpn ssl settings"):
             if (str(settings.get("status", "")).casefold() != "enable"
                     or not self._as_list(settings.get("source-interface"))):
+                continue
+            if all((scope.casefold(), name.casefold()) in down_interfaces
+                   for name in self._as_list(settings.get("source-interface"))):
                 continue
             portals = self._as_list(settings.get("default-portal"))
             if len(portals) != 1:
