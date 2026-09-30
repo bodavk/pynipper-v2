@@ -109,6 +109,18 @@ FORTINET_BLASTRADIUS_ADVISORY = "https://www.fortiguard.com/psirt/FG-IR-24-255"
 FORTINET_SSLVPN_REFERENCE = (
     "https://docs.fortinet.com/document/fortigate/7.4.4/cli-reference/114404382/config-vpn-ssl-settings"
 )
+FORTINET_SSLVPN_ACCESS_GUIDE = (
+    "https://docs.fortinet.com/document/fortigate/7.4.2/administration-guide/"
+    "947829/ssl-vpn-security-best-practices"
+)
+FORTINET_DNS_SERVER_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.4.1/cli-reference/087620/"
+    "config-system-dns-server"
+)
+FORTINET_DNS_SERVER_GUIDE = (
+    "https://docs.fortinet.com/document/fortigate/7.4.8/administration-guide/"
+    "960561/fortigate-dns-server"
+)
 FORTINET_PPTP_REFERENCE = "https://docs.fortinet.com/document/fortigate/7.4.1/cli-reference/336620/config-vpn-pptp"
 FORTINET_PPTP_CLIENT_REFERENCE = "https://docs.fortinet.com/document/fortigate/7.4.10/cli-reference/317104469/config-system-interface"
 MICROSOFT_PPTP_DEPRECATION = (
@@ -1846,6 +1858,7 @@ class PluginFortiOSBaseline(BasePlugin):
         self.check_ha_protection(parser)
         self.check_usb_auto_install(parser)
         self.check_ntp_server_mode(parser)
+        self.check_dns_broad_resolver(parser)
         self.check_fortianalyzer_transport(parser)
         self.check_admin_password_hashes(parser)
         self.check_release_defaults(parser)
@@ -2074,6 +2087,26 @@ class PluginFortiOSBaseline(BasePlugin):
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
+    def check_dns_broad_resolver(self, parser: BaseDeviceParser) -> None:
+        """SC-026: an explicitly permitted recursive DNS listener on an assessed edge."""
+        for resolver in self._fortios(parser).get_dns_broad_resolvers():
+            self.add_issue(self._finding(
+                parser,
+                "fortinet.fortios.dns.broad_resolution_service",
+                "DNS resolution or forwarding is broadly admitted on an external interface",
+                (f"FortiGate scope '{resolver.scope}' configures {resolver.mode} DNS on "
+                 f"externally assessed interface '{resolver.interface}'. Its first active IPv4 "
+                 f"local-in policy '{resolver.policy_name}' explicitly accepts every source for UDP DNS. "
+                 "This is configured device-local permission, not proof of Internet reachability or a successful query."),
+                "Untrusted clients that can reach the interface may use the firewall as a DNS resolver or forwarding service.",
+                "Limit recursive DNS to trusted internal interfaces and clients, or apply a source-restricted local-in policy before broad accepts.",
+                Severity.HIGH,
+                resolver.evidence + (f"assessment policy: {resolver.interface} role external",),
+                (FORTINET_DNS_SERVER_REFERENCE, FORTINET_DNS_SERVER_GUIDE,
+                 FORTINET_LOCAL_IN_REFERENCE),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+
     def check_pptp_gateway(self, parser: BaseDeviceParser) -> None:
         """SC-013: an explicitly enabled legacy VPN gateway, not reachability proof."""
         fortios = self._fortios(parser)
@@ -2115,6 +2148,27 @@ class PluginFortiOSBaseline(BasePlugin):
             values, evidence = vpn["values"], vpn["evidence"]
             where = f"SSL-VPN in scope '{vpn['scope']}' (listening on {', '.join(vpn['interfaces'])})"
             base = tuple(vpn["interface_evidence"])
+            external = tuple(interface for interface in vpn["interfaces"]
+                             if fortios.assessment_context.role_for_interface(interface) == "external")
+            if (external and vpn["source_unrestricted"]
+                    and vpn["source_address_negated"] == "disable"):
+                self.add_issue(self._finding(
+                    parser,
+                    "fortinet.fortios.sslvpn.unrestricted_sources",
+                    "SSL-VPN global IPv4 source restriction admits all addresses",
+                    (f"{where} has an explicit source-address selection resolving to every IPv4 address "
+                     "with source-address-negate disabled; "
+                     f"assessment policy classifies {', '.join(external)} as external. "
+                     "This is a broad global source gate, not proof of Internet reachability or successful authentication; "
+                     "local-in policies and upstream controls require separate review."),
+                    "Unauthorised clients on an external network may be able to attempt SSL-VPN authentication or exploit the listener.",
+                    "Restrict SSL-VPN source addresses to approved networks, or verify a compensating local-in/VIP policy and upstream controls.",
+                    Severity.MEDIUM,
+                    base + tuple(vpn["source_evidence"])
+                    + tuple(f"assessment policy: {interface} role external" for interface in external),
+                    (FORTINET_SSLVPN_REFERENCE, FORTINET_SSLVPN_ACCESS_GUIDE),
+                    basis=FindingBasis.EXPLICIT_VALUE,
+                ))
             checks = []
             if values["ssl-min-proto-ver"] in {"tls1-0", "tls1-1", "sslv3"}:
                 checks.append((

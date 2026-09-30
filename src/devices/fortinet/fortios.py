@@ -33,8 +33,11 @@ from src.devices.common.models import (
 from src.devices.common.policy_semantics import (
     AddressInterval,
     NetworkSemantics,
+    ProofState,
     ServiceInterval,
     ServiceSemantics,
+    network_covers,
+    service_covers,
 )
 
 
@@ -122,6 +125,15 @@ class FortiPPTPGateway:
 class FortiPPTPClient:
     scope: str
     interface: str
+    evidence: Tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class FortiDNSBroadResolver:
+    scope: str
+    interface: str
+    mode: str
+    policy_name: str
     evidence: Tuple[ConfigEvidence, ...]
 
 
@@ -1040,12 +1052,82 @@ class FortiOSParser(BaseDeviceParser):
             ))
         return tuple(result)
 
+    def get_dns_broad_resolvers(self) -> tuple[FortiDNSBroadResolver, ...]:
+        """Prove explicit recursive DNS and a first broad local-in accept on an assessed edge."""
+        release = tuple(int(part) for part in re.findall(r"\d+", self.get_version())[:3])
+        if len(release) != 3 or not (7, 0, 0) <= release < (7, 6, 1):
+            return ()  # Later releases can have a built-in, non-exported local-in deny.
+        interfaces = {(scope.casefold(), name.casefold()): (settings, path)
+                      for scope, name, settings, path in self.iter_interfaces()}
+        local_in: dict[str, tuple[str, FortiDict, tuple[str, ...]]] = {}
+        for scope, section, path in self._scoped_sections("firewall local-in-policy"):
+            for name, settings in section.items():
+                if isinstance(settings, dict) and str(settings.get("status", "")).casefold() != "disable":
+                    local_in.setdefault(scope.casefold(), (str(name), settings, path + (str(name),)))
+        result = []
+        dns_udp = ServiceSemantics(intervals=(ServiceInterval("udp", 53, 53),))
+        allowed_fields = {"status", "intf", "srcaddr", "dstaddr", "service", "schedule",
+                          "action", "srcaddr-negate", "dstaddr-negate", "service-negate",
+                          "comments", "uuid", "logtraffic"}
+        for scope, section, path in self._scoped_sections("system dns-server"):
+            for name, settings in section.items():
+                if not isinstance(settings, dict):
+                    continue
+                mode = str(settings.get("mode", "")).casefold()
+                if mode not in {"recursive", "forward-only"}:
+                    continue
+                interface = str(name)
+                if self.assessment_context.role_for_interface(interface) != "external":
+                    continue
+                interface_entry = interfaces.get((scope.casefold(), interface.casefold()))
+                if not interface_entry or str(interface_entry[0].get("status", "")).casefold() != "up":
+                    continue
+                _, interface_path = interface_entry
+                first = local_in.get(scope.casefold())
+                if first is None:
+                    continue
+                policy_name, policy, policy_path = first
+                if (set(policy) - allowed_fields
+                        or str(policy.get("status", "")).casefold() != "enable"
+                        or str(policy.get("action", "")).casefold() != "accept"
+                        or str(policy.get("schedule", "")).casefold() != "always"
+                        or str(policy.get("intf", "")).casefold() not in {"any", interface.casefold()}
+                        or any(str(policy.get(field, "")).casefold() != "disable"
+                               for field in ("srcaddr-negate", "dstaddr-negate", "service-negate"))):
+                    continue
+                if not self._covers_every_ipv4_address(
+                    self._combine_network_members(self._as_list(policy.get("srcaddr")), scope, 4)
+                ):
+                    continue
+                if not self._covers_every_ipv4_address(
+                    self._combine_network_members(self._as_list(policy.get("dstaddr")), scope, 4)
+                ):
+                    continue
+                if service_covers(self._combine_service_members(
+                    self._as_list(policy.get("service")), scope
+                ), dns_udp) != ProofState.PROVEN:
+                    continue
+                result.append(FortiDNSBroadResolver(
+                    scope, interface, mode, policy_name,
+                    self._field_evidence(path + (interface, "mode"))
+                    + self._field_evidence(interface_path + ("status",))
+                    + self._field_evidence(policy_path + ("status",))
+                    + self._field_evidence(policy_path + ("intf",))
+                    + self._field_evidence(policy_path + ("action",))
+                    + self._field_evidence(policy_path + ("srcaddr",))
+                    + self._field_evidence(policy_path + ("service",))
+                    + self._field_evidence(policy_path + ("schedule",)),
+                ))
+        return tuple(result)
+
     def get_sslvpn_settings(self) -> list[dict]:
         """``config vpn ssl settings`` per scope: active when enabled (default) and bound to a
         ``source-interface``. Values are the explicit ones; absent fields are ``None``."""
         results = []
         for scope, settings, path in self._scoped_sections("vpn ssl settings"):
             interfaces = self._as_list(settings.get("source-interface"))
+            source_addresses = self._as_list(settings.get("source-address"))
+            source_networks = self._combine_network_members(source_addresses, scope, 4)
             active = bool(interfaces) and str(settings.get("status", "enable")).lower() != "disable"
             values = {
                 field: (" ".join(self._as_list(settings[field])) if field in settings else None)
@@ -1055,9 +1137,15 @@ class FortiOSParser(BaseDeviceParser):
                 "scope": scope,
                 "active": active,
                 "interfaces": tuple(interfaces),
+                "source_addresses": tuple(source_addresses),
+                "source_networks": source_networks,
+                "source_unrestricted": self._covers_every_ipv4_address(source_networks),
+                "source_address_negated": str(settings.get("source-address-negate", "")).casefold(),
                 "values": values,
                 "evidence": {field: self._field_evidence(path + (field,)) for field in values},
                 "interface_evidence": self._field_evidence(path + ("source-interface",)),
+                "source_evidence": (self._field_evidence(path + ("source-address",))
+                                    + self._field_evidence(path + ("source-address-negate",))),
             })
         return results
 
@@ -1487,6 +1575,11 @@ class FortiOSParser(BaseDeviceParser):
                 unresolved=tuple(dict.fromkeys(unresolved or tuple(str(item) for item in members))),
             )
         return NetworkSemantics(intervals=tuple(sorted(set(intervals))))
+
+    @staticmethod
+    def _covers_every_ipv4_address(networks: NetworkSemantics) -> bool:
+        universe = NetworkSemantics(intervals=(AddressInterval(4, 0, (1 << 32) - 1),))
+        return network_covers(networks, universe) == ProofState.PROVEN
 
     @staticmethod
     def _service_port_intervals(protocol: str, values: object) -> tuple[ServiceInterval, ...] | None:
@@ -2389,6 +2482,7 @@ __all__ = [
     "FortiFirewallPolicy",
     "FortiPPTPGateway",
     "FortiPPTPClient",
+    "FortiDNSBroadResolver",
     "FortiOSParseError",
     "FortiOSParser",
 ]

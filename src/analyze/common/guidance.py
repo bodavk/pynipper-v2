@@ -573,6 +573,20 @@ _CATALOGUE = (
         "PPTP is a legacy VPN protocol that has been superseded by stronger alternatives.",
         "Confirm whether this client connection is needed, migrate it to a supported secure VPN, and disable PPTP client mode.",
     )),
+    (r"^sslvpn\.unrestricted_sources$", _G(
+        "vpn-broad-source-admission", "management-access",
+        "The SSL-VPN global IPv4 source setting admits all addresses on an interface assessed as external.",
+        "Clients that can reach that interface may attempt VPN authentication; local-in policies and upstream controls are not resolved by this finding.",
+        "A broad source gate increases the population able to probe the VPN listener and attempt logins.",
+        "Limit source addresses to approved networks or verify and document an effective compensating local-in or upstream restriction.",
+    )),
+    (r"^dns\.broad_resolution_service$", _G(
+        "dns-broad-resolution", "control-plane",
+        "A FortiGate is configured to resolve or forward DNS queries on an externally assessed interface, with a broad first local-in allow rule.",
+        "Clients that can reach the interface may submit arbitrary DNS queries; this export does not prove public-Internet reachability.",
+        "Unrestricted recursive or forwarding service can be abused for DNS reflection and can consume device resources.",
+        "Limit the DNS listener to trusted internal interfaces or restrict client sources with effective local-in policy.",
+    )),
     (r"^(crypto\.(legacy_\w+|ike_dh_policy|unresolved_transform|ikev2_default_proposal)|vpn\.\w+)$", _G(
         "vpn-crypto", "vpn",
         "An active VPN tunnel can negotiate outdated encryption, hashing or key-exchange "

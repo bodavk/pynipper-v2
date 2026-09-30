@@ -12,6 +12,7 @@ from src.analyze.common.guidance import guidance_for
 from src.analyze.common.issue import FindingBasis
 from src.analyze.f5.core.process_bigip_conf import process_bigip_conf
 from src.analyze.fortinet.core.process_fortios_conf import process_fortios_conf
+from src.common.assessment import AssessmentContext
 from src.devices import get_parser
 
 
@@ -190,6 +191,56 @@ def test_sslvpn_secure_settings(tmp_path):
                    "    set algorithm high\n    set login-attempt-limit 3\n")
     findings = _run(tmp_path, "FORTIOS", text, process_fortios_conf)
     assert not [f for f in findings if f.rule_id.startswith("fortinet.fortios.sslvpn")]
+
+
+@pytest.mark.parametrize("settings,role,expected", [
+    ('    set source-address "all"\n    set source-address-negate disable\n', "external", True),
+    ('    set source-address "0.0.0.0/0"\n    set source-address-negate disable\n', "external", True),
+    ('    set source-address "all"\n    set source-address-negate enable\n', "external", False),
+    ('    set source-address "approved"\n    set source-address-negate disable\n', "external", False),
+    ('    set source-address "all"\n    set source-address-negate disable\n', "internal", False),
+    ('    set source-address "all"\n', "external", False),
+    ('    set source-address6 "all6"\n    set source-address-negate disable\n', "external", False),
+    ('    set source-address "all"\n    set source-address-negate disable\n'
+     '    set status disable\n', "external", False),
+])
+def test_sslvpn_global_unrestricted_ipv4_sources_are_role_and_state_gated(
+    tmp_path, settings, role, expected,
+):
+    source = tmp_path / "fortigate.conf"
+    source.write_text(_sslvpn(settings), encoding="utf-8")
+    parser = get_parser("FORTIOS", str(source))
+    parser.set_assessment_context(AssessmentContext.from_mapping({
+        "interface_roles": {"wan1": role},
+    }))
+    with contextlib.redirect_stdout(io.StringIO()):
+        findings = list(process_fortios_conf(parser).values())
+    matching = _rules(findings, "fortinet.fortios.sslvpn.unrestricted_sources")
+    assert bool(matching) is expected
+    if matching:
+        assert matching[0].basis == FindingBasis.EXPLICIT_VALUE
+        assert guidance_for(matching[0].rule_id) is not None
+        assert "not proof of Internet reachability" in matching[0].observation
+
+
+@pytest.mark.parametrize("member,expected", [("all", True), ("APPROVED", False)])
+def test_sslvpn_source_group_is_resolved_before_broad_source_finding(tmp_path, member, expected):
+    group = ('config firewall address\n    edit "APPROVED"\n'
+             '        set subnet 198.51.100.0 255.255.255.0\n    next\nend\n'
+             'config firewall addrgrp\n    edit "VPN-SOURCES"\n'
+             f'        set member "{member}"\n    next\nend\n')
+    source = tmp_path / "fortigate.conf"
+    source.write_text(FORTI + group + _sslvpn(
+        '    set source-address "VPN-SOURCES"\n'
+        '    set source-address-negate disable\n').removeprefix(FORTI), encoding="utf-8")
+    parser = get_parser("FORTIOS", str(source))
+    parser.set_assessment_context(AssessmentContext.from_mapping({
+        "interface_roles": {"wan1": "external"},
+    }))
+    with contextlib.redirect_stdout(io.StringIO()):
+        findings = list(process_fortios_conf(parser).values())
+    matching = _rules(findings, "fortinet.fortios.sslvpn.unrestricted_sources")
+    assert bool(matching) is expected
 
 
 # --- SC-041 F5 self-IP port lockdown -----------------------------------------------------
