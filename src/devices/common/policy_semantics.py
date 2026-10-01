@@ -144,6 +144,40 @@ def static_values_cover(
     return ProofState.PROVEN if current_values.issubset(prior_values) else ProofState.DISPROVEN
 
 
+def network_disjoint(first: NetworkSemantics, second: NetworkSemantics) -> ProofState:
+    """Prove two complete static address sets cannot match the same address."""
+    if not first.complete or not second.complete or not (
+        first.any or first.intervals
+    ) or not (second.any or second.intervals):
+        return ProofState.UNKNOWN
+    if first.any or second.any:
+        return ProofState.DISPROVEN
+    overlaps = any(
+        left.family == right.family
+        and left.first <= right.last and right.first <= left.last
+        for left in first.intervals for right in second.intervals
+    )
+    return ProofState.DISPROVEN if overlaps else ProofState.PROVEN
+
+
+def service_disjoint(first: ServiceSemantics, second: ServiceSemantics) -> ProofState:
+    """Prove complete protocol/port sets do not overlap."""
+    if not first.complete or not second.complete or not (
+        first.any or first.intervals
+    ) or not (second.any or second.intervals):
+        return ProofState.UNKNOWN
+    if first.any or second.any:
+        return ProofState.DISPROVEN
+    overlaps = any(
+        left.protocol.casefold() == right.protocol.casefold()
+        and left.first_port <= right.last_port and right.first_port <= left.last_port
+        for left in first.intervals for right in second.intervals
+    )
+    return ProofState.DISPROVEN if overlaps else ProofState.PROVEN
+
+
+
+
 __all__ = [
     "AddressInterval", "NetworkSemantics", "ProofState", "ServiceInterval",
     "ServiceSemantics", "network_covers", "service_covers", "static_values_cover",

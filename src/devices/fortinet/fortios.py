@@ -37,7 +37,9 @@ from src.devices.common.policy_semantics import (
     ServiceInterval,
     ServiceSemantics,
     network_covers,
+    network_disjoint,
     service_covers,
+    service_disjoint,
     static_values_cover,
 )
 
@@ -2271,6 +2273,34 @@ class FortiOSParser(BaseDeviceParser):
             if qualified:
                 result.append((policy, tuple(dict.fromkeys(evidence))))
         return tuple(result)
+
+    @staticmethod
+    def get_proven_disjoint_prior_policies(
+        policy: FortiFirewallPolicy,
+        prior: Tuple[FortiFirewallPolicy, ...],
+    ) -> Tuple[FortiFirewallPolicy, ...] | None:
+        """Return prior active rules only if each cannot match this rule at all.
+
+        One complete, disjoint selector suffices for a rule; unknown or merely
+        partial overlap never establishes first-match availability. Limit both
+        proof cost and report evidence size.
+        """
+        active = tuple(item for item in prior if item.enabled
+                       and item.scope.casefold() == policy.scope.casefold()
+                       and item.family == policy.family)
+        if len(active) > 64:
+            return None
+        for earlier in active:
+            # Distinct interface names are insufficient: a zone and a member
+            # interface can describe overlapping traffic. Only resolved address
+            # and protocol/port selectors establish disjointness here.
+            if not any(state == ProofState.PROVEN for state in (
+                network_disjoint(earlier.source_networks, policy.source_networks),
+                network_disjoint(earlier.destination_networks, policy.destination_networks),
+                service_disjoint(earlier.services, policy.services),
+            )):
+                return None
+        return active
 
     def get_local_in_policies(self) -> Tuple[FortiLocalInPolicy, ...]:
         """Return local-device traffic rules separately from transit policies."""

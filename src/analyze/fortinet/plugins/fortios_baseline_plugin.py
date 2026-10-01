@@ -1441,23 +1441,34 @@ class PluginFortiOSBaseline(BasePlugin):
             prior_by_scope[key].append(policy)
 
     def check_risky_boundary_policies(self, parser: BaseDeviceParser) -> None:
-        """SC-043/SC-053: first active risky rules crossing an assessed edge."""
+        """SC-043/SC-053: statically first-match risky boundary permissions."""
         fortios = self._fortios(parser)
         policies = fortios.get_firewall_policy_semantics()
-        first_active = {}
+        egress = fortios.get_assessed_boundary_policies(
+            policies, source_role="internal", destination_role="external"
+        )
+        ingress = fortios.get_assessed_boundary_policies(
+            policies, source_role="external", destination_role="internal"
+        )
+        candidate_ids = {id(policy) for policy, _ in egress + ingress}
+        prior_by_scope: dict[tuple[str, str], list] = defaultdict(list)
+        available: dict[int, tuple] = {}
         for policy in policies:
             key = (policy.scope.casefold(), policy.family)
-            if policy.enabled and key not in first_active:
-                first_active[key] = policy
+            if id(policy) in candidate_ids:
+                prior = fortios.get_proven_disjoint_prior_policies(
+                    policy, tuple(prior_by_scope[key])
+                )
+                if prior is not None:
+                    available[id(policy)] = prior
+            prior_by_scope[key].append(policy)
 
         risky_egress = {"FTP", "Telnet", "TFTP", "SMB", "NetBIOS/SMB",
                         "RDP", "rlogin", "rsh", "rexec"}
-        for policy, boundary_evidence in fortios.get_assessed_boundary_policies(
-            policies, source_role="internal", destination_role="external"
-        ):
-            key = (policy.scope.casefold(), policy.family)
-            if first_active.get(key) is not policy or not policy.destination_unrestricted:
+        for policy, boundary_evidence in egress:
+            if id(policy) not in available or not policy.destination_unrestricted:
                 continue
+            prior = available[id(policy)]
             labels = sorted({
                 label for interval in policy.services.intervals
                 for label in risky_labels(interval.protocol, interval.first_port, interval.last_port)
@@ -1469,7 +1480,9 @@ class PluginFortiOSBaseline(BasePlugin):
                 parser,
                 "fortinet.fortios.policy.risky_internet_egress",
                 "Risky service permitted across an assessed Internet-bound policy",
-                (f"First enabled {policy.family} policy '{policy.name}' in scope '{policy.scope}' "
+                (f"{policy.family.upper()} policy '{policy.name}' at position {policy.position} "
+                 f"in scope '{policy.scope}' has {len(prior)} preceding enabled policies "
+                 "proven disjoint and "
                  f"permits {', '.join(labels)} port traffic from assessed internal interface(s) "
                  f"{', '.join(policy.source_interfaces)} to assessed external interface(s) "
                  f"{', '.join(policy.destination_interfaces)}, with destination objects covering "
@@ -1478,19 +1491,18 @@ class PluginFortiOSBaseline(BasePlugin):
                 "Legacy remote access and file-sharing ports across an Internet boundary can expose credentials or services if reachable.",
                 "Limit outbound destinations and services to documented needs; replace legacy protocols with protected alternatives.",
                 Severity.HIGH,
-                tuple(policy.evidence) + boundary_evidence
+                tuple(policy.evidence) + tuple(item for earlier in prior for item in earlier.evidence)
+                + boundary_evidence
                 + tuple(f"assessment policy: {name} role internal" for name in policy.source_interfaces)
                 + tuple(f"assessment policy: {name} role external" for name in policy.destination_interfaces),
                 ("https://docs.fortinet.com/document/fortigate/7.4.0/administration-guide/656084/firewall-policy",),
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
-        for policy, boundary_evidence in fortios.get_assessed_boundary_policies(
-            policies, source_role="external", destination_role="internal"
-        ):
-            key = (policy.scope.casefold(), policy.family)
-            if first_active.get(key) is not policy or policy.source_unrestricted:
+        for policy, boundary_evidence in ingress:
+            if id(policy) not in available or policy.source_unrestricted:
                 continue
+            prior = available[id(policy)]
             labels = sorted({
                 label for interval in policy.services.intervals
                 for label in risky_labels(interval.protocol, interval.first_port, interval.last_port)
@@ -1501,7 +1513,9 @@ class PluginFortiOSBaseline(BasePlugin):
                 parser,
                 "fortinet.fortios.policy.risky_untrusted_ingress",
                 "Risky service permitted from an assessed external source",
-                (f"First enabled {policy.family} policy '{policy.name}' in scope '{policy.scope}' "
+                (f"{policy.family.upper()} policy '{policy.name}' at position {policy.position} "
+                 f"in scope '{policy.scope}' has {len(prior)} preceding enabled policies "
+                 "proven disjoint and "
                  f"permits {', '.join(labels)} port traffic from explicitly assessed external "
                  f"interface(s) {', '.join(policy.source_interfaces)} and resolved source objects "
                  f"covering less than the whole address family, toward assessed internal "
@@ -1511,7 +1525,8 @@ class PluginFortiOSBaseline(BasePlugin):
                 "An untrusted source that can reach this boundary may attempt access to a sensitive legacy or administrative service.",
                 "Restrict source, destination and service to the minimum approved flow, or remove the exposed legacy port.",
                 Severity.HIGH,
-                tuple(policy.evidence) + boundary_evidence
+                tuple(policy.evidence) + tuple(item for earlier in prior for item in earlier.evidence)
+                + boundary_evidence
                 + tuple(f"assessment policy: {name} role external" for name in policy.source_interfaces)
                 + tuple(f"assessment policy: {name} role internal" for name in policy.destination_interfaces),
                 ("https://docs.fortinet.com/document/fortigate/7.4.0/administration-guide/656084/firewall-policy",),

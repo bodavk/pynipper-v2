@@ -139,6 +139,80 @@ def test_later_ingress_rule_is_not_claimed_first_match(tmp_path):
     assert "policy '2'" in findings[0].observation
 
 
+@pytest.mark.parametrize("first_change", [
+    ('set srcaddr "10.0.0.0/24"', 'set srcaddr "192.0.2.0/24"'),
+    ('set service "TELNET"', 'set service "HTTPS"'),
+])
+def test_later_egress_rule_is_assessed_after_proven_disjoint_prior(tmp_path, first_change):
+    first = _policy().replace("edit 1", "edit 2").replace(*first_change)
+    later = _policy().replace("edit 1", "edit 3")
+    policies = first.replace("end\n", "") + later.replace("config firewall policy\n", "")
+    findings = _scan(tmp_path, _interfaces() + policies,
+                     {"lan": "internal", "wan1": "external"})
+    assert any("policy '3'" in item.observation and "1 preceding enabled" in item.observation
+               for item in findings)
+
+
+def test_later_ingress_rule_is_assessed_after_disjoint_destination(tmp_path):
+    first = _policy(destination="10.2.0.0/24").replace("edit 1", "edit 2")
+    later = _policy(destination="10.1.0.0/24").replace("edit 1", "edit 3")
+    policies = first.replace("end\n", "") + later.replace("config firewall policy\n", "")
+    findings = _scan(tmp_path, _interfaces() + policies,
+                     {"lan": "external", "wan1": "internal"}, INGRESS_RULE)
+    assert any("policy '3'" in item.observation for item in findings)
+
+
+@pytest.mark.parametrize("first_extra", [
+    '        set status disable\n',
+    '        set action deny\n',
+    '        set users "unknown"\n',
+])
+def test_overlap_or_uncertainty_does_not_prove_later_egress(tmp_path, first_extra):
+    first = _policy(extra=first_extra).replace("edit 1", "edit 2")
+    later = _policy().replace("edit 1", "edit 3")
+    policies = first.replace("end\n", "") + later.replace("config firewall policy\n", "")
+    findings = _scan(tmp_path, _interfaces() + policies,
+                     {"lan": "internal", "wan1": "external"})
+    if "status disable" in first_extra:
+        assert any("policy '3'" in item.observation for item in findings)
+    else:
+        assert not any("policy '3'" in item.observation for item in findings)
+
+
+def test_unresolved_prior_selector_keeps_later_egress_unknown(tmp_path):
+    first = _policy().replace("edit 1", "edit 2").replace(
+        'set srcaddr "10.0.0.0/24"', 'set srcaddr "UNKNOWN"'
+    )
+    later = _policy().replace("edit 1", "edit 3")
+    policies = first.replace("end\n", "") + later.replace("config firewall policy\n", "")
+    findings = _scan(tmp_path, _interfaces() + policies,
+                     {"lan": "internal", "wan1": "external"})
+    assert not any("policy '3'" in item.observation for item in findings)
+
+
+def test_different_prior_interface_name_is_not_proven_disjoint(tmp_path):
+    first = _policy().replace("edit 1", "edit 2").replace(
+        'set srcintf "lan"', 'set srcintf "LAN-ZONE"'
+    )
+    later = _policy().replace("edit 1", "edit 3")
+    policies = first.replace("end\n", "") + later.replace("config firewall policy\n", "")
+    findings = _scan(tmp_path, _interfaces() + policies,
+                     {"lan": "internal", "wan1": "external"})
+    assert not any("policy '3'" in item.observation for item in findings)
+
+
+def test_move_order_is_used_for_later_boundary_finding(tmp_path):
+    first = _policy().replace("edit 1", "edit 2")
+    second = _policy().replace("edit 1", "edit 3")
+    policies = (first.replace("end\n", "")
+                + second.replace("config firewall policy\n", "")
+                    .replace("end\n", "move 3 before 2\nend\n"))
+    findings = _scan(tmp_path, _interfaces() + policies,
+                     {"lan": "internal", "wan1": "external"})
+    assert len(findings) == 1
+    assert "policy '3'" in findings[0].observation
+
+
 def test_vdom_interface_binding_must_match_policy_scope(tmp_path):
     tenant = ('config vdom\n    edit "tenant"\n'
               + _policy().replace("config firewall policy", "        config firewall policy")

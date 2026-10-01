@@ -89,14 +89,14 @@ _CATALOGUE = (
         "policy-risky-ingress", "traffic-policy",
         "An assessed external source can match a configured rule permitting a risky port toward an internal interface.",
         "A host on the untrusted side may try to reach an internal legacy or administrative service over that permitted port.",
-        "The finding requires a resolved static source and destination, explicit interface roles and a first active policy. It does not prove that a public host can reach the appliance or that a particular application runs on the port.",
+        "The finding requires resolved static selectors and explicit interface roles. Each preceding enabled rule must be proven disjoint on an address or protocol/port selector; uncertain overlap is not treated as access. Public reachability and application identity remain unproven.",
         "Confirm the approved remote-access need and compensating controls, then narrow or remove the source, destination and service permission.",
     )),
     (r"^policy\.risky_internet_egress$", _G(
         "policy-risky-egress", "traffic-policy",
         "An explicitly assessed internal-to-external firewall policy permits a legacy remote-access or file-sharing port toward arbitrary destination addresses.",
         "A compromised internal host may attempt to contact an external service over a permitted legacy port.",
-        "The finding proves only a configured port-level permission on the first active policy in its scope; routing, upstream controls, application identity and actual traffic are not established.",
+        "The finding proves only a configured port-level permission after any preceding enabled policies have been proven disjoint. Routing, upstream controls, application identity and actual traffic are not established.",
         "Confirm the business need, routes and compensating controls, then restrict the destination and service or use a protected alternative.",
     )),
     (r"^((policy|filter|acl|ltm)\.(broad_\w+|overly_broad_accept|default_permit\w*|interzone_default_allow|negated_accept|risky_service_exposure)|afm\.default_accept)$", _G(

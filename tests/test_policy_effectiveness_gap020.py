@@ -9,7 +9,9 @@ from src.devices.common.policy_semantics import (
     ServiceInterval,
     ServiceSemantics,
     network_covers,
+    network_disjoint,
     service_covers,
+    service_disjoint,
     static_values_cover,
 )
 from src.analyze.paloalto.plugins.panos_checks_plugin import PluginPANOSChecks
@@ -84,6 +86,20 @@ def test_shared_primitives_distinguish_proof_disproof_and_unknown():
         ServiceSemantics(intervals=(ServiceInterval("tcp", 80, 90),)),
         ServiceSemantics(intervals=(ServiceInterval("tcp", 85, 85),)),
     ) == ProofState.PROVEN
+
+
+def test_shared_disjoint_proofs_preserve_unknown_and_protocol_identity():
+    low = NetworkSemantics(intervals=(AddressInterval(4, 0, 127),))
+    high = NetworkSemantics(intervals=(AddressInterval(4, 128, 255),))
+    overlap = NetworkSemantics(intervals=(AddressInterval(4, 127, 200),))
+    unknown = NetworkSemantics(complete=False, unresolved=("dynamic",))
+    assert network_disjoint(low, high) == ProofState.PROVEN
+    assert network_disjoint(low, overlap) == ProofState.DISPROVEN
+    assert network_disjoint(low, unknown) == ProofState.UNKNOWN
+    tcp = ServiceSemantics(intervals=(ServiceInterval("tcp", 23, 23),))
+    udp = ServiceSemantics(intervals=(ServiceInterval("udp", 23, 23),))
+    assert service_disjoint(tcp, udp) == ProofState.PROVEN
+    assert service_disjoint(tcp, ServiceSemantics(any=True)) == ProofState.DISPROVEN
 
 
 @pytest.mark.parametrize(
