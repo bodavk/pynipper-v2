@@ -85,6 +85,13 @@ AREAS = {area.key: area for area in _AREA_LIST}
 _G = Guidance
 _CATALOGUE = (
     # Firewall and access policy -------------------------------------------------
+    (r"^policy\.prohibited_egress_port$", _G(
+        "policy-prohibited-egress", "traffic-policy",
+        "An auditor-approved assessment policy explicitly prohibits an outbound protocol/port pair that a FortiGate rule permits across an assessed internal-to-external boundary.",
+        "A client may attempt to use a service the organization has chosen to block, if the configured path is reachable.",
+        "The match is exact by TCP or UDP port and requires a statically resolved policy; a port number does not establish the application running on it or prove Internet connectivity.",
+        "Confirm the approved egress restriction and business exception process, then remove or narrow the permission.",
+    )),
     (r"^policy\.risky_untrusted_ingress$", _G(
         "policy-risky-ingress", "traffic-policy",
         "An assessed external source can match a configured rule permitting a risky port toward an internal interface.",

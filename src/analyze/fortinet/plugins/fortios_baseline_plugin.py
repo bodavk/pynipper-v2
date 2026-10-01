@@ -6,7 +6,7 @@ import re
 
 from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.issue import Finding, FindingBasis, Severity
-from src.analyze.common.risky_services import risky_labels
+from src.analyze.common.risky_services import RISKY_PORTS, risky_labels
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.policy_semantics import (
     ProofState,
@@ -1466,13 +1466,54 @@ class PluginFortiOSBaseline(BasePlugin):
         risky_egress = {"FTP", "Telnet", "TFTP", "SMB", "NetBIOS/SMB",
                         "RDP", "rlogin", "rsh", "rexec"}
         for policy, boundary_evidence in egress:
-            if id(policy) not in available or not policy.destination_unrestricted:
+            if id(policy) not in available:
                 continue
             prior = available[id(policy)]
+            prohibited = tuple(item for item in fortios.assessment_context.fortios_prohibited_egress_ports
+                               if policy.services.any or any(
+                                   interval.protocol.casefold() == item.partition("/")[0]
+                                   and interval.first_port <= int(item.partition("/")[2]) <= interval.last_port
+                                   for interval in policy.services.intervals
+                               ))
+            if prohibited:
+                self.add_issue(self._finding(
+                    parser,
+                    "fortinet.fortios.policy.prohibited_egress_port",
+                    "FortiGate policy permits an explicitly prohibited outbound port",
+                    (f"{policy.family.upper()} policy '{policy.name}' at position {policy.position} "
+                     f"in scope '{policy.scope}' permits {', '.join(prohibited)} from assessed internal "
+                     f"interface(s) {', '.join(policy.source_interfaces)} to assessed external "
+                     f"interface(s) {', '.join(policy.destination_interfaces)}. "
+                     f"Assessment policy '{fortios.assessment_context.policy_version}' explicitly "
+                     "prohibits these protocol/port pairs. All preceding enabled policies are "
+                     "proven disjoint; this establishes configured permission, not Internet "
+                     "reachability, application identity or observed traffic."),
+                    "A configured outbound permission violates the auditor-supplied egress restriction and may expose a prohibited service if reachable.",
+                    "Remove the prohibited protocol/port from this policy or revise the approved assessment policy after documented review.",
+                    Severity.HIGH,
+                    tuple(policy.evidence)
+                    + tuple(item for earlier in prior for item in earlier.evidence)
+                    + boundary_evidence
+                    + tuple(f"assessment policy: {name} role internal" for name in policy.source_interfaces)
+                    + tuple(f"assessment policy: {name} role external" for name in policy.destination_interfaces)
+                    + (f"assessment policy: prohibited egress {', '.join(prohibited)}",),
+                    ("https://docs.fortinet.com/document/fortigate/7.4.0/administration-guide/656084/firewall-policy",),
+                    basis=FindingBasis.EXPLICIT_VALUE,
+                ))
+            if not policy.destination_unrestricted:
+                continue
+            prohibited_pairs = {
+                (item.partition("/")[0], int(item.partition("/")[2]))
+                for item in prohibited
+            }
+            prohibited_labels = {
+                label for pair, label in RISKY_PORTS.items()
+                if pair in prohibited_pairs
+            }
             labels = sorted({
                 label for interval in policy.services.intervals
                 for label in risky_labels(interval.protocol, interval.first_port, interval.last_port)
-                if label in risky_egress
+                if label in risky_egress and label not in prohibited_labels
             })
             if not labels:
                 continue

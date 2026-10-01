@@ -2245,8 +2245,7 @@ class FortiOSParser(BaseDeviceParser):
         for policy in policies if policies is not None else self.get_firewall_policy_semantics():
             if not (policy.proof_eligible and policy.schedule_explicit
                     and policy.action == "accept" and policy.source_networks.complete
-                    and policy.destination_networks.complete and policy.services.complete
-                    and not policy.services.any):
+                    and policy.destination_networks.complete and policy.services.complete):
                 continue
             evidence: list[ConfigEvidence] = []
             qualified = True

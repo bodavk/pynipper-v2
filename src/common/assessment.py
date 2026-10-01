@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -30,6 +31,7 @@ class AssessmentContext:
     device_role: str = "unknown"
     device_lifecycle: str = "unknown"
     approved_asa_ike_dh_groups: tuple[str, ...] = ()
+    fortios_prohibited_egress_ports: tuple[str, ...] = ()
     asa_ra_require_client_certificate: bool = False
     interface_roles: tuple[tuple[str, str], ...] = ()
     protected_aaa_profiles: tuple[str, ...] = ()
@@ -55,6 +57,13 @@ class AssessmentContext:
                 or any(not item.isdigit() or int(item) < 1
                        for item in self.approved_asa_ike_dh_groups)):
             raise ValueError("approved_asa_ike_dh_groups must be unique positive group numbers")
+        if (len(self.fortios_prohibited_egress_ports) > 256
+                or len(self.fortios_prohibited_egress_ports)
+                != len(set(self.fortios_prohibited_egress_ports))
+                or any(not re.fullmatch(r"(tcp|udp)/[1-9][0-9]{0,4}", item)
+                       or int(item.partition("/")[2]) > 65535
+                       for item in self.fortios_prohibited_egress_ports)):
+            raise ValueError("fortios_prohibited_egress_ports must be unique tcp/port or udp/port entries (1-65535; at most 256)")
         if not isinstance(self.asa_ra_require_client_certificate, bool):
             raise ValueError("asa_ra_require_client_certificate must be a boolean")
         seen = set()
@@ -138,6 +147,7 @@ class AssessmentContext:
         allowed = {
             "policy_version", "device_role", "device_lifecycle", "interface_roles",
             "approved_asa_ike_dh_groups",
+            "fortios_prohibited_egress_ports",
             "asa_ra_require_client_certificate",
             "protected_aaa_profiles", "assessment_time",
             "management_certificate_identities", "trusted_certificate_sha256",
@@ -195,6 +205,11 @@ class AssessmentContext:
             for item in approved_dh
         ):
             raise ValueError("assessment approved_asa_ike_dh_groups must be a string/integer list")
+        prohibited_egress = value.get("fortios_prohibited_egress_ports", [])
+        if not isinstance(prohibited_egress, list) or any(
+            not isinstance(item, str) for item in prohibited_egress
+        ):
+            raise ValueError("assessment fortios_prohibited_egress_ports must be a string list")
         require_ra_certificate = value.get("asa_ra_require_client_certificate", False)
         if not isinstance(require_ra_certificate, bool):
             raise ValueError("assessment asa_ra_require_client_certificate must be a boolean")
@@ -205,6 +220,7 @@ class AssessmentContext:
             approved_asa_ike_dh_groups=tuple(
                 str(int(item)) if str(item).isdigit() else str(item) for item in approved_dh
             ),
+            fortios_prohibited_egress_ports=tuple(prohibited_egress),
             asa_ra_require_client_certificate=require_ra_certificate,
             interface_roles=tuple((str(name), str(role).casefold()) for name, role in roles.items()),
             protected_aaa_profiles=tuple(protected_profiles),
@@ -280,6 +296,7 @@ class AssessmentContext:
             "device-role": self.device_role,
             "device-lifecycle": self.device_lifecycle,
             "approved-asa-ike-dh-groups": list(self.approved_asa_ike_dh_groups),
+            "fortios-prohibited-egress-ports": list(self.fortios_prohibited_egress_ports),
             "asa-ra-require-client-certificate": self.asa_ra_require_client_certificate,
             "interface-roles": dict(self.interface_roles),
             "protected-aaa-profiles": list(self.protected_aaa_profiles),
