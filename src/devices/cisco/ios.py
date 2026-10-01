@@ -1728,6 +1728,9 @@ class CiscoIOSParser(BaseDeviceParser):
             entries.sort(key=lambda item: int(item[0]))
         elif any(item[0] for item in entries):
             return IOSManagementACL(name, "unsupported", evidence)
+        if len(entries) > 512:
+            return IOSManagementACL(name, "unsupported", evidence)
+        source_rules: list[tuple[str, NetworkSemantics]] = []
         for _, body, _ in entries:
             match = re.fullmatch(r"(permit|deny) (.+?)(?: log(?:-input)?)?", body)
             if not match:
@@ -1753,15 +1756,50 @@ class CiscoIOSParser(BaseDeviceParser):
             source_network = self._acl_network_semantics(source, "ipv6")
             if not source_network.complete:
                 return IOSManagementACL(name, "unsupported", evidence)
-            universal = source_network.any or any(
-                item.first == 0 and item.last == (1 << 128) - 1
-                for item in source_network.intervals
-            )
-            if action == "deny":
-                return IOSManagementACL(name, "restrictive", evidence)
-            if universal:
+            source_rules.append((action, source_network))
+            if action == "permit" and self._management_acl_source_union(source_rules, 6) == "permit-all":
                 return IOSManagementACL(name, "permit-all", evidence)
-        return IOSManagementACL(name, "restrictive", evidence)
+        return IOSManagementACL(name, self._management_acl_source_union(source_rules, 6), evidence)
+
+    @staticmethod
+    def _management_acl_source_union(
+        rules: list[tuple[str, NetworkSemantics]], family: int,
+    ) -> str:
+        """Prove every source reaches a permit before any effective deny.
+
+        IPv4 standard and the bounded management extended grammar already
+        qualify destination/protocol predicates before calling this helper.
+        Unsupported ranges or excessive splitting remain unassessed.
+        """
+        maximum = (1 << (32 if family == 4 else 128)) - 1
+        unmatched = [(0, maximum)]
+        for action, network in rules:
+            if not network.complete or not (network.any or network.intervals):
+                return "unsupported"
+            ranges = ((0, maximum),) if network.any else tuple(
+                (item.first, item.last) for item in network.intervals if item.family == family
+            )
+            if not ranges:
+                return "unsupported"
+            for first, last in ranges:
+                next_unmatched = []
+                for start, end in unmatched:
+                    low, high = max(start, first), min(end, last)
+                    if low > high:
+                        next_unmatched.append((start, end))
+                        continue
+                    if action == "deny":
+                        return "restrictive"
+                    if start < low:
+                        next_unmatched.append((start, low - 1))
+                    if high < end:
+                        next_unmatched.append((high + 1, end))
+                unmatched = next_unmatched
+                if len(unmatched) > 512:
+                    return "unsupported"
+                if not unmatched:
+                    return "permit-all"
+        return "restrictive"
 
     def get_management_ipv4_acl(self, name: str, *, allow_extended: bool = False) -> IOSManagementACL:
         """Bounded source restriction proof, in effective order.
@@ -1844,6 +1882,9 @@ class CiscoIOSParser(BaseDeviceParser):
             entries.sort(key=lambda item: int(item[0]))
         elif any(item[0] for item in entries):
             return IOSManagementACL(name, "unsupported", evidence)
+        if len(entries) > 512:
+            return IOSManagementACL(name, "unsupported", evidence)
+        source_rules: list[tuple[str, NetworkSemantics]] = []
         for _, body, _ in entries:
             match = re.fullmatch(r"(permit|deny) (.+?)(?: log(?:-input)?)?", body)
             if not match:
@@ -1871,14 +1912,10 @@ class CiscoIOSParser(BaseDeviceParser):
             network = self._acl_network_semantics(selector, "ipv4")
             if not network.complete:
                 return IOSManagementACL(name, "unsupported", evidence)
-            universal = network.any or any(
-                item.first == 0 and item.last == (1 << 32) - 1
-                for item in network.intervals)
-            if action == "deny":
-                return IOSManagementACL(name, "restrictive", evidence)
-            if universal:
+            source_rules.append((action, network))
+            if action == "permit" and self._management_acl_source_union(source_rules, 4) == "permit-all":
                 return IOSManagementACL(name, "permit-all", evidence)
-        return IOSManagementACL(name, "restrictive", evidence)
+        return IOSManagementACL(name, self._management_acl_source_union(source_rules, 4), evidence)
 
     def get_http_authentication(self) -> Optional[str]:
         value: Optional[str] = None
