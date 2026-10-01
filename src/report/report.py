@@ -3,7 +3,9 @@ import os
 import subprocess
 import datetime
 import array
+import csv
 import json
+import re
 
 from .common.types import ReportType
 from .explanations import (
@@ -17,20 +19,26 @@ _IS_WINDOWS = os.name == "nt"
 
 
 def _restrict_windows_acl(filename: str) -> bool:
-    """Replace inherited Windows ACLs with full control for the current user only.
+    """Replace inherited Windows ACLs with full control for the process user.
 
     POSIX mode bits passed to ``os.open`` are ignored on Windows, where a new
     file inherits the directory ACL. ``icacls /inheritance:r`` removes the
-    inherited entries and ``/grant:r`` leaves only the current account.
+    inherited entries. The process token can differ from USERNAME/USERDOMAIN
+    (for example under a sandbox or impersonation), so resolve its SID.
     """
-    user = os.environ.get("USERNAME")
-    domain = os.environ.get("USERDOMAIN")
-    if not user:
-        return False
-    principal = f"{domain}\\{user}" if domain else user
     try:
+        identity = subprocess.run(
+            ["whoami", "/user", "/fo", "csv", "/nh"],
+            capture_output=True, text=True, check=False,
+        )
+        if identity.returncode != 0:
+            return False
+        rows = [row for row in csv.reader(identity.stdout.splitlines()) if row]
+        if (len(rows) != 1 or len(rows[0]) != 2
+                or not re.fullmatch(r"S-1-(?:\d+-)+\d+", rows[0][1])):
+            return False
         result = subprocess.run(
-            ["icacls", filename, "/inheritance:r", "/grant:r", f"{principal}:F"],
+            ["icacls", filename, "/inheritance:r", "/grant:r", f"*{rows[0][1]}:F"],
             capture_output=True, text=True, check=False,
         )
     except OSError:

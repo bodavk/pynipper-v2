@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 import hashlib
 import ipaddress
+from itertools import product
 import re
 import shlex
 from typing import Dict, Iterator, List, Tuple, Union
@@ -2186,43 +2187,127 @@ class FortiOSParser(BaseDeviceParser):
         prior: Tuple[FortiFirewallPolicy, ...],
         action: str,
     ) -> Tuple[FortiFirewallPolicy, ...]:
-        """Prove bounded first-match coverage by earlier, compatible source ranges.
+        """Prove bounded first-match coverage across static address/service ranges.
 
-        This deliberately unions only the source dimension. Every contributing
-        policy must independently cover interfaces, destination and service;
-        mixed terminal actions or an uncertain earlier accept cannot establish
-        complete shadowing. Disabled rules are excluded from first-match order.
+        Subtract earlier policy traffic cuboids from the candidate. An empty
+        remainder proves coverage; unsupported predicates, mixed actions and
+        proof-budget exhaustion remain unknown rather than inferred shadows.
+        Interface selectors are not partitioned: each contributor must cover
+        the candidate's entire interface scope.
         """
-        if not policy.proof_eligible or not policy.source_networks.complete or len(prior) > 4096:
+        limit = 2048
+        if (not policy.proof_eligible or not policy.schedule_explicit
+                or not all((policy.source_networks.complete,
+                            policy.destination_networks.complete, policy.services.complete))
+                ):
             return ()
         active = tuple(item for item in prior if item.enabled)
-        if any(item.action != action for item in active):
+        if (len(active) > 64 or any(item.action != action for item in active)
+                or (action == policy.action and any(
+                    item.behavior_signature != policy.behavior_signature for item in active
+                ))):
             return ()
-        covering = tuple(item for item in active if (
+        eligible = tuple(item for item in active if (
             item.scope.casefold() == policy.scope.casefold()
             and item.family == policy.family
             and item.position < policy.position
             and item.proof_eligible
             and item.schedule_explicit
             and item.source_networks.complete
+            and item.destination_networks.complete
+            and item.services.complete
             and (action != policy.action or item.behavior_signature == policy.behavior_signature)
             and all(state == ProofState.PROVEN for state in (
                 static_values_cover(item.source_interfaces, policy.source_interfaces, any_value="any"),
                 static_values_cover(item.destination_interfaces, policy.destination_interfaces, any_value="any"),
-                network_covers(item.destination_networks, policy.destination_networks),
-                service_covers(item.services, policy.services),
             ))
         ))
-        if not covering:
+        if not eligible:
             return ()
-        sources = NetworkSemantics(
-            any=any(item.source_networks.any for item in covering),
-            intervals=tuple(interval for item in covering for interval in item.source_networks.intervals),
-        )
         family = 4 if policy.family == "ipv4" else 6
-        target = (NetworkSemantics(intervals=(AddressInterval(family, 0, (1 << (32 if family == 4 else 128)) - 1),))
-                  if policy.source_networks.any else policy.source_networks)
-        return covering if network_covers(sources, target) == ProofState.PROVEN else ()
+        maximum = (1 << (32 if family == 4 else 128)) - 1
+
+        def addresses(semantics: NetworkSemantics) -> tuple[tuple[int, int], ...]:
+            if semantics.any:
+                return ((0, maximum),)
+            return tuple((item.first, item.last) for item in semantics.intervals
+                         if item.family == family)
+
+        # A candidate ALL service includes protocols not listed in the static
+        # service catalogue. Only an earlier ALL can cover that wildcard.
+        protocols = ({"*"} if policy.services.any else
+                     {item.protocol.casefold() for item in policy.services.intervals})
+
+        def services(semantics: ServiceSemantics) -> tuple[tuple[str, int, int], ...]:
+            if semantics.any:
+                return tuple((proto, 0, 65535) for proto in sorted(protocols))
+            return tuple((item.protocol.casefold(), item.first_port, item.last_port)
+                         for item in semantics.intervals
+                         if item.protocol.casefold() in protocols)
+
+        def boxes(candidate: FortiFirewallPolicy) -> tuple[tuple[str, int, int, int, int, int, int], ...]:
+            src = addresses(candidate.source_networks)
+            dst = addresses(candidate.destination_networks)
+            svc = services(candidate.services)
+            if not src or not dst or not svc or len(src) * len(dst) * len(svc) > limit:
+                return ()
+            return tuple((proto, s0, s1, d0, d1, p0, p1)
+                         for (s0, s1), (d0, d1), (proto, p0, p1) in product(src, dst, svc))
+
+        def subtract(box, prior_box):
+            proto, s0, s1, d0, d1, p0, p1 = box
+            other_proto, os0, os1, od0, od1, op0, op1 = prior_box
+            if proto != other_proto:
+                return (box,)
+            si0, si1 = max(s0, os0), min(s1, os1)
+            di0, di1 = max(d0, od0), min(d1, od1)
+            pi0, pi1 = max(p0, op0), min(p1, op1)
+            if si0 > si1 or di0 > di1 or pi0 > pi1:
+                return (box,)
+            pieces = []
+            if s0 < si0:
+                pieces.append((proto, s0, si0 - 1, d0, d1, p0, p1))
+            if si1 < s1:
+                pieces.append((proto, si1 + 1, s1, d0, d1, p0, p1))
+            if d0 < di0:
+                pieces.append((proto, si0, si1, d0, di0 - 1, p0, p1))
+            if di1 < d1:
+                pieces.append((proto, si0, si1, di1 + 1, d1, p0, p1))
+            if p0 < pi0:
+                pieces.append((proto, si0, si1, di0, di1, p0, pi0 - 1))
+            if pi1 < p1:
+                pieces.append((proto, si0, si1, di0, di1, pi1 + 1, p1))
+            return tuple(pieces)
+
+        remaining = list(boxes(policy))
+        if not remaining:
+            return ()
+        contributors = []
+        work = 0
+        for earlier in eligible:
+            earlier_boxes = boxes(earlier)
+            if not earlier_boxes:
+                return ()
+            changed = False
+            for earlier_box in earlier_boxes:
+                next_remaining = []
+                for box in remaining:
+                    work += 1
+                    if work > 100000:
+                        return ()
+                    pieces = subtract(box, earlier_box)
+                    changed |= pieces != (box,)
+                    next_remaining.extend(pieces)
+                    if len(next_remaining) > limit:
+                        return ()
+                remaining = next_remaining
+                if not remaining:
+                    break
+            if changed:
+                contributors.append(earlier)
+            if not remaining:
+                return tuple(contributors)
+        return ()
 
     def get_assessed_boundary_policies(
         self,

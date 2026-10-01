@@ -1430,7 +1430,7 @@ class PluginFortiOSBaseline(BasePlugin):
                         (f"{policy.family.upper()} policy '{policy.name}' at position {policy.position} "
                          f"in scope '{policy.scope}' is fully covered by earlier "
                          f"{action} policies {', '.join(repr(item.name) for item in covering)} "
-                         "with a source-range union and compatible other selectors."),
+                         "with a bounded union of static source, destination and service selectors."),
                         "The later policy cannot alter first-match enforcement for the statically proven traffic scope.",
                         "Remove or reorder the policy after validating VDOM scope and operational intent.",
                         Severity.LOW if same_action else Severity.HIGH,

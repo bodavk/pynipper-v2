@@ -129,18 +129,23 @@ def test_windows_sensitive_report_restricts_acl_before_writing(tmp_path, monkeyp
 
     calls = []
     monkeypatch.setattr(report_module, "_IS_WINDOWS", True)
-    monkeypatch.setenv("USERNAME", "auditor")
-    monkeypatch.setenv("USERDOMAIN", "LAB")
 
     def fake_run(command, **kwargs):
         calls.append(command)
+        if command[0] == "whoami":
+            return type("Result", (), {"returncode": 0,
+                                        "stdout": '"LAB\\token-user","S-1-5-21-111-222-333-1004"'})()
         assert Path(command[1]).read_text(encoding="utf-8") == ""  # nothing written yet
         return type("Result", (), {"returncode": 0})()
 
     monkeypatch.setattr(report_module.subprocess, "run", fake_run)
     target = tmp_path / "sensitive.json"
     report_module._write_report_file(str(target), "SECRET", sensitive=True)
-    assert calls == [["icacls", str(target), "/inheritance:r", "/grant:r", "LAB\\auditor:F"]]
+    assert calls == [
+        ["whoami", "/user", "/fo", "csv", "/nh"],
+        ["icacls", str(target), "/inheritance:r", "/grant:r",
+         "*S-1-5-21-111-222-333-1004:F"],
+    ]
     assert target.read_text(encoding="utf-8") == "SECRET"
 
 
@@ -148,13 +153,30 @@ def test_windows_acl_failure_fails_closed(tmp_path, monkeypatch):
     from src.report import report as report_module
 
     monkeypatch.setattr(report_module, "_IS_WINDOWS", True)
-    monkeypatch.setenv("USERNAME", "auditor")
     monkeypatch.setattr(report_module.subprocess, "run",
                         lambda command, **kwargs: type("Result", (), {"returncode": 5})())
     target = tmp_path / "sensitive.json"
     with pytest.raises(PermissionError):
         report_module._write_report_file(str(target), "SECRET", sensitive=True)
     assert not target.exists()
+
+
+def test_windows_unparseable_token_sid_fails_closed(tmp_path, monkeypatch):
+    from src.report import report as report_module
+
+    monkeypatch.setattr(report_module, "_IS_WINDOWS", True)
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return type("Result", (), {"returncode": 0, "stdout": '"LAB\\user","not-a-sid"'})()
+
+    monkeypatch.setattr(report_module.subprocess, "run", fake_run)
+    target = tmp_path / "sensitive.json"
+    with pytest.raises(PermissionError):
+        report_module._write_report_file(str(target), "SECRET", sensitive=True)
+    assert not target.exists()
+    assert calls == [["whoami", "/user", "/fo", "csv", "/nh"]]
 
 
 IOS_KEYS = """version 17.9
