@@ -9,8 +9,6 @@ from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.analyze.common.risky_services import risky_labels
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.policy_semantics import (
-    AddressInterval,
-    NetworkSemantics,
     ProofState,
     network_covers,
     service_covers,
@@ -1326,7 +1324,7 @@ class PluginFortiOSBaseline(BasePlugin):
             if (
                 policy.action == "accept"
                 and policy.services.any
-                and not (policy.source_networks.any and policy.destination_networks.any)
+                and not (policy.source_unrestricted and policy.destination_unrestricted)
             ):
                 self.add_issue(self._finding(
                     parser,
@@ -1355,37 +1353,9 @@ class PluginFortiOSBaseline(BasePlugin):
                 # First-match policy order can make the later allow unreachable.
                 # An earlier accept, even if not statically resolvable, prevents
                 # us from proving that a subsequent covering deny blocks it.
-                earlier_rules = seen_by_scope[key]
-                covering_denies = (
-                    [earlier for earlier in earlier_rules
-                     if earlier.proof_eligible and earlier.action == "deny"
-                     and earlier.schedule_explicit and earlier.source_networks.complete
-                     and all(state == ProofState.PROVEN for state in (
-                            static_values_cover(
-                                earlier.source_interfaces, policy.source_interfaces,
-                                any_value="any",
-                            ),
-                            static_values_cover(
-                                earlier.destination_interfaces, policy.destination_interfaces,
-                                any_value="any",
-                            ),
-                            network_covers(earlier.destination_networks, policy.destination_networks),
-                            service_covers(earlier.services, policy.services),
-                        ))]
-                    if all(earlier.action == "deny" for earlier in earlier_rules) else []
-                )
-                denied_sources = NetworkSemantics(
-                    any=any(earlier.source_networks.any for earlier in covering_denies),
-                    intervals=tuple(item for earlier in covering_denies
-                                    for item in earlier.source_networks.intervals),
-                )
-                source_target = (NetworkSemantics(intervals=(AddressInterval(
-                    4 if policy.family == "ipv4" else 6, 0,
-                    (1 << (32 if policy.family == "ipv4" else 128)) - 1,
-                ),)) if policy.source_networks.any else policy.source_networks)
-                blocked_by_prior_deny = bool(covering_denies) and (
-                    network_covers(denied_sources, source_target) == ProofState.PROVEN
-                )
+                blocked_by_prior_deny = bool(fortios.get_covering_prior_policy_union(
+                    policy, tuple(seen_by_scope[key]), "deny"
+                ))
                 if risky and not blocked_by_prior_deny:
                     self.add_issue(self._finding(
                         parser,
@@ -1444,6 +1414,30 @@ class PluginFortiOSBaseline(BasePlugin):
                     references,
                 ))
                 break
+            else:
+                for action in ("deny", "accept"):
+                    covering = fortios.get_covering_prior_policy_union(
+                        policy, tuple(seen_by_scope[key][:-1]), action
+                    )
+                    if len(covering) < 2:
+                        continue
+                    same_action = action == policy.action
+                    self.add_issue(self._finding(
+                        parser,
+                        ("fortinet.fortios.policy.redundant_rule" if same_action
+                         else "fortinet.fortios.policy.shadowed_rule"),
+                        "Firewall policy is redundant" if same_action else "Firewall policy is shadowed",
+                        (f"{policy.family.upper()} policy '{policy.name}' at position {policy.position} "
+                         f"in scope '{policy.scope}' is fully covered by earlier "
+                         f"{action} policies {', '.join(repr(item.name) for item in covering)} "
+                         "with a source-range union and compatible other selectors."),
+                        "The later policy cannot alter first-match enforcement for the statically proven traffic scope.",
+                        "Remove or reorder the policy after validating VDOM scope and operational intent.",
+                        Severity.LOW if same_action else Severity.HIGH,
+                        evidence + tuple(item for prior in covering for item in prior.evidence),
+                        references,
+                    ))
+                    break
             prior_by_scope[key].append(policy)
 
     def check_configuration_backups(self, parser: BaseDeviceParser) -> None:

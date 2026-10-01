@@ -95,35 +95,41 @@ class PluginFortiOSChecks(BasePlugin):
 
     def check_broad_policies(self, parser: BaseDeviceParser) -> None:
         fortios = self._fortios(parser)
-        for scope, position, name, settings, path in fortios.iter_firewall_policies():
-            if settings.get("status", "enable") == "disable" or settings.get("action", "deny") != "accept":
+        prior_by_scope = {}
+        for policy in fortios.get_firewall_policy_semantics():
+            key = (policy.scope.casefold(), policy.family)
+            earlier = tuple(prior_by_scope.get(key, ()))
+            prior_by_scope.setdefault(key, []).append(policy)
+            if not (policy.proof_eligible and policy.schedule_explicit and policy.action == "accept"
+                    and policy.source_unrestricted and policy.destination_unrestricted
+                    and policy.services.any
+                    and policy.source_interfaces and policy.destination_interfaces):
                 continue
-            sources = {value.lower() for value in self._values(settings, "srcaddr")}
-            destinations = {value.lower() for value in self._values(settings, "dstaddr")}
-            services = {value.lower() for value in self._values(settings, "service")}
-            schedule = str(settings.get("schedule", "always")).lower()
-            if not (sources == {"all"} and destinations == {"all"} and services == {"all"} and schedule == "always"):
+            if fortios.get_covering_prior_policy_union(policy, earlier, "deny"):
                 continue
-            source_interfaces = self._values(settings, "srcintf")
-            destination_interfaces = self._values(settings, "dstintf")
             interface_scope = (
                 "all interfaces"
-                if {value.lower() for value in source_interfaces + destination_interfaces} == {"any"}
-                else f"{source_interfaces or ['unspecified']} to {destination_interfaces or ['unspecified']}"
+                if {value.casefold() for value in policy.source_interfaces + policy.destination_interfaces} == {"any"}
+                else f"{list(policy.source_interfaces)} to {list(policy.destination_interfaces)}"
             )
-            logging = settings.get("logtraffic", "disable")
-            evidence = fortios._field_evidence(path)
+            behavior = dict(policy.behavior_signature)
             self.add_issue(
                 Finding(
                     rule_id="fortinet.fortios.policy.broad_accept",
                     device=parser.device_type,
                     title="Broad Firewall Policy",
-                    observation=f"Enabled accept policy '{name}' at position {position} in '{scope}' allows all source addresses, destinations, and services on schedule always across {interface_scope}; logtraffic is {logging} and NAT is {settings.get('nat', 'disable')}.",
+                    observation=(f"Enabled {policy.family} accept policy '{policy.name}' at position "
+                                 f"{policy.position} in '{policy.scope}' has resolved source and destination "
+                                 f"objects covering every address, service ALL, and schedule always across "
+                                 f"{interface_scope}; logtraffic is {behavior.get('logtraffic', 'disable')} "
+                                 f"and NAT is {behavior.get('nat', 'disable')}. "
+                                 "This is a configured broad permission, not proof of "
+                                 "end-to-end reachability."),
                     impact="The policy permits unrestricted service access between its configured interface scopes.",
                     severity=Severity.CRITICAL,
                     exploitability="Any source matching the interface scope can target any reachable destination and service.",
                     recommendation="Constrain source and destination addresses, services, schedule, and interfaces; enable appropriate policy logging.",
-                    evidence=tuple(item for item in evidence) or (f"firewall policy {name}",),
+                    evidence=policy.evidence or (f"firewall {policy.family} policy {policy.name}",),
                     references=(FORTINET_POLICY_GUIDE,),
                 )
             )

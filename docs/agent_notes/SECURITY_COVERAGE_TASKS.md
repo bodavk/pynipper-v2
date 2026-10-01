@@ -4,6 +4,8 @@ Reviewed **2026-09-22** against the current source, after the recent parser and 
 
 Backlog extended **2026-09-26** following a new source review and targeted synthetic probes. This update schedules work only; it does not mark the new stages implemented. The current queue below overrides historical wave ordering for remaining work.
 
+FortiOS policy follow-up **2026-10-01**: the public CLI and 75 focused tests confirmed bounded shadow/redundancy, IPv4 all-address/all-service, broad-service and risky-service checks. Four P1 implementation stages were added as [SC-051](#sc-051)–[SC-054](#sc-054), and the FortiOS source/destination depth stage was merged into [SC-043](#sc-043). These are backlog changes only; no scanner behavior changed.
+
 ## Scope and execution contract
 
 There are **16 registered IDs and 13 parser/analyzer pipelines**, including F5 BIG-IP and Check Point Gaia OS (added 2026-09-25). IOS aliases share one implementation; PIX shares ASA code but does not thereby have independently verified dialect coverage. Source authority is [registry](../../src/devices/registry.py), not historical roadmap claims.
@@ -29,6 +31,8 @@ This queue prioritizes **remaining work**, not already completed stages. P1 = pr
 | Priority | Remaining work and rationale |
 |---|---|
 | **P1 — direct high-impact configuration risks** | [SC-046](#sc-046) effective management ACLs; [SC-026](#sc-026) unsafe management APIs; [SC-011](#sc-011) privileged API identities; [SC-047](#sc-047) SRX host-inbound administration; [SC-013](#sc-013) VPN authentication and exposed legacy VPN; [SC-005](#sc-005) explicit RIPv1/IS-IS trust; [SC-043](#sc-043) accurate risky-service permissions. These can enable administrative access, credential exposure, route manipulation or sensitive-service access. |
+| **P1 — FortiOS firewall-policy gaps** | [SC-051](#sc-051) IPv6/broad-policy parity; [SC-052](#sc-052) effective first-match findings and multi-rule shadows; [SC-053](#sc-053) scoped Internet-bound permissions and high-risk source/destination combinations. Extend [SC-043](#sc-043) for risk-qualified source/destination exposure. These prevent missed broad allows and misleading effective-exposure conclusions. |
+| **P1 — FortiOS audit assurance** | [SC-054](#sc-054) optional offline rule-hit evidence. This identifies supplied-counter zero-hit candidates but never infers traffic history from a configuration alone. P1 is a requested implementation priority, not a vulnerability severity. |
 | **P1 — offline operating requirement** | [SC-045](#sc-045): eliminate implicit outbound advisory requests from ordinary audits. This is a data-handling/product requirement, not a device misconfiguration or Critical vulnerability. |
 | **P2 — deployment-dependent security depth** | [SC-048](#sc-048) IPv6 access-edge/dual-stack controls; multicast and additional address families in [SC-005](#sc-005); DNS in [SC-026](#sc-026). Promote an affected deployment stage to P1 when supplied scope proves an untrusted control-plane or management bypass. Do not prioritize unused protocols. |
 | **P2 — assurance** | [SC-049](#sc-049) per-control coverage and manual-review inventory, after direct high-risk misses; this reduces false assurance without adding a device vulnerability. |
@@ -94,7 +98,7 @@ This table describes **implemented subsets**, not complete coverage of a categor
 | IOS_XE | IOS baseline plus XE/MACsec/crypto additions | [SC-001](#sc-001), switch-role [SC-003](#sc-003)/[SC-004](#sc-004), [SC-005](#sc-005), [SC-006](#sc-006), [SC-021](#sc-021), [SC-022](#sc-022); Wave 4: [SC-025](#sc-025), [SC-026](#sc-026), [SC-027](#sc-027), [SC-028](#sc-028), [SC-029](#sc-029), [SC-031](#sc-031), [SC-032](#sc-032), [SC-033](#sc-033), [SC-034](#sc-034), [SC-035](#sc-035), [SC-036](#sc-036), [SC-037](#sc-037), [SC-044](#sc-044) |
 | ASA | AAA, SSH/HTTP source restrictions, credentials, SNMP/log/NTP, MPF/uRPF, active SSL and bound IPsec transforms, ACL effectiveness, failover authentication | [SC-002](#sc-002), [SC-013](#sc-013), [SC-021](#sc-021), [SC-022](#sc-022); Wave 4: [SC-031](#sc-031), [SC-032](#sc-032), [SC-034](#sc-034), [SC-035](#sc-035), [SC-036](#sc-036), [SC-037](#sc-037), [SC-043](#sc-043), [SC-044](#sc-044) |
 | PIX | Registry alias to ASA; independent old-dialect parsing remains uncertain, including externally observed bound ACL misses | [SC-020](#sc-020) first; do not blindly inherit modern ASA task applicability; Wave 4: [SC-044](#sc-044) |
-| FORTIOS | Management/administrator/session/password/crypto/cert checks, including bound custom write-capable profile trusted-host/MFA coverage; SNMP/NTP, logging destinations/events, profile attachment/content summaries, DoS, local-in, VPN, backup/update configuration | [SC-009](#sc-009), [SC-011](#sc-011) authorized log-role policy only, [SC-012](#sc-012), [SC-013](#sc-013), [SC-022](#sc-022); Wave 4: [SC-031](#sc-031), [SC-032](#sc-032), [SC-033](#sc-033), [SC-034](#sc-034), [SC-035](#sc-035), [SC-037](#sc-037), [SC-038](#sc-038), [SC-039](#sc-039), [SC-040](#sc-040), [SC-043](#sc-043), [SC-044](#sc-044) |
+| FORTIOS | Management/administrator/session/password/crypto/cert checks, including bound custom write-capable profile trusted-host/MFA coverage; SNMP/NTP, logging destinations/events, profile attachment/content summaries, DoS, local-in, VPN, backup/update configuration; bounded IPv4 broad policy and IPv4/IPv6 first-match/risky-service analysis | [SC-009](#sc-009), [SC-011](#sc-011) authorized log-role policy only, [SC-012](#sc-012), [SC-013](#sc-013), [SC-022](#sc-022); Wave 4: [SC-031](#sc-031), [SC-032](#sc-032), [SC-033](#sc-033), [SC-034](#sc-034), [SC-035](#sc-035), [SC-037](#sc-037), [SC-038](#sc-038), [SC-039](#sc-039), [SC-040](#sc-040), [SC-043](#sc-043), [SC-044](#sc-044); priority FortiOS policy stages [SC-051](#sc-051)–[SC-054](#sc-054) |
 | JUNOS | SRX policy/default deny/IPsec; administrative classes/AAA/SSH/SNMP/log/NTP, lo0 protection, BGP/OSPF and discovery | EX-only [SC-003](#sc-003)/[SC-004](#sc-004), [SC-005](#sc-005), SRX-only [SC-010](#sc-010), [SC-021](#sc-021), [SC-022](#sc-022); stateless-filter research remains in TODO; Wave 4: later stages of [SC-028](#sc-028), [SC-033](#sc-033) |
 | SCREENOS | Legacy admin/password/logging/SNMP, NTP-server presence, policy/session/default-policy subset, VPN proposals and lifecycle warning | [SC-019](#sc-019), plus existing [RV-008](REALWORLD_VALIDATION_TASKS.md#rv-008); no duplicate lifecycle task |
 | CHECKPOINT_FW1 | Policy objects, broad rules, cleanup/stealth, tracking/install scope and bounded static rule analysis | [SC-017](#sc-017); OS posture is the separate `CHECKPOINT_GAIA` family ([SC-023](#sc-023)); Wave 4: [SC-034](#sc-034), [SC-043](#sc-043), [SC-044](#sc-044) |
@@ -1220,6 +1224,8 @@ FortiOS disable-default sources: [6.4.10](https://docs.fortinet.com/document/for
 
 **2026-10-01 policy-order accuracy:** A later FortiOS risky-service allow is suppressed when earlier enabled, explicitly `always` deny policies in the same VDOM/address family jointly cover its full source set and each independently covers its interfaces, destination and service. A gap, uncertain predicate or intervening accept keeps the potential exposure reportable. This is a bounded first-match configuration proof, not a claim about NAT or network reachability.
 
+**2026-10-01 FortiOS depth extension (open, P1):** Keep the implemented all-source risky-port finding. Add risk-qualified coverage for (a) an accept rule whose source is an explicitly assessed external/untrusted network rather than the whole address family, and (b) an accept rule whose destination is a documented sensitive asset/network supplied by assessment policy. Resolve both selectors through same-VDOM IPv4/IPv6 objects and groups, combine them with protocol-correct risky services, interfaces, schedule, action, first-match deny effects and explicit assessment roles. A literal `all` source or destination alone is not a High finding; require a proven trust boundary plus a risky service or an explicit approved-service restriction. A merely `all` destination with internal HTTPS must not trigger this finding. Unknown roles, FQDN/dynamic objects, Internet Service Database selectors, identity conditions, negation, NAT or unmerged scope cannot establish public reachability. Extend typed policy evidence and assessment-policy fields only when needed; preserve `fortinet.fortios.policy.risky_service_exposure` for its current all-source meaning and add stable IDs for distinct states. Tests must include external-to-internal risky service, untrusted subnet, sensitive destination, legitimate internal-only and HTTPS cases, prior deny/accept order, IPv6/VDOM, unknown objects/roles, redaction and public CLI; run the mandatory regression gate. Coordinate the separate Internet-egress intent contract in [SC-053](#sc-053) rather than duplicating it here.
+
 
 **Source of Truth:** Candidates: IANA service registry; CISA and vendor guidance on exposed SMB, RDP, Telnet, FTP, SNMP and database ports; Firewall SRG (S07).
 
@@ -1440,6 +1446,98 @@ These tasks continue numbering after SC-044. Their execution order is governed b
 
 **Acceptance Criteria:** Batch output reproduces equivalent individual offline audits; comparisons never claim a risk was fixed merely because its evidence disappeared. No audit input is overwritten and no device/network access occurs.
 
+<a id="sc-051"></a>
+### SC-051 — Close FortiOS IPv6 and resolved-object broad-policy gaps
+
+**Task ID and Title:** SC-051 — Apply broad-accept and all-service checks to both FortiOS transit-policy families.
+
+**Priority:** P1 — an IPv6 `policy6` accepting `all_ipv6` to `all_ipv6` with `ALL` service currently has no broad-policy finding.
+
+**Status:** Implemented 2026-10-01 for resolved static IPv4/IPv6 policies. `broad_accept` now consumes parser-owned policy semantics for both families, including complete static address/group unions and `ALL` service, and requires an explicit `always` schedule. Disabled, negated, identity/ISDB-conditioned and unresolved policies are excluded; a fully broad rule does not also emit `broad_service`. First-match denial suppression is shared with SC-052. The export still does not establish end-to-end reachability.
+
+**Source of Truth:** [FortiOS parser](../../src/devices/fortinet/fortios.py) `get_firewall_policy_semantics` resolves `firewall policy` and `firewall policy6`; [broad check](../../src/analyze/fortinet/plugins/fortios_checks_plugin.py) `check_broad_policies` sees only IPv4; [effectiveness check](../../src/analyze/fortinet/plugins/fortios_baseline_plugin.py) `check_policy_effectiveness` excludes fully unrestricted addresses from `broad_service`. [Fortinet IPv6 guide](https://docs.fortinet.com/document/fortigate/7.4.10/administration-guide/87102/ipv6-quick-start) establishes separate IPv6 policy configuration.
+
+**Linked Findings:** 2026-10-01 public CLI probe: IPv4 any/any/ALL emitted `fortinet.fortios.policy.broad_accept`; equivalent `policy6` with `all_ipv6`/`all_ipv6`/`ALL` emitted no FortiOS policy finding. Related [SC-043](#sc-043) handles risky *specific* services; [SC-052](#sc-052) handles order-aware severity.
+
+**Dependencies:** Confirm release-qualified aliases and object/group semantics for `all`, `all_ipv6`, `::/0`, `0.0.0.0/0` and complete unions; preserve VDOM and address-family isolation.
+
+**Architecture/Convention Notes:** Use the parser-owned typed `FortiFirewallPolicy` rather than a second raw-section pass. Preserve existing `fortinet.fortios.policy.broad_accept` and `broad_service` IDs. Report configured permission, not Internet reachability; do not infer unsupported selectors or omitted defaults.
+
+**Concrete Requirements:** FORTIOS only. Detect an enabled `accept` policy in either family whose effective source and destination cover that family's entire address space, whose resolved service is `ALL`, and whose effective schedule is `always`; include interfaces, family, VDOM and rule position in sanitized evidence. Detect partial broad combinations without double-reporting a fully broad rule as `broad_service`. Resolve static address and service groups, and require complete proofs. Keep disabled, deny, time-limited, negated, dynamic/unresolved and unsupported-predicate cases distinct or unassessed. Existing JSON/HTML finding interfaces suffice; extend typed evidence only if a field is missing.
+
+**Test Requirements:** IPv4/IPv6 positive, `/0` and complete-group positive, narrow address/service negative, override and policy `move` order, disabled/deny, same names in separate VDOMs, unresolved/dynamic/negated selectors, malformed export, redaction, public JSON/HTML pipeline and mandatory regression gate.
+
+**Acceptance Criteria:** An effectively all-address/all-service IPv6 accept has the same broad-rule coverage as IPv4; one rule does not acquire duplicate broad findings, and unknown semantics never become a proven unrestricted permit.
+
+<a id="sc-052"></a>
+### SC-052 — Make FortiOS shadow and broad-risk findings order-aware
+
+**Task ID and Title:** SC-052 — Prove multi-rule first-match coverage and reconcile fully shadowed broad allows.
+
+**Priority:** P1 — missed effective shadows and a Critical broad-allow finding on a fully blocked rule can misdirect an audit.
+
+**Status:** Bounded first stage implemented 2026-10-01. A shared parser proof now combines earlier compatible source ranges when each contributing policy independently covers interfaces, destination, service and an explicit always schedule. Mixed earlier terminal actions, unsupported predicates, incomplete objects and behavior differences keep union shadowing unknown. Proven deny unions suppress a later Critical broad-allow finding for IPv4/IPv6 while retaining a shadow finding; proven equivalent accept unions produce a redundancy finding. The same deny proof is reused by the SC-043 risky-service check. Other multi-dimensional unions and broader schedule/identity semantics remain open.
+
+**Source of Truth:** [FortiOS typed policy and order](../../src/devices/fortinet/fortios.py) `get_firewall_policy_semantics`; [effectiveness check](../../src/analyze/fortinet/plugins/fortios_baseline_plugin.py) `check_policy_effectiveness`; [broad check](../../src/analyze/fortinet/plugins/fortios_checks_plugin.py) `check_broad_policies`; [Fortinet policy processing](https://docs.fortinet.com/document/fortigate/7.2.7/administration-guide/118003/policies).
+
+**Linked Findings:** 2026-10-01 shadowed-broad CLI case; existing `fortinet.fortios.policy.shadowed_rule`, `redundant_rule`, `broad_accept`; [SC-043](#sc-043) prior-deny union logic and [SC-051](#sc-051) IPv6 parity.
+
+**Dependencies:** Complete static address/service/interface containment, effective `move` order, action and behavior equivalence, schedule/negation/identity-predicate qualification, and same-VDOM/family isolation. Bound union complexity to avoid unbounded analysis.
+
+**Architecture/Convention Notes:** Keep one parser-owned first-match model consumed by both policy checks. Existing stable IDs remain; a later rule's configured breadth and its effective traffic exposure must be separate facts. Unresolved coverage is not proof of reachability or complete shadow.
+
+**Concrete Requirements:** FORTIOS IPv4 and IPv6. Prove full shadow where a union of earlier enabled, compatible terminal-action rules covers the later rule's static address range while each earlier rule covers its interface, destination, service and applicable schedule; retain single-rule proof. Report `shadowed_rule` for conflicting terminal action and `redundant_rule` only for equivalent action *and* effective NAT/logging/inspection behavior. Do not claim same-action redundancy across different behavior. If a broad accept is fully shadowed by proven earlier denies, suppress its Critical effective-exposure presentation and retain a traceable shadow/hygiene finding; if shadow status is unknown, keep the configured-breadth finding but word it as potential rather than proven effective access. Apply the same decision to SC-051's IPv6 broad case. Preserve separate evidence for the later rule and covering earlier rules. Use existing JSON/HTML interfaces unless an additive coverage state is needed.
+
+**Test Requirements:** One-rule and two-rule complete cover, partial union gap, mixed earlier accept/deny, different NAT/profile/logging, `move` reorder, inactive rule, schedule, negation, FQDN/dynamic/group cycles, unsupported identity/ISDB selector, VDOM/family boundaries, broad shadow severity, redaction, public pipeline and regression gate.
+
+**Acceptance Criteria:** A fully blocked broad allow is not presented as proven Critical exposure; incomplete or unprovable earlier coverage does not create a false shadow. Existing proven single-rule cases keep their IDs.
+
+<a id="sc-053"></a>
+### SC-053 — Assess FortiOS Internet-bound policy intent
+
+**Task ID and Title:** SC-053 — Detect high-risk Internet-bound permissions from static exports with explicit boundary evidence.
+
+**Priority:** P1 — permissive egress across an assessed Internet boundary can expose credentials or sensitive services even when source addresses are narrower than `all`.
+
+**Status:** Open. Current `policy.logging` and `policy.security_profiles` checks assess IPv4 accept rules headed to an interface named/marked WAN. A policy with `INTERNAL` source, `all` destination and HTTPS produced no destination-breadth finding; that alone is not a proven vulnerability.
+
+**Source of Truth:** [FortiOS parser](../../src/devices/fortinet/fortios.py) policy semantics/interface records; [WAN-bound logging and profile checks](../../src/analyze/fortinet/plugins/fortios_baseline_plugin.py) `check_logging_and_policy_profiles`; [assessment-policy contract](../ASSESSMENT_POLICY.md); [Fortinet firewall-policy reference](https://docs.fortinet.com/document/fortigate/7.4.1/administration-guide/656084/firewall-policy). [SC-043](#sc-043) owns risky-service catalogue expansion; do not duplicate its all-source result.
+
+**Linked Findings:** 2026-10-01 `INTERNAL`→`all`/HTTPS CLI probe (inspection finding only); current WAN-name heuristic; [SC-043](#sc-043) risk-qualified source/destination stage and [SC-051](#sc-051) broad any/ALL parity.
+
+**Dependencies:** Explicit auditor-supplied interface roles and, for organization-specific prohibited flows, an approved egress-service policy; same-VDOM interface/address/service resolution and first-match assessment. Confirm supported FortiOS address/ISDB syntax before extending beyond static objects.
+
+**Architecture/Convention Notes:** A `wan*` name may be a hint for existing logging but is not proof of an Internet trust boundary. Keep direction, configured permission, actual reachability, application identity and inspection effectiveness separate. Do not add live traffic collection or network calls.
+
+**Concrete Requirements:** FORTIOS IPv4 and IPv6. Add a typed boundary-aware policy view that binds source/destination interfaces to explicit `internal`/`external` assessment roles and resolves static source, destination and protocol/port selectors in VDOM scope. Report a distinct high-risk configured-permission finding when an enabled first-match accept allows a qualified risky egress service (for example Telnet, FTP, SMB or RDP) from an assessed internal segment toward an assessed external interface and a destination covering arbitrary Internet addresses, or when it violates an explicit approved prohibited-egress service list. Do not call an internal-to-external HTTPS rule with `dstaddr all` suspicious solely because of `all`; do not equate a WAN name, `all` object, ISDB label, NAT setting or open port with public reachability or cleartext application traffic. Keep logging and security-profile findings separate. Unknown roles, address objects, special predicates, partial exports or unproven first-match effects produce unassessed/potential coverage, not a High assertion. Add only the minimal validated assessment-policy input and stable new finding ID(s); keep existing report formats backward compatible.
+
+**Test Requirements:** Risky outbound positive; HTTPS and approved-service negatives; broad `ALL` interaction; named port/group, TCP versus UDP, prior deny/accept and move ordering; internal/external and VDOM scope, IPv6, missing/contradictory roles, NAT/ISDB/identity unknown, disabled/time-scoped rules, malformed input, redaction, public CLI JSON/HTML and regression gate.
+
+**Acceptance Criteria:** A high-risk finding requires an evidenced boundary and specific prohibited/risky communication; arbitrary `dstaddr all` alone remains ungraded. The report describes configured permission without claiming a successful Internet connection.
+
+<a id="sc-054"></a>
+### SC-054 — Correlate supplied FortiOS rule-hit evidence offline
+
+**Task ID and Title:** SC-054 — Identify zero-hit policy candidates only from optional, qualified counter exports.
+
+**Priority:** P1 audit assurance by request; a zero-hit candidate is normally informational/low severity, not a High vulnerability.
+
+**Status:** Evidence gate. Current FortiOS policy parsing and checks do not consume hit counters, and an ordinary configuration backup cannot prove that a rule had no matches.
+
+**Source of Truth:** [FortiOS policy parser](../../src/devices/fortinet/fortios.py) and [policy checks](../../src/analyze/fortinet/plugins/fortios_baseline_plugin.py) have no hit-count field or rule. Obtain real, sanitized FortiOS counter exports with exact release, command/export format, policy UUID/ID, VDOM and counter-reset semantics before implementing a parser. The offline boundary is documented in [Architecture](../ARCHITECTURE.md).
+
+**Linked Findings:** 2026-10-01 source audit found no FortiOS hit-counter check; [SC-052](#sc-052) static shadow/redundancy is independent of observed use; [SC-049](#sc-049) can expose unassessed usage coverage.
+
+**Dependencies:** Vendor documentation and fixtures for at least one supported counter-export format; a documented observation interval or two comparable time-stamped snapshots; reliable rule identity and counter-reset/restart handling. If these cannot be established, retain the evidence gate and do not invent no-hit conclusions.
+
+**Architecture/Convention Notes:** Accept only user-supplied local companion files; never contact a FortiGate. Parse counters into typed records separate from configuration semantics. A zero count is a candidate for review, not proof that a rule is safe or unnecessary; static shadows remain distinct.
+
+**Concrete Requirements:** FORTIOS. Add an optional explicit CLI/manifest input for a supported counter export, with versioned format identification and a stable policy identity join (prefer UUID plus VDOM/family; qualify ID-only matching). Report zero hits during the *known supplied observation window* only when the policy was active, the counter window is meaningful and continuous, and resets/identity changes are excluded or accounted for. Include observation dates, export provenance and matched rule identity in sanitized evidence. Handle missing, stale, ambiguous, reset, partial and incompatible counters as unknown/unassessed. Preserve normal config-only findings and report no rule-use conclusion when no companion data is supplied. Use an additive report field or low/informational stable finding ID only after evidence schema is settled; no change to existing rule IDs.
+
+**Test Requirements:** Real-format fixture plus zero/nonzero counters, two-snapshot delta, reset/reboot, rule re-ID/reorder, duplicate/missing UUID, VDOM/IPv4/IPv6 collision, disabled/new rule, stale window, malformed or partial companion, config-only negative, offline enforcement, redaction, public CLI JSON/HTML and regression gate.
+
+**Acceptance Criteria:** A configuration-only audit never says a rule had zero hits. With qualified supplied counters, the result states its measured interval and uncertainty, and neither a static shadow nor a missing counter is mislabeled as observed nonuse.
+
 ## Source appendix and audit validation
 
 Source evidence below is the current implementation boundary. Method names are supplied because line numbers move as planned work lands. Parser records and registered plugin bodies were inspected together; negative findings above are scoped to those paths, not based only on documentation/search keywords.
@@ -1449,7 +1547,7 @@ Source evidence below is the current implementation boundary. Method names are s
 | IOS | [ios.py](../../src/devices/cisco/ios.py) | [baseline](../../src/analyze/cisco/ios/plugins/baseline_plugin.py): `check_aaa`, `check_management_lines`, `check_ssh_policy`, `check_acl_effectiveness`, `check_credentials`, `check_snmp`, `check_logging`, `check_configuration_management`, `check_ntp`, `check_banner`, `check_unnecessary_services`, `check_interface_protections`, `check_control_plane`, `check_crypto`, `check_routing`, `check_discovery`, `check_switch_edge`; dedicated HTTP/SSH plugins remain registered. Presence/attachment limitations are detailed in SC-001/005. |
 | IOS-XE | [iosxe.py](../../src/devices/cisco/iosxe.py) | Shared IOS baseline plus [XE plugin directory](../../src/analyze/cisco/iosxe/plugins); do not count aliases as independent dialect breadth. |
 | ASA/PIX | [asa.py](../../src/devices/cisco/asa.py) | [baseline](../../src/analyze/cisco/asa/plugins/baseline_plugin.py), [ASA checks](../../src/analyze/cisco/asa/plugins/asa_checks_plugin.py): AAA, credentials, service reachability, SNMP/logging, ACL policy, bound TLS/IPsec, NTP/MPF/uRPF/failover. Remote-access user authentication differs from these crypto checks. |
-| FortiOS | [fortios.py](../../src/devices/fortinet/fortios.py) | [baseline](../../src/analyze/fortinet/plugins/fortios_baseline_plugin.py): `check_administrators`, password/session, management crypto/certificates, SNMP/NTP, logging/profiles, policy effectiveness, backups, updates/services, DoS, AAA transport, local-in, IPsec. [Additional checks](../../src/analyze/fortinet/plugins/fortios_checks_plugin.py) cover basic management/broad policies/TLS/syslog. |
+| FortiOS | [fortios.py](../../src/devices/fortinet/fortios.py) | [baseline](../../src/analyze/fortinet/plugins/fortios_baseline_plugin.py): `check_administrators`, password/session, management crypto/certificates, SNMP/NTP, logging/profiles, policy effectiveness, backups, updates/services, DoS, AAA transport, local-in, IPsec. [Additional checks](../../src/analyze/fortinet/plugins/fortios_checks_plugin.py) cover basic management/IPv4 broad policies/TLS/syslog. Bounded static IPv4/IPv6 shadows and risky services exist; full IPv6 broad-rule parity, multi-rule general shadows, role-qualified Internet egress and hit-counter evidence are SC-051–SC-054. |
 | Junos | [junos.py](../../src/devices/juniper/junos.py) | [baseline](../../src/analyze/juniper/junos/plugins/baseline_plugin.py), [plugins](../../src/analyze/juniper/junos/plugins): administrative and routing baseline plus SRX stateful policy/IPsec. SRX screens/IDP and EX access-edge admission are separate missing functions. |
 | ScreenOS | [screenos.py](../../src/devices/juniper/screenos.py) | [baseline](../../src/analyze/juniper/plugins/screenos_baseline_plugin.py), [plugins](../../src/analyze/juniper/plugins): legacy management, policy, VPN and operations; time server existence is not authenticated association evidence. |
 | Check Point | [fw1.py](../../src/devices/checkpoint/fw1.py) | [baseline](../../src/analyze/checkpoint/plugins/fw1_baseline_plugin.py), [plugins](../../src/analyze/checkpoint/plugins): policy content and static effectiveness, not Gaia system posture. |
@@ -1465,3 +1563,5 @@ Validation of this documentation refresh: 65 tests in `tests/test_realworld*.py`
 
 
 Documentation update validation (2026-09-26): seven review proposals were merged into five existing tasks, and six distinct tasks were added as SC-045 through SC-050 (50 total). New task stages remain open. This update makes no code, runtime schema or snapshot changes; historical test counts above are not new test runs. SC-044 was preserved unchanged. Task numbering, required fields and local links were checked for this update.
+
+Documentation update validation (2026-10-01): one FortiOS depth extension was merged into SC-043 and four tasks were added as SC-051 through SC-054 (54 total). All four use P1 scheduling; SC-054's priority does not imply that a zero-hit candidate is a High vulnerability. The public CLI probes and 75 focused tests described above were run before this documentation edit. No runtime code, schema or test snapshot changed. Task fields, local links and anchors were checked after editing.

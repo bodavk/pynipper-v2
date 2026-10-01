@@ -38,6 +38,7 @@ from src.devices.common.policy_semantics import (
     ServiceSemantics,
     network_covers,
     service_covers,
+    static_values_cover,
 )
 
 
@@ -310,6 +311,17 @@ class FortiFirewallPolicy:
             AddressInterval(family, 0, (1 << (32 if family == 4 else 128)) - 1),
         ))
         return network_covers(self.source_networks, universe) == ProofState.PROVEN
+
+    @property
+    def destination_unrestricted(self) -> bool:
+        """Whether resolved destination objects cover the whole address family."""
+        family = 4 if self.family == "ipv4" else 6 if self.family == "ipv6" else None
+        if family is None:
+            return False
+        universe = NetworkSemantics(intervals=(
+            AddressInterval(family, 0, (1 << (32 if family == 4 else 128)) - 1),
+        ))
+        return network_covers(self.destination_networks, universe) == ProofState.PROVEN
 
     @property
     def proof_eligible(self) -> bool:
@@ -2165,6 +2177,50 @@ class FortiOSParser(BaseDeviceParser):
                         evidence=self._field_evidence(object_path),
                     ))
         return tuple(policies)
+
+    @staticmethod
+    def get_covering_prior_policy_union(
+        policy: FortiFirewallPolicy,
+        prior: Tuple[FortiFirewallPolicy, ...],
+        action: str,
+    ) -> Tuple[FortiFirewallPolicy, ...]:
+        """Prove bounded first-match coverage by earlier, compatible source ranges.
+
+        This deliberately unions only the source dimension. Every contributing
+        policy must independently cover interfaces, destination and service;
+        mixed terminal actions or an uncertain earlier accept cannot establish
+        complete shadowing. Disabled rules are excluded from first-match order.
+        """
+        if not policy.proof_eligible or not policy.source_networks.complete or len(prior) > 4096:
+            return ()
+        active = tuple(item for item in prior if item.enabled)
+        if any(item.action != action for item in active):
+            return ()
+        covering = tuple(item for item in active if (
+            item.scope.casefold() == policy.scope.casefold()
+            and item.family == policy.family
+            and item.position < policy.position
+            and item.proof_eligible
+            and item.schedule_explicit
+            and item.source_networks.complete
+            and (action != policy.action or item.behavior_signature == policy.behavior_signature)
+            and all(state == ProofState.PROVEN for state in (
+                static_values_cover(item.source_interfaces, policy.source_interfaces, any_value="any"),
+                static_values_cover(item.destination_interfaces, policy.destination_interfaces, any_value="any"),
+                network_covers(item.destination_networks, policy.destination_networks),
+                service_covers(item.services, policy.services),
+            ))
+        ))
+        if not covering:
+            return ()
+        sources = NetworkSemantics(
+            any=any(item.source_networks.any for item in covering),
+            intervals=tuple(interval for item in covering for interval in item.source_networks.intervals),
+        )
+        family = 4 if policy.family == "ipv4" else 6
+        target = (NetworkSemantics(intervals=(AddressInterval(family, 0, (1 << (32 if family == 4 else 128)) - 1),))
+                  if policy.source_networks.any else policy.source_networks)
+        return covering if network_covers(sources, target) == ProofState.PROVEN else ()
 
     def get_local_in_policies(self) -> Tuple[FortiLocalInPolicy, ...]:
         """Return local-device traffic rules separately from transit policies."""
