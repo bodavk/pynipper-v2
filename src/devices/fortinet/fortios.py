@@ -2222,6 +2222,56 @@ class FortiOSParser(BaseDeviceParser):
                   if policy.source_networks.any else policy.source_networks)
         return covering if network_covers(sources, target) == ProofState.PROVEN else ()
 
+    def get_assessed_boundary_policies(
+        self,
+        policies: Tuple[FortiFirewallPolicy, ...] | None = None,
+        *,
+        source_role: str,
+        destination_role: str,
+    ) -> Tuple[Tuple[FortiFirewallPolicy, Tuple[ConfigEvidence, ...]], ...]:
+        """Bind a transit policy to explicit, unambiguous assessed interfaces.
+
+        Assessment roles are namespaced only by interface name today, so a name
+        duplicated across exported scopes is deliberately left unassessed.
+        """
+        interfaces: dict[str, list[tuple[str, FortiDict, tuple[str, ...]]]] = {}
+        for section_scope, name, settings, path in self.iter_interfaces():
+            scope = str(settings.get("vdom", "root" if section_scope == "global" else section_scope))
+            interfaces.setdefault(name.casefold(), []).append((scope, settings, path))
+
+        result = []
+        for policy in policies if policies is not None else self.get_firewall_policy_semantics():
+            if not (policy.proof_eligible and policy.schedule_explicit
+                    and policy.action == "accept" and policy.source_networks.complete
+                    and policy.destination_networks.complete and policy.services.complete
+                    and not policy.services.any):
+                continue
+            evidence: list[ConfigEvidence] = []
+            qualified = True
+            for names, role in ((policy.source_interfaces, source_role),
+                                (policy.destination_interfaces, destination_role)):
+                if not names:
+                    qualified = False
+                    break
+                for name in names:
+                    matches = interfaces.get(name.casefold(), ())
+                    if (name.casefold() == "any" or len(matches) != 1
+                            or self.assessment_context.role_for_interface(name) != role):
+                        qualified = False
+                        break
+                    scope, settings, path = matches[0]
+                    if (scope.casefold() != policy.scope.casefold()
+                            or str(settings.get("status", "")).casefold() != "up"):
+                        qualified = False
+                        break
+                    evidence.extend(self._field_evidence(path + ("status",)))
+                    evidence.extend(self._field_evidence(path + ("vdom",)))
+                if not qualified:
+                    break
+            if qualified:
+                result.append((policy, tuple(dict.fromkeys(evidence))))
+        return tuple(result)
+
     def get_local_in_policies(self) -> Tuple[FortiLocalInPolicy, ...]:
         """Return local-device traffic rules separately from transit policies."""
 

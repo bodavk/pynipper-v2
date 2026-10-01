@@ -1440,6 +1440,84 @@ class PluginFortiOSBaseline(BasePlugin):
                     break
             prior_by_scope[key].append(policy)
 
+    def check_risky_boundary_policies(self, parser: BaseDeviceParser) -> None:
+        """SC-043/SC-053: first active risky rules crossing an assessed edge."""
+        fortios = self._fortios(parser)
+        policies = fortios.get_firewall_policy_semantics()
+        first_active = {}
+        for policy in policies:
+            key = (policy.scope.casefold(), policy.family)
+            if policy.enabled and key not in first_active:
+                first_active[key] = policy
+
+        risky_egress = {"FTP", "Telnet", "TFTP", "SMB", "NetBIOS/SMB",
+                        "RDP", "rlogin", "rsh", "rexec"}
+        for policy, boundary_evidence in fortios.get_assessed_boundary_policies(
+            policies, source_role="internal", destination_role="external"
+        ):
+            key = (policy.scope.casefold(), policy.family)
+            if first_active.get(key) is not policy or not policy.destination_unrestricted:
+                continue
+            labels = sorted({
+                label for interval in policy.services.intervals
+                for label in risky_labels(interval.protocol, interval.first_port, interval.last_port)
+                if label in risky_egress
+            })
+            if not labels:
+                continue
+            self.add_issue(self._finding(
+                parser,
+                "fortinet.fortios.policy.risky_internet_egress",
+                "Risky service permitted across an assessed Internet-bound policy",
+                (f"First enabled {policy.family} policy '{policy.name}' in scope '{policy.scope}' "
+                 f"permits {', '.join(labels)} port traffic from assessed internal interface(s) "
+                 f"{', '.join(policy.source_interfaces)} to assessed external interface(s) "
+                 f"{', '.join(policy.destination_interfaces)}, with destination objects covering "
+                 "every address. This is a configured permission, not proof of Internet "
+                 "reachability, application identity or a successful connection."),
+                "Legacy remote access and file-sharing ports across an Internet boundary can expose credentials or services if reachable.",
+                "Limit outbound destinations and services to documented needs; replace legacy protocols with protected alternatives.",
+                Severity.HIGH,
+                tuple(policy.evidence) + boundary_evidence
+                + tuple(f"assessment policy: {name} role internal" for name in policy.source_interfaces)
+                + tuple(f"assessment policy: {name} role external" for name in policy.destination_interfaces),
+                ("https://docs.fortinet.com/document/fortigate/7.4.0/administration-guide/656084/firewall-policy",),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+
+        for policy, boundary_evidence in fortios.get_assessed_boundary_policies(
+            policies, source_role="external", destination_role="internal"
+        ):
+            key = (policy.scope.casefold(), policy.family)
+            if first_active.get(key) is not policy or policy.source_unrestricted:
+                continue
+            labels = sorted({
+                label for interval in policy.services.intervals
+                for label in risky_labels(interval.protocol, interval.first_port, interval.last_port)
+            })
+            if not labels:
+                continue
+            self.add_issue(self._finding(
+                parser,
+                "fortinet.fortios.policy.risky_untrusted_ingress",
+                "Risky service permitted from an assessed external source",
+                (f"First enabled {policy.family} policy '{policy.name}' in scope '{policy.scope}' "
+                 f"permits {', '.join(labels)} port traffic from explicitly assessed external "
+                 f"interface(s) {', '.join(policy.source_interfaces)} and resolved source objects "
+                 f"covering less than the whole address family, toward assessed internal "
+                 f"interface(s) {', '.join(policy.destination_interfaces)}. This is a configured "
+                 "permission, not proof of public reachability, application identity or a "
+                 "successful connection."),
+                "An untrusted source that can reach this boundary may attempt access to a sensitive legacy or administrative service.",
+                "Restrict source, destination and service to the minimum approved flow, or remove the exposed legacy port.",
+                Severity.HIGH,
+                tuple(policy.evidence) + boundary_evidence
+                + tuple(f"assessment policy: {name} role external" for name in policy.source_interfaces)
+                + tuple(f"assessment policy: {name} role internal" for name in policy.destination_interfaces),
+                ("https://docs.fortinet.com/document/fortigate/7.4.0/administration-guide/656084/firewall-policy",),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+
     def check_configuration_backups(self, parser: BaseDeviceParser) -> None:
         fortios = self._fortios(parser)
         backups = fortios.get_configuration_backups()
@@ -1919,6 +1997,7 @@ class PluginFortiOSBaseline(BasePlugin):
         self.check_syslog_severity(parser)
         self.check_ips_selector_actions(parser)
         self.check_policy_effectiveness(parser)
+        self.check_risky_boundary_policies(parser)
         self.check_configuration_backups(parser)
         self.check_updates_and_unused_services(parser)
         self.check_password_and_session_policy(parser)
