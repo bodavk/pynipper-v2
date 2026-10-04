@@ -1068,12 +1068,66 @@ class PluginAristaChecks(BasePlugin):
                      "Set a peer-specific 'maximum-routes' value based on the expected route volume.",
                      Severity.MEDIUM, evidence, FindingBasis.EXPLICIT_VALUE)
 
+    def check_root_and_nopassword_login(self, parser: BaseDeviceParser) -> None:
+        """SC-030: enabled root account and remote login for password-less users."""
+        eos = self._eos(parser)
+        state, evidence = eos.get_root_account()
+        if state == "secret":
+            self.add_issue(Finding(
+                rule_id="arista.eos.auth.root_login_enabled",
+                device=parser.device_type,
+                title="The root account is enabled with a password",
+                observation="'aaa root secret' enables the shared root account; the secret is redacted.",
+                impact="Root is a shared superuser account with full access to the underlying Linux system, so its use is not attributable to a named administrator.",
+                exploitability="An attacker who obtains or guesses the root password gains full control of the switch.",
+                recommendation="Run 'no aaa root' and administer the switch with named accounts and centralized AAA; keep a separately protected break-glass account if required.",
+                severity=Severity.MEDIUM,
+                evidence=(evidence,),
+                references=(ARISTA_USER_SECURITY_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+        elif state == "nopassword":
+            self.add_issue(Finding(
+                rule_id="arista.eos.auth.root_login_enabled",
+                device=parser.device_type,
+                title="The root account is enabled without a password",
+                observation="'aaa root nopassword' enables the root account without a password; Arista documents that it can then log in only through the console port.",
+                impact="Anyone with physical or console-server access to the switch gets an unauthenticated superuser shell.",
+                exploitability="Requires console access, including through a terminal server or out-of-band network.",
+                recommendation="Run 'no aaa root' (or set a strong 'aaa root secret' only if root is genuinely required).",
+                severity=Severity.MEDIUM,
+                evidence=(evidence,),
+                references=(ARISTA_USER_SECURITY_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+        remote = eos.get_nopassword_remote_login()
+        if remote is None:
+            return
+        users = sorted(c.account for c in eos.get_credential_metadata() if c.method == "nopassword")
+        if not users:
+            return
+        self.add_issue(Finding(
+            rule_id="arista.eos.auth.nopassword_remote_login",
+            device=parser.device_type,
+            title="Password-less users may log in remotely",
+            observation=(f"'aaa authentication policy local allow-nopassword-remote-login' is set and user(s) "
+                         f"{', '.join(repr(u) for u in users)} have no password; by default EOS limits such users to the console."),
+            impact="Anyone who can reach SSH or other remote management can log in as these users without a password.",
+            exploitability="Requires only network reachability to a management service that uses local authentication.",
+            recommendation="Remove 'allow-nopassword-remote-login' and give every local user a strong secret.",
+            severity=Severity.CRITICAL,
+            evidence=(remote,),
+            references=(ARISTA_USER_SECURITY_GUIDE,),
+            basis=FindingBasis.EXPLICIT_VALUE,
+        ))
+
     def analyze(self, parser: BaseDeviceParser) -> None:
         self.check_management_api(parser)
         self.check_authentication(parser)
         self.check_administrative_policy(parser)
         self.check_ssh_and_authorization(parser)
         self.check_credentials(parser)
+        self.check_root_and_nopassword_login(parser)
         self.check_snmp(parser)
         self.check_operations(parser)
         self.check_control_plane(parser)

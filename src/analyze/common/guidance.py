@@ -203,7 +203,7 @@ _CATALOGUE = (
         "Check whether TCP 4786 is blocked towards this device and whether Smart Install is "
         "still used for deployment.",
     )),
-    (r"^auth\.(root_login_enabled|user_bash_shell|remote_default_admin)$", _G(
+    (r"^auth\.(root_login_enabled|user_bash_shell|remote_default_admin|nopassword_remote_login)$", _G(
         "privileged-access", "authorization",
         "An account has more direct or broader privilege than needed: the root account can log in, an administrator gets a full Linux shell, or every remotely authenticated user becomes an administrator.",
         "An attacker who guesses or phishes one password, even for an ordinary directory account, gets full control of the device and its operating system.",

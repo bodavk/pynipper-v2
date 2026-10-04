@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- SC-030 Arista EOS: `arista.eos.auth.root_login_enabled` (Medium) for `aaa root secret` or console-only `aaa root nopassword`, and `arista.eos.auth.nopassword_remote_login` (Critical) when `allow-nopassword-remote-login` lets password-less users log in remotely. Root secrets are redacted.
+
 - SC-031 Cisco IOS: `cisco.ios.aaa.ldap_cleartext` (High) for LDAP servers used by AAA method lists without `mode secure`; bind credentials are not copied into evidence.
 
 - SC-036 Cisco ASA: `cisco.asa.credentials.url_storage` for `user:password@` URLs (redacted) and `cisco.asa.update.server_unverified` (High) for Auto Update Servers over HTTP, with `no-verification`, or without `verify-certificate` before 9.2(1).

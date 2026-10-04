@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 import shlex
-from typing import Any
+from typing import Any, Optional
 
 from dataclasses import replace
 
@@ -1633,6 +1633,47 @@ class AristaEOSParser(CiscoIOSParser):
             if value.casefold() in {"admin", "arista", "password"}
             else DefaultCredentialAssessment.NO_MATCH
         )
+
+    def get_root_account(self) -> tuple[Optional[str], Optional[ConfigEvidence]]:
+        """Effective ``aaa root`` state: "secret", "nopassword" or None (``no aaa root``/absent).
+
+        EOS User Security guide: ``aaa root secret`` / ``aaa root nopassword``; without a
+        password, root can log in only through the console port. Evidence is redacted.
+        """
+        state, evidence = None, None
+        for command in self.commands:
+            if command.indent:
+                continue
+            lowered = command.text.casefold().split()
+            if lowered[:2] == ["aaa", "root"] and len(lowered) > 2:
+                if lowered[2] == "nopassword":
+                    state = "nopassword"
+                    evidence = self._evidence(command)
+                elif lowered[2] == "secret":
+                    state = "secret"
+                    evidence = ConfigEvidence("aaa root secret <redacted>", self.config_filepath, command.line_number)
+            elif lowered[:3] in (["no", "aaa", "root"], ["default", "aaa", "root"]):
+                state, evidence = None, None
+        return state, evidence
+
+    def get_nopassword_remote_login(self) -> Optional[ConfigEvidence]:
+        """Explicit ``aaa authentication policy local allow-nopassword-remote-login``.
+
+        EOS User Security guide: the default allows password-less usernames to log in
+        only from the console.
+        """
+        evidence = None
+        for command in self.commands:
+            if command.indent:
+                continue
+            folded = " ".join(command.text.casefold().split())
+            if folded == "aaa authentication policy local allow-nopassword-remote-login":
+                evidence = self._evidence(command)
+            elif folded in {"no aaa authentication policy local allow-nopassword-remote-login",
+                            "default aaa authentication policy local allow-nopassword-remote-login",
+                            "no aaa authentication policy local", "default aaa authentication policy local"}:
+                evidence = None
+        return evidence
 
     def get_credential_metadata(self) -> list[CredentialMetadata]:
         credentials: dict[str, CredentialMetadata] = {}
