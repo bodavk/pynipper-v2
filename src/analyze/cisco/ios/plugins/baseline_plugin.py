@@ -12,6 +12,14 @@ from src.devices.common.models import DefaultCredentialAssessment
 CISCO_IOS_HARDENING_GUIDE = (
     "https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html"
 )
+CISCO_XE_SECURITY_WARNINGS = (
+    "https://www.cisco.com/c/en/us/about/trust-center/resilient-infrastructure/"
+    "resilient-infrastructure-security-warnings-reference.html"
+)
+CISCO_XE_TLS_SYSLOG = (
+    "https://www.cisco.com/c/en/us/support/docs/routers/xe-sd-wan-routers/"
+    "222665-sdwan-cisco-ios-xe-tls-syslog-configurat.html"
+)
 CISCO_PPTP_IOS_GUIDE = (
     "https://www.cisco.com/c/en/us/support/docs/ip/point-to-point-tunneling-protocol-pptp/29781-pptp-ios.html"
 )
@@ -1312,6 +1320,56 @@ class PluginIOSBaseline(BasePlugin):
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
+    def check_xe_security_warnings(self, parser: BaseDeviceParser) -> None:
+        """Explicit settings Cisco's IOS XE security-warnings reference flags as insecure."""
+        ios = self._ios(parser)
+        for record in ios.get_logging_tls_profiles():
+            weak = ", ".join(record.weak_versions + record.weak_ciphers)
+            self.add_issue(self._finding(
+                parser, "cisco.ios.logging.remote_weak_tls",
+                "Syslog TLS profile allows weak TLS settings",
+                f"Syslog destination {record.host} uses TLS profile '{record.profile}', which permits: {weak}.",
+                "TLS 1.0/1.1 and CBC-mode SHA-1 suites are deprecated and weaken the protection of log records in transit.",
+                "Set 'tls-version TLSv1.2' (or TLSv1.3) and only GCM/TLS 1.3 cipher suites in the logging TLS profile.",
+                Severity.MEDIUM, record.evidence,
+                (CISCO_XE_SECURITY_WARNINGS, CISCO_XE_TLS_SYSLOG),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+        if ios.is_iosxe():
+            for association in ios.get_ntp_associations():
+                if association.authentication_state != "authenticated" or association.algorithm != "md5":
+                    continue
+                self.add_issue(self._finding(
+                    parser, "cisco.ios.ntp.weak_algorithm",
+                    "NTP authentication uses MD5",
+                    f"NTP {association.role} '{association.address}' in VRF '{association.vrf}' is authenticated with MD5 key '{association.key_id}'.",
+                    "MD5 is cryptographically weak; Cisco IOS XE flags MD5 NTP keys as insecure, and manipulated time affects certificates and log timestamps.",
+                    "Replace the key with an hmac-sha2-256 (or other SHA-2) NTP authentication key and re-bind the association.",
+                    Severity.LOW, association.evidence, (CISCO_XE_SECURITY_WARNINGS,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
+                ))
+        found = ios.get_xe_insecure_feature_lines()
+        specs = {
+            "router odr": ("cisco.ios.routing.odr_enabled", "On-Demand Routing (ODR) is enabled",
+                           "ODR accepts routes learned from unauthenticated, unencrypted CDP messages, so a neighbour can inject routes.",
+                           "Remove 'router odr' and use a routing protocol with authentication.", Severity.MEDIUM),
+            "secure-webauth-disable": ("cisco.ios.webauth.insecure_http", "Web authentication over plain HTTP is allowed",
+                                       "Web-authentication credentials can be sent over unencrypted HTTP and captured on the network.",
+                                       "Remove 'secure-webauth-disable' and serve web authentication over HTTPS with a trusted certificate.",
+                                       Severity.HIGH),
+            "key-hash md5": ("cisco.ios.ssh.weak_pubkey_hash", "SSH public keys are pinned by MD5 hash",
+                             "Administrator SSH public keys are identified by MD5 fingerprints, which are vulnerable to collision attacks.",
+                             "Re-enter the keys with 'key-string' so IOS XE stores a SHA-2 hash.", Severity.LOW),
+        }
+        for command, evidence in found.items():
+            rule, title, impact, recommendation, severity = specs[command]
+            self.add_issue(self._finding(
+                parser, rule, title,
+                f"The configuration contains {len(evidence)} explicit '{command}' setting(s) that Cisco's IOS XE security-warnings reference marks as insecure.",
+                impact, recommendation, severity, evidence, (CISCO_XE_SECURITY_WARNINGS,),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+
     def check_smart_install(self, parser: BaseDeviceParser) -> None:
         """SC-025: Smart Install accepts unauthenticated configuration and image changes."""
         state, evidence = self._ios(parser).get_smart_install()
@@ -2477,6 +2535,7 @@ class PluginIOSBaseline(BasePlugin):
         self.check_smart_install(parser)
         self.check_pptp_dialin(parser)
         self.check_ppp_pap(parser)
+        self.check_xe_security_warnings(parser)
         self.check_ike_aggressive_mode(parser)
         self.check_tacacs_keys(parser)
         self.check_http_tls(parser)

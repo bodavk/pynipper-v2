@@ -69,6 +69,17 @@ class IOSPPPPapInterface:
 
 
 @dataclass(frozen=True)
+class IOSLoggingTLSProfile:
+    """A ``logging tls-profile`` bound to a ``logging host ... transport tls`` destination."""
+
+    host: str
+    profile: str
+    weak_versions: tuple[str, ...]
+    weak_ciphers: tuple[str, ...]
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
 class NumericSetting:
     value: Optional[int]
     configured: bool
@@ -1002,6 +1013,92 @@ class CiscoIOSParser(BaseDeviceParser):
                 evidence=tuple(evidence),
             ))
         return records
+
+    _WEAK_LOGGING_TLS_VERSIONS = {"tlsv1.0", "tlsv1.1", "tlsv1"}
+
+    def get_logging_tls_profiles(self) -> list[IOSLoggingTLSProfile]:
+        """Bound syslog TLS profiles with TLS 1.0/1.1 or CBC-SHA1 cipher suites.
+
+        Syntax: ``logging host <addr> ... transport tls profile <name>`` and a
+        ``logging tls-profile <name>`` block with ``tls-version`` / ``ciphersuite``
+        (Cisco IOS XE TLS syslog configuration example; weak values per the Cisco
+        Resilient Infrastructure IOS XE Security Warnings Reference).
+        """
+        profiles: dict[str, tuple[ConfigEvidence, list[tuple[str, ConfigEvidence]]]] = {}
+        for header, line, children in self._indented_blocks("logging tls-profile "):
+            name = header.split()[2] if len(header.split()) > 2 else ""
+            if name:
+                profiles[name] = (
+                    ConfigEvidence(header, self.config_filepath, line),
+                    [(child.lower(), ConfigEvidence(child, self.config_filepath, number))
+                     for number, _, child in children],
+                )
+        records = []
+        for number, raw in enumerate(self.parser.ioscfg, start=1):
+            if raw[:1].isspace():
+                continue
+            tokens = raw.split()
+            folded = [token.lower() for token in tokens]
+            if folded[:2] != ["logging", "host"] or "tls" not in folded or "profile" not in folded:
+                continue
+            index = folded.index("profile")
+            if index + 1 >= len(tokens) or tokens[index + 1] not in profiles:
+                continue
+            name = tokens[index + 1]
+            header_evidence, children = profiles[name]
+            versions, ciphers, evidence = [], [], []
+            for text, item in children:
+                parts = text.split()
+                if parts[:1] == ["tls-version"]:
+                    weak = [part for part in parts[1:] if part in self._WEAK_LOGGING_TLS_VERSIONS]
+                    if weak:
+                        versions.extend(weak)
+                        evidence.append(item)
+                elif parts[:1] == ["ciphersuite"]:
+                    weak = [part for part in parts[1:] if "cbc" in part and part.endswith("-sha")]
+                    if weak:
+                        ciphers.extend(weak)
+                        evidence.append(item)
+            if not versions and not ciphers:
+                continue
+            records.append(IOSLoggingTLSProfile(
+                host=tokens[2] if len(tokens) > 2 else "",
+                profile=name,
+                weak_versions=tuple(versions),
+                weak_ciphers=tuple(ciphers),
+                evidence=(ConfigEvidence(raw.strip(), self.config_filepath, number), header_evidence, *evidence),
+            ))
+        return records
+
+    def get_xe_insecure_feature_lines(self) -> dict[str, tuple[ConfigEvidence, ...]]:
+        """Explicit commands Cisco's IOS XE security-warnings reference marks insecure.
+
+        ``router odr`` and ``secure-webauth-disable`` are effective top-level
+        toggles (last statement wins); ``key-hash ssh-rsa`` entries with a 32-hex
+        (MD5) fingerprint under ``ip ssh pubkey-chain`` are listed individually.
+        """
+        found: dict[str, tuple[ConfigEvidence, ...]] = {}
+        for command in ("router odr", "secure-webauth-disable"):
+            state = None
+            for number, raw in enumerate(self.parser.ioscfg, start=1):
+                if raw[:1].isspace():
+                    continue
+                folded = " ".join(raw.split()).lower()
+                if folded == command or folded.startswith(command + " "):
+                    state = ConfigEvidence(raw.strip(), self.config_filepath, number)
+                elif folded == "no " + command:
+                    state = None
+            if state is not None:
+                found[command] = (state,)
+        hashes = []
+        for header, _, children in self._indented_blocks("ip ssh pubkey-chain"):
+            for number, _, child in children:
+                match = re.fullmatch(r"key-hash\s+ssh-rsa\s+([0-9a-fA-F]{32})(?:\s+\S+)?", child)
+                if match:
+                    hashes.append(ConfigEvidence(child, self.config_filepath, number))
+        if hashes:
+            found["key-hash md5"] = tuple(hashes)
+        return found
 
     def _last_global_match(self, pattern: str) -> Optional[re.Match]:
         expression = re.compile(pattern)

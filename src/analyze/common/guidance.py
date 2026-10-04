@@ -587,6 +587,20 @@ _CATALOGUE = (
         "PPTP has been superseded by stronger VPN protocols. Enabling the gateway is a configuration risk even though user authentication and network exposure require separate assessment.",
         "Confirm whether any clients still depend on PPTP, migrate them to a supported secure VPN, and disable the gateway.",
     )),
+    (r"^routing\.odr_enabled$", _G(
+        "routing-odr", "routing",
+        "On-Demand Routing learns routes from CDP announcements.",
+        "A device on an attached segment sends crafted CDP messages and becomes the default route for the router's traffic.",
+        "CDP is neither authenticated nor encrypted; Cisco marks ODR as a legacy, insecure feature.",
+        "Remove 'router odr' and use an authenticated routing protocol or static routes.",
+    )),
+    (r"^webauth\.insecure_http$", _G(
+        "webauth-http", "authentication",
+        "Web-based network-access authentication may run over plain HTTP.",
+        "A user on the access network logs in through the web portal; an attacker on the same segment captures the username and password.",
+        "HTTP provides no confidentiality; Cisco flags 'secure-webauth-disable' as an insecure configuration.",
+        "Remove 'secure-webauth-disable' and serve web authentication only over HTTPS with a trusted certificate.",
+    )),
     (r"^ppp\.pap_authentication$", _G(
         "ppp-pap", "vpn",
         "A PPP link authenticates with PAP, which sends the username and password in clear text.",
