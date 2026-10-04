@@ -582,10 +582,17 @@ _CATALOGUE = (
     # VPN -----------------------------------------------------------------------------------------
     (r"^vpn\.pptp_gateway$", _G(
         "legacy-pptp-gateway", "vpn",
-        "The FortiGate is explicitly configured to act as a PPTP VPN gateway.",
+        "The device is explicitly configured to act as a PPTP VPN gateway.",
         "A client that can reach the gateway may negotiate a legacy VPN protocol; this export does not prove that the listener is reachable or that a login succeeds.",
         "PPTP has been superseded by stronger VPN protocols. Enabling the gateway is a configuration risk even though user authentication and network exposure require separate assessment.",
         "Confirm whether any clients still depend on PPTP, migrate them to a supported secure VPN, and disable the gateway.",
+    )),
+    (r"^ppp\.pap_authentication$", _G(
+        "ppp-pap", "vpn",
+        "A PPP link authenticates with PAP, which sends the username and password in clear text.",
+        "Someone who can observe the link or the provider access network captures the PAP password and reuses it.",
+        "Cisco documents PAP as not secure: passwords cross the link in clear text with no replay protection. CHAP never sends the password itself.",
+        "Switch the link to CHAP or EAP where the peer supports it and remove PAP from the method list and sent-username configuration.",
     )),
     (r"^vpn\.pptp_client$", _G(
         "legacy-pptp-client", "vpn",

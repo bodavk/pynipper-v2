@@ -49,6 +49,26 @@ class ConfigurationState(str, Enum):
 
 
 @dataclass(frozen=True)
+class IOSPPTPDialin:
+    """A VPDN group that accepts PPTP dial-in while VPDN is globally enabled."""
+
+    group: str
+    virtual_template: Optional[str]
+    authentication: tuple[str, ...]
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class IOSPPPPapInterface:
+    """An active PPP link interface that uses or sends PAP credentials."""
+
+    interface: str
+    methods: tuple[str, ...]
+    sends_pap: bool
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
 class NumericSetting:
     value: Optional[int]
     configured: bool
@@ -865,6 +885,123 @@ class CiscoIOSParser(BaseDeviceParser):
                 state = True
                 evidence.append(line)
         return state, tuple(evidence)
+
+    def get_pptp_dialin_groups(self) -> list[IOSPPTPDialin]:
+        """SC-013: VPDN groups accepting PPTP (``protocol pptp`` or ``any``) dial-in.
+
+        Syntax per Cisco "Configuring the Cisco Router and VPN Clients Using PPTP and
+        MPPE": global ``vpdn enable``, ``vpdn-group`` > ``accept-dialin`` > ``protocol
+        pptp`` and ``virtual-template``. VPDN is disabled unless ``vpdn enable`` is in
+        effect. ``authentication`` is the cloned Virtual-Template's explicit
+        ``ppp authentication`` method list (empty when absent or unresolved).
+        """
+        enabled = None
+        for number, raw in enumerate(self.parser.ioscfg, start=1):
+            if raw[:1].isspace():
+                continue
+            folded = raw.strip().lower()
+            if folded == "vpdn enable":
+                enabled = ConfigEvidence(raw.strip(), self.config_filepath, number)
+            elif folded == "no vpdn enable":
+                enabled = None
+        if enabled is None:
+            return []
+        templates: dict[str, tuple[str, ...]] = {}
+        for header, _, children in self._indented_blocks("interface "):
+            match = re.fullmatch(r"interface\s+virtual-template\s*(\d+)", header, re.IGNORECASE)
+            if not match:
+                continue
+            methods: tuple[str, ...] = ()
+            for _, _, child in children:
+                tokens = child.lower().split()
+                if tokens[:2] == ["ppp", "authentication"]:
+                    methods = tuple(token for token in tokens[2:] if token in {"pap", "chap", "ms-chap", "ms-chap-v2", "eap"})
+                elif tokens[:3] == ["no", "ppp", "authentication"]:
+                    methods = ()
+            templates[match.group(1)] = methods
+        groups = []
+        for header, line, children in self._indented_blocks("vpdn-group "):
+            in_dialin, dialin_indent, pptp, template = False, 0, None, None
+            evidence = [enabled, ConfigEvidence(header, self.config_filepath, line)]
+            for number, indent, child in children:
+                folded = child.lower()
+                if folded == "accept-dialin":
+                    in_dialin, dialin_indent = True, indent
+                    evidence.append(ConfigEvidence(child, self.config_filepath, number))
+                    continue
+                if in_dialin and indent <= dialin_indent:
+                    in_dialin = False
+                if not in_dialin:
+                    continue
+                if folded in {"protocol pptp", "protocol any"}:
+                    pptp = ConfigEvidence(child, self.config_filepath, number)
+                elif folded.startswith("protocol "):
+                    pptp = None
+                elif re.fullmatch(r"virtual-template\s+\d+", folded):
+                    template = folded.split()[1]
+                    evidence.append(ConfigEvidence(child, self.config_filepath, number))
+            if pptp is None:
+                continue
+            evidence.insert(3, pptp)
+            groups.append(IOSPPTPDialin(
+                group=header.split(None, 1)[1],
+                virtual_template=template,
+                authentication=templates.get(template, ()) if template else (),
+                evidence=tuple(evidence),
+            ))
+        return groups
+
+    _PPP_LINK_INTERFACE = re.compile(
+        r"interface\s+((?:serial|dialer|async|bri|multilink)\S*)", re.IGNORECASE
+    )
+
+    def get_ppp_pap_interfaces(self) -> list[IOSPPPPapInterface]:
+        """SC-013: PAP on active physical/dialer PPP links.
+
+        Virtual-Template/Virtual-Access interfaces are excluded because their PPP
+        session may run inside a protected tunnel. ``ppp pap sent-username`` lines are
+        represented with the credential redacted.
+        """
+        records = []
+        for header, line, children in self._indented_blocks("interface "):
+            match = self._PPP_LINK_INTERFACE.fullmatch(header)
+            if not match:
+                continue
+            shutdown, ppp, methods, sends = False, False, (), None
+            auth_evidence = None
+            for number, _, child in children:
+                tokens = child.lower().split()
+                if tokens == ["shutdown"]:
+                    shutdown = True
+                elif tokens == ["no", "shutdown"]:
+                    shutdown = False
+                elif tokens[:2] == ["encapsulation", "ppp"]:
+                    ppp = True
+                elif tokens[:1] == ["encapsulation"]:
+                    ppp = False
+                elif tokens[:2] == ["ppp", "authentication"]:
+                    methods = tuple(t for t in tokens[2:] if t in {"pap", "chap", "ms-chap", "ms-chap-v2", "eap"})
+                    auth_evidence = ConfigEvidence(child, self.config_filepath, number)
+                elif tokens[:3] == ["no", "ppp", "authentication"]:
+                    methods, auth_evidence = (), None
+                elif tokens[:3] == ["ppp", "pap", "sent-username"]:
+                    sends = ConfigEvidence("ppp pap sent-username <redacted>", self.config_filepath, number)
+                elif tokens[:4] == ["no", "ppp", "pap", "sent-username"]:
+                    sends = None
+            if shutdown or not ppp or ("pap" not in methods and sends is None):
+                continue
+            evidence = [ConfigEvidence(header, self.config_filepath, line)]
+            if "pap" in methods and auth_evidence is not None:
+                evidence.append(auth_evidence)
+            if sends is not None:
+                evidence.append(sends)
+            records.append(IOSPPPPapInterface(
+                interface=match.group(1),
+                methods=methods if "pap" in methods else (),
+                sends_pap=sends is not None,
+                evidence=tuple(evidence),
+            ))
+        return records
 
     def _last_global_match(self, pattern: str) -> Optional[re.Match]:
         expression = re.compile(pattern)

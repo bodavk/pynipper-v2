@@ -12,6 +12,12 @@ from src.devices.common.models import DefaultCredentialAssessment
 CISCO_IOS_HARDENING_GUIDE = (
     "https://www.cisco.com/c/en/us/support/docs/ip/access-lists/13608-21.html"
 )
+CISCO_PPTP_IOS_GUIDE = (
+    "https://www.cisco.com/c/en/us/support/docs/ip/point-to-point-tunneling-protocol-pptp/29781-pptp-ios.html"
+)
+CISCO_PAP_GUIDE = (
+    "https://www.cisco.com/c/en/us/support/docs/wan/point-to-point-protocol-ppp/10313-config-pap.html"
+)
 CISCO_SMART_INSTALL_ADVISORY = (
     "https://www.cisco.com/c/en/us/support/docs/csa/cisco-sa-20180409-smi.html"
 )
@@ -1254,6 +1260,58 @@ class PluginIOSBaseline(BasePlugin):
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
+    def check_pptp_dialin(self, parser: BaseDeviceParser) -> None:
+        """SC-013: explicitly configured PPTP dial-in; reachability and logins are not proven."""
+        for group in self._ios(parser).get_pptp_dialin_groups():
+            template = (f"Virtual-Template{group.virtual_template}" if group.virtual_template
+                        else "no virtual-template")
+            if group.authentication:
+                auth = f" The template's PPP authentication order is {' '.join(group.authentication)}"
+                auth += (", which permits PAP (cleartext passwords inside the tunnel)." if "pap" in group.authentication
+                         else ".")
+            else:
+                auth = " No explicit PPP authentication method was resolved on the template."
+            self.add_issue(Finding(
+                rule_id="cisco.ios.vpn.pptp_gateway",
+                device=parser.device_type,
+                title="Legacy PPTP VPN dial-in is enabled",
+                observation=(f"VPDN is enabled and vpdn-group '{group.group}' accepts PPTP dial-in using {template}."
+                             + auth + " External reachability and successful client authentication are not established by this export."),
+                impact="PPTP relies on MS-CHAP/MPPE or weaker methods; captured sessions can be cracked offline and the protocol is deprecated.",
+                exploitability="A client that can reach TCP 1723 and GRE on the router may negotiate the legacy protocol.",
+                recommendation="Migrate remote access to IKEv2/IPsec or another supported VPN and remove 'protocol pptp' from the VPDN group (or 'no vpdn enable').",
+                severity=Severity.HIGH,
+                evidence=group.evidence,
+                references=(CISCO_PPTP_IOS_GUIDE, CISCO_PAP_GUIDE),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+
+    def check_ppp_pap(self, parser: BaseDeviceParser) -> None:
+        """SC-013: PAP sends passwords in clear text across the PPP link (Cisco PAP guide)."""
+        for record in self._ios(parser).get_ppp_pap_interfaces():
+            parts = []
+            if record.methods:
+                position = ("as the first method" if record.methods[0] == "pap"
+                            else "as a fallback after " + ", ".join(record.methods[:record.methods.index("pap")]))
+                parts.append(f"accepts PAP {position} (ppp authentication {' '.join(record.methods)})")
+            if record.sends_pap:
+                parts.append("sends its own PAP credentials to the peer (ppp pap sent-username)")
+            first = bool(record.methods) and record.methods[0] == "pap"
+            self.add_issue(Finding(
+                rule_id="cisco.ios.ppp.pap_authentication",
+                device=parser.device_type,
+                title="PPP link uses cleartext PAP authentication",
+                observation=(f"Active PPP interface {record.interface} " + " and ".join(parts)
+                             + ". Whether the underlying link or access network is otherwise protected is not established by this export."),
+                impact="PAP passwords cross the link in clear text with no protection against replay or guessing, so anyone able to observe the link or access network can capture them.",
+                exploitability="Requires the ability to observe or intercept traffic on the PPP link or the PPPoE/access network.",
+                recommendation="Use CHAP (or EAP) for PPP authentication and remove PAP from the method list and 'ppp pap sent-username', unless the provider requires PAP and the path is otherwise protected.",
+                severity=Severity.MEDIUM if first or record.sends_pap else Severity.LOW,
+                evidence=record.evidence,
+                references=(CISCO_PAP_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+
     def check_smart_install(self, parser: BaseDeviceParser) -> None:
         """SC-025: Smart Install accepts unauthenticated configuration and image changes."""
         state, evidence = self._ios(parser).get_smart_install()
@@ -2417,6 +2475,8 @@ class PluginIOSBaseline(BasePlugin):
         self.check_unnecessary_services(parser)
         self.check_programmability_api_acls(parser)
         self.check_smart_install(parser)
+        self.check_pptp_dialin(parser)
+        self.check_ppp_pap(parser)
         self.check_ike_aggressive_mode(parser)
         self.check_tacacs_keys(parser)
         self.check_http_tls(parser)

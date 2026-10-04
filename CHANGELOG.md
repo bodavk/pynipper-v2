@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- SC-013 Cisco IOS: report PPTP dial-in (`cisco.ios.vpn.pptp_gateway`, High) for an enabled VPDN group accepting PPTP, with the virtual template's PPP authentication order, and PAP on active physical/dialer PPP links (`cisco.ios.ppp.pap_authentication`; Medium when first or sent by the router, Low as a fallback). PAP credentials are redacted; virtual-template PAP stays ungraded.
+
 - FortiOS: flag explicit `admin-forticloud-sso-login enable` in `config system global` on releases affected by FG-IR-26-060 / FG-IR-25-647 (Critical; High when the release is unknown; fixed in 7.0.19, 7.2.13, 7.4.11, 7.6.6), and report administrator names matching the advisory's published post-exploitation account indicators. Flag a disabled or absent `pre-login-banner` on releases 6.4.14 and later (documented default `disable`).
 
 - SC-037 FortiOS: report SNMPv1/v2c trap targets (`fortinet.fortios.snmp.legacy_version`, Medium) for enabled communities with trap status enabled and a single-host trap-capable manager, in scopes where polling is not already reported as `snmp.legacy_community`; omitted trap status and host type use the documented `enable`/`any` defaults.
