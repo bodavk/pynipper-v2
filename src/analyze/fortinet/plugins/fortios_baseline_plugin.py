@@ -298,6 +298,8 @@ class PluginFortiOSBaseline(BasePlugin):
             "hmac-sha1",
             "hmac-sha1-96",
         },
+        # 7.4.1 CLI reference: optional ssh-rsa (SHA-1 signatures) is not in the default set.
+        "ssh-hostkey-algo": {"ssh-rsa"},
     }
 
     @staticmethod
