@@ -20,6 +20,7 @@ SECURE_CONFIG = '''#config-version=FGT100F-7.2.11-FW-build0001-240101:opmode=0:v
 config system global
 set hostname edge-fw
 set admin-maintainer disable
+set pre-login-banner enable
 set strong-crypto enable
 set ssl-static-key-ciphers disable
 set dh-params 4096

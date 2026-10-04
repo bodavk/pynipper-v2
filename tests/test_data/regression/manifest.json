@@ -221,6 +221,7 @@
         "fortinet.fortios.admin.session_timeout",
         "fortinet.fortios.admin.trusted_hosts",
         "fortinet.fortios.api.trusted_hosts",
+        "fortinet.fortios.banner.login_disabled",
         "fortinet.fortios.credentials.private_data_storage",
         "fortinet.fortios.crypto.admin_ssh_v1",
         "fortinet.fortios.crypto.dh_parameters",
@@ -244,7 +245,7 @@
         "fortinet.fortios.tls.minimum_version",
         "fortinet.fortios.vpn.ike_aggressive_mode"
       ],
-      "expected_finding_count": 31
+      "expected_finding_count": 32
     },
     {
       "name": "fortios-secure",
@@ -265,8 +266,8 @@
         "policy_version": "regression-v1",
         "protected_aaa_profiles": ["root:LEGACY-PROTECTED"]
       },
-      "expected_rule_ids": ["fortinet.fortios.credentials.private_data_storage", "fortinet.fortios.logging.remote_cleartext"],
-      "expected_finding_count": 2
+      "expected_rule_ids": ["fortinet.fortios.banner.login_disabled", "fortinet.fortios.credentials.private_data_storage", "fortinet.fortios.logging.remote_cleartext"],
+      "expected_finding_count": 3
     },
     {
       "name": "junos-vulnerable",
@@ -420,12 +421,13 @@
       "input": "fortios/syntax_variants.conf",
       "expected_rule_ids": [
         "fortinet.fortios.admin.centralized_authentication",
+        "fortinet.fortios.banner.login_disabled",
         "fortinet.fortios.dos.wan_policy_missing",
         "fortinet.fortios.https.management_certificate",
         "fortinet.fortios.logging.remote_cleartext",
         "fortinet.fortios.policy.disabled_permissive_rule"
       ],
-      "expected_finding_count": 5
+      "expected_finding_count": 6
     },
     {
       "name": "junos-hierarchical-variant",

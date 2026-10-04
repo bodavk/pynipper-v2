@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- FortiOS: flag explicit `admin-forticloud-sso-login enable` in `config system global` on releases affected by FG-IR-26-060 / FG-IR-25-647 (Critical; High when the release is unknown; fixed in 7.0.19, 7.2.13, 7.4.11, 7.6.6), and report administrator names matching the advisory's published post-exploitation account indicators. Flag a disabled or absent `pre-login-banner` on releases 6.4.14 and later (documented default `disable`).
+
+- SC-037 FortiOS: report SNMPv1/v2c trap targets (`fortinet.fortios.snmp.legacy_version`, Medium) for enabled communities with trap status enabled and a single-host trap-capable manager, in scopes where polling is not already reported as `snmp.legacy_community`; omitted trap status and host type use the documented `enable`/`any` defaults.
+
 - SC-046 IPv6 management ACL stage: independently resolve active IOS/IOS-XE VTY IPv6 access-class and IOS-XE WebUI IPv6 access-class attachments. Prove bounded permit-all IPv6 ACLs with ordered entries/removals, keep restrictive/unsupported/unresolved states distinct, and surface unresolved active attachments as sanitized manual-review coverage rather than vulnerability findings.
 
 - SC-005 Cisco IS-IS: resolve active, explicitly leveled IOS/IOS-XE process/interface bindings into separate hello and link-state database authentication records. Detect configured send-only receive bypass, cleartext mode or legacy passwords, and MD5 modes without an effective exported key chain; redact IS-IS passwords in all finding evidence and leave omitted or ambiguous authentication ungraded.

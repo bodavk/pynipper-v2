@@ -121,6 +121,21 @@ FORTINET_PASSWORD_6414_REFERENCE = (
     "https://docs.fortinet.com/document/fortigate/6.4.14/cli-reference/10620/config-system-password-policy"
 )
 FORTINET_BLASTRADIUS_ADVISORY = "https://www.fortiguard.com/psirt/FG-IR-24-255"
+FORTINET_SNMP_COMMUNITY_741_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.4.1/cli-reference/54620/config-system-snmp-community"
+)
+FORTINET_FORTICLOUD_SSO_ADVISORY = "https://www.fortiguard.com/psirt/FG-IR-26-060"
+FORTINET_FORTICLOUD_SAML_ADVISORY = "https://www.fortiguard.com/psirt/FG-IR-25-647"
+FORTINET_GLOBAL_741_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.4.1/cli-reference/1620/config-system-global"
+)
+# FG-IR-26-060 (CVE-2026-24858, exploited): first fixed release per affected train.
+_FORTICLOUD_SSO_FIXED = {(7, 0): (7, 0, 19), (7, 2): (7, 2, 13), (7, 4): (7, 4, 11), (7, 6): (7, 6, 6)}
+# Admin account names the advisory lists as created by the attackers.
+_FORTICLOUD_SSO_IOC_ACCOUNTS = frozenset({
+    "audit", "backup", "itadmin", "secadmin", "support", "backupadmin", "deploy",
+    "remoteadmin", "security", "svcadmin", "system", "adccount",
+})
 FORTINET_SSLVPN_REFERENCE = (
     "https://docs.fortinet.com/document/fortigate/7.4.4/cli-reference/114404382/config-vpn-ssl-settings"
 )
@@ -765,6 +780,87 @@ class PluginFortiOSBaseline(BasePlugin):
                     evidence,
                     references,
                 ))
+
+    def check_snmp_trap_targets(self, parser: BaseDeviceParser) -> None:
+        """SC-037: v1/v2c trap targets in scopes not already graded by snmp.legacy_community.
+
+        Documented defaults (7.4.1 CLI reference): community status enable,
+        trap-v1-status/trap-v2c-status enable, host-type any; no traps are sent
+        when a host entry is a subnet, so only single-host targets are graded.
+        """
+        fortios = self._fortios(parser)
+        agent_disabled_scopes = {
+            scope
+            for scope, settings, _ in fortios.iter_scoped_sections("system snmp sysinfo")
+            if self._text(settings.get("status"), "disable").lower() == "disable"
+        }
+        if "global" in agent_disabled_scopes:
+            return
+        polled_scopes = {
+            scope
+            for scope, name, settings, path in fortios.iter_interfaces()
+            if self._enabled(settings)
+            and "snmp" in {value.lower() for value in self._values(settings, "allowaccess")}
+        }
+        for scope, section, path in fortios.iter_scoped_sections("system snmp community"):
+            if scope in agent_disabled_scopes or scope in polled_scopes:
+                continue
+            for key, settings in section.items():
+                if not isinstance(settings, dict) or not self._enabled(settings):
+                    continue
+                versions = [
+                    label
+                    for label, field in (("v1", "trap-v1-status"), ("v2c", "trap-v2c-status"))
+                    if self._text(settings.get(field), "enable").lower() == "enable"
+                ]
+                if not versions:
+                    continue
+                targets = 0
+                for table, host_mask in (("hosts", "255.255.255.255"), ("hosts6", None)):
+                    hosts = settings.get(table)
+                    if not isinstance(hosts, dict):
+                        continue
+                    for host in hosts.values():
+                        if not isinstance(host, dict):
+                            continue
+                        if self._text(host.get("host-type"), "any").lower() not in {"any", "trap"}:
+                            continue
+                        address = self._values(host, "ip6" if table == "hosts6" else "ip")
+                        if not address:
+                            continue
+                        if host_mask is not None:
+                            if len(address) > 1 and address[1] not in {host_mask, "32"} and not address[0].endswith("/32"):
+                                continue
+                            if "/" in address[0] and not address[0].endswith("/32"):
+                                continue
+                        elif "/" in address[0] and not address[0].endswith("/128"):
+                            continue
+                        targets += 1
+                if not targets:
+                    continue
+                secret = self._text(settings.get("name"))
+                community_evidence = tuple(
+                    replace(item, text=item.text.replace(secret, "<redacted>") if secret else item.text)
+                    for item in fortios.field_evidence(path + (str(key),))
+                ) or ("system snmp community <redacted>",)
+                explicit = all(settings.get(f"trap-{v}-status") is not None for v in versions)
+                self.add_issue(
+                    self._finding(
+                        parser,
+                        "fortinet.fortios.snmp.legacy_version",
+                        "SNMPv1/v2c traps are sent with a community string",
+                        f"Community entry {key} in scope '{scope}' sends SNMP {'/'.join(versions)} traps to "
+                        f"{targets} host target(s); the community name is redacted.",
+                        "SNMPv1/v2c notifications carry the community string in clear text and have no "
+                        "message authentication or privacy.",
+                        "Send notifications from an SNMPv3 authPriv user (config system snmp user with "
+                        "trap-status enable) and disable trap-v1-status/trap-v2c-status on the community.",
+                        Severity.MEDIUM,
+                        community_evidence,
+                        (FORTINET_SNMP_COMMUNITY_741_REFERENCE, FORTINET_HARDENING),
+                        basis=FindingBasis.EXPLICIT_VALUE if explicit else FindingBasis.DOCUMENTED_DEFAULT,
+                    )
+                )
 
     def check_snmp(self, parser: BaseDeviceParser) -> None:
         fortios = self._fortios(parser)
@@ -2048,6 +2144,7 @@ class PluginFortiOSBaseline(BasePlugin):
         self.check_management_crypto(parser)
         self.check_management_certificates(parser)
         self.check_snmp(parser)
+        self.check_snmp_trap_targets(parser)
         self.check_logging_and_policy_profiles(parser)
         self.check_syslog_transport(parser)
         self.check_syslog_severity(parser)
@@ -2075,6 +2172,92 @@ class PluginFortiOSBaseline(BasePlugin):
         self.check_fortianalyzer_transport(parser)
         self.check_admin_password_hashes(parser)
         self.check_release_defaults(parser)
+        self.check_forticloud_sso(parser)
+        self.check_login_banner(parser)
+
+    def check_forticloud_sso(self, parser: BaseDeviceParser) -> None:
+        """FortiCloud SSO administrator login on releases affected by FG-IR-26-060 / FG-IR-25-647.
+
+        The feature is off in factory defaults but GUI FortiCare registration enables it unless
+        the toggle is cleared (FG-IR-25-647). Only an explicit 'enable' is graded; the
+        advisories' workaround is 'set admin-forticloud-sso-login disable'.
+        """
+        fortios = self._fortios(parser)
+        release = self._release(fortios)
+        affected = None
+        if release:
+            fixed = _FORTICLOUD_SSO_FIXED.get(release[:2])
+            affected = bool(fixed and release < fixed)
+        for scope, settings, path in fortios.iter_scoped_sections("system global"):
+            if self._text(settings.get("admin-forticloud-sso-login")).lower() != "enable":
+                continue
+            if affected is False:
+                continue  # fixed release: the setting itself is a supported feature
+            label = ".".join(map(str, release)) if release else "an unidentified release"
+            evidence = self._evidence(fortios, path + ("admin-forticloud-sso-login",), "set admin-forticloud-sso-login enable")
+            self.add_issue(self._finding(
+                parser,
+                "fortinet.fortios.admin.forticloud_sso_login",
+                "FortiCloud SSO administrator login is enabled on a vulnerable release" if affected
+                else "FortiCloud SSO administrator login is enabled; release not identified",
+                (f"Scope '{scope}' enables admin-forticloud-sso-login on FortiOS {label}. "
+                 + ("This release is affected by FG-IR-26-060 (CVE-2026-24858, exploited in the wild): an attacker "
+                    "with any FortiCloud account can log in as an administrator."
+                    if affected else
+                    "Releases 7.0.0-7.0.18, 7.2.0-7.2.12, 7.4.0-7.4.10 and 7.6.0-7.6.5 allow a FortiCloud SSO "
+                    "authentication bypass (FG-IR-26-060).")),
+                "An unauthenticated or unrelated FortiCloud user can obtain full administrative access to the firewall.",
+                ("Upgrade to 7.0.19, 7.2.13, 7.4.11, 7.6.6 or later; until then run "
+                 "'config system global / set admin-forticloud-sso-login disable', and review administrator accounts and logs."),
+                Severity.CRITICAL if affected else Severity.HIGH,
+                evidence,
+                (FORTINET_FORTICLOUD_SSO_ADVISORY, FORTINET_FORTICLOUD_SAML_ADVISORY),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+            if affected:
+                suspicious = sorted(
+                    username for _, username, _, _ in fortios.iter_administrators()
+                    if username.casefold() in _FORTICLOUD_SSO_IOC_ACCOUNTS
+                )
+                if suspicious:
+                    self.add_issue(self._finding(
+                        parser,
+                        "fortinet.fortios.admin.forticloud_sso_ioc_account",
+                        "Administrator names match accounts created in FortiCloud SSO attacks",
+                        (f"Administrator account(s) {', '.join(suspicious)} match names that FG-IR-26-060 lists as "
+                         "created by attackers, on a release with FortiCloud SSO login enabled and affected."),
+                        "If the accounts were not created by your administrators, the firewall may already be compromised.",
+                        "Confirm who created each account (event logs, change records); remove unknown accounts, rotate all credentials and follow Fortinet's incident guidance.",
+                        Severity.MEDIUM,
+                        tuple(f"config system admin / edit {name}" for name in suspicious),
+                        (FORTINET_FORTICLOUD_SSO_ADVISORY,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
+                    ))
+
+    def check_login_banner(self, parser: BaseDeviceParser) -> None:
+        """Pre-login administrator disclaimer; CLI reference 6.4.14-7.4.1 default 'disable'."""
+        fortios = self._fortios(parser)
+        release = self._release(fortios)
+        if not release or release < (6, 4, 14):
+            return
+        for scope, settings, path in fortios.iter_scoped_sections("system global"):
+            value = self._text(settings.get("pre-login-banner")).lower()
+            if value == "enable":
+                continue
+            explicit = value == "disable"
+            self.add_issue(self._finding(
+                parser,
+                "fortinet.fortios.banner.login_disabled",
+                "Administrator login banner is disabled",
+                f"Scope '{scope}' " + ("sets pre-login-banner disable." if explicit else
+                                       "does not set pre-login-banner; the documented default is disable."),
+                "Administrators are not shown an authorized-use notice before logging in, which can weaken legal action after misuse.",
+                "Run 'config system global / set pre-login-banner enable' and set the approved text in 'config system replacemsg admin pre_admin-disclaimer-text'.",
+                Severity.LOW,
+                self._evidence(fortios, path + ("pre-login-banner",), "pre-login-banner absent: default disable"),
+                (FORTINET_GLOBAL_741_REFERENCE, FORTINET_GLOBAL_6414_REFERENCE),
+                basis=FindingBasis.EXPLICIT_VALUE if explicit else FindingBasis.DOCUMENTED_DEFAULT,
+            ))
 
     def check_release_defaults(self, parser: BaseDeviceParser) -> None:
         """SC-044 FOS-01/02/03/04/05/07/13: global defaults that differ by release."""

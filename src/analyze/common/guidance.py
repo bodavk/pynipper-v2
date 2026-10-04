@@ -274,7 +274,7 @@ _CATALOGUE = (
         "replace the certificate with one issued by your internal CA for the correct name.",
     )),
     # Authentication and authorization -----------------------------------------------
-    (r"^(ssh\.(empty_passwords|root_login|root_login_permitted)|(vty|console|auxiliary|http)\.authentication|authentication\.(super_user|unauthenticated_method)|admin\.(unauthenticated_method|maintainer_account)|vty\.(authorization_bypass|aaa_server_group_unusable)|aaa\.(new_model|login_authentication|management_authentication)|admin\.authentication_profile_unresolved|auth\.active_remote_servers_none|authentication\.server_reference|remote_access\.client_certificate_missing)$", _G(
+    (r"^(ssh\.(empty_passwords|root_login|root_login_permitted)|(vty|console|auxiliary|http)\.authentication|authentication\.(super_user|unauthenticated_method)|admin\.(unauthenticated_method|maintainer_account|forticloud_sso_login|forticloud_sso_ioc_account)|vty\.(authorization_bypass|aaa_server_group_unusable)|aaa\.(new_model|login_authentication|management_authentication)|admin\.authentication_profile_unresolved|auth\.active_remote_servers_none|authentication\.server_reference|remote_access\.client_certificate_missing)$", _G(
         "authentication-missing", "authentication",
         "A way to log in to the device is not protected by a proper authentication method: it "
         "may allow an empty password, a direct root login, a method that always succeeds, or "

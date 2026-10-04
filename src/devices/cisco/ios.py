@@ -1591,6 +1591,32 @@ class CiscoIOSParser(BaseDeviceParser):
                     value = None
         return value
 
+    def has_qualified_ipv6_web_listener(self) -> bool:
+        """Bound IOS-XE 17.x IPv6 WebUI applicability to explicit interface state.
+
+        Cisco documents a dual-stack HTTP(S) listener when the server is on and
+        the device has an IPv6 address. An explicitly enabled interface with a
+        configured non-link-local IPv6 address is positive configuration
+        evidence; operational reachability remains outside this export.
+        """
+        if self.device_type != "IOS_XE" or not re.fullmatch(r"17\.\d+(?:\.\S+)?", self.get_version()):
+            return False
+        if not any(state == ConfigurationState.ENABLED for state in (
+            self.get_http_server_state(), self.get_https_server_state(),
+        )):
+            return False
+        for interface in self._normalized_interfaces():
+            if interface.state != NormalizedConfigurationState.ENABLED:
+                continue
+            for value in interface.addresses:
+                try:
+                    address = ipaddress.IPv6Interface(value).ip
+                except ValueError:
+                    continue
+                if not (address.is_link_local or address.is_unspecified or address.is_multicast):
+                    return True
+        return False
+
     def get_programmability_apis(self) -> tuple[IOSProgrammabilityAPI, ...]:
         """Explicit IOS-XE NETCONF/RESTCONF listeners and service ACL bindings."""
         if self.device_type != "IOS_XE":
@@ -1983,6 +2009,19 @@ class CiscoIOSParser(BaseDeviceParser):
                 ):
                     if state == ConfigurationState.ENABLED:
                         describe(service, "global listener", acl6, "IPv6")
+            elif self.has_qualified_ipv6_web_listener():
+                for service, state in (
+                    ("HTTP", self.get_http_server_state()),
+                    ("HTTPS", self.get_https_server_state()),
+                ):
+                    if state == ConfigurationState.ENABLED:
+                        diagnostics.append(
+                            f"Management ACL assessment incomplete: {service} (global IPv6 listener): "
+                            "an IOS-XE 17.x export has an explicitly enabled interface with a "
+                            "configured IPv6 address but no IPv6 WebUI access-class binding. "
+                            "An IPv4 ACL does not establish IPv6 source restriction; external "
+                            "reachability and upstream controls require manual review."
+                        )
         for api in self.get_programmability_apis():
             service = api.service.casefold()
             for family, name in (("ipv4", api.ipv4_acl), ("ipv6", api.ipv6_acl)):
@@ -5527,6 +5566,7 @@ class CiscoIOSParser(BaseDeviceParser):
                 evidence=(ConfigEvidence("explicit SSH configuration", self.config_filepath),),
             ))
         http_acl = self.get_http_access_class()
+        http_acl6 = self.get_http_ipv6_access_class() if self.device_type == "IOS_XE" else None
         for protocol, state in (
             ("http", self.get_http_server_state()),
             ("https", self.get_https_server_state()),
@@ -5536,7 +5576,10 @@ class CiscoIOSParser(BaseDeviceParser):
                     protocol=protocol,
                     state=NormalizedConfigurationState.ENABLED,
                     scope="global",
-                    permitted_sources=(f"ipv4-acl:{http_acl}",) if http_acl else (),
+                    permitted_sources=tuple(item for item in (
+                        f"ipv4-acl:{http_acl}" if http_acl else "",
+                        f"ipv6-acl:{http_acl6}" if http_acl6 else "",
+                    ) if item),
                     evidence=(ConfigEvidence(f"ip http {'secure-' if protocol == 'https' else ''}server", self.config_filepath),),
                 ))
 
