@@ -20,6 +20,9 @@ CISCO_XE_TLS_SYSLOG = (
     "https://www.cisco.com/c/en/us/support/docs/routers/xe-sd-wan-routers/"
     "222665-sdwan-cisco-ios-xe-tls-syslog-configurat.html"
 )
+CISCO_IOS_LDAP_GUIDE = (
+    "https://www.cisco.com/en/US/docs/ios-xml/ios/sec_usr_ldap/configuration/15-2mt/sec_conf_ldap.html"
+)
 CISCO_PPTP_IOS_GUIDE = (
     "https://www.cisco.com/c/en/us/support/docs/ip/point-to-point-tunneling-protocol-pptp/29781-pptp-ios.html"
 )
@@ -1691,6 +1694,44 @@ class PluginIOSBaseline(BasePlugin):
                 basis=FindingBasis.REQUIRED_SETTING_MISSING,
             ))
 
+    def check_ldap_transport(self, parser: BaseDeviceParser) -> None:
+        """SC-031: LDAP servers used by AAA method lists without 'mode secure' (TLS)."""
+        ios = self._ios(parser)
+        servers, groups = ios.get_ldap_servers()
+        if not servers:
+            return
+        used: dict[str, str] = {}
+        for method_list in ios.get_aaa_method_lists():
+            tokens = list(method_list.methods)
+            for index, token in enumerate(tokens[:-1]):
+                if token.casefold() != "group":
+                    continue
+                target = tokens[index + 1]
+                if target.casefold() == "ldap":
+                    for server in servers:
+                        used.setdefault(server.name.casefold(), "the global 'group ldap' method")
+                elif target in groups:
+                    for member in groups[target]:
+                        used.setdefault(member.casefold(), f"server group '{target}'")
+        for server in servers:
+            via = used.get(server.name.casefold())
+            if via is None or server.secure or server.port == "636":
+                continue
+            self.add_issue(Finding(
+                rule_id="cisco.ios.aaa.ldap_cleartext",
+                device=parser.device_type,
+                title="LDAP authentication server is used without TLS",
+                observation=(f"LDAP server '{server.name}' is used by an AAA method list through {via} "
+                             "and has no 'mode secure', so the router does not initiate TLS to it."),
+                impact="LDAP binds carry the authenticating user's password (and the router's bind credentials) in clear text.",
+                exploitability="An attacker on the path to the LDAP server can capture administrator or user passwords.",
+                recommendation="Configure 'mode secure' with a trusted CA certificate on the LDAP server definition, or move to an authentication method protected end to end.",
+                severity=Severity.HIGH,
+                evidence=server.evidence,
+                references=(CISCO_IOS_LDAP_GUIDE, CISCO_XE_SECURITY_WARNINGS),
+                basis=FindingBasis.REQUIRED_SETTING_MISSING,
+            ))
+
     def check_fhrp_authentication(self, parser: BaseDeviceParser) -> None:
         """SC-028: HSRP/VRRPv2/GLBP groups without MD5 authentication."""
         for group in self._ios(parser).get_fhrp_groups():
@@ -2538,6 +2579,7 @@ class PluginIOSBaseline(BasePlugin):
         self.check_xe_security_warnings(parser)
         self.check_ike_aggressive_mode(parser)
         self.check_tacacs_keys(parser)
+        self.check_ldap_transport(parser)
         self.check_http_tls(parser)
         self.check_fhrp_authentication(parser)
         self.check_ntp_access(parser)

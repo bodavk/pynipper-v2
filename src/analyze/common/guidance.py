@@ -587,6 +587,13 @@ _CATALOGUE = (
         "PPTP has been superseded by stronger VPN protocols. Enabling the gateway is a configuration risk even though user authentication and network exposure require separate assessment.",
         "Confirm whether any clients still depend on PPTP, migrate them to a supported secure VPN, and disable the gateway.",
     )),
+    (r"^update\.server_unverified$", _G(
+        "update-server-unverified", "platform",
+        "The device downloads configuration or software updates from a server it does not authenticate.",
+        "An attacker on the path impersonates the update server and pushes a modified configuration or software image.",
+        "Without HTTPS certificate verification the device cannot tell the real update server from an impostor.",
+        "Use an HTTPS update URL, enable certificate verification and install the issuing CA as a trusted certificate.",
+    )),
     (r"^routing\.odr_enabled$", _G(
         "routing-odr", "routing",
         "On-Demand Routing learns routes from CDP announcements.",

@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- SC-031 Cisco IOS: `cisco.ios.aaa.ldap_cleartext` (High) for LDAP servers used by AAA method lists without `mode secure`; bind credentials are not copied into evidence.
+
+- SC-036 Cisco ASA: `cisco.asa.credentials.url_storage` for `user:password@` URLs (redacted) and `cisco.asa.update.server_unverified` (High) for Auto Update Servers over HTTP, with `no-verification`, or without `verify-certificate` before 9.2(1).
+
 - Cisco IOS/IOS-XE: explicit settings from Cisco's Resilient Infrastructure IOS XE Security Warnings Reference: weak bound syslog TLS profiles (`logging.remote_weak_tls`), MD5 NTP authentication keys on IOS-XE (`ntp.weak_algorithm`, Low), `router odr` (`routing.odr_enabled`), `secure-webauth-disable` (`webauth.insecure_http`, High) and MD5 `key-hash ssh-rsa` pins (`ssh.weak_pubkey_hash`, Low). The IOS-XE secure regression fixture now uses an `hmac-sha2-256` NTP key.
 
 - SC-013 Cisco IOS: report PPTP dial-in (`cisco.ios.vpn.pptp_gateway`, High) for an enabled VPDN group accepting PPTP, with the virtual template's PPP authentication order, and PAP on active physical/dialer PPP links (`cisco.ios.ppp.pap_authentication`; Medium when first or sent by the router, Low as a fallback). PAP credentials are redacted; virtual-template PAP stays ungraded.

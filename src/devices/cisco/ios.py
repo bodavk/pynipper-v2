@@ -80,6 +80,16 @@ class IOSLoggingTLSProfile:
 
 
 @dataclass(frozen=True)
+class IOSLDAPServer:
+    """A named ``ldap server`` and its effective secure-mode state."""
+
+    name: str
+    secure: bool
+    port: Optional[str]
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
 class NumericSetting:
     value: Optional[int]
     configured: bool
@@ -1099,6 +1109,44 @@ class CiscoIOSParser(BaseDeviceParser):
         if hashes:
             found["key-hash md5"] = tuple(hashes)
         return found
+
+    def get_ldap_servers(self) -> tuple[list[IOSLDAPServer], dict[str, tuple[str, ...]]]:
+        """LDAP servers and ``aaa group server ldap`` memberships.
+
+        Per the Cisco IOS "Configuring LDAP" guide, ``mode secure`` makes the router
+        initiate TLS; ``transport port`` changes the port. Bind credentials are never
+        copied into evidence.
+        """
+        servers = []
+        for header, line, children in self._indented_blocks("ldap server "):
+            parts = header.split()
+            if len(parts) < 3:
+                continue
+            secure, port = False, None
+            evidence = [ConfigEvidence(header, self.config_filepath, line)]
+            for number, _, child in children:
+                folded = child.lower().split()
+                if folded[:2] == ["mode", "secure"]:
+                    secure = True
+                    evidence.append(ConfigEvidence(child, self.config_filepath, number))
+                elif folded[:3] == ["no", "mode", "secure"]:
+                    secure = False
+                elif folded[:2] == ["transport", "port"] and len(folded) > 2:
+                    port = folded[2]
+                    evidence.append(ConfigEvidence(child, self.config_filepath, number))
+                elif folded[:1] == ["ipv4"] or folded[:1] == ["ipv6"]:
+                    evidence.append(ConfigEvidence(child, self.config_filepath, number))
+            servers.append(IOSLDAPServer(parts[2], secure, port, tuple(evidence)))
+        groups: dict[str, tuple[str, ...]] = {}
+        for header, _, children in self._indented_blocks("aaa group server ldap "):
+            parts = header.split()
+            if len(parts) < 5:
+                continue
+            groups[parts[4]] = tuple(
+                child.split()[1] for _, _, child in children
+                if child.lower().startswith("server ") and len(child.split()) > 1
+            )
+        return servers, groups
 
     def _last_global_match(self, pattern: str) -> Optional[re.Match]:
         expression = re.compile(pattern)

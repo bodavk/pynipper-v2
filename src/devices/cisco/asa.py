@@ -1655,6 +1655,39 @@ class CiscoASAParser(BaseDeviceParser):
                 f"{account} {marker}", self.config_filepath, number)))
         return results
 
+    _URL_CREDENTIAL = re.compile(r"(?i)\b((?:ftp|http|https|scp|sftp|tftp|smb)://)([^:/@\s]+):([^@\s]+)@")
+
+    def get_url_credentials(self) -> list[ConfigEvidence]:
+        """SC-036: ``scheme://user:password@`` anywhere in the export; secret redacted."""
+        found = []
+        for number, raw in enumerate(self._source_lines, 1):
+            line = raw.strip()
+            if self._URL_CREDENTIAL.search(line):
+                redacted = self._URL_CREDENTIAL.sub(lambda m: f"{m.group(1)}{m.group(2)}:<redacted>@", line)
+                found.append(ConfigEvidence(redacted, self.config_filepath, number))
+        return found
+
+    def get_auto_update_servers(self) -> list[tuple[str, Optional[str], ConfigEvidence]]:
+        """``auto-update server <url> [source <if>] {verify-certificate|no-verification}``.
+
+        Returns (scheme, explicit verification keyword or None, redacted evidence).
+        ASA command reference: verify-certificate is the default from 9.2(1);
+        9.1 and earlier did not verify the certificate by default.
+        """
+        servers = []
+        for number, raw in enumerate(self._source_lines, 1):
+            if raw[:1].isspace():
+                continue
+            tokens = raw.split()
+            if [token.lower() for token in tokens[:2]] != ["auto-update", "server"] or len(tokens) < 3:
+                continue
+            folded = [token.lower() for token in tokens]
+            keyword = next((t for t in folded if t in {"verify-certificate", "no-verification"}), None)
+            scheme = tokens[2].split("://", 1)[0].lower() if "://" in tokens[2] else ""
+            text = self._URL_CREDENTIAL.sub(lambda m: f"{m.group(1)}{m.group(2)}:<redacted>@", raw.strip())
+            servers.append((scheme, keyword, ConfigEvidence(text, self.config_filepath, number)))
+        return servers
+
     def get_snmp_communities(self) -> list[str]:
         return [community.name for community in self.get_snmp_configuration()[0]]
 

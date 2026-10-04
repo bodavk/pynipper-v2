@@ -82,6 +82,9 @@ CISCO_ASA_ICMP_REFERENCE = (
 CISCO_ASA_91_IKE_GUIDE = (
     "https://www.cisco.com/c/en/us/td/docs/security/asa/asa91/configuration/vpn/asa_91_vpn_config/vpn_ike.html"
 )
+CISCO_ASA_AUTO_UPDATE_REFERENCE = (
+    "https://www.cisco.com/c/en/us/td/docs/security/asa/asa-cli-reference/A-H/asa-command-ref-A-H/ar-az-commands.html"
+)
 CISCO_ASA_MASTER_PASSPHRASE_REFERENCE = (
     "https://www.cisco.com/c/en/us/td/docs/security/asa/asa918/configuration/general/"
     "asa-918-general-config/basic-hostname-pw.html"
@@ -827,6 +830,40 @@ class PluginASABaseline(BasePlugin):
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
+    def check_url_credentials_and_updates(self, parser: BaseDeviceParser) -> None:
+        """SC-036 URL credentials and Auto Update Server certificate verification."""
+        asa = self._asa(parser)
+        for evidence in asa.get_url_credentials():
+            self.add_issue(self._finding(
+                parser, "cisco.asa.credentials.url_storage",
+                "Password is embedded in a URL",
+                "A URL in the configuration contains a 'user:password@' credential; the password is redacted.",
+                "Anyone with a copy of the configuration can reuse the account, and the credential is not protected by the master passphrase.",
+                "Remove the credential from the URL, use certificate-based or separately stored authentication, and rotate the exposed password.",
+                Severity.MEDIUM, (evidence,), (CISCO_ASA_AUTO_UPDATE_REFERENCE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+        _, release = asa.get_release()
+        for scheme, keyword, evidence in asa.get_auto_update_servers():
+            if scheme == "http":
+                reason, basis = "uses plain HTTP, so updates are neither encrypted nor authenticated", FindingBasis.EXPLICIT_VALUE
+            elif keyword == "no-verification":
+                reason, basis = "sets no-verification, so the server certificate is not checked", FindingBasis.EXPLICIT_VALUE
+            elif keyword is None and release is not None and release < (9, 2, 0):
+                reason, basis = ("omits verify-certificate on a release before 9.2(1), where the documented default "
+                                 "is not to verify the certificate"), FindingBasis.DOCUMENTED_DEFAULT
+            else:
+                continue
+            self.add_issue(self._finding(
+                parser, "cisco.asa.update.server_unverified",
+                "Auto Update Server is not authenticated",
+                f"The Auto Update Server entry {reason}.",
+                "An attacker who can intercept the connection can impersonate the server and push configuration or software images to the firewall.",
+                "Use an https:// Auto Update Server URL with 'verify-certificate' and a trusted CA certificate.",
+                Severity.HIGH, (evidence,), (CISCO_ASA_AUTO_UPDATE_REFERENCE,),
+                basis=basis,
+            ))
+
     def analyze(self, parser: BaseDeviceParser) -> None:
         if parser.device_type != "ASA" or self._asa(parser).get_version() == "?":
             return
@@ -835,6 +872,7 @@ class PluginASABaseline(BasePlugin):
         self.check_local_administrator_policy(parser)
         self.check_local_users(parser)
         self.check_service_key_storage(parser)
+        self.check_url_credentials_and_updates(parser)
         self.check_ike_aggressive_mode(parser)
         self.check_aaa_transport(parser)
         self.check_http_management(parser)
