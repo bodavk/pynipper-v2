@@ -124,6 +124,18 @@ FORTINET_BLASTRADIUS_ADVISORY = "https://www.fortiguard.com/psirt/FG-IR-24-255"
 FORTINET_SNMP_COMMUNITY_741_REFERENCE = (
     "https://docs.fortinet.com/document/fortigate/7.4.1/cli-reference/54620/config-system-snmp-community"
 )
+FORTINET_GLOBAL_760_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.6.0/cli-reference/339914554/config-system-global"
+)
+FORTINET_CLI_AUDIT_LOG_GUIDE = (
+    "https://docs.fortinet.com/document/fortigate/7.4.0/administration-guide/334417"
+)
+FORTINET_LOG_44547_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.6.5/fortios-log-message-reference/44547"
+)
+FORTINET_EVENTFILTER_741_REFERENCE = (
+    "https://docs.fortinet.com/document/fortigate/7.4.1/cli-reference/432620/config-log-eventfilter"
+)
 FORTINET_FORTICLOUD_SSO_ADVISORY = "https://www.fortiguard.com/psirt/FG-IR-26-060"
 FORTINET_FORTICLOUD_SAML_ADVISORY = "https://www.fortiguard.com/psirt/FG-IR-25-647"
 FORTINET_GLOBAL_741_REFERENCE = (
@@ -2176,6 +2188,8 @@ class PluginFortiOSBaseline(BasePlugin):
         self.check_release_defaults(parser)
         self.check_forticloud_sso(parser)
         self.check_login_banner(parser)
+        self.check_admin_restrict_local(parser)
+        self.check_cli_audit_log(parser)
 
     def check_forticloud_sso(self, parser: BaseDeviceParser) -> None:
         """FortiCloud SSO administrator login on releases affected by FG-IR-26-060 / FG-IR-25-647.
@@ -2235,6 +2249,158 @@ class PluginFortiOSBaseline(BasePlugin):
                         (FORTINET_FORTICLOUD_SSO_ADVISORY,),
                         basis=FindingBasis.EXPLICIT_VALUE,
                     ))
+
+    _LOCAL_RESTRICTED = {"enable", "all", "non-console-only"}
+    _BELOW_INFORMATION = {"emergency", "alert", "critical", "error", "warning", "notification"}
+    _REMOTE_LOG_DESTINATIONS = (
+        ("log syslogd setting", "log syslogd filter"),
+        ("log syslogd2 setting", "log syslogd2 filter"),
+        ("log syslogd3 setting", "log syslogd3 filter"),
+        ("log syslogd4 setting", "log syslogd4 filter"),
+        ("log fortianalyzer setting", "log fortianalyzer filter"),
+        ("log fortianalyzer2 setting", "log fortianalyzer2 filter"),
+        ("log fortianalyzer3 setting", "log fortianalyzer3 filter"),
+        ("log fortiguard setting", "log fortiguard filter"),
+    )
+
+    def check_admin_restrict_local(self, parser: BaseDeviceParser) -> None:
+        """Local admins usable while remote authentication works.
+
+        CLI reference 6.4.14-7.4.1 (enable/disable) and 7.6.0 (all/non-console-only/disable):
+        admin-restrict-local default disable. Only graded when remote-authenticated
+        administrators and local password administrators coexist; local-only
+        authentication is reported separately by admin.centralized_authentication.
+        """
+        fortios = self._fortios(parser)
+        release = self._release(fortios)
+        remote, local = [], []
+        for scope, username, settings, path in fortios.iter_administrators():
+            if not self._enabled(settings):
+                continue
+            if self._text(settings.get("remote-auth"), "disable").lower() == "enable":
+                remote.append(username)
+            elif self._text(settings.get("peer-auth"), "disable").lower() != "enable":
+                local.append((username, path))
+        if not remote or not local:
+            return
+        globals_ = list(fortios.iter_scoped_sections("system global")) or [("global", {}, ("system global",))]
+        for scope, settings, path in globals_:
+            value = self._text(settings.get("admin-restrict-local")).lower()
+            if value in self._LOCAL_RESTRICTED:
+                continue
+            explicit = bool(value)
+            if not explicit and (not release or release < (6, 4, 14)):
+                continue
+            names = ", ".join(sorted(f"'{name}'" for name, _ in local))
+            evidence = self._evidence(
+                fortios, path + ("admin-restrict-local",),
+                "admin-restrict-local absent: documented default disable",
+            ) + tuple(
+                text for name, admin_path in local
+                for text in self._evidence(fortios, admin_path, f"system admin {name}")
+            )
+            self.add_issue(self._finding(
+                parser,
+                "fortinet.fortios.admin.local_login_unrestricted",
+                "Local administrators can bypass remote authentication",
+                f"{len(remote)} administrator(s) use remote authentication, but local password administrator(s) "
+                f"{names} remain usable at all times: scope '{scope}' "
+                + (f"sets admin-restrict-local {value}." if explicit
+                   else "does not set admin-restrict-local; the documented default is disable."),
+                "Local accounts sidestep the central controls applied through TACACS+/RADIUS/LDAP "
+                "(MFA, account lifecycle, central authorization and accounting) even while those servers are reachable.",
+                "Set 'config system global / set admin-restrict-local enable' (7.6: 'all' or 'non-console-only') so "
+                "local accounts work only when no remote authentication server is reachable, and keep them as "
+                "protected break-glass accounts.",
+                Severity.MEDIUM,
+                evidence,
+                (FORTINET_GLOBAL_741_REFERENCE, FORTINET_GLOBAL_760_REFERENCE, FORTINET_GLOBAL_6414_REFERENCE),
+                basis=FindingBasis.EXPLICIT_VALUE if explicit else FindingBasis.DOCUMENTED_DEFAULT,
+            ))
+
+    def _config_change_log_context(self, fortios: FortiOSParser) -> str:
+        """Describe where configuration-change events (log IDs 44546/44547) are sent."""
+        disabled = sorted({
+            f"{field} disable (scope '{scope}')"
+            for scope, settings, _ in fortios.iter_scoped_sections("log eventfilter")
+            for field in ("event", "system")
+            if self._text(settings.get(field)).lower() == "disable"
+        })
+        if disabled:
+            return (
+                "Configuration-change events are also not logged: log eventfilter sets "
+                + ", ".join(disabled) + "."
+            )
+        forwarded, dropped, freestyle = [], [], []
+        for setting_name, filter_name in self._REMOTE_LOG_DESTINATIONS:
+            scopes = {
+                scope for scope, settings, _ in fortios.iter_scoped_sections(setting_name)
+                if self._text(settings.get("status")).lower() == "enable"
+            }
+            if not scopes:
+                continue
+            label = setting_name.removeprefix("log ").removesuffix(" setting")
+            filters = [s for scope, s, _ in fortios.iter_scoped_sections(filter_name) if scope in scopes]
+            severity = next(
+                (self._text(s.get("severity")).lower() for s in filters
+                 if self._text(s.get("severity")).lower() in self._BELOW_INFORMATION), "")
+            if severity or any(
+                self._text(s.get(field)).lower() == "disable" for s in filters for field in ("event", "system")
+            ):
+                dropped.append(f"{label} (filter {'severity ' + severity if severity else 'disables event/system logs'})")
+                continue
+            forwarded.append(label)
+            if any(self._text(s.get("filter")) for s in filters):
+                freestyle.append(label)
+        parts = []
+        if forwarded:
+            parts.append(
+                "Configuration changes are still logged as system events (log IDs 44546/44547, severity "
+                "information) and the configuration forwards them to: " + ", ".join(forwarded)
+                + ". Those events show which settings changed and by whom, but not the exact commands typed "
+                "or read-only/diagnostic commands (show, get, diagnose, execute; log ID 44548)."
+            )
+            if freestyle:
+                parts.append("Free-style filters on " + ", ".join(freestyle) + " were not evaluated.")
+        else:
+            parts.append(
+                "No enabled remote log destination forwards configuration-change events; they can only be "
+                "stored locally (memory/disk), if at all."
+            )
+        if dropped:
+            parts.append("Destinations that drop these information-level events: " + ", ".join(dropped) + ".")
+        return " ".join(parts)
+
+    def check_cli_audit_log(self, parser: BaseDeviceParser) -> None:
+        """CLI command audit logging; CLI reference 6.4.14-7.6.0 default disable."""
+        fortios = self._fortios(parser)
+        release = self._release(fortios)
+        globals_ = list(fortios.iter_scoped_sections("system global")) or [("global", {}, ("system global",))]
+        for scope, settings, path in globals_:
+            value = self._text(settings.get("cli-audit-log")).lower()
+            if value == "enable":
+                continue
+            explicit = bool(value)
+            if not explicit and (not release or release < (6, 4, 14)):
+                continue
+            self.add_issue(self._finding(
+                parser,
+                "fortinet.fortios.cli.audit_disabled",
+                "CLI command audit logging is disabled",
+                f"Scope '{scope}' " + ("sets cli-audit-log disable. " if explicit else
+                                       "does not set cli-audit-log; the documented default is disable. ")
+                + self._config_change_log_context(fortios),
+                "Commands administrators run in the CLI (including show, get, diagnose and execute) are not "
+                "recorded, which limits investigation of administrator or attacker activity. Whether this is "
+                "acceptable depends on the organization's logging and accountability requirements.",
+                "Set 'config system global / set cli-audit-log enable' and forward system event logs to a "
+                "central log server or FortiAnalyzer.",
+                Severity.MEDIUM,
+                self._evidence(fortios, path + ("cli-audit-log",), "cli-audit-log absent: documented default disable"),
+                (FORTINET_CLI_AUDIT_LOG_GUIDE, FORTINET_GLOBAL_741_REFERENCE, FORTINET_LOG_44547_REFERENCE,
+                 FORTINET_EVENTFILTER_741_REFERENCE),
+                basis=FindingBasis.EXPLICIT_VALUE if explicit else FindingBasis.DOCUMENTED_DEFAULT,
+            ))
 
     def check_login_banner(self, parser: BaseDeviceParser) -> None:
         """Pre-login administrator disclaimer; CLI reference 6.4.14-7.4.1 default 'disable'."""

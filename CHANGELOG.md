@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - FortiOS: explicit `ssh-rsa` (SHA-1 signatures) in `ssh-hostkey-algo` is reported as `fortinet.fortios.ssh.weak_hostkey_algo`; it is not in the documented default set.
 
+- FortiOS: `fortinet.fortios.admin.local_login_unrestricted` (Medium) when remote-authenticated and local password administrators coexist and `admin-restrict-local` is not enabled (documented default `disable`; 7.6 `all`/`non-console-only` accepted), so local accounts can bypass central authentication. `fortinet.fortios.cli.audit_disabled` (Medium) when `cli-audit-log` is not enabled (documented default `disable`); the observation states whether configuration-change system events (log IDs 44546/44547) are still forwarded to enabled syslog/FortiAnalyzer/FortiGate Cloud destinations, dropped by severity filters, or disabled in `log eventfilter`.
+
 - SC-046 IPv6 management ACL stage: independently resolve active IOS/IOS-XE VTY IPv6 access-class and IOS-XE WebUI IPv6 access-class attachments. Prove bounded permit-all IPv6 ACLs with ordered entries/removals, keep restrictive/unsupported/unresolved states distinct, and surface unresolved active attachments as sanitized manual-review coverage rather than vulnerability findings.
 
 - SC-005 Cisco IS-IS: resolve active, explicitly leveled IOS/IOS-XE process/interface bindings into separate hello and link-state database authentication records. Detect configured send-only receive bypass, cleartext mode or legacy passwords, and MD5 modes without an effective exported key chain; redact IS-IS passwords in all finding evidence and leave omitted or ambiguous authentication ungraded.

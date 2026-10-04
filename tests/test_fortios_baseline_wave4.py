@@ -21,6 +21,8 @@ config system global
 set hostname edge-fw
 set admin-maintainer disable
 set pre-login-banner enable
+set admin-restrict-local enable
+set cli-audit-log enable
 set strong-crypto enable
 set ssl-static-key-ciphers disable
 set dh-params 4096

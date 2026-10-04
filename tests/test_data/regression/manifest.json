@@ -216,12 +216,14 @@
         "fortinet.fortios.aaa.radsec_server_identity",
         "fortinet.fortios.aaa.radsec_tls_version",
         "fortinet.fortios.admin.centralized_authentication",
+        "fortinet.fortios.admin.local_login_unrestricted",
         "fortinet.fortios.admin.lockout",
         "fortinet.fortios.admin.mfa",
         "fortinet.fortios.admin.session_timeout",
         "fortinet.fortios.admin.trusted_hosts",
         "fortinet.fortios.api.trusted_hosts",
         "fortinet.fortios.banner.login_disabled",
+        "fortinet.fortios.cli.audit_disabled",
         "fortinet.fortios.credentials.private_data_storage",
         "fortinet.fortios.crypto.admin_ssh_v1",
         "fortinet.fortios.crypto.dh_parameters",
@@ -245,7 +247,7 @@
         "fortinet.fortios.tls.minimum_version",
         "fortinet.fortios.vpn.ike_aggressive_mode"
       ],
-      "expected_finding_count": 32
+      "expected_finding_count": 34
     },
     {
       "name": "fortios-secure",
@@ -266,8 +268,8 @@
         "policy_version": "regression-v1",
         "protected_aaa_profiles": ["root:LEGACY-PROTECTED"]
       },
-      "expected_rule_ids": ["fortinet.fortios.banner.login_disabled", "fortinet.fortios.credentials.private_data_storage", "fortinet.fortios.logging.remote_cleartext"],
-      "expected_finding_count": 3
+      "expected_rule_ids": ["fortinet.fortios.admin.local_login_unrestricted", "fortinet.fortios.banner.login_disabled", "fortinet.fortios.cli.audit_disabled", "fortinet.fortios.credentials.private_data_storage", "fortinet.fortios.logging.remote_cleartext"],
+      "expected_finding_count": 5
     },
     {
       "name": "junos-vulnerable",
@@ -422,12 +424,13 @@
       "expected_rule_ids": [
         "fortinet.fortios.admin.centralized_authentication",
         "fortinet.fortios.banner.login_disabled",
+        "fortinet.fortios.cli.audit_disabled",
         "fortinet.fortios.dos.wan_policy_missing",
         "fortinet.fortios.https.management_certificate",
         "fortinet.fortios.logging.remote_cleartext",
         "fortinet.fortios.policy.disabled_permissive_rule"
       ],
-      "expected_finding_count": 6
+      "expected_finding_count": 7
     },
     {
       "name": "junos-hierarchical-variant",
