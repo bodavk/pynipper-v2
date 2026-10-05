@@ -908,6 +908,20 @@ class CiscoIOSParser(BaseDeviceParser):
         return state, tuple(evidence)
 
     def get_pptp_dialin_groups(self) -> list[IOSPPTPDialin]:
+        return self._vpdn_dialin_groups({"protocol pptp", "protocol any"})
+
+    def get_l2tp_dialin_groups(self) -> list[IOSPPTPDialin]:
+        """VPDN groups accepting L2TP dial-in (``protocol l2tp``) while VPDN is enabled."""
+        return self._vpdn_dialin_groups({"protocol l2tp"})
+
+    def has_ipsec_configuration(self) -> bool:
+        """Any crypto map, dynamic map, IPsec profile or transform set in the export."""
+        return any(
+            re.match(r"crypto\s+(?:map|dynamic-map|ipsec\s+profile|ipsec\s+transform-set)\s", raw.strip(), re.IGNORECASE)
+            for raw in self.parser.ioscfg
+        )
+
+    def _vpdn_dialin_groups(self, accepted: set[str]) -> list[IOSPPTPDialin]:
         """SC-013: VPDN groups accepting PPTP (``protocol pptp`` or ``any``) dial-in.
 
         Syntax per Cisco "Configuring the Cisco Router and VPN Clients Using PPTP and
@@ -954,7 +968,7 @@ class CiscoIOSParser(BaseDeviceParser):
                     in_dialin = False
                 if not in_dialin:
                     continue
-                if folded in {"protocol pptp", "protocol any"}:
+                if folded in accepted:
                     pptp = ConfigEvidence(child, self.config_filepath, number)
                 elif folded.startswith("protocol "):
                     pptp = None

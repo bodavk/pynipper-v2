@@ -23,6 +23,7 @@ CISCO_XE_TLS_SYSLOG = (
 CISCO_IOS_LDAP_GUIDE = (
     "https://www.cisco.com/en/US/docs/ios-xml/ios/sec_usr_ldap/configuration/15-2mt/sec_conf_ldap.html"
 )
+RFC_3193_L2TP_IPSEC = "https://www.rfc-editor.org/rfc/rfc3193"
 CISCO_PPTP_IOS_GUIDE = (
     "https://www.cisco.com/c/en/us/support/docs/ip/point-to-point-tunneling-protocol-pptp/29781-pptp-ios.html"
 )
@@ -1294,6 +1295,31 @@ class PluginIOSBaseline(BasePlugin):
                 severity=Severity.HIGH,
                 evidence=group.evidence,
                 references=(CISCO_PPTP_IOS_GUIDE, CISCO_PAP_GUIDE),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+
+    def check_l2tp_dialin(self, parser: BaseDeviceParser) -> None:
+        """SC-013: L2TP dial-in on a router with no IPsec configuration at all."""
+        ios = self._ios(parser)
+        groups = ios.get_l2tp_dialin_groups()
+        if not groups or ios.has_ipsec_configuration():
+            return
+        for group in groups:
+            auth = (f" The template's PPP authentication order is {' '.join(group.authentication)}."
+                    if group.authentication else "")
+            self.add_issue(Finding(
+                rule_id="cisco.ios.vpn.l2tp_without_ipsec",
+                device=parser.device_type,
+                title="L2TP dial-in without IPsec on this router",
+                observation=(f"vpdn-group '{group.group}' accepts L2TP dial-in and the configuration contains no crypto map, "
+                             "IPsec profile or transform set, so the router itself does not protect the tunnel." + auth
+                             + " Protection by another device on the path is not visible in this export."),
+                impact="L2TP provides no confidentiality; PPP authentication and user traffic inside the tunnel can be read or altered in transit.",
+                exploitability="Requires the ability to observe or intercept traffic between clients and the router.",
+                recommendation="Run L2TP only inside IPsec (L2TP/IPsec, RFC 3193) or migrate to an IKEv2/IPsec remote-access VPN.",
+                severity=Severity.MEDIUM,
+                evidence=group.evidence,
+                references=(RFC_3193_L2TP_IPSEC, CISCO_PPTP_IOS_GUIDE),
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
@@ -2591,6 +2617,7 @@ class PluginIOSBaseline(BasePlugin):
         self.check_smart_install(parser)
         self.check_pptp_dialin(parser)
         self.check_ppp_pap(parser)
+        self.check_l2tp_dialin(parser)
         self.check_xe_security_warnings(parser)
         self.check_ike_aggressive_mode(parser)
         self.check_tacacs_keys(parser)

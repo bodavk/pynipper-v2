@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- SC-005 Arista EOS: `arista.eos.routing.ospf.authentication` (High, documented default no authentication), `ospf.weak_authentication` (simple password) and `isis.cleartext_authentication` (text mode).
+
+- SC-013 Cisco IOS: `cisco.ios.vpn.l2tp_without_ipsec` (Medium) for L2TP dial-in on a router with no IPsec configuration.
+
+- SC-047 Junos SRX: `juniper.junos.host_inbound.routing_exposed` (High) when an external interface admits unauthenticated or cleartext-authenticated OSPF/IS-IS running on it, without lo0/interface filters.
+
 - SC-026/SC-046 Arista EOS: `arista.eos.management.unrestricted_gnmi` for enabled gNMI transports without an IPv4 access-group or with a permit-all ACL.
 
 - Cisco IOS-XE: one consolidated informational finding `cisco.ios.aaa.servers_without_tls` listing RADIUS/TACACS+ servers without TLS/DTLS and LDAP servers without `mode secure` (Cisco IOS XE security warnings); headers only, at most six evidence lines.

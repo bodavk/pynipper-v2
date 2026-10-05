@@ -1634,6 +1634,91 @@ class AristaEOSParser(CiscoIOSParser):
             else DefaultCredentialAssessment.NO_MATCH
         )
 
+    def _top_blocks(self, pattern: str):
+        """Yield (header command, direct-and-nested children) for top-level blocks matching pattern."""
+        expression = re.compile(pattern, re.IGNORECASE)
+        for index, command in enumerate(self.commands):
+            if command.indent != 0 or not expression.fullmatch(command.text):
+                continue
+            children = []
+            for child in self.commands[index + 1:]:
+                if child.indent == 0:
+                    break
+                children.append(child)
+            yield command, children
+
+    def get_ospf_interface_authentication(self) -> list[tuple[str, str, tuple[ConfigEvidence, ...]]]:
+        """SC-005: OSPFv2 interfaces bound with ``ip ospf area`` and their authentication.
+
+        Returns (interface, state, evidence) with state ``none`` (documented default:
+        "By default, OSPFv2 does not authenticate packets"), ``simple`` or
+        ``message-digest``. Interfaces are omitted when no ``router ospf`` exists, when
+        any ``area ... authentication`` is configured (area-level semantics are not
+        qualified), or when the interface is shut down, a loopback or passive.
+        """
+        processes = list(self._top_blocks(r"router\s+ospf\s+\S+(?:\s+vrf\s+\S+)?"))
+        if not processes:
+            return []
+        passive_default, passive, active = False, set(), set()
+        for _, children in processes:
+            for child in children:
+                folded = " ".join(child.text.casefold().split())
+                if folded.startswith("area ") and " authentication" in folded:
+                    return []
+                if folded == "passive-interface default":
+                    passive_default = True
+                elif folded.startswith("no passive-interface "):
+                    active.add(folded.split()[2])
+                elif folded.startswith("passive-interface "):
+                    passive.add(folded.split()[1])
+        records = []
+        for header, children in self._top_blocks(r"interface\s+\S+"):
+            name = header.text.split()[1]
+            folded_name = name.casefold()
+            if folded_name.startswith(("loopback", "management")):
+                continue
+            area, state, shutdown, evidence = None, "none", False, [self._evidence(header)]
+            for child in children:
+                folded = " ".join(child.text.casefold().split())
+                if folded.startswith("ip ospf area "):
+                    area = folded.split()[3]
+                    evidence.append(self._evidence(child))
+                elif folded == "ip ospf authentication":
+                    state = "simple"
+                    evidence.append(self._evidence(child))
+                elif folded == "ip ospf authentication message-digest":
+                    state = "message-digest"
+                elif folded == "no ip ospf authentication":
+                    state = "none"
+                elif folded == "shutdown":
+                    shutdown = True
+                elif folded == "no shutdown":
+                    shutdown = False
+            if area is None or shutdown:
+                continue
+            is_passive = (folded_name in passive) or (passive_default and folded_name not in active)
+            if is_passive:
+                continue
+            records.append((name, state, tuple(evidence)))
+        return records
+
+    def get_isis_text_authentication(self) -> list[ConfigEvidence]:
+        """SC-005: explicit IS-IS clear-text authentication (router or interface level).
+
+        Arista documents that with clear-text authentication "the password is
+        specified as text in the authentication TLV".
+        """
+        found = []
+        for header, children in self._top_blocks(r"router\s+isis\s+\S+.*"):
+            for child in children:
+                if re.fullmatch(r"authentication\s+mode\s+text(?:\s+.*)?", child.text, re.IGNORECASE):
+                    found.append(self._evidence(child))
+        for header, children in self._top_blocks(r"interface\s+\S+"):
+            for child in children:
+                if re.fullmatch(r"isis\s+authentication\s+mode\s+text(?:\s+.*)?", child.text, re.IGNORECASE):
+                    found.append(ConfigEvidence(f"{header.text} / {child.text}", self.config_filepath, child.line_number))
+        return found
+
     def get_root_account(self) -> tuple[Optional[str], Optional[ConfigEvidence]]:
         """Effective ``aaa root`` state: "secret", "nopassword" or None (``no aaa root``/absent).
 

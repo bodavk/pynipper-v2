@@ -1170,6 +1170,65 @@ class PluginJunOSBaseline(BasePlugin):
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
+    def check_host_inbound_routing(self, parser: BaseDeviceParser) -> None:
+        """SC-047: unauthenticated OSPF/IS-IS adjacencies admitted on an assessed external interface.
+
+        Requires (1) zone/interface host-inbound-traffic protocols admitting the protocol,
+        (2) the protocol running on that interface (active, non-passive, default instance) and
+        (3) no or simple authentication. lo0/interface input filters keep the case unknown.
+        """
+        junos = self._junos(parser)
+        if (junos.parse_error or not junos.get_model().upper().startswith("SRX")
+                or junos.has_unexpanded_inheritance()):
+            return
+        if any(not junos.is_accept_all_filter(p.family, p.filter_name)
+               for p in junos.get_routing_engine_protections()):
+            return
+        filtered = {
+            interface for interface, filters in junos.get_interface_input_filters().items()
+            if not all(junos.is_accept_all_filter(family, name) for family, name in filters)
+        }
+        weak: dict[str, dict[str, str]] = {}
+        for record in junos.get_ospf_interfaces():
+            if (record.routing_instance == "default" and record.active and not record.passive
+                    and record.authentication_state in {"unauthenticated", "weak"}):
+                weak.setdefault(record.interface, {})["ospf"] = (
+                    "no authentication" if record.authentication_state == "unauthenticated" else "simple-password authentication")
+        for record in junos.get_isis_authentication():
+            if record.routing_instance != "default" or record.unknown:
+                continue
+            state = ("no authentication" if not record.authenticated
+                     else "simple authentication" if record.cleartext_levels else "")
+            if state:
+                for interface in record.interfaces:
+                    weak.setdefault(interface, {})["isis"] = state
+        if not weak:
+            return
+        for admission in junos.get_host_inbound_protocol_admissions():
+            physical = admission.interface.split(".", 1)[0]
+            roles = {junos.assessment_context.role_for_interface(admission.interface),
+                     junos.assessment_context.role_for_interface(physical)}
+            if "external" not in roles or admission.interface in filtered:
+                continue
+            protocols = {k: v for k, v in weak.get(admission.interface, {}).items() if admission.admits(k)}
+            if not protocols:
+                continue
+            detail = ", ".join(f"{name.upper()} ({state})" for name, state in sorted(protocols.items()))
+            self.add_issue(self._finding(
+                parser,
+                "juniper.junos.host_inbound.routing_exposed",
+                "SRX accepts unauthenticated routing protocols on an external interface",
+                (f"Interface {admission.interface} in zone {admission.zone} is classified external; its "
+                 f"{admission.source}-level host-inbound-traffic protocols admit {detail}, which runs on this interface. "
+                 "No lo0 or interface input filter is attached."),
+                "A device on the external network can form a routing adjacency and inject or withdraw routes on the firewall.",
+                "Remove the protocol from the external zone/interface host-inbound-traffic, or configure strong authentication and a source-restricted lo0 filter.",
+                Severity.HIGH,
+                tuple(admission.evidence) + (f"assessment policy: {admission.interface} role external",),
+                (JUNIPER_HOST_INBOUND_REFERENCE, JUNIPER_OSPF_AUTH_GUIDE, JUNIPER_ISIS_AUTH_GUIDE),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+
     def check_zone_screens(self, parser: BaseDeviceParser) -> None:
         junos = self._junos(parser)
         if (
@@ -1348,4 +1407,5 @@ class PluginJunOSBaseline(BasePlugin):
         self.check_access_edge(parser)
         self.check_zone_screens(parser)
         self.check_host_inbound(parser)
+        self.check_host_inbound_routing(parser)
         self.check_idp_actions(parser)

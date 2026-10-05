@@ -99,3 +99,27 @@ def test_pap_sent_username_redacted(tmp_path):
 ])
 def test_pap_not_reported(tmp_path, body):
     assert not _pap(tmp_path, body)
+
+
+L2TP_RULE = "cisco.ios.vpn.l2tp_without_ipsec"
+
+
+
+def _l2tp_rules(tmp_path, extra=""):
+    path = tmp_path / "l2tp.conf"
+    path.write_text(_config(protocol="l2tp").replace("end\n", extra + "end\n"), encoding="utf-8")
+    with contextlib.redirect_stdout(io.StringIO()):
+        findings = process_cisco_ios_conf(get_parser("IOS_ROUTER", str(path))).values()
+    return [finding for finding in findings if finding.rule_id == L2TP_RULE]
+
+
+def test_l2tp_without_ipsec(tmp_path):
+    findings = _l2tp_rules(tmp_path)
+    assert len(findings) == 1 and findings[0].severity is Severity.MEDIUM
+    assert "pap chap ms-chap" in findings[0].observation
+    assert guidance_for(L2TP_RULE)
+
+
+def test_l2tp_with_crypto_is_unknown(tmp_path):
+    extra = "crypto ipsec transform-set L2TP esp-aes esp-sha-hmac\n mode transport\n!\n"
+    assert not _l2tp_rules(tmp_path, extra)

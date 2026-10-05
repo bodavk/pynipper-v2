@@ -615,6 +615,20 @@ _CATALOGUE = (
         "HTTP provides no confidentiality; Cisco flags 'secure-webauth-disable' as an insecure configuration.",
         "Remove 'secure-webauth-disable' and serve web authentication only over HTTPS with a trusted certificate.",
     )),
+    (r"^host_inbound\.routing_exposed$", _G(
+        "routing-exposed-external", "routing",
+        "The firewall accepts a routing protocol from an external network on an interface where that protocol runs without strong authentication.",
+        "A device on the external network forms an adjacency with the firewall and advertises routes that divert or black-hole traffic.",
+        "Host-inbound admission on SRX controls traffic to the device itself; transit security policies do not filter it.",
+        "Check whether the routing protocol is really needed towards that network and whether the neighbor is authenticated.",
+    )),
+    (r"^vpn\.l2tp_without_ipsec$", _G(
+        "l2tp-without-ipsec", "vpn",
+        "The router accepts L2TP remote-access tunnels without protecting them with IPsec.",
+        "Someone on the path between a remote user and the router reads the user's login exchange and traffic.",
+        "L2TP itself has no encryption; RFC 3193 specifies carrying it inside IPsec. Protection by another device is not visible in a single configuration.",
+        "Confirm whether another device encrypts the L2TP traffic; otherwise enable L2TP/IPsec or migrate to an IKEv2 VPN.",
+    )),
     (r"^ppp\.pap_authentication$", _G(
         "ppp-pap", "vpn",
         "A PPP link authenticates with PAP, which sends the username and password in clear text.",

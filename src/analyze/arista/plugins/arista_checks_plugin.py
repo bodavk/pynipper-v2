@@ -21,6 +21,9 @@ ARISTA_CONTROL_PLANE_ACL_GUIDE = "https://www.arista.com/en/um-eos/eos-data-tran
 ARISTA_STP_GUIDE = "https://www.arista.com/en/um-eos/eos-spanning-tree-protocol"
 ARISTA_DOT1X_GUIDE = "https://www.arista.com/en/um-eos/eos-control-plane-security"
 ARISTA_BGP_GUIDE = "https://www.arista.com/en/um-eos/eos-border-gateway-protocol-bgp"
+ARISTA_OSPF_GUIDE = "https://www.arista.com/en/um-eos/eos-open-shortest-path-first-version-2"
+ARISTA_ISIS_GUIDE = "https://www.arista.com/en/um-eos/eos-is-is"
+RFC_2328_SIMPLE_PASSWORD = "https://www.rfc-editor.org/rfc/rfc2328#appendix-D.3"
 ARISTA_LOGGING_GUIDE = "https://www.arista.com/en/um-eos/eos-switch-administration-commands"
 
 
@@ -1096,6 +1099,57 @@ class PluginAristaChecks(BasePlugin):
                      "Set a peer-specific 'maximum-routes' value based on the expected route volume.",
                      Severity.MEDIUM, evidence, FindingBasis.EXPLICIT_VALUE)
 
+    def check_igp_authentication(self, parser: BaseDeviceParser) -> None:
+        """SC-005: OSPFv2 interface authentication and explicit IS-IS clear-text mode."""
+        eos = self._eos(parser)
+        records = eos.get_ospf_interface_authentication()
+        unauthenticated = [r for r in records if r[1] == "none"]
+        if unauthenticated:
+            self.add_issue(Finding(
+                rule_id="arista.eos.routing.ospf.authentication",
+                device=parser.device_type,
+                title="OSPF interfaces run without authentication",
+                observation=("OSPF runs without authentication on: " + ", ".join(r[0] for r in unauthenticated)
+                             + ". Arista documents that by default OSPFv2 does not authenticate packets."),
+                impact="An unprotected routing adjacency can accept forged protocol packets from a reachable attacker.",
+                exploitability="Requires the ability to send OSPF packets on a link where OSPF is enabled.",
+                recommendation="Configure 'ip ospf authentication message-digest' with a message-digest key on each OSPF interface, matching the neighbors.",
+                severity=Severity.HIGH,
+                evidence=tuple(item for r in unauthenticated for item in r[2])[:8],
+                references=(ARISTA_OSPF_GUIDE,),
+                basis=FindingBasis.DOCUMENTED_DEFAULT,
+            ))
+        simple = [r for r in records if r[1] == "simple"]
+        if simple:
+            self.add_issue(Finding(
+                rule_id="arista.eos.routing.ospf.weak_authentication",
+                device=parser.device_type,
+                title="OSPF interfaces use simple-password authentication",
+                observation="OSPF uses simple-password authentication on: " + ", ".join(r[0] for r in simple) + ".",
+                impact="RFC 2328 simple passwords are carried in clear text in every OSPF packet, so an observer can learn and reuse them.",
+                exploitability="Requires the ability to observe traffic on an OSPF link.",
+                recommendation="Use 'ip ospf authentication message-digest' with message-digest keys on all neighbors.",
+                severity=Severity.MEDIUM,
+                evidence=tuple(item for r in simple for item in r[2])[:8],
+                references=(ARISTA_OSPF_GUIDE, RFC_2328_SIMPLE_PASSWORD),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+        text = eos.get_isis_text_authentication()
+        if text:
+            self.add_issue(Finding(
+                rule_id="arista.eos.routing.isis.cleartext_authentication",
+                device=parser.device_type,
+                title="IS-IS uses clear-text authentication",
+                observation=f"{len(text)} IS-IS authentication setting(s) use 'mode text'; Arista documents that the password is then carried as text in the authentication TLV.",
+                impact="An observer on the routing link can read the password and forge authenticated IS-IS packets.",
+                exploitability="Requires the ability to observe traffic on an IS-IS link.",
+                recommendation="Use 'authentication mode md5' (or sha where supported) at router and interface level, matching the neighbors.",
+                severity=Severity.MEDIUM,
+                evidence=tuple(text),
+                references=(ARISTA_ISIS_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+
     def check_root_and_nopassword_login(self, parser: BaseDeviceParser) -> None:
         """SC-030: enabled root account and remote login for password-less users."""
         eos = self._eos(parser)
@@ -1156,6 +1210,7 @@ class PluginAristaChecks(BasePlugin):
         self.check_ssh_and_authorization(parser)
         self.check_credentials(parser)
         self.check_root_and_nopassword_login(parser)
+        self.check_igp_authentication(parser)
         self.check_snmp(parser)
         self.check_operations(parser)
         self.check_control_plane(parser)
