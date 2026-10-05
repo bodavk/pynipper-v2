@@ -67,7 +67,7 @@ def _status(section, pattern):
 def test_admin_path_joins_listener_account_mfa_and_lockout(tmp_path):
     _, issues, section = _scan(tmp_path, GLOBAL + WAN + ADMIN)
     [path] = _paths(section, "privileged-admin-guessing")
-    assert path["instance-key"] == "root/admin:fwadmin"
+    assert path["instance-key"] == "root/ipv4/admin:fwadmin"
     assert path["priority"] == "High"
     assert [step["kind"] for step in path["steps"]] == [
         "management-listener", "admin-source-restriction", "privileged-local-account", "second-factor", "lockout",
@@ -177,7 +177,7 @@ def test_unrendered_template_blocks_paths(tmp_path):
 def test_sslvpn_path_joins_listener_limit_and_user(tmp_path):
     _, _, section = _scan(tmp_path, WAN + USER + VPN)
     [path] = _paths(section, "sslvpn-password-guessing")
-    assert path["instance-key"] == "root/sslvpn-user:alice"
+    assert path["instance-key"] == "root/ipv4/sslvpn-user:alice"
     assert [step["kind"] for step in path["steps"]] == ["sslvpn-listener", "sslvpn-login-limit", "password-only-user"]
     linked = {item["rule-id"] for item in path["linked-findings"]}
     assert {"fortinet.fortios.sslvpn.unlimited_login_attempts", "fortinet.fortios.sslvpn.password_only_local_user"} <= linked
@@ -310,3 +310,148 @@ def test_parse_error_and_other_callers_report_not_assessed(tmp_path):
     assert report["attack-paths"]["results"] == []
     assert {item["status"] for item in report["attack-paths"]["patterns"]} <= {
         "not-assessed", "gated", "not-implemented-for-device"}
+
+
+# --- IPv6 (FortiOS) ------------------------------------------------------------------------
+
+WAN6 = ('config system interface\n    edit "wan1"\n        set allowaccess ping\n        config ipv6\n'
+        '            set ip6-address 2001:db8::1/64\n            set ip6-allowaccess https ssh\n        end\n    next\nend\n')
+
+
+def test_ipv6_admin_path_is_a_separate_instance(tmp_path):
+    _, _, section = _scan(tmp_path, GLOBAL + WAN6 + ADMIN)
+    [path] = _paths(section, "privileged-admin-guessing")
+    assert path["instance-key"] == "root/ipv6/admin:fwadmin" and path["family"] == "ipv6"
+    assert "IPv6" in path["steps"][0]["predicate"] and "::/0" in path["steps"][1]["predicate"]
+
+
+@pytest.mark.parametrize("body", [
+    GLOBAL + WAN6 + ADMIN.replace('set accprofile "super_admin"', 'set accprofile "super_admin"\n        set ip6-trusthost1 2001:db8:100::/48'),
+    GLOBAL + WAN6.replace("            set ip6-address 2001:db8::1/64\n", "") + ADMIN,
+    GLOBAL + WAN6.replace("https ssh", "ping") + ADMIN,
+])
+def test_ipv6_admin_path_requires_ipv6_predicates(tmp_path, body):
+    _, _, section = _scan(tmp_path, body)
+    assert _paths(section, "privileged-admin-guessing") == []
+
+
+def test_ipv4_trust_does_not_restrict_ipv6_and_vice_versa(tmp_path):
+    restricted4 = ADMIN.replace('set accprofile "super_admin"', 'set accprofile "super_admin"\n        set trusthost1 10.0.0.0 255.0.0.0')
+    both = WAN6.replace("set allowaccess ping", "set allowaccess ping https")
+    _, _, section = _scan(tmp_path, GLOBAL + both + restricted4)
+    assert [item["instance-key"] for item in _paths(section, "privileged-admin-guessing")] == ["root/ipv6/admin:fwadmin"]
+
+
+def test_ipv6_local_in_policy_blocks_only_ipv6(tmp_path):
+    both = WAN6.replace("set allowaccess ping", "set allowaccess ping https")
+    local_in6 = ('config firewall local-in-policy6\n    edit 1\n        set intf "wan1"\n        set srcaddr "all"\n'
+                 '        set dstaddr "all"\n        set service "ALL"\n        set schedule "always"\n        set action deny\n    next\nend\n')
+    _, _, section = _scan(tmp_path, GLOBAL + both + ADMIN + local_in6)
+    assert [item["instance-key"] for item in _paths(section, "privileged-admin-guessing")] == ["root/ipv4/admin:fwadmin"]
+    assert "IPv6 local-in" in _status(section, "privileged-admin-guessing")["reasons"][0]
+
+
+def test_ipv6_sslvpn_path_needs_explicit_unrestricted_source6(tmp_path):
+    vpn6 = VPN.replace("    set source-address-negate disable\n",
+                       '    set source-address-negate disable\n    set source-address6 "all"\n    set source-address6-negate disable\n')
+    _, _, section = _scan(tmp_path, WAN + USER + vpn6)
+    keys = [item["instance-key"] for item in _paths(section, "sslvpn-password-guessing")]
+    assert keys == ["root/ipv4/sslvpn-user:alice", "root/ipv6/sslvpn-user:alice"]
+    _, _, section = _scan(tmp_path, WAN + USER + VPN)
+    assert [item["family"] for item in _paths(section, "sslvpn-password-guessing")] == ["ipv4"]
+
+
+# --- ASA and PAN-OS deny paths -------------------------------------------------------------
+
+ASA_HEAD = ("ASA Version 9.22\nhostname edge\ninterface GigabitEthernet0/0\n nameif outside\n security-level 0\n"
+            " ip address 192.0.2.1 255.255.255.0\n")
+ASA_ACL = ("access-list EDGE extended permit ip 10.0.0.0 255.0.0.0 any\n"
+           "access-list EDGE extended deny tcp 10.20.0.0 255.255.0.0 host 192.0.2.10 eq 443\n"
+           "access-group EDGE in interface outside\n")
+
+
+def _asa_section(tmp_path, body, head=ASA_HEAD):
+    from src.analyze.cisco.asa.plugins.asa_checks_plugin import PluginASAChecks
+    from src.devices.cisco.asa import CiscoASAParser
+
+    path = tmp_path / "asa.conf"
+    path.write_text(head + body, encoding="utf-8")
+    parser = CiscoASAParser(str(path))
+    plugin = PluginASAChecks()
+    with contextlib.redirect_stdout(io.StringIO()):
+        plugin.analyze(parser)
+    return plugin.get_issues(), attack_path_section(parser)
+
+
+def test_asa_bound_deny_defeated_by_earlier_permit(tmp_path):
+    findings, section = _asa_section(tmp_path, ASA_ACL)
+    [path] = _paths(section, "protective-deny-defeated")
+    assert path["instance-key"] == "system/acl:EDGE/entry:2"
+    assert "in on outside" in path["steps"][1]["predicate"]
+    assert path["linked-findings"][0]["rule-id"] == "cisco.asa.acl.shadowed_rule"
+    assert [f.severity.value for f in findings if f.rule_id == "cisco.asa.acl.shadowed_rule"] == ["High"]
+
+
+@pytest.mark.parametrize("body,head", [
+    (ASA_ACL.replace("access-group EDGE in interface outside\n", ""), ASA_HEAD),            # unbound
+    (ASA_ACL, ASA_HEAD + " shutdown\n"),                                                       # disabled interface
+    (ASA_ACL.replace("permit ip 10.0.0.0 255.0.0.0 any", "permit ip 10.0.0.0 255.0.0.0 any time-range WORK"), ASA_HEAD),
+    (ASA_ACL.replace("extended permit ip 10.0.0.0", "extended deny ip 10.0.0.0"), ASA_HEAD),  # deny covered by deny
+    ("access-list EDGE extended deny tcp 10.20.0.0 255.255.0.0 host 192.0.2.10 eq 443\n"
+     "access-list EDGE extended permit ip 10.0.0.0 255.0.0.0 any\naccess-group EDGE in interface outside\n", ASA_HEAD),
+])
+def test_asa_deny_path_requires_bound_active_first_match_proof(tmp_path, body, head):
+    _, section = _asa_section(tmp_path, body, head)
+    assert _paths(section, "protective-deny-defeated") == []
+
+
+def test_asa_binding_to_unknown_nameif_is_not_assessed(tmp_path):
+    _, section = _asa_section(tmp_path, ASA_ACL.replace("interface outside", "interface dmz"))
+    assert _paths(section, "protective-deny-defeated") == []
+    assert _status(section, "protective-deny-defeated")["status"] == "not-assessed"
+
+
+def _panos_section(tmp_path, rules, nat=""):
+    from src.analyze.paloalto.plugins.panos_checks_plugin import PluginPANOSChecks
+    from src.devices.paloalto.panos import PaloAltoPANOSParser
+
+    def rule(name, source, action):
+        return (f'<entry name="{name}"><from><member>trust</member></from><to><member>untrust</member></to>'
+                f'<source><member>{source}</member></source><destination><member>any</member></destination>'
+                '<source-user><member>any</member></source-user><category><member>any</member></category>'
+                '<application><member>any</member></application><service><member>any</member></service>'
+                f'<action>{action}</action></entry>')
+    body = "".join(rule(*item) for item in rules)
+    xml = ('<config><devices><entry name="fw-a"><vsys><entry name="vsys1">'
+           '<address><entry name="WIDE"><ip-netmask>10.0.0.0/8</ip-netmask></entry>'
+           '<entry name="NARROW"><ip-netmask>10.20.0.0/16</ip-netmask></entry></address>'
+           f'<rulebase>{nat}<security><rules>{body}</rules></security></rulebase></entry></vsys></entry></devices></config>')
+    path = tmp_path / "panos.xml"
+    path.write_text(xml, encoding="utf-8")
+    parser = PaloAltoPANOSParser(str(path))
+    plugin = PluginPANOSChecks()
+    plugin.check_rule_effectiveness(parser)
+    return attack_path_section(parser)
+
+
+def test_panos_deny_defeated_by_earlier_allow(tmp_path):
+    section = _panos_section(tmp_path, [("ALLOW", "WIDE", "allow"), ("BLOCK", "NARROW", "deny")])
+    [path] = _paths(section, "protective-deny-defeated")
+    assert path["instance-key"].endswith("/rule:BLOCK")
+    assert path["linked-findings"][0]["rule-id"] == "paloalto.panos.policy.shadowed_rule"
+
+
+@pytest.mark.parametrize("rules", [
+    [("BLOCK", "NARROW", "deny"), ("ALLOW", "WIDE", "allow")],
+    [("ALLOW", "NARROW", "allow"), ("BLOCK", "WIDE", "deny")],
+    [("DENY1", "WIDE", "deny"), ("ALLOW", "NARROW", "allow")],
+])
+def test_panos_deny_path_requires_first_match_cover(tmp_path, rules):
+    assert _paths(_panos_section(tmp_path, rules), "protective-deny-defeated") == []
+
+
+def test_panos_nat_policy_withholds_proof(tmp_path):
+    nat = '<nat><rules><entry name="N1"><from><member>trust</member></from></entry></rules></nat>'
+    section = _panos_section(tmp_path, [("ALLOW", "WIDE", "allow"), ("BLOCK", "NARROW", "deny")], nat)
+    assert section["results"] == []
+    assert _status(section, "protective-deny-defeated")["status"] == "not-assessed"

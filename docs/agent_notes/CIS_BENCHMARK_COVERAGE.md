@@ -13,11 +13,11 @@ CIS mapping is cross-reference metadata, not a compliance claim (see SC-049 and 
 | FortiGate 7.4.x v1.0.1 | FORTIOS | 64 | 22 | 7 | 0 | 28 | 4 | 2 | 1 |
 | Cisco IOS XE 17.x v2.2.1 | IOS_XE / IOS family | 84 | 55 | 6 | 0 | 20 | 3 | 0 | 0 |
 | Cisco ASA 9.x Firewall v1.1.0 | ASA | 78 | 36 | 2 | 0 | 30 | 5 | 2 | 3 |
-| Juniper OS v2.1.0 | JUNOS | 178 | 52 | 17 | 15 | 66 | 17 | 2 | 9 |
+| Juniper OS v2.1.0 | JUNOS | 178 | 54 | 22 | 0 | 74 | 17 | 2 | 9 |
 | Arista EOS v1.0.0 | ARISTA_EOS | 33 | 21 | 3 | 0 | 6 | 1 | 0 | 2 |
 | F5 Networks v1.0.0 (archived) | F5_BIGIP | 29 | 16 | 1 | 0 | 10 | 2 | 0 | 0 |
 | Palo Alto Firewall 11 v1.2.0 | PANOS | 78 | 27 | 7 | 0 | 39 | 4 | 0 | 1 |
-| Check Point Firewall v1.1.0 | CHECKPOINT_FW1 / GAIA | 60 | 10 | 0 | 11 | 30 | 3 | 1 | 5 |
+| Check Point Firewall v1.1.0 | CHECKPOINT_FW1 / GAIA | 60 | 14 | 4 | 0 | 33 | 3 | 1 | 5 |
 
 Older or sibling benchmarks were compared with the newest one for the same family; only recommendations without an equivalent are listed in the tasks below: FortiGate 7.0.x v1.4.0 and FortiGate v1.1.0; Cisco IOS XE 16.x v2.2.0, IOS 17.x v2.0.0, IOS 16 v2.0.0, IOS 15 v4.1.1 (archived), IOS XE v1.0.0; Cisco Firewall 8.x v4.2.0 (archived, ASA 8.x/PIX); Palo Alto Firewall 10 v1.3.0. Cisco IOS XR 7.x v1.0.1 and NX-OS v1.2.0 were supplied but cover platforms the tool does not support; they are not mapped.
 
@@ -99,4 +99,5 @@ Not implemented, with reason:
 - **Not provable from configuration:** ASA RSA key size (keys are not in the running configuration), image integrity, organisational items (M/R in the catalogue).
 - **Deliberately dropped:** F5 SSH banner and ETag hygiene (default banner state and ETag syntax not verified; would add a finding to nearly every export).
 - **Sample-gated:** Check Point Global Properties, implied rules, anti-spoofing (SC-017) and Gaia items (SC-023).
-- **Still to verify:** 15 Junos and 11 Check Point catalogue mappings (SC-062).
+- **Verified 2026-10-05 (SC-062):** the 26 former V mappings were checked against the code. Junos: SNMPv3 user algorithms (5.6, 5.7) covered by `snmp.v3_security`, which now also rejects `authentication-none` and `privacy-3des`; SSH algorithm items (6.10.1.6/8/9/11) partial (explicit weak values only); SNMP client-list (5.3) partial; client-list restrict and interface restriction (5.4, 5.8), IPv6 redirects (3.7, 6.22), password-options (6.6.9-6.6.11) and AAA secret presence (6.8.2) are gaps. Check Point: lockout enabled (1.11), banner (2.1.1), CLI timeout (2.5.1) and cleanup rule (3.2) covered; password length, complexity and history (1.1, 1.3, 1.4) and rule logging (3.8) partial; failed-attempt count, lockout time and web timeout (1.12, 1.13, 2.5.2) are gaps.
+- **Rule-level CIS references (SC-062):** `src/analyze/common/cis_references.py` lists benchmark recommendation numbers for 211 rule IDs from covered (C) mappings only, and reports show them per finding and per control. 21 covered recommendations have no single rule ID that fully implements them (for example Check Point 3.5-3.7, ASA 3.12, IOS XE 1.5.4-1.5.6) and carry no reference.

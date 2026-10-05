@@ -8,6 +8,8 @@ from src.analyze.common.risky_services import CISCO_PORT_NAMES, risky_labels
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.policy_semantics import ProofState, network_covers, service_covers
 from src.devices.cisco.asa import CiscoASAParser
+from src.analyze.common.attack_paths import mark_evaluated, record_deny_defeated, record_path_not_assessed
+from src.devices.common.models import ConfigurationState
 
 
 CISCO_ASA_MANAGEMENT_GUIDE = (
@@ -598,6 +600,7 @@ class PluginASAChecks(BasePlugin):
 
     def check_acl_hygiene_and_effectiveness(self, parser: BaseDeviceParser) -> None:
         asa = self._asa(parser)
+        self._deny_shadows = []
         for binding in asa.get_acl_bindings():
             entries = asa.get_acl_entries(binding["acl_name"])
             previous = []
@@ -707,7 +710,7 @@ class PluginASAChecks(BasePlugin):
                         earlier.action == entry.action
                         and earlier.behavior_signature == entry.behavior_signature
                     )
-                    self.add_issue(Finding(
+                    finding = Finding(
                         rule_id=(
                             "cisco.asa.acl.redundant_rule"
                             if same_action else "cisco.asa.acl.shadowed_rule"
@@ -721,7 +724,10 @@ class PluginASAChecks(BasePlugin):
                         severity=Severity.LOW if same_action else Severity.HIGH,
                         evidence=evidence + (earlier.raw_line,),
                         references=(CISCO_ASA_ACCESS_RULES_GUIDE,),
-                    ))
+                    )
+                    self.add_issue(finding)
+                    if earlier.action == "permit" and entry.action == "deny":
+                        self._deny_shadows.append((binding, position, entry, earlier_position, earlier, finding))
                     break
                 previous.append((position, entry))
 
@@ -736,3 +742,41 @@ class PluginASAChecks(BasePlugin):
         self.check_pix_defaults(parser)
         self.check_wide_open_acls(parser)
         self.check_acl_hygiene_and_effectiveness(parser)
+        self.produce_attack_paths(parser)
+
+    def produce_attack_paths(self, parser: BaseDeviceParser) -> None:
+        """SC-063: a bound, active ACL deny entry fully covered by an earlier permit in the same ACL."""
+        pattern = "protective-deny-defeated"
+        mark_evaluated(parser, pattern)
+        states = {
+            interface.zone.casefold(): interface.state
+            for interface in parser.get_normalized_config().interfaces.items
+        }
+        grouped: dict = {}
+        for binding, position, entry, earlier_position, earlier, finding in getattr(self, "_deny_shadows", ()):
+            state = states.get(binding["interface"].casefold())
+            key = f"system/acl:{entry.acl_name}/entry:{position}"
+            if state is None:
+                record_path_not_assessed(
+                    parser, pattern, f"{key}: access-group names interface '{binding['interface']}', which has no matching nameif.",
+                )
+                continue
+            if state == ConfigurationState.DISABLED:
+                continue
+            grouped.setdefault(key, []).append((binding, position, entry, earlier_position, earlier, finding))
+        for key, items in sorted(grouped.items()):
+            binding, position, entry, earlier_position, earlier, finding = items[0]
+            bindings = sorted({f"{item[0]['direction']} on {item[0]['interface']}" for item in items})
+            record_deny_defeated(
+                parser, scope="system", family="any", instance_key=key,
+                allow_entity=f"system/acl:{entry.acl_name}/entry:{earlier_position}",
+                allow_text=(f"Earlier active permit entry {earlier_position} in access list '{entry.acl_name}' statically "
+                            "covers the deny's sources, destinations and services."),
+                allow_evidence=(earlier.raw_line,),
+                deny_text=(f"Deny entry {position} in access list '{entry.acl_name}', applied {', '.join(bindings)}, "
+                           "is never reached under first-match evaluation."),
+                deny_evidence=(entry.raw_line,) + tuple(
+                    f"access-group {entry.acl_name} {item[0]['direction']} interface {item[0]['interface']}" for item in items
+                ),
+                finding=finding,
+            )

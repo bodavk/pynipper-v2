@@ -2,6 +2,7 @@
 
 from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.issue import Finding, FindingBasis, Severity
+from src.analyze.common.attack_paths import mark_evaluated, record_deny_defeated, record_path_not_assessed
 from src.devices.common.policy_semantics import (
     ProofState,
     network_covers,
@@ -1164,7 +1165,13 @@ class PluginPANOSChecks(BasePlugin):
 
     def check_rule_effectiveness(self, parser: BaseDeviceParser) -> None:
         panos = self._panos(parser)
+        pattern = "protective-deny-defeated"
+        mark_evaluated(parser, pattern)
         if panos.panorama_inheritance_unknown or panos.has_nat_policy():
+            record_path_not_assessed(
+                parser, pattern,
+                "Panorama inheritance is unresolved or a NAT policy exists; first-match rule proof was withheld.",
+            )
             return
         previous_by_scope: dict[tuple[str, str, str], list[PanosSecurityRule]] = {}
         for rule in panos.get_security_rules():
@@ -1176,8 +1183,7 @@ class PluginPANOSChecks(BasePlugin):
                 if not self._rule_covers(panos, earlier, rule):
                     continue
                 same_action = earlier.action == rule.action
-                self.add_issue(
-                    Finding(
+                finding = Finding(
                         rule_id="paloalto.panos.policy.redundant_rule" if same_action else "paloalto.panos.policy.shadowed_rule",
                         device=parser.device_type,
                         title="Rule is redundant" if same_action else "Rule is shadowed",
@@ -1189,7 +1195,19 @@ class PluginPANOSChecks(BasePlugin):
                         evidence=self._evidence(rule.evidence) + self._evidence(earlier.evidence),
                         references=(PANOS_POLICY_GUIDE,),
                     )
-                )
+                self.add_issue(finding)
+                if earlier.action == "allow" and rule.action != "allow":
+                    where = f"{rule.device_scope}/{rule.scope}/{rule.rulebase}"
+                    record_deny_defeated(
+                        parser, scope=where, family="any", instance_key=f"{where}/rule:{rule.name}",
+                        allow_entity=f"{where}/rule:{earlier.name}",
+                        allow_text=(f"Earlier enabled allow rule '{earlier.name}' at position {earlier.position} statically "
+                                    "covers the rule's zones, sources, destinations and services, with any application, user and category."),
+                        allow_evidence=earlier.evidence,
+                        deny_text=(f"Enabled {rule.action} rule '{rule.name}' at position {rule.position} in "
+                                   f"'{rule.scope}/{rule.rulebase}' is never reached under first-match evaluation."),
+                        deny_evidence=rule.evidence, finding=finding,
+                    )
                 break
             previous.append(rule)
 

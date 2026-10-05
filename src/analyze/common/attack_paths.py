@@ -174,12 +174,14 @@ PATTERNS: dict[str, PathPattern] = {
         ),
         PathPattern(
             "protective-deny-defeated", 1, "Protective deny defeated by an earlier allow",
-            Severity.HIGH, _FORTIOS, ("fortinet.fortios.policy.shadowed_rule",),
-            ("Earlier enabled accept policies statically cover every source, destination and service of a later "
-             "deny policy in the same scope, address family and interface pair, so the deny is never reached."),
+            Severity.HIGH, frozenset({"FORTIOS", "ASA", "PAN_OS"}),
+            ("fortinet.fortios.policy.shadowed_rule", "cisco.asa.acl.shadowed_rule", "paloalto.panos.policy.shadowed_rule"),
+            ("Earlier enabled allow rules statically cover every source, destination and service of a later deny "
+             "in the same ordered rule set (FortiOS policy scope and interface pair, ASA bound access list, PAN-OS "
+             "rulebase and zones), so the deny is never reached."),
             ("Traffic matching the deny was not observed; the intended effect of the deny is inferred from its order.",
-             "Schedules, identity, ISDB and NAT objects were not involved in the proof (they are excluded from it)."),
-            ("Move the deny above the covering accept policies, or narrow the accept policies.",
+             "Rules with schedules, time ranges, users, applications, negation or unresolved objects were left out of the proof."),
+            ("Move the deny above the covering allow rules, or narrow the allow rules.",
              "Remove the deny if its intent is obsolete, so policy review is not misled."),
         ),
         PathPattern(
@@ -208,6 +210,17 @@ PATTERNS: dict[str, PathPattern] = {
 assert len(PATTERNS) <= MAX_PATTERNS
 
 _PRIORITY_ORDER = {Severity.CRITICAL: 0, Severity.HIGH: 1}
+# Vendor and platform tokens (the first two rule-ID segments) owned by each device type.
+_RULE_OWNERS = {
+    "FORTIOS": ("fortinet", "fortios"), "ASA": ("cisco", "asa"), "PAN_OS": ("paloalto", "panos"),
+    "JUNOS": ("juniper", "junos"), "IOS_ROUTER": ("cisco", "ios"), "IOS_SWITCH": ("cisco", "ios"),
+    "IOS_CATALYST": ("cisco", "ios"), "IOS_XE": ("cisco", "ios"),
+}
+
+
+def _component_rules(pattern: PathPattern, device_type: str) -> tuple[str, ...]:
+    owner = _RULE_OWNERS.get(device_type)
+    return tuple(rule for rule in pattern.component_rule_ids if owner is None or tuple(rule.split(".")[:2]) == owner)
 
 
 @dataclass
@@ -305,6 +318,21 @@ def record_path(parser, result: PathResult) -> bool:
     return True
 
 
+def record_deny_defeated(
+    parser, *, scope: str, family: str, instance_key: str, allow_entity: str, allow_text: str,
+    allow_evidence: Iterable, deny_text: str, deny_evidence: Iterable, finding,
+) -> bool:
+    """Shared step shape for ``protective-deny-defeated``; callers supply a first-match proof."""
+    link = ((finding.rule_id, finding.title),) if finding is not None else ()
+    steps = (
+        PathFact("earlier-allow", allow_entity, scope, family, FactState.KNOWN, allow_text,
+                 evidence_locations(allow_evidence), link),
+        PathFact("defeated-deny", instance_key, scope, family, FactState.KNOWN, deny_text,
+                 evidence_locations(deny_evidence), link),
+    )
+    return record_path(parser, PathResult("protective-deny-defeated", instance_key, scope, family, steps))
+
+
 def _result_dict(pattern: PathPattern, result: PathResult) -> dict:
     links: list[dict] = []
     for step in result.steps:
@@ -387,7 +415,7 @@ def attack_path_section(parser, *, template_unresolved: bool = False) -> dict:
             continue
         found = ledger.results.get(pattern.pattern_id, {})
         reasons = ledger.not_assessed.get(pattern.pattern_id, [])
-        if not all(context.permits_rule(rule) for rule in pattern.component_rule_ids):
+        if not all(context.permits_rule(rule) for rule in _component_rules(pattern, device_type)):
             statuses.append(_pattern_status(
                 pattern, device_type, PatternStatus.EXCLUDED, ["A component category is excluded by the assessment policy."], 0,
             ))
@@ -424,5 +452,5 @@ def attack_path_section(parser, *, template_unresolved: bool = False) -> dict:
 __all__: Iterable[str] = [
     "ATTACK_PATH_SCHEMA_VERSION", "PATTERNS", "FactState", "PathFact", "PathPattern", "PathResult",
     "PatternStatus", "attack_path_section", "empty_attack_path_section", "evidence_locations",
-    "linked_findings", "mark_evaluated", "record_path", "record_path_not_assessed",
+    "linked_findings", "mark_evaluated", "record_deny_defeated", "record_path", "record_path_not_assessed",
 ]

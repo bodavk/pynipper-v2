@@ -199,6 +199,7 @@
                             <details>
                                 <summary>Technical background and references</summary>
                                 {% if guide %}<p>{{ guide.technical }}</p>{% endif %}
+                                {% if view['cis-references'] %}<p><strong>CIS benchmark:</strong> {{ view['cis-references']|join('; ') }} <span class="muted">(recommendation numbers only; not certification)</span></p>{% endif %}
                                 {% if finding.references %}
                                     <ul class="refs">
                                     {% for reference in finding.references %}

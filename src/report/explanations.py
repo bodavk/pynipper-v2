@@ -11,6 +11,7 @@ proof that a control is in place.
 from collections import defaultdict
 from typing import Dict, List, Optional
 
+from src.analyze.common.cis_references import cis_references
 from src.analyze.common.guidance import AREAS, Guidance, guidance_for
 from src.analyze.common.issue import Finding, FindingBasis
 
@@ -112,6 +113,7 @@ def build_finding_views(issues: Dict[str, Finding]) -> List[dict]:
             "basis": finding.basis.value if finding.basis else None,
             "basis-label": BASIS_TEXT[finding.basis][0] if finding.basis else None,
             "basis-note": BASIS_TEXT[finding.basis][1] if finding.basis else None,
+            "cis-references": cis_references(finding.rule_id),
         })
     return views
 
@@ -126,6 +128,7 @@ def json_security_audit(issues: Dict[str, Finding]) -> Dict[str, dict]:
         record = finding.to_dict()
         record["guidance"] = view["guidance"].to_dict() if view["guidance"] else None
         record["basis-note"] = view["basis-note"]
+        record["cis-references"] = list(view["cis-references"])
         record["related-areas"] = [
             {
                 "area": item["area"],

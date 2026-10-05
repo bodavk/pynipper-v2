@@ -118,6 +118,11 @@ CISCO_IOS_ACCOUNTING_GUIDE = (
 CISCO_IOS_AAA_GROUP_GUIDE = (
     "https://www.cisco.com/c/en/us/td/docs/routers/ios-xe/security-vpn/security-vpn/m_sec-rad-aaa-server-groups.html"
 )
+CISCO_IOS_IPV6_FHS_GUIDE = (
+    "https://www.cisco.com/c/en/us/td/docs/switches/lan/catalyst9300/software/release/17-12/"
+    "configuration_guide/sec/b_1712_sec_9300_cg/configuring_ipv6_first_hop_security.html"
+)
+RFC_9099 = "https://www.rfc-editor.org/rfc/rfc9099.html"
 CISCO_IOS_DOT1X_GUIDE = (
     "https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/sec_usr_8021x/"
     "configuration/xe-3e/sec-usr-8021x-xe-3e-book/config-ieee-802x-pba.html"
@@ -2618,6 +2623,53 @@ class PluginIOSBaseline(BasePlugin):
                     Severity.MEDIUM, evidence, (CISCO_IOS_ROUTING_HARDENING_GUIDE,),
                 ))
 
+    def check_ipv6_first_hop(self, parser: BaseDeviceParser) -> None:
+        """SC-048: an assessed endpoint port explicitly trusted for IPv6 RAs or DHCPv6 server messages.
+
+        Only explicit trust is graded (router/server device-role or trusted-port in an attached
+        policy). A missing policy, switch/monitor roles, VLAN-qualified attachments and
+        conflicting interface/VLAN attachments stay ungraded: absence of RA or DHCPv6 guard
+        depends on whether IPv6 is in use, which the export does not establish.
+        """
+        ios = self._ios(parser)
+        if ios.get_version() == "?":
+            return
+        checks = (
+            ("ra_guard", "router", "cisco.ios.layer2.access_edge.ipv6_ra_trusted",
+             "Access-edge port is trusted to send IPv6 router advertisements",
+             "RA guard", "router advertisements and redirects",
+             "A connected endpoint can announce itself as the IPv6 default router or change prefixes and DNS options, "
+             "redirecting or intercepting traffic of other hosts on the VLAN, including on networks that treat IPv6 as unused.",
+             "Attach an RA guard policy with device-role host (the default) to this endpoint port; reserve device-role "
+             "router and trusted-port for ports classified as uplinks or router-facing."),
+            ("dhcp_guard", "server", "cisco.ios.layer2.access_edge.ipv6_dhcp_server_trusted",
+             "Access-edge port is trusted to send DHCPv6 server messages",
+             "DHCPv6 guard", "DHCPv6 advertisements and replies",
+             "A connected endpoint can act as a rogue DHCPv6 server and hand out attacker-controlled DNS servers or addresses.",
+             "Attach a DHCPv6 guard policy with device-role client (the default) to this endpoint port; reserve "
+             "device-role server and trusted-port for ports facing approved DHCPv6 servers or relays."),
+        )
+        for port in ios.get_ipv6_first_hop_ports():
+            if not port.active or port.role != "access-edge" or port.mode not in {"access", "switchport"}:
+                continue
+            for attribute, role_state, rule, title, feature, messages, impact, recommendation in checks:
+                attachment = getattr(port, attribute)
+                if attachment.state not in {role_state, "trusted-port"}:
+                    continue
+                how = ("trusted-port, which disables policing" if attachment.state == "trusted-port"
+                       else f"device-role {role_state}")
+                where = "the interface" if attachment.source == "interface" else f"VLAN {port.access_vlan}"
+                self.add_issue(self._finding(
+                    parser, rule, title,
+                    (f"Interface {port.interface} is explicitly classified access-edge, but the {feature} policy "
+                     f"'{attachment.policy}' attached to {where} sets {how}, so {messages} from this port are accepted."),
+                    impact, recommendation, Severity.HIGH,
+                    tuple(port.evidence[:1]) + tuple(attachment.evidence)
+                    + (f"assessment policy: {port.interface} role access-edge",),
+                    (CISCO_IOS_IPV6_FHS_GUIDE, RFC_9099),
+                    basis=FindingBasis.EXPLICIT_VALUE,
+                ))
+
     def check_access_admission(self, parser: BaseDeviceParser) -> None:
         ios = self._ios(parser)
         for port in ios.get_access_admission_interfaces():
@@ -2726,5 +2778,6 @@ class PluginIOSBaseline(BasePlugin):
         self.check_routing(parser)
         self.check_discovery(parser)
         self.check_switch_edge(parser)
+        self.check_ipv6_first_hop(parser)
         self.check_access_admission(parser)
         self.check_bpdu_guard(parser)

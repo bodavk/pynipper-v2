@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Iterable
 
+from src.analyze.common.cis_references import cis_references_for_rules
+
 CONTROL_SCHEMA_VERSION = 1
 
 _IOS_FAMILY = frozenset({"IOS_ROUTER", "IOS_SWITCH", "IOS_CATALYST", "IOS_XE"})
@@ -153,6 +155,7 @@ def control_coverage(parser, *, template_unresolved: bool = False) -> dict:
             "reasons": list(reasons),
             "rule-ids": list(definition.rule_ids),
             "references": list(definition.references),
+            "cis-references": cis_references_for_rules(definition.rule_ids),
         })
     return {
         "schema-version": CONTROL_SCHEMA_VERSION,

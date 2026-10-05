@@ -693,7 +693,7 @@ class PluginJunOSBaseline(BasePlugin):
             }
             has_auth = any(
                 token.startswith("authentication-")
-                and token not in {"authentication-password", "authentication-key"}
+                and token not in {"authentication-password", "authentication-key", "authentication-none"}
                 for token in values
             )
             has_privacy = any(
@@ -704,7 +704,8 @@ class PluginJunOSBaseline(BasePlugin):
             weak = sorted(
                 token
                 for token in values
-                if token in {"authentication-md5", "privacy-des", "privacy-none"}
+                # privacy-3des: 64-bit block cipher; AES-128 is the stronger supported option.
+                if token in {"authentication-md5", "authentication-none", "privacy-des", "privacy-3des", "privacy-none"}
             )
             if has_auth and has_privacy and not weak:
                 continue

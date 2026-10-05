@@ -341,6 +341,36 @@ class IOSSwitchEdgeInterface:
 
 
 @dataclass(frozen=True)
+class IOSFirstHopAttachment:
+    """Resolved IPv6 RA guard or DHCPv6 guard state for one switchport (SC-048).
+
+    ``state`` is ``trusted-port``, ``router``/``server`` (the policy admits that role's
+    messages), ``protected`` (host/client role, including the default policy), ``none``
+    (nothing attached), or ``unknown`` (undefined policy, VLAN-qualified interface
+    attachment, an unassessed role such as switch/monitor, or conflicting interface and
+    VLAN attachments whose precedence is not documented).
+    """
+
+    state: str
+    policy: str | None
+    source: str | None
+    detail: str
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class IOSIPv6FirstHopPort:
+    interface: str
+    mode: str
+    access_vlan: int | None
+    active: bool
+    role: str
+    ra_guard: IOSFirstHopAttachment
+    dhcp_guard: IOSFirstHopAttachment
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
 class IOSAccessAdmission:
     interface: str
     role: str
@@ -4735,6 +4765,133 @@ class CiscoIOSParser(BaseDeviceParser):
                 source_guard=source_guard,
                 port_security=port_security,
                 evidence=tuple(global_evidence + evidence),
+            ))
+        return records
+
+    @staticmethod
+    def _vlan_ids(text: str) -> set[int] | None:
+        values: set[int] = set()
+        for part in text.replace(" ", "").split(","):
+            try:
+                if "-" in part:
+                    start, end = map(int, part.split("-", 1))
+                    if not 1 <= start <= end <= 4094:
+                        return None
+                    values.update(range(start, end + 1))
+                else:
+                    value = int(part)
+                    if not 1 <= value <= 4094:
+                        return None
+                    values.add(value)
+            except ValueError:
+                return None
+        return values
+
+    # IOS XE 17.12 Catalyst 9300 security guide, "Configuring IPv6 First Hop Security":
+    # RA guard device-role {host|monitor|router|switch} (default host: RAs and redirects
+    # disallowed); DHCPv6 guard device-role {client|server} (default client: server
+    # messages dropped); trusted-port disables policing. "ipv6 nd raguard" or "ipv6 dhcp
+    # guard" without attach-policy attaches the default policy.
+    _FIRST_HOP = {
+        "ra": ("ipv6 nd raguard", "host", {"host": "protected", "router": "router"}),
+        "dhcp": ("ipv6 dhcp guard", "client", {"client": "protected", "server": "server"}),
+    }
+
+    def get_ipv6_first_hop_ports(self) -> list[IOSIPv6FirstHopPort]:
+        """Resolve RA guard and DHCPv6 guard attachments for each switchport (SC-048)."""
+        policies: dict[str, dict[str, tuple[str, tuple[ConfigEvidence, ...]]]] = {"ra": {}, "dhcp": {}}
+        for feature, (command, default_role, roles) in self._FIRST_HOP.items():
+            for header, header_line, children in self._indented_blocks(f"{command} policy "):
+                name = header.split()[-1]
+                role, trusted = default_role, False
+                evidence = [ConfigEvidence(header, self.config_filepath, header_line)]
+                for line_number, _, child in children:
+                    match = re.fullmatch(r"(no\s+)?device-role\s+(\S+)", child)
+                    if match:
+                        role = default_role if match.group(1) else match.group(2).casefold()
+                    elif child in {"trusted-port", "no trusted-port", "default trusted-port"}:
+                        trusted = child == "trusted-port"
+                    else:
+                        continue
+                    evidence.append(ConfigEvidence(child, self.config_filepath, line_number))
+                state = "trusted-port" if trusted else roles.get(role, "unknown")
+                policies[feature][name] = (state, tuple(evidence))
+
+        def resolve(feature: str, name: str | None, source: str, line: ConfigEvidence) -> IOSFirstHopAttachment:
+            if name is None:
+                return IOSFirstHopAttachment("protected", None, source, "default policy", (line,))
+            if name not in policies[feature]:
+                return IOSFirstHopAttachment("unknown", name, source, "attached policy is not defined", (line,))
+            state, evidence = policies[feature][name]
+            return IOSFirstHopAttachment(state, name, source, f"policy {name}", (line,) + evidence)
+
+        vlan_attach: dict[str, dict[int, IOSFirstHopAttachment]] = {"ra": {}, "dhcp": {}}
+        for header, header_line, children in self._indented_blocks("vlan configuration "):
+            vlans = self._vlan_ids(header.split(maxsplit=2)[2]) or set()
+            for line_number, _, child in children:
+                for feature, (command, _, _) in self._FIRST_HOP.items():
+                    match = re.fullmatch(re.escape(command) + r"(?:\s+attach-policy\s+(\S+))?", child)
+                    if match:
+                        attachment = resolve(feature, match.group(1), "vlan", ConfigEvidence(
+                            f"{header}: {child}", self.config_filepath, line_number))
+                        for vlan in vlans:
+                            vlan_attach[feature][vlan] = attachment
+
+        records = []
+        for header, header_line, children in self._indented_blocks("interface "):
+            interface = header.split(maxsplit=1)[1]
+            mode, access_vlan, active = "unknown", None, True
+            evidence = [ConfigEvidence(header, self.config_filepath, header_line)]
+            local: dict[str, IOSFirstHopAttachment] = {}
+            for line_number, _, command in children:
+                if command == "shutdown":
+                    active = False
+                elif command == "no shutdown":
+                    active = True
+                elif command == "no switchport":
+                    mode = "routed"
+                elif command == "switchport":
+                    mode = "switchport"
+                elif command.startswith("switchport mode "):
+                    mode = command.split()[2].casefold()
+                elif command.startswith("switchport access vlan "):
+                    value = command.split()[-1]
+                    access_vlan = int(value) if value.isdigit() and 1 <= int(value) <= 4094 else None
+                else:
+                    for feature, (prefix, _, _) in self._FIRST_HOP.items():
+                        if command == f"no {prefix}" or command.startswith(f"no {prefix} "):
+                            local.pop(feature, None)
+                            break
+                        match = re.fullmatch(re.escape(prefix) + r"(?:\s+attach-policy\s+(\S+))?(\s+vlan\b.*)?", command)
+                        if match:
+                            line = ConfigEvidence(command, self.config_filepath, line_number)
+                            local[feature] = (
+                                IOSFirstHopAttachment("unknown", match.group(1), "interface",
+                                                      "VLAN-qualified interface attachment", (line,))
+                                if match.group(2) else resolve(feature, match.group(1), "interface", line)
+                            )
+                            break
+                    continue
+                evidence.append(ConfigEvidence(command, self.config_filepath, line_number))
+            if mode == "unknown" and access_vlan is not None:
+                mode = "access"
+            effective = {}
+            for feature in self._FIRST_HOP:
+                port = local.get(feature)
+                vlan = vlan_attach[feature].get(access_vlan) if access_vlan is not None else None
+                trusting = {"trusted-port", "router", "server"}
+                if port and vlan and port.state != vlan.state and not {port.state, vlan.state} <= trusting:
+                    effective[feature] = IOSFirstHopAttachment(
+                        "unknown", None, "interface+vlan",
+                        "interface and VLAN attachments differ; precedence is not documented",
+                        port.evidence + vlan.evidence,
+                    )
+                else:
+                    effective[feature] = port or vlan or IOSFirstHopAttachment("none", None, None, "no policy attached", ())
+            records.append(IOSIPv6FirstHopPort(
+                interface=interface, mode=mode, access_vlan=access_vlan, active=active,
+                role=self.assessment_context.role_for_interface(interface),
+                ra_guard=effective["ra"], dhcp_guard=effective["dhcp"], evidence=tuple(evidence),
             ))
         return records
 
