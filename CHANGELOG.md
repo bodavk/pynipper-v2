@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- SC-026/SC-046 Arista EOS: `arista.eos.management.unrestricted_gnmi` for enabled gNMI transports without an IPv4 access-group or with a permit-all ACL.
+
+- Cisco IOS-XE: one consolidated informational finding `cisco.ios.aaa.servers_without_tls` listing RADIUS/TACACS+ servers without TLS/DTLS and LDAP servers without `mode secure` (Cisco IOS XE security warnings); headers only, at most six evidence lines.
+
+- SC-005 Junos IS-IS: report instances without any level/hello authentication (documented default disabled), `authentication-type simple` (cleartext) and `no-authentication-check` (received packets not verified).
+
 - SC-030 Arista EOS: `arista.eos.auth.root_login_enabled` (Medium) for `aaa root secret` or console-only `aaa root nopassword`, and `arista.eos.auth.nopassword_remote_login` (Critical) when `allow-nopassword-remote-login` lets password-less users log in remotely. Root secrets are redacted.
 
 - SC-031 Cisco IOS: `cisco.ios.aaa.ldap_cleartext` (High) for LDAP servers used by AAA method lists without `mode secure`; bind credentials are not copied into evidence.

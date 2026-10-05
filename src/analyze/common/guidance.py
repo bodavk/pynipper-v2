@@ -587,6 +587,13 @@ _CATALOGUE = (
         "PPTP has been superseded by stronger VPN protocols. Enabling the gateway is a configuration risk even though user authentication and network exposure require separate assessment.",
         "Confirm whether any clients still depend on PPTP, migrate them to a supported secure VPN, and disable the gateway.",
     )),
+    (r"^aaa\.servers_without_tls$", _G(
+        "aaa-without-tls", "authentication",
+        "Authentication servers are reached without TLS or DTLS.",
+        "Someone on the path to the AAA server records the traffic and works on the shared secret offline.",
+        "RADIUS and TACACS+ only obfuscate parts of a packet with a shared secret; TLS/DTLS adds encryption and integrity. The vendor flags non-TLS servers as insecure, but this is usually a hardening item rather than an urgent risk.",
+        "Check whether the AAA servers support RadSec/DTLS, TACACS+ over TLS or LDAPS and plan a migration.",
+    )),
     (r"^update\.server_unverified$", _G(
         "update-server-unverified", "platform",
         "The device downloads configuration or software updates from a server it does not authenticate.",

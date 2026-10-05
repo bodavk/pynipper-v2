@@ -1110,6 +1110,31 @@ class CiscoIOSParser(BaseDeviceParser):
             found["key-hash md5"] = tuple(hashes)
         return found
 
+    def get_aaa_servers_without_tls(self) -> dict[str, list[ConfigEvidence]]:
+        """RADIUS/TACACS+/LDAP server definitions without TLS/DTLS (IOS XE security warnings).
+
+        Named ``radius server``/``tacacs server`` blocks without a ``tls``/``dtls``
+        sub-command, ``ldap server`` blocks without ``mode secure`` and legacy
+        ``radius-server host``/``tacacs-server host`` lines. Only header lines are
+        returned, so no keys are exposed.
+        """
+        found: dict[str, list[ConfigEvidence]] = {"RADIUS": [], "TACACS+": [], "LDAP": []}
+        for prefix, protocol, marker in (("radius server ", "RADIUS", ("tls", "dtls")),
+                                         ("tacacs server ", "TACACS+", ("tls",)),
+                                         ("ldap server ", "LDAP", ("mode secure",))):
+            for header, line, children in self._indented_blocks(prefix):
+                if not any(child.lower() == m or child.lower().startswith(m + " ")
+                           for _, _, child in children for m in marker):
+                    found[protocol].append(ConfigEvidence(header, self.config_filepath, line))
+        for number, raw in enumerate(self.parser.ioscfg, start=1):
+            if raw[:1].isspace():
+                continue
+            tokens = raw.split()
+            for command, protocol in (("radius-server", "RADIUS"), ("tacacs-server", "TACACS+")):
+                if tokens[:2] == [command, "host"] and len(tokens) > 2:
+                    found[protocol].append(ConfigEvidence(" ".join(tokens[:3]), self.config_filepath, number))
+        return {protocol: items for protocol, items in found.items() if items}
+
     def get_ldap_servers(self) -> tuple[list[IOSLDAPServer], dict[str, tuple[str, ...]]]:
         """LDAP servers and ``aaa group server ldap`` memberships.
 

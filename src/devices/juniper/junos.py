@@ -213,6 +213,19 @@ class JunosOSPFInterface:
 
 
 @dataclass(frozen=True)
+class JunosISISAuthentication:
+    """Explicit IS-IS authentication state for one routing instance."""
+
+    routing_instance: str
+    interfaces: tuple[str, ...]
+    authenticated: bool
+    cleartext_levels: tuple[str, ...]
+    receive_check_disabled: bool
+    unknown: bool
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
 class JunosAccessEdgePort:
     """BPDU protection and 802.1X supplicant mode for one declared access-edge port (SC-003/SC-004)."""
 
@@ -3004,6 +3017,79 @@ class JunOSParser(BaseDeviceParser):
                     inheritance_unknown=global_unknown,
                     evidence=evidence,
                 ))
+        return records
+
+    def get_isis_authentication(self) -> list[JunosISISAuthentication]:
+        """IS-IS authentication per routing instance (Juniper "Configuring IS-IS Authentication").
+
+        Level ``authentication-key``/``authentication-type`` (simple = text password in
+        the packet), interface ``hello-authentication-key``/``hello-authentication-type``
+        and ``no-authentication-check`` (send authenticated packets but do not check
+        received ones). Authentication is disabled by default. lo0 and passive or
+        disabled interfaces are not adjacency-forming and are ignored.
+        """
+        unknown_inheritance = any(
+            statement.active and "apply-groups" in statement.path for statement in self.statements
+        )
+        instances: dict[str, dict] = {}
+        for statement in self.statements:
+            if not statement.active:
+                continue
+            scoped = self._routing_scope(statement.path, "isis")
+            if scoped is None:
+                continue
+            routing_instance, index = scoped
+            tail = statement.path[index + 2:]
+            data = instances.setdefault(routing_instance, {
+                "interfaces": {}, "levels": {}, "hello": False, "no_check": None, "evidence": [],
+            })
+            if not tail:
+                continue
+            if tail[0] == "interface" and len(tail) > 1:
+                name = tail[1]
+                info = data["interfaces"].setdefault(name, {"inactive": name.startswith("lo"), "evidence": statement.evidence})
+                rest = tail[2:]
+                if "passive" in rest or "disable" in rest:
+                    info["inactive"] = True
+                if "hello-authentication-key" in rest:
+                    data["hello"] = True
+                    data["evidence"].append(statement.evidence)
+                if "hello-authentication-type" in rest:
+                    position = rest.index("hello-authentication-type")
+                    if position + 1 < len(rest) and rest[position + 1] == "simple":
+                        data["levels"].setdefault(f"interface {name}", {})["type"] = "simple"
+                        data["levels"][f"interface {name}"]["key"] = True
+                    data["evidence"].append(statement.evidence)
+            elif tail[0] == "level" and len(tail) > 2:
+                level = data["levels"].setdefault(f"level {tail[1]}", {})
+                if tail[2] == "authentication-key":
+                    level["key"] = True
+                    data["evidence"].append(statement.evidence)
+                elif tail[2] == "authentication-type" and len(tail) > 3:
+                    level["type"] = tail[3]
+                    data["evidence"].append(statement.evidence)
+            elif tail[0] == "no-authentication-check":
+                data["no_check"] = statement.evidence
+        records = []
+        for routing_instance, data in sorted(instances.items()):
+            active = tuple(sorted(n for n, info in data["interfaces"].items() if not info["inactive"]))
+            keyed = [name for name, level in data["levels"].items() if level.get("key")]
+            cleartext = tuple(sorted(name for name, level in data["levels"].items()
+                                     if level.get("key") and level.get("type") == "simple"))
+            evidence = list(data["evidence"])
+            if data["no_check"] is not None:
+                evidence.append(data["no_check"])
+            if not evidence:
+                evidence = [data["interfaces"][name]["evidence"] for name in active[:3]]
+            records.append(JunosISISAuthentication(
+                routing_instance=routing_instance,
+                interfaces=active,
+                authenticated=bool(keyed) or data["hello"],
+                cleartext_levels=cleartext,
+                receive_check_disabled=data["no_check"] is not None,
+                unknown=unknown_inheritance,
+                evidence=tuple(dict.fromkeys(evidence)),
+            ))
         return records
 
     def get_ospf_interfaces(self) -> list[JunosOSPFInterface]:

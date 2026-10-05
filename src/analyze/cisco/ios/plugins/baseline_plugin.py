@@ -1351,6 +1351,21 @@ class PluginIOSBaseline(BasePlugin):
                     Severity.LOW, association.evidence, (CISCO_XE_SECURITY_WARNINGS,),
                     basis=FindingBasis.EXPLICIT_VALUE,
                 ))
+        if ios.is_iosxe():
+            servers = ios.get_aaa_servers_without_tls()
+            if servers:
+                summary = ", ".join(f"{len(items)} {protocol}" for protocol, items in servers.items())
+                evidence = tuple(item for items in servers.values() for item in items)
+                self.add_issue(self._finding(
+                    parser, "cisco.ios.aaa.servers_without_tls",
+                    "AAA servers are defined without TLS",
+                    f"{summary} server definition(s) have no TLS/DTLS (LDAP: no 'mode secure'). Cisco IOS XE flags these "
+                    "as insecure; protection then relies on the protocol's shared-secret obfuscation and the network path.",
+                    "AAA traffic is not encrypted end to end. This is a hardening gap for the assessor to weigh, not an exploitable flaw by itself.",
+                    "Where the AAA servers support it, move to RADIUS over DTLS/TLS (RadSec), TACACS+ over TLS and LDAP 'mode secure'.",
+                    Severity.INFORMATIONAL, evidence[:6], (CISCO_XE_SECURITY_WARNINGS,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
+                ))
         found = ios.get_xe_insecure_feature_lines()
         specs = {
             "router odr": ("cisco.ios.routing.odr_enabled", "On-Demand Routing (ODR) is enabled",

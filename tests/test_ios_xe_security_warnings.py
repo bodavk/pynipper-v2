@@ -76,3 +76,24 @@ def test_disabled_or_sha2_not_reported(tmp_path):
     findings = _run(tmp_path, body)
     assert not _rules(findings, "cisco.ios.routing.odr_enabled")
     assert not _rules(findings, "cisco.ios.ssh.weak_pubkey_hash")
+
+
+AAA_RULE = "cisco.ios.aaa.servers_without_tls"
+
+
+def test_aaa_servers_without_tls_single_informational(tmp_path):
+    body = ("radius server R1\n address ipv4 192.0.2.1 auth-port 1812 acct-port 1813\n key 7 0822455D0A16\n!\n"
+            "radius server R2\n address ipv4 192.0.2.2\n dtls port 2083\n!\n"
+            "tacacs server T1\n address ipv4 192.0.2.3\n key 7 0822455D0A16\n!\n"
+            "tacacs-server host 192.0.2.4\n")
+    findings = _rules(_run(tmp_path, body), AAA_RULE)
+    assert len(findings) == 1
+    assert findings[0].severity is Severity.INFORMATIONAL
+    assert "1 RADIUS" in findings[0].observation and "2 TACACS+" in findings[0].observation
+    assert "0822455D0A16" not in repr(findings[0])
+    assert guidance_for(AAA_RULE)
+
+
+def test_aaa_servers_not_graded_on_classic_ios(tmp_path):
+    body = "tacacs server T1\n address ipv4 192.0.2.3\n!\n"
+    assert not _rules(_run(tmp_path, body, device="IOS_ROUTER", version="15.4"), AAA_RULE)

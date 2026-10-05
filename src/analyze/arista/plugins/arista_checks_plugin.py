@@ -64,6 +64,34 @@ class PluginAristaChecks(BasePlugin):
                             "https://www.arista.com/en/support/advisories-notices/security-advisory/19862-security-advisory-0099"),
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
+        for transport in self._eos(parser).get_gnmi_transports():
+            if transport.active is not True or transport.address_state == "unknown":
+                continue
+            vrf = transport.vrf or "default or unspecified"
+            if not transport.ipv4_acl:
+                observation = (f"The enabled gNMI gRPC transport '{transport.name}' in VRF '{vrf}' has no "
+                               "'ip access-group', so no IPv4 source restriction is configured for it.")
+                evidence, basis = transport.evidence, None
+            else:
+                assessment = self._eos(parser).assess_service_acl("ip", transport.ipv4_acl)
+                if assessment.state != "permit-all":
+                    continue
+                observation = (f"The enabled gNMI gRPC transport '{transport.name}' in VRF '{vrf}' attaches IPv4 ACL "
+                               f"'{transport.ipv4_acl}', whose first effective entry permits any source.")
+                evidence, basis = transport.evidence + assessment.evidence, FindingBasis.EXPLICIT_VALUE
+            self.add_issue(Finding(
+                rule_id="arista.eos.management.unrestricted_gnmi",
+                device=parser.device_type,
+                title="gNMI transport is not source restricted",
+                observation=observation + " IPv6 restrictions are not assessed for gNMI.",
+                impact="Any routed client in the transport VRF can reach the gNMI service and attempt authentication or exploit service flaws.",
+                exploitability="Requires routed reachability to the gNMI port; this export does not prove the listener is reachable from untrusted networks.",
+                recommendation="Attach an 'ip access-group' with reviewed source-specific permits to the gNMI transport.",
+                severity=Severity.MEDIUM,
+                evidence=evidence,
+                references=("https://aristanetworks.github.io/openmgmt/configuration/openconfig/", ARISTA_ACL_GUIDE),
+                basis=basis,
+            ))
         for endpoint in self._eos(parser).get_eapi_endpoints():
             if not endpoint.active:
                 continue

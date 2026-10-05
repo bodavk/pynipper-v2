@@ -44,6 +44,7 @@ def test_named_transports_are_assessed_independently(tmp_path):
 """
     parser, findings = scan(tmp_path, body)
     assert {item.name for item in parser.get_gnmi_transports()} == {"audit", "secure"}
+    findings = [item for item in findings if item.rule_id == "arista.eos.management.gnmi_cleartext"]
     assert len(findings) == 1 and "'audit'" in findings[0].observation
 
 

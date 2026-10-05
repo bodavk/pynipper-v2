@@ -94,6 +94,10 @@ JUNIPER_BGP_SECURITY_GUIDE = (
     "https://www.juniper.net/documentation/us/en/software/junos/"
     "bgp/topics/topic-map/bgp_security.html"
 )
+JUNIPER_ISIS_AUTH_GUIDE = (
+    "https://www.juniper.net/documentation/us/en/software/junos/"
+    "is-is/topics/concept/routing-configuring-is-is-authentication.html"
+)
 JUNIPER_OSPF_AUTH_GUIDE = (
     "https://www.juniper.net/documentation/us/en/software/junos/"
     "ospf/topics/topic-map/configuring-ospf-authentication.html"
@@ -1037,6 +1041,45 @@ class PluginJunOSBaseline(BasePlugin):
                 "An unprotected routing adjacency can accept forged protocol packets from a reachable attacker.",
                 recommendation, severity, evidence, (JUNIPER_OSPF_AUTH_GUIDE,),
             ))
+
+        for record in junos.get_isis_authentication():
+            if not record.interfaces:
+                continue
+            scope = f"routing-instance {record.routing_instance}"
+            evidence = tuple(record.evidence)
+            if record.receive_check_disabled:
+                self.add_issue(self._finding(
+                    parser, "juniper.junos.routing.isis.send_only",
+                    "IS-IS does not check authentication on received packets",
+                    f"IS-IS in {scope} sets no-authentication-check, so it sends authenticated packets but does not verify received ones.",
+                    "A device on an IS-IS link can inject unauthenticated adjacencies and link-state information.",
+                    "Remove no-authentication-check once all neighbors share the configured keys.",
+                    Severity.HIGH, evidence, (JUNIPER_ISIS_AUTH_GUIDE,),
+                ))
+            if record.cleartext_levels:
+                self.add_issue(self._finding(
+                    parser, "juniper.junos.routing.isis.cleartext_authentication",
+                    "IS-IS uses simple (cleartext) authentication",
+                    f"IS-IS in {scope} uses authentication-type simple for: {', '.join(record.cleartext_levels)}; Juniper documents that the text password is included in the transmitted packet.",
+                    "An observer on the routing link can read the password and forge authenticated IS-IS packets.",
+                    "Use authentication-type md5 or a key chain with an HMAC-SHA algorithm on all neighbors.",
+                    Severity.MEDIUM, evidence, (JUNIPER_ISIS_AUTH_GUIDE,),
+                ))
+            if not record.authenticated and not record.unknown:
+                self.add_issue(Finding(
+                    rule_id="juniper.junos.routing.isis.authentication",
+                    device=parser.device_type,
+                    title="IS-IS runs without authentication",
+                    observation=(f"IS-IS in {scope} runs on {', '.join(record.interfaces)} with no level or hello "
+                                 "authentication key; Juniper documents that IS-IS authentication is disabled by default."),
+                    impact="An unprotected routing adjacency can accept forged protocol packets from a reachable attacker.",
+                    exploitability="Requires the ability to send IS-IS frames on a link where IS-IS is enabled.",
+                    recommendation="Configure level authentication (md5 or HMAC-SHA key chain) and hello authentication consistently with the neighbors.",
+                    severity=Severity.HIGH,
+                    evidence=evidence,
+                    references=(JUNIPER_ISIS_AUTH_GUIDE,),
+                    basis=FindingBasis.DOCUMENTED_DEFAULT,
+                ))
 
     def check_discovery(self, parser: BaseDeviceParser) -> None:
         junos = self._junos(parser)

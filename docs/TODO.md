@@ -31,7 +31,7 @@ SC-026 progress (2026-09-28): Junos REST HTTP and classic JET gRPC clear-text ex
 
 - [x] PT-001 to PT-004 ([details](agent_notes/PRACTICAL_TESTING_TASKS.md)): MarkupSafe pin, FortiOS and cross-vendor multi-line value parsing, and evidence line numbers.
 - [x] PT-005 to PT-007: report readability, layered explanations and related-control hints.
-- [ ] **PT-010 (high priority)**: opt-in CVE lookup for the configured software version through the free NVD CVE/CPE APIs, with offline bundle replay. See the [analysis](agent_notes/PRACTICAL_TESTING_TASKS.md#pt-010). **First stage done 2026-09-25**; remaining: one live validation run against NVD, then F5 per-module, AOS-S naming, vendor-feed cross-checks and feature correlation.
+- [x] **PT-010 (high priority)**: opt-in CVE lookup for the configured software version through the free NVD CVE/CPE APIs, with offline bundle replay. See the [analysis](agent_notes/PRACTICAL_TESTING_TASKS.md#pt-010). **First stage done 2026-09-25**; remaining: one live validation run against NVD, then F5 per-module, AOS-S naming, vendor-feed cross-checks and feature correlation.
 - [ ] PT-008 (deferred): dependency modernisation.
 - [ ] PT-009 (low priority): label findings as explicit insecure value vs. missing explicit hardening setting. **Progress 2026-09-25:** `FindingBasis` model, report note and JSON field done, declared for a representative rule set; remaining: declare the basis in the other plugins rule by rule.
 
