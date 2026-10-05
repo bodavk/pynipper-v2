@@ -7,6 +7,7 @@ import unicodedata
 from enum import Enum
 from typing import Any, Iterable
 
+from src.analyze.common.attack_paths import attack_path_section, empty_attack_path_section
 from src.analyze.common.controls import control_coverage
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.models import KnowledgeState, NormalizedCollection
@@ -150,8 +151,13 @@ def build_report_context(parser: BaseDeviceParser) -> dict:
     coverage["controls"] = control_coverage(
         parser, template_unresolved=bool(getattr(parser, "template_unresolved", False))
     )
+    attack_paths = attack_path_section(
+        parser, template_unresolved=bool(getattr(parser, "template_unresolved", False))
+    )
+    coverage["attack-path-patterns"] = attack_paths["patterns"]
     result = {
         "coverage": coverage,
+        "attack-paths": attack_paths,
         "configuration-inventory": (
             {} if getattr(parser, "template_unresolved", False)
             else _inventory(normalized, parser.assessment_context.report_inventory)
@@ -167,6 +173,7 @@ def build_report_context(parser: BaseDeviceParser) -> dict:
 def build_parse_error_context(device: str, parser_name: str, line_number: int, excluded_categories=()) -> dict:
     """Report a failed file parse without exposing exception text or input bytes."""
     detail = f"Configuration parsing failed at line {line_number}; security checks were not run."
+    paths = empty_attack_path_section(device, detail)
     return {
         "coverage": {
             "schema-version": 1,
@@ -190,7 +197,9 @@ def build_parse_error_context(device: str, parser_name: str, line_number: int, e
             ],
             "diagnostics": [detail],
             "scope-note": "The input could not be parsed. An empty finding list does not indicate a successful security assessment.",
+            "attack-path-patterns": paths["patterns"],
         },
+        "attack-paths": paths,
         "configuration-inventory": {},
     }
 

@@ -16,6 +16,7 @@
                 <p class="meta"><span>Host: <strong>{{ hostname }}</strong></span><span>Date: {{ date }}</span><span>Findings: <strong>{{ remediation_summary['finding-count'] }}</strong></span></p>
                 <nav class="toc" aria-label="Report sections">
                     <a href="#summary">Summary</a>
+                    {% if attack_paths %}<a href="#attack-paths">Attack paths</a>{% endif %}
                     <a href="#security-issues">Findings</a>
                     <a href="#coverage">Coverage</a>
                     <a href="#about">About</a>
@@ -62,6 +63,49 @@
                 {% endif %}
                 <p class="note">{{ remediation_summary['scope-note'] }}</p>
             </section>
+
+            {% if attack_paths %}
+            <section id="attack-paths" class="panel">
+                <h2>Configuration-supported attack paths <span class="muted">({{ attack_paths['results']|length }}{% if attack_paths['omitted-result-count'] %} shown, {{ attack_paths['omitted-result-count'] }} more in JSON{% endif %})</span></h2>
+                <p class="note">{{ attack_paths['scope-note'] }}</p>
+                {% for path in attack_paths['results'] %}
+                    <article class="finding sev-{{ path['priority']|lower }}" id="path-{{ loop.index }}">
+                        <header class="finding-head">
+                            <span class="badge sev-{{ path['priority']|lower }}">{{ path['priority'] }} path</span>
+                            <h3>{{ path['title'] }}</h3>
+                            <p class="finding-meta"><code>{{ path['pattern-id'] }} v{{ path['pattern-version'] }}</code> <span class="chip">{{ path['instance-key'] }}</span></p>
+                        </header>
+                        <p>{{ path['summary'] }}</p>
+                        <ol>
+                        {% for step in path['steps'] %}
+                            <li>{{ step['predicate'] }}{% if step['linked-findings'] %} <span class="muted">(finding: {% for link in step['linked-findings'] %}<code>{{ link['rule-id'] }}</code>{% if not loop.last %}, {% endif %}{% endfor %})</span>{% endif %}
+                                {% if step['evidence'] %}<br><small>{% for item in step['evidence'] %}{% if item['line'] %}line {{ item['line'] }}: {% endif %}<code>{{ item['text'] }}</code>{% if not loop.last %}; {% endif %}{% endfor %}</small>{% endif %}</li>
+                        {% endfor %}
+                        </ol>
+                        <p><strong>Break the path:</strong> {{ path['breakpoints']|join(' ') }}</p>
+                        <p class="muted"><strong>Not tested:</strong> {{ path['assumptions']|join(' ') }}</p>
+                    </article>
+                {% else %}
+                    <p>No catalogued path was found. This is not a security pass; see the pattern status below.</p>
+                {% endfor %}
+                <details>
+                    <summary>Pattern status ({{ attack_paths['patterns']|selectattr('status', 'ne', 'path-found')|list|length }} without an emitted path)</summary>
+                    <table class="table">
+                        <thead><tr><th scope="col">Pattern</th><th scope="col">Status</th><th scope="col">Instances</th><th scope="col">Reason</th></tr></thead>
+                        <tbody>
+                        {% for pattern in attack_paths['patterns'] %}
+                            <tr>
+                                <td>{{ pattern['title'] }}<br><small>{{ pattern['pattern-id'] }} v{{ pattern['pattern-version'] }}</small></td>
+                                <td><span class="chip state-{{ pattern['status'] }}">{{ pattern['status'] }}</span></td>
+                                <td>{{ pattern['instance-count'] }}</td>
+                                <td>{{ pattern['reasons']|join(' ') }}</td>
+                            </tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </details>
+            </section>
+            {% endif %}
 
             <section id="security-issues" class="panel">
                 <h2>Findings <span class="muted">(security audit)</span></h2>

@@ -13,6 +13,7 @@ from .explanations import (
 )
 from src.advisories.service import not_requested_status
 from src.common.assessment import AssessmentContext
+from src.analyze.common.attack_paths import empty_attack_path_section
 
 TEMPLATE_FILE = "html_template.html"
 _IS_WINDOWS = os.name == "nt"
@@ -94,6 +95,14 @@ def _remediation_summary(issues: dict) -> dict:
     }
 
 
+def _attack_paths(data: dict) -> dict:
+    """SC-063 section; callers without analysis get an explicit not-assessed placeholder."""
+    return data.get("attack-paths") or empty_attack_path_section(
+        str(data.get("device-type", "")),
+        "Attack-path correlation was not run by this caller; no pattern was assessed.",
+    )
+
+
 def _report_sections(data: dict, issues: dict) -> tuple[dict, dict, dict]:
     coverage = data.get("coverage") or {
         "schema-version": 1,
@@ -152,6 +161,7 @@ def _generate_html_report(filename: str, issues: dict, vulns: array, data: dict)
         coverage=coverage,
         configuration_inventory=inventory,
         remediation_summary=remediation_summary,
+        attack_paths=_attack_paths(data),
         secret_evidence=data.get("secret-evidence"),
         report_secret_evidence=_sensitive_report(data),
     )
@@ -181,6 +191,7 @@ def _generate_json_report(filename: str, issues: dict, vulns: array, data: dict)
     vulns_dict["coverage"] = coverage
     vulns_dict["configuration-inventory"] = inventory
     vulns_dict["remediation-summary"] = remediation_summary
+    vulns_dict["attack-paths"] = _attack_paths(data)
     if _sensitive_report(data):
         vulns_dict["secret-evidence"] = data.get("secret-evidence", {
             "status": "unavailable", "entries": [],

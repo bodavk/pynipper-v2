@@ -16,6 +16,7 @@ from src.devices.common.policy_semantics import (
     static_values_cover,
 )
 from src.devices.fortinet.fortios import FortiDict, FortiOSParser
+from .fortios_attack_paths import DenyShadow, produce_attack_paths
 
 
 FORTINET_HARDENING = (
@@ -1394,6 +1395,7 @@ class PluginFortiOSBaseline(BasePlugin):
         """Report independent hygiene and only statically proven first-match effects."""
 
         fortios = self._fortios(parser)
+        self._deny_shadows = []
         prior_by_scope: dict[tuple[str, str], list] = defaultdict(list)
         seen_by_scope: dict[tuple[str, str], list] = defaultdict(list)
         references = (
@@ -1509,7 +1511,7 @@ class PluginFortiOSBaseline(BasePlugin):
                 same_action = earlier.action == policy.action
                 if same_action and earlier.behavior_signature != policy.behavior_signature:
                     continue
-                self.add_issue(self._finding(
+                finding = self._finding(
                     parser,
                     (
                         "fortinet.fortios.policy.redundant_rule"
@@ -1523,7 +1525,10 @@ class PluginFortiOSBaseline(BasePlugin):
                     Severity.LOW if same_action else Severity.HIGH,
                     evidence + tuple(item for item in earlier.evidence),
                     references,
-                ))
+                )
+                self.add_issue(finding)
+                if policy.action == "deny" and earlier.action == "accept":
+                    self._deny_shadows.append(DenyShadow(policy, (earlier,), finding))
                 break
             else:
                 for action in ("deny", "accept"):
@@ -1533,7 +1538,7 @@ class PluginFortiOSBaseline(BasePlugin):
                     if len(covering) < 2:
                         continue
                     same_action = action == policy.action
-                    self.add_issue(self._finding(
+                    finding = self._finding(
                         parser,
                         ("fortinet.fortios.policy.redundant_rule" if same_action
                          else "fortinet.fortios.policy.shadowed_rule"),
@@ -1547,7 +1552,10 @@ class PluginFortiOSBaseline(BasePlugin):
                         Severity.LOW if same_action else Severity.HIGH,
                         evidence + tuple(item for prior in covering for item in prior.evidence),
                         references,
-                    ))
+                    )
+                    self.add_issue(finding)
+                    if policy.action == "deny" and action == "accept":
+                        self._deny_shadows.append(DenyShadow(policy, tuple(covering), finding))
                     break
             prior_by_scope[key].append(policy)
 
@@ -2193,6 +2201,9 @@ class PluginFortiOSBaseline(BasePlugin):
         self.check_cli_audit_log(parser)
         self.check_cis_management_hygiene(parser)
         self.check_cis_security_depth(parser)
+        # SC-063: correlate after every finding exists so path steps can link to them.
+        produce_attack_paths(self, self._fortios(parser), self._release(self._fortios(parser)),
+                             getattr(self, "_deny_shadows", ()))
 
     def check_forticloud_sso(self, parser: BaseDeviceParser) -> None:
         """FortiCloud SSO administrator login on releases affected by FG-IR-26-060 / FG-IR-25-647.
