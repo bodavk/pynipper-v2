@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- CIS follow-ups (SC-055, SC-057, SC-058, SC-061): PAN-OS update-server identity verification disabled; Junos IS-IS suppressed/loose authentication, RIP and BFD authentication (documented defaults disabled), OSPFv3 without IPsec, REST without allowed-sources and REST API Explorer; ASA password recovery (documented default enabled); FortiOS post-login banner, GUI hostname disclosure, default admin ports and built-in `admin` account (informational/low). Secure fixtures set the hardened values.
+
 - SC-005 Arista EOS: `arista.eos.routing.ospf.authentication` (High, documented default no authentication), `ospf.weak_authentication` (simple password) and `isis.cleartext_authentication` (text mode).
 
 - SC-049: per-control assessment outcomes. The coverage section now lists, for migrated controls, whether each produced a finding, was evaluated without a finding, was unknown, unsupported, not applicable, excluded or not recorded, with reasons, plus a "Configured features requiring manual review" list. Eight initial controls across IOS, FortiOS, Junos and EOS; other checks remain findings-only and are not presented as passed.

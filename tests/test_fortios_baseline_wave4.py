@@ -21,6 +21,9 @@ config system global
 set hostname edge-fw
 set admin-maintainer disable
 set pre-login-banner enable
+set post-login-banner enable
+set admin-sport 8443
+set admin-ssh-port 2222
 set admin-restrict-local enable
 set cli-audit-log enable
 set strong-crypto enable

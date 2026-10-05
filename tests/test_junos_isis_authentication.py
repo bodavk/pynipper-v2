@@ -53,3 +53,14 @@ def test_no_authentication_check(tmp_path):
 def test_not_reported(tmp_path, extra):
     for rule in ("authentication", "cleartext_authentication", "send_only"):
         assert not _rules(tmp_path, extra, f"juniper.junos.routing.isis.{rule}")
+
+
+def test_suppressed_and_loose_checks(tmp_path):
+    extra = ("set protocols isis level 2 authentication-key \"$9$abc\"\n"
+             "set protocols isis level 2 authentication-type md5\n"
+             "set protocols isis level 2 no-hello-authentication\n"
+             "set protocols isis loose-authentication-check\n")
+    findings = _rules(tmp_path, extra, "juniper.junos.routing.isis.suppressed_authentication")
+    assert len(findings) == 1
+    assert "no-hello-authentication" in findings[0].observation and "loose" in findings[0].observation
+    assert guidance_for("juniper.junos.routing.isis.suppressed_authentication")

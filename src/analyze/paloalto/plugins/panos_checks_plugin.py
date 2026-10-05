@@ -825,6 +825,22 @@ class PluginPANOSChecks(BasePlugin):
                     references=(PANOS_UPDATE_GUIDE,),
                 )
             )
+        for scope, value, evidence in panos.get_update_server_verification():
+            if value != "no":
+                continue
+            self.add_issue(Finding(
+                rule_id="paloalto.panos.update.server_unverified",
+                device=parser.device_type,
+                title="Update server identity verification is disabled",
+                observation=f"Device scope '{scope}' sets server-verification to 'no' ('Verify Update Server Identity' unchecked).",
+                impact="The firewall downloads software and content updates without verifying the update server's certificate.",
+                exploitability="An attacker who can redirect DNS or intercept the update session can serve a modified update package.",
+                recommendation="Enable 'Verify Update Server Identity' (set deviceconfig system server-verification yes); if an SSL forward proxy intercepts updates, exempt the update servers instead.",
+                severity=Severity.HIGH,
+                evidence=(evidence,),
+                references=(PANOS_UPDATE_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
         if not panos.get_system_log_forwarding_destinations():
             self.add_issue(
                 Finding(

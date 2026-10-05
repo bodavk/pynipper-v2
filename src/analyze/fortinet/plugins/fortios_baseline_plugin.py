@@ -2191,6 +2191,7 @@ class PluginFortiOSBaseline(BasePlugin):
         self.check_login_banner(parser)
         self.check_admin_restrict_local(parser)
         self.check_cli_audit_log(parser)
+        self.check_cis_management_hygiene(parser)
 
     def check_forticloud_sso(self, parser: BaseDeviceParser) -> None:
         """FortiCloud SSO administrator login on releases affected by FG-IR-26-060 / FG-IR-25-647.
@@ -2419,6 +2420,83 @@ class PluginFortiOSBaseline(BasePlugin):
                 (FORTINET_CLI_AUDIT_LOG_GUIDE, FORTINET_GLOBAL_741_REFERENCE, FORTINET_LOG_44547_REFERENCE,
                  FORTINET_EVENTFILTER_741_REFERENCE),
                 basis=FindingBasis.EXPLICIT_VALUE if explicit else FindingBasis.DOCUMENTED_DEFAULT,
+            ))
+
+    def check_cis_management_hygiene(self, parser: BaseDeviceParser) -> None:
+        """SC-055 (CIS FortiGate 7.4.x 2.1.2, 2.1.13, 2.4.1, 2.4.7): low-severity management hygiene.
+
+        Defaults from the FortiOS 7.4.1 'config system global' reference: post-login-banner
+        disable, gui-display-hostname disable, admin-sport 443, admin-ssh-port 22.
+        Absence is graded only on 7.4.1 or later (verified release).
+        """
+        fortios = self._fortios(parser)
+        release = self._release(fortios)
+        defaults_known = bool(release and release >= (7, 4, 1))
+        services = {
+            value.lower()
+            for _, _, settings, _ in fortios.iter_interfaces()
+            if self._enabled(settings)
+            for value in self._values(settings, "allowaccess")
+        }
+        for scope, settings, path in fortios.iter_scoped_sections("system global"):
+            banner = self._text(settings.get("post-login-banner")).lower()
+            if banner == "disable" or (not banner and defaults_known):
+                self.add_issue(self._finding(
+                    parser, "fortinet.fortios.banner.post_login_disabled",
+                    "Post-login administrator disclaimer is not shown",
+                    f"Scope '{scope}' " + ("sets post-login-banner disable." if banner else
+                                           "does not set post-login-banner; the documented default is disable."),
+                    "Administrators are not reminded of acceptable-use terms after logging in; this is a governance control, not a technical weakness.",
+                    "Set 'config system global / set post-login-banner enable' and the approved text in 'config system replacemsg admin post_admin-disclaimer-text'.",
+                    Severity.INFORMATIONAL,
+                    self._evidence(fortios, path + ("post-login-banner",), "post-login-banner absent: default disable"),
+                    (FORTINET_GLOBAL_741_REFERENCE,),
+                    basis=FindingBasis.EXPLICIT_VALUE if banner else FindingBasis.DOCUMENTED_DEFAULT,
+                ))
+            if self._text(settings.get("gui-display-hostname")).lower() == "enable":
+                self.add_issue(self._finding(
+                    parser, "fortinet.fortios.management.login_hostname_disclosed",
+                    "GUI login page displays the hostname",
+                    f"Scope '{scope}' sets gui-display-hostname enable.",
+                    "Unauthenticated visitors of the login page learn the device name, which helps reconnaissance.",
+                    "Set 'config system global / set gui-display-hostname disable'.",
+                    Severity.LOW,
+                    self._evidence(fortios, path + ("gui-display-hostname",), "set gui-display-hostname enable"),
+                    (FORTINET_GLOBAL_741_REFERENCE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
+                ))
+            default_ports = []
+            for service, field, default in (("https", "admin-sport", "443"), ("ssh", "admin-ssh-port", "22")):
+                if service not in services:
+                    continue
+                value = self._text(settings.get(field))
+                if value == default or (not value and defaults_known):
+                    default_ports.append(f"{service.upper()} {default}")
+            if default_ports:
+                self.add_issue(self._finding(
+                    parser, "fortinet.fortios.management.default_admin_ports",
+                    "Administrative services use their default ports",
+                    f"Scope '{scope}' serves administrative access on default ports: {', '.join(default_ports)}.",
+                    "Default ports make the management services easier to find in automated scans; changing them does not replace source restrictions.",
+                    "Consider non-default admin-sport/admin-ssh-port values together with trusted hosts and local-in policies.",
+                    Severity.INFORMATIONAL,
+                    self._evidence(fortios, path, "config system global (admin ports at documented defaults)"),
+                    (FORTINET_GLOBAL_741_REFERENCE,),
+                    basis=FindingBasis.DOCUMENTED_DEFAULT,
+                ))
+        admins = [(username, path) for _, username, settings, path in fortios.iter_administrators()
+                  if self._enabled(settings) and str(username) == "admin"]
+        if admins:
+            self.add_issue(self._finding(
+                parser, "fortinet.fortios.admin.default_account_name",
+                "The built-in 'admin' account is still in use",
+                "An enabled administrator named 'admin' exists.",
+                "Attackers know the account name and target it with password guessing and credential-stuffing attempts.",
+                "Create named administrator accounts and remove or rename the built-in 'admin' account.",
+                Severity.LOW,
+                self._evidence(fortios, admins[0][1], "config system admin / edit admin"),
+                (FORTINET_HARDENING,),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
     def check_login_banner(self, parser: BaseDeviceParser) -> None:

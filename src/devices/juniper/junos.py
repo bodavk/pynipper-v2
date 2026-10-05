@@ -223,6 +223,29 @@ class JunosISISAuthentication:
     receive_check_disabled: bool
     unknown: bool
     evidence: tuple[ConfigEvidence, ...]
+    suppressed: tuple[str, ...] = ()
+    loose_check: bool = False
+
+
+@dataclass(frozen=True)
+class JunosRIPAuthentication:
+    """Explicit RIP authentication state for one routing instance."""
+
+    routing_instance: str
+    neighbors: tuple[str, ...]
+    mode: str  # none | simple | md5 | unknown
+    unknown: bool
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class JunosOSPFv3Interface:
+    """OSPFv3 interface and whether an IPsec SA is bound (RFC 5340 relies on IPsec)."""
+
+    routing_instance: str
+    interface: str
+    ipsec_sa: bool
+    evidence: tuple[ConfigEvidence, ...]
 
 
 @dataclass(frozen=True)
@@ -1797,6 +1820,11 @@ class JunOSParser(BaseDeviceParser):
             ))
         return tuple(listeners)
 
+    def get_rest_explorer(self) -> tuple[ConfigEvidence, ...]:
+        """Explicit ``system services rest enable-explorer`` (REST API Explorer web UI)."""
+        return tuple(item.evidence for item in self.get_active_statements(("system", "services", "rest"))
+                     if item.path[3:4] == ("enable-explorer",))
+
     def get_services(self) -> dict:
         paths = self._active_paths()
         return {
@@ -3042,7 +3070,15 @@ class JunOSParser(BaseDeviceParser):
             tail = statement.path[index + 2:]
             data = instances.setdefault(routing_instance, {
                 "interfaces": {}, "levels": {}, "hello": False, "no_check": None, "evidence": [],
+                "suppressed": set(), "loose": False,
             })
+            for flag in ("no-hello-authentication", "no-csnp-authentication", "no-psnp-authentication"):
+                if flag in tail:
+                    data["suppressed"].add(flag)
+                    data["evidence"].append(statement.evidence)
+            if "loose-authentication-check" in tail:
+                data["loose"] = True
+                data["evidence"].append(statement.evidence)
             if not tail:
                 continue
             if tail[0] == "interface" and len(tail) > 1:
@@ -3089,8 +3125,113 @@ class JunOSParser(BaseDeviceParser):
                 receive_check_disabled=data["no_check"] is not None,
                 unknown=unknown_inheritance,
                 evidence=tuple(dict.fromkeys(evidence)),
+                suppressed=tuple(sorted(data["suppressed"])),
+                loose_check=data["loose"],
             ))
         return records
+
+    def get_rip_authentication(self) -> list[JunosRIPAuthentication]:
+        """RIP authentication per routing instance (Juniper "RIP authentication":
+        disabled by default; simple puts a text password in the transmitted packet)."""
+        unknown_inheritance = any(
+            statement.active and "apply-groups" in statement.path for statement in self.statements
+        )
+        instances: dict[str, dict] = {}
+        for statement in self.statements:
+            if not statement.active:
+                continue
+            scoped = self._routing_scope(statement.path, "rip")
+            if scoped is None:
+                continue
+            routing_instance, index = scoped
+            tail = statement.path[index + 2:]
+            data = instances.setdefault(routing_instance, {"neighbors": set(), "modes": set(), "evidence": []})
+            if "neighbor" in tail:
+                position = tail.index("neighbor")
+                if position + 1 < len(tail):
+                    data["neighbors"].add(tail[position + 1])
+                    if len(data["evidence"]) < 4:
+                        data["evidence"].append(statement.evidence)
+            if "authentication-type" in tail:
+                position = tail.index("authentication-type")
+                if position + 1 < len(tail):
+                    data["modes"].add(tail[position + 1])
+                    data["evidence"].append(statement.evidence)
+        records = []
+        for routing_instance, data in sorted(instances.items()):
+            modes = data["modes"]
+            mode = ("none" if not modes or modes == {"none"} else "simple" if "simple" in modes
+                    else "md5" if modes == {"md5"} else "unknown")
+            records.append(JunosRIPAuthentication(
+                routing_instance=routing_instance,
+                neighbors=tuple(sorted(data["neighbors"])),
+                mode=mode,
+                unknown=unknown_inheritance,
+                evidence=tuple(dict.fromkeys(data["evidence"])),
+            ))
+        return records
+
+    def get_bfd_sessions(self) -> list[tuple[str, str, tuple[ConfigEvidence, ...]]]:
+        """``bfd-liveness-detection`` blocks and their authentication state.
+
+        Juniper ("Configuring BFD Authentication"): authentication for BFD sessions is
+        disabled by default; ``authentication loose-check`` relaxes strict checking.
+        Returns (context, state, evidence) with state none | loose | authenticated.
+        """
+        blocks: dict[tuple[str, ...], dict] = {}
+        for statement in self.statements:
+            if not statement.active or "bfd-liveness-detection" not in statement.path:
+                continue
+            position = statement.path.index("bfd-liveness-detection")
+            key = statement.path[:position]
+            data = blocks.setdefault(key, {"auth": False, "loose": False, "evidence": []})
+            rest = statement.path[position + 1:]
+            if rest[:1] == ("authentication",):
+                if "loose-check" in rest:
+                    data["loose"] = True
+                elif "key-chain" in rest or "algorithm" in rest:
+                    data["auth"] = True
+            data["evidence"].append(statement.evidence)
+        results = []
+        for key, data in blocks.items():
+            state = "none" if not data["auth"] else "loose" if data["loose"] else "authenticated"
+            results.append((" ".join(key), state, tuple(data["evidence"][:4])))
+        return results
+
+    def get_ospf3_interfaces(self) -> list[JunosOSPFv3Interface]:
+        """Active, non-passive OSPFv3 interfaces and IPsec SA binding (area/interface level)."""
+        records: dict[tuple[str, str], dict] = {}
+        area_sa: set[tuple[str, str]] = set()
+        for statement in self.statements:
+            if not statement.active:
+                continue
+            scoped = self._routing_scope(statement.path, "ospf3")
+            if scoped is None:
+                continue
+            routing_instance, index = scoped
+            tail = statement.path[index + 2:]
+            if len(tail) < 2 or tail[0] != "area":
+                continue
+            area = tail[1]
+            if "interface" not in tail:
+                if "ipsec-sa" in tail:
+                    area_sa.add((routing_instance, area))
+                continue
+            position = tail.index("interface")
+            if position + 1 >= len(tail):
+                continue
+            name = tail[position + 1]
+            data = records.setdefault((routing_instance, name), {"area": area, "sa": False, "skip": name.startswith("lo"), "evidence": []})
+            rest = tail[position + 2:]
+            if "passive" in rest or "disable" in rest:
+                data["skip"] = True
+            if "ipsec-sa" in rest:
+                data["sa"] = True
+            data["evidence"].append(statement.evidence)
+        return [
+            JunosOSPFv3Interface(instance, name, data["sa"] or (instance, data["area"]) in area_sa, tuple(data["evidence"]))
+            for (instance, name), data in sorted(records.items()) if not data["skip"]
+        ]
 
     def get_ospf_interfaces(self) -> list[JunosOSPFInterface]:
         """Return explicit OSPFv2 interface state; OSPFv3/IPsec is separate."""

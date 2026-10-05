@@ -1667,6 +1667,21 @@ class CiscoASAParser(BaseDeviceParser):
                 found.append(ConfigEvidence(redacted, self.config_filepath, number))
         return found
 
+    def get_password_recovery(self) -> tuple[bool, Optional[ConfigEvidence]]:
+        """Effective ``service password-recovery`` (ASA command reference: enabled by default).
+
+        Returns (enabled, evidence of the last explicit statement or None)."""
+        enabled, evidence = True, None
+        for number, raw in enumerate(self._source_lines, 1):
+            if raw[:1].isspace():
+                continue
+            folded = " ".join(raw.split()).lower()
+            if folded == "no service password-recovery":
+                enabled, evidence = False, ConfigEvidence(raw.strip(), self.config_filepath, number)
+            elif folded == "service password-recovery":
+                enabled, evidence = True, ConfigEvidence(raw.strip(), self.config_filepath, number)
+        return enabled, evidence
+
     def get_auto_update_servers(self) -> list[tuple[str, Optional[str], ConfigEvidence]]:
         """``auto-update server <url> [source <if>] {verify-certificate|no-verification}``.
 

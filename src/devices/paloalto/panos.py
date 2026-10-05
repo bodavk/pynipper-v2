@@ -1942,6 +1942,22 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                 )
         return schedules
 
+    def get_update_server_verification(self) -> list[tuple[str, str, object]]:
+        """Explicit ``deviceconfig system server-verification`` per device scope.
+
+        Returns (scope, value, evidence) only where the element is present; the GUI
+        option is "Verify Update Server Identity" (Device > Setup > Services).
+        """
+        results = []
+        for device in self._device_entries():
+            node = device.find("./deviceconfig/system/server-verification")
+            if node is None:
+                continue
+            scope = self._device_scope(device)
+            value = self._text(node).casefold()
+            results.append((scope, value, self._evidence(f"{scope}: deviceconfig system server-verification {value}", node)))
+        return results
+
     def get_system_log_forwarding_destinations(self) -> tuple[str, ...]:
         destinations = []
         profiles = {}

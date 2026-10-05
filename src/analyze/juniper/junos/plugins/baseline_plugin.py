@@ -95,6 +95,13 @@ JUNIPER_BGP_SECURITY_GUIDE = (
     "https://www.juniper.net/documentation/us/en/software/junos/"
     "bgp/topics/topic-map/bgp_security.html"
 )
+JUNIPER_RIP_AUTH_GUIDE = (
+    "https://www.juniper.net/documentation/us/en/software/junos/rip/topics/topic-map/rip-authentication.html"
+)
+JUNIPER_BFD_AUTH_GUIDE = (
+    "https://www.juniper.net/documentation/en_US/junos/topics/topic-map/ospf-bfd-authentication.html"
+)
+RFC_5340_OSPFV3 = "https://www.rfc-editor.org/rfc/rfc5340#section-2.6"
 JUNIPER_ISIS_AUTH_GUIDE = (
     "https://www.juniper.net/documentation/us/en/software/junos/"
     "is-is/topics/concept/routing-configuring-is-is-authentication.html"
@@ -573,6 +580,38 @@ class PluginJunOSBaseline(BasePlugin):
                 severity=Severity.HIGH,
                 evidence=listener.evidence,
                 references=("https://www.juniper.net/documentation/us/en/software/junos/rest-api/topics/task/rest-api-configuring.html",),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+
+    def check_rest_restrictions(self, parser: BaseDeviceParser) -> None:
+        """SC-058 (CIS Juniper OS 6.10.5.7, 6.10.5.8): REST source restriction and API Explorer."""
+        junos = self._junos(parser)
+        reference = "https://www.juniper.net/documentation/us/en/software/junos/rest-api/topics/task/rest-api-configuring.html"
+        network = [listener for listener in junos.get_rest_listeners() if listener.resolution_state == "network"]
+        if network and not any(listener.allowed_sources for listener in network):
+            self.add_issue(Finding(
+                rule_id="juniper.junos.management.unrestricted_rest",
+                device=parser.device_type,
+                title="REST API has no allowed-sources restriction",
+                observation=("REST listener(s) " + ", ".join(f"{l.transport} on {', '.join(l.addresses)}" for l in network)
+                             + " are configured without 'system services rest control allowed-sources'."),
+                impact="Any host that can route to the listener addresses can reach the REST API and attempt authentication.",
+                exploitability="Requires routed reachability to the REST listener; this export does not prove external exposure.",
+                recommendation="Configure 'system services rest control allowed-sources' with the management hosts that need API access.",
+                severity=Severity.MEDIUM,
+                evidence=tuple(item for l in network for item in l.evidence)[:6],
+                references=(reference,),
+                basis=FindingBasis.REQUIRED_SETTING_MISSING,
+            ))
+        explorer = junos.get_rest_explorer()
+        if explorer:
+            self.add_issue(self._finding(
+                parser, "juniper.junos.management.rest_explorer",
+                "REST API Explorer is enabled",
+                "'system services rest enable-explorer' exposes the interactive REST API Explorer web interface.",
+                "The explorer adds an interactive web interface to the management plane that is rarely needed in production.",
+                "Remove 'enable-explorer' unless it is needed for a time-limited development task.",
+                Severity.LOW, explorer, (reference,),
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
@@ -1079,6 +1118,17 @@ class PluginJunOSBaseline(BasePlugin):
                     "Use authentication-type md5 or a key chain with an HMAC-SHA algorithm on all neighbors.",
                     Severity.MEDIUM, evidence, (JUNIPER_ISIS_AUTH_GUIDE,),
                 ))
+            if record.authenticated and (record.suppressed or record.loose_check):
+                parts = list(record.suppressed) + (["loose-authentication-check"] if record.loose_check else [])
+                self.add_issue(self._finding(
+                    parser, "juniper.junos.routing.isis.suppressed_authentication",
+                    "IS-IS authentication is partly suppressed or loosely checked",
+                    f"IS-IS in {scope} configures authentication but also sets {', '.join(parts)}.",
+                    "Suppressed hello/CSNP/PSNP authentication or a loose check lets some unauthenticated IS-IS PDUs be accepted or sent.",
+                    "Remove the suppression statements and loose-authentication-check once all neighbors are configured with the same keys.",
+                    Severity.MEDIUM, tuple(record.evidence), (JUNIPER_ISIS_AUTH_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
+                ))
             if not record.authenticated and not record.unknown:
                 self.add_issue(Finding(
                     rule_id="juniper.junos.routing.isis.authentication",
@@ -1094,6 +1144,89 @@ class PluginJunOSBaseline(BasePlugin):
                     references=(JUNIPER_ISIS_AUTH_GUIDE,),
                     basis=FindingBasis.DOCUMENTED_DEFAULT,
                 ))
+
+    def check_rip_and_ospf3_authentication(self, parser: BaseDeviceParser) -> None:
+        """SC-058/SC-005: Junos RIP authentication and OSPFv3 IPsec protection."""
+        junos = self._junos(parser)
+        if junos.parse_error or junos.get_version() == "?":
+            return
+        for record in junos.get_rip_authentication():
+            if not record.neighbors or record.unknown or record.mode in {"md5", "unknown"}:
+                continue
+            scope = f"routing-instance {record.routing_instance}"
+            if record.mode == "simple":
+                self.add_issue(self._finding(
+                    parser, "juniper.junos.routing.rip.cleartext_authentication",
+                    "RIP uses simple (cleartext) authentication",
+                    f"RIP in {scope} uses authentication-type simple; Juniper documents that the text password is included in the transmitted packet.",
+                    "An observer on the routing link can read the password and inject authenticated RIP updates.",
+                    "Use authentication-type md5 (or a key chain) with all RIP neighbors.",
+                    Severity.MEDIUM, record.evidence, (JUNIPER_RIP_AUTH_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
+                ))
+            else:
+                self.add_issue(Finding(
+                    rule_id="juniper.junos.routing.rip.authentication",
+                    device=parser.device_type,
+                    title="RIP runs without authentication",
+                    observation=(f"RIP in {scope} has neighbor(s) {', '.join(record.neighbors)} and no authentication; "
+                                 "Juniper documents that RIP authentication is disabled by default."),
+                    impact="A device on a RIP link can inject or withdraw routes without authentication.",
+                    exploitability="Requires the ability to send RIP packets on a link where RIP is enabled.",
+                    recommendation="Configure authentication-type md5 with an authentication key (or a key chain) on all RIP neighbors.",
+                    severity=Severity.HIGH,
+                    evidence=record.evidence,
+                    references=(JUNIPER_RIP_AUTH_GUIDE,),
+                    basis=FindingBasis.DOCUMENTED_DEFAULT,
+                ))
+        if not junos.has_unexpanded_inheritance():
+            sessions = junos.get_bfd_sessions()
+            none = [s for s in sessions if s[1] == "none"]
+            loose = [s for s in sessions if s[1] == "loose"]
+            if none:
+                self.add_issue(Finding(
+                    rule_id="juniper.junos.routing.bfd.authentication",
+                    device=parser.device_type,
+                    title="BFD sessions run without authentication",
+                    observation=(f"{len(none)} bfd-liveness-detection configuration(s) have no authentication; Juniper documents "
+                                 "that authentication for BFD sessions is disabled by default. Contexts: "
+                                 + "; ".join(s[0] for s in none[:5])),
+                    impact="Spoofed BFD packets can bring down the protected routing adjacencies, causing route withdrawal or outages.",
+                    exploitability="Requires the ability to send packets to the BFD session endpoints (single-hop sessions: on the link).",
+                    recommendation="Configure 'bfd-liveness-detection authentication algorithm <keyed-sha-1|meticulous-keyed-sha-1> key-chain <name>' on both ends.",
+                    severity=Severity.LOW,
+                    evidence=tuple(item for s in none[:4] for item in s[2])[:8],
+                    references=(JUNIPER_BFD_AUTH_GUIDE,),
+                    basis=FindingBasis.DOCUMENTED_DEFAULT,
+                ))
+            if loose:
+                self.add_issue(self._finding(
+                    parser, "juniper.junos.routing.bfd.loose_authentication",
+                    "BFD authentication uses loose checking",
+                    f"{len(loose)} BFD configuration(s) set 'authentication loose-check', which Juniper describes as a migration aid. Contexts: "
+                    + "; ".join(s[0] for s in loose[:5]),
+                    "Loose checking can accept BFD packets that are not authenticated.",
+                    "Remove loose-check once both ends authenticate BFD.",
+                    Severity.LOW, tuple(item for s in loose[:4] for item in s[2])[:8], (JUNIPER_BFD_AUTH_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
+                ))
+        unprotected = [r for r in junos.get_ospf3_interfaces() if not r.ipsec_sa]
+        if unprotected and not junos.has_unexpanded_inheritance():
+            self.add_issue(Finding(
+                rule_id="juniper.junos.routing.ospf3.authentication",
+                device=parser.device_type,
+                title="OSPFv3 interfaces have no IPsec authentication",
+                observation=("OSPFv3 runs without an ipsec-sa on: "
+                             + ", ".join(f"{r.interface} ({r.routing_instance})" for r in unprotected)
+                             + ". OSPFv3 has no built-in authentication field and relies on IPsec (RFC 5340)."),
+                impact="A device on an OSPFv3 link can form an adjacency and inject routing information.",
+                exploitability="Requires the ability to send OSPFv3 packets on a link where OSPFv3 is enabled.",
+                recommendation="Bind an IPsec security association (ipsec-sa) to the OSPFv3 areas or interfaces, consistently on all neighbors.",
+                severity=Severity.MEDIUM,
+                evidence=tuple(item for r in unprotected for item in r.evidence)[:8],
+                references=(RFC_5340_OSPFV3,),
+                basis=FindingBasis.REQUIRED_SETTING_MISSING,
+            ))
 
     def check_discovery(self, parser: BaseDeviceParser) -> None:
         junos = self._junos(parser)
@@ -1402,6 +1535,7 @@ class PluginJunOSBaseline(BasePlugin):
         self.check_ssh_algorithms(parser)
         self.check_additional_services(parser)
         self.check_rest_listeners(parser)
+        self.check_rest_restrictions(parser)
         self.check_grpc_listener(parser)
         self.check_snmp(parser)
         self.check_default_security_policy(parser)
@@ -1422,4 +1556,5 @@ class PluginJunOSBaseline(BasePlugin):
         self.check_zone_screens(parser)
         self.check_host_inbound(parser)
         self.check_host_inbound_routing(parser)
+        self.check_rip_and_ospf3_authentication(parser)
         self.check_idp_actions(parser)

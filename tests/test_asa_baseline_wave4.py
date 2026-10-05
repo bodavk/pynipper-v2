@@ -36,6 +36,7 @@ failover
 
 SECURE = """ASA Version 9.18(4)
 hostname secure
+no service password-recovery
 username admin password opaquehash pbkdf2 privilege 15
 interface GigabitEthernet0/0
  nameif outside
@@ -76,6 +77,7 @@ def test_asa_baseline_vulnerable_rule_snapshot_and_redaction(tmp_path):
     _, issues = _analyze(tmp_path, VULNERABLE)
     rule_ids = {issue.rule_id for issue in issues}
     assert rule_ids == {
+        "cisco.asa.platform.password_recovery",
         "cisco.asa.aaa.management_authentication",
         "cisco.asa.aaa.management_accounting",
         "cisco.asa.credentials.local_user_storage",

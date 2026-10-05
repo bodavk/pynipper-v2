@@ -228,7 +228,7 @@ _CATALOGUE = (
         "cannot see iRules or client behaviour.",
         "Check whether an iRule or upstream component redirects or rejects clear-text requests.",
     )),
-    (r"^(management\.(unrestricted_\w+|(?:netconf|restconf)(?:_ipv6)?_unrestricted_sources|source_restriction|external_interface|auxiliary_services|http_sources|self_ip_port_lockdown)|host_inbound\.management_exposed|http\.(access_restriction|(?:ipv6_)?unrestricted_sources)|ssh\.(source_restriction|(?:ipv6_)?unrestricted_sources|vty_access_restriction)|eapi\.source_restriction|(?:admin|api)\.trusted_hosts|administration\.manager_sources|local_in\.unrestricted_management|layer\.stealth_rule_missing|auxiliary\.enabled)$", _G(
+    (r"^(management\.(unrestricted_\w+|(?:netconf|restconf)(?:_ipv6)?_unrestricted_sources|source_restriction|external_interface|auxiliary_services|http_sources|self_ip_port_lockdown|rest_explorer)|host_inbound\.management_exposed|http\.(access_restriction|(?:ipv6_)?unrestricted_sources)|ssh\.(source_restriction|(?:ipv6_)?unrestricted_sources|vty_access_restriction)|eapi\.source_restriction|(?:admin|api)\.trusted_hosts|administration\.manager_sources|local_in\.unrestricted_management|layer\.stealth_rule_missing|auxiliary\.enabled)$", _G(
         "management-exposure", "management-access",
         "The device's management interfaces (SSH, web GUI, API) accept connections from any "
         "address, or from an untrusted/external network, instead of only from administrator "
@@ -593,6 +593,20 @@ _CATALOGUE = (
         "Someone on the path to the AAA server records the traffic and works on the shared secret offline.",
         "RADIUS and TACACS+ only obfuscate parts of a packet with a shared secret; TLS/DTLS adds encryption and integrity. The vendor flags non-TLS servers as insecure, but this is usually a hardening item rather than an urgent risk.",
         "Check whether the AAA servers support RadSec/DTLS, TACACS+ over TLS or LDAPS and plan a migration.",
+    )),
+    (r"^(management\.(login_hostname_disclosed|default_admin_ports)|admin\.default_account_name)$", _G(
+        "management-hygiene", "management-access",
+        "A management setting makes the device or its administrator accounts easier to identify or target.",
+        "A scanner finds the login page on the usual port, reads the device name and tries passwords against the well-known 'admin' account.",
+        "These settings do not open access by themselves; they reduce the effort of reconnaissance and guessing. Source restrictions and strong authentication matter more.",
+        "Check whether source restrictions and MFA are in place and whether the default names or ports are needed.",
+    )),
+    (r"^platform\.password_recovery$", _G(
+        "password-recovery", "platform",
+        "The device allows password recovery from the console boot loader.",
+        "Someone with physical or console-server access reboots the firewall, skips the startup configuration and resets the administrator password.",
+        "Password recovery trades availability of a recovery path against protection from local attackers; it only matters where console access is not physically controlled.",
+        "Check how console and terminal-server access is protected and whether disabling recovery fits the operations procedure.",
     )),
     (r"^update\.server_unverified$", _G(
         "update-server-unverified", "platform",

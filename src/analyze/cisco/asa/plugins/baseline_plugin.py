@@ -82,6 +82,9 @@ CISCO_ASA_ICMP_REFERENCE = (
 CISCO_ASA_91_IKE_GUIDE = (
     "https://www.cisco.com/c/en/us/td/docs/security/asa/asa91/configuration/vpn/asa_91_vpn_config/vpn_ike.html"
 )
+CISCO_ASA_PASSWORD_RECOVERY_REFERENCE = (
+    "https://www.cisco.com/c/en/us/td/docs/security/asa/asa-cli-reference/S/asa-command-ref-S/sa-shov-commands.html"
+)
 CISCO_ASA_AUTO_UPDATE_REFERENCE = (
     "https://www.cisco.com/c/en/us/td/docs/security/asa/asa-cli-reference/A-H/asa-command-ref-A-H/ar-az-commands.html"
 )
@@ -830,6 +833,23 @@ class PluginASABaseline(BasePlugin):
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
+    def check_password_recovery(self, parser: BaseDeviceParser) -> None:
+        """SC-057 (CIS ASA 9.x 1.1.4): password recovery through ROMMON."""
+        enabled, evidence = self._asa(parser).get_password_recovery()
+        if not enabled:
+            return
+        self.add_issue(self._finding(
+            parser, "cisco.asa.platform.password_recovery",
+            "Password recovery is enabled",
+            ("'service password-recovery' is explicitly configured." if evidence else
+             "'no service password-recovery' is not configured; the ASA command reference documents that password recovery is enabled by default."),
+            "Anyone with console access can boot into ROMMON, bypass the startup configuration and reset the administrator passwords.",
+            "Configure 'no service password-recovery' if console access is not otherwise controlled, and keep a documented recovery procedure.",
+            Severity.LOW, (evidence,) if evidence else ("service password-recovery absent: documented default enabled",),
+            (CISCO_ASA_PASSWORD_RECOVERY_REFERENCE,),
+            basis=FindingBasis.EXPLICIT_VALUE if evidence else FindingBasis.DOCUMENTED_DEFAULT,
+        ))
+
     def check_url_credentials_and_updates(self, parser: BaseDeviceParser) -> None:
         """SC-036 URL credentials and Auto Update Server certificate verification."""
         asa = self._asa(parser)
@@ -873,6 +893,7 @@ class PluginASABaseline(BasePlugin):
         self.check_local_users(parser)
         self.check_service_key_storage(parser)
         self.check_url_credentials_and_updates(parser)
+        self.check_password_recovery(parser)
         self.check_ike_aggressive_mode(parser)
         self.check_aaa_transport(parser)
         self.check_http_management(parser)
