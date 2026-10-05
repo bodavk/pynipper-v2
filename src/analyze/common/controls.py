@@ -1,0 +1,179 @@
+"""Per-control assessment outcomes and manual-review coverage (SC-049).
+
+Controls are metadata kept separate from findings. A plugin records an explicit
+outcome for each migrated control it evaluates; the report never derives a pass
+from the mere absence of a finding. Controls that are applicable to the device
+type but were not recorded are shown as ``not-recorded``; checks without control
+metadata are not listed and therefore make no assurance claim.
+"""
+
+from __future__ import annotations
+
+import weakref
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Iterable
+
+CONTROL_SCHEMA_VERSION = 1
+
+_IOS_FAMILY = frozenset({"IOS_ROUTER", "IOS_SWITCH", "IOS_CATALYST", "IOS_XE"})
+
+
+class ControlOutcome(str, Enum):
+    FINDING = "finding"
+    NO_FINDING = "evaluated-no-finding"
+    UNKNOWN = "unknown"
+    UNSUPPORTED = "unsupported"
+    NOT_APPLICABLE = "not-applicable"
+    EXCLUDED = "excluded"
+    NOT_RECORDED = "not-recorded"
+
+
+# Higher wins when one control records several outcomes (for example per instance).
+_PRECEDENCE = {
+    ControlOutcome.FINDING: 5,
+    ControlOutcome.UNKNOWN: 4,
+    ControlOutcome.UNSUPPORTED: 3,
+    ControlOutcome.NO_FINDING: 2,
+    ControlOutcome.NOT_APPLICABLE: 1,
+}
+
+
+@dataclass(frozen=True)
+class ControlDefinition:
+    control_id: str
+    title: str
+    version: int
+    device_types: frozenset[str]
+    rule_ids: tuple[str, ...]
+    references: tuple[str, ...] = ()
+
+
+@dataclass
+class _Ledger:
+    results: dict[str, tuple[ControlOutcome, list[str]]] = field(default_factory=dict)
+    manual_review: list[tuple[str, str]] = field(default_factory=list)
+
+
+CONTROLS: dict[str, ControlDefinition] = {
+    definition.control_id: definition
+    for definition in (
+        ControlDefinition(
+            "cisco.ios.smart-install", "Smart Install (vstack) disabled", 1, _IOS_FAMILY,
+            ("cisco.ios.services.smart_install",),
+            ("https://www.cisco.com/c/en/us/support/docs/csa/cisco-sa-20180409-smi.html",),
+        ),
+        ControlDefinition(
+            "cisco.ios.pptp-dialin", "No PPTP dial-in VPDN group", 1, _IOS_FAMILY,
+            ("cisco.ios.vpn.pptp_gateway",),
+        ),
+        ControlDefinition(
+            "cisco.ios.ldap-transport", "AAA LDAP servers use TLS", 1, _IOS_FAMILY,
+            ("cisco.ios.aaa.ldap_cleartext",),
+        ),
+        ControlDefinition(
+            "fortinet.fortios.forticloud-sso", "FortiCloud SSO admin login not exposed to FG-IR-26-060", 1,
+            frozenset({"FORTIOS"}), ("fortinet.fortios.admin.forticloud_sso_login",),
+        ),
+        ControlDefinition(
+            "fortinet.fortios.admin-restrict-local", "Local admins restricted while remote auth works", 1,
+            frozenset({"FORTIOS"}), ("fortinet.fortios.admin.local_login_unrestricted",),
+        ),
+        ControlDefinition(
+            "fortinet.fortios.cli-audit-log", "CLI command audit logging enabled", 1,
+            frozenset({"FORTIOS"}), ("fortinet.fortios.cli.audit_disabled",),
+        ),
+        ControlDefinition(
+            "juniper.junos.isis-authentication", "IS-IS adjacencies authenticated", 1,
+            frozenset({"JUNOS"}),
+            ("juniper.junos.routing.isis.authentication", "juniper.junos.routing.isis.cleartext_authentication",
+             "juniper.junos.routing.isis.send_only"),
+        ),
+        ControlDefinition(
+            "arista.eos.ospf-authentication", "OSPFv2 interfaces authenticated with message digest", 1,
+            frozenset({"ARISTA_EOS"}),
+            ("arista.eos.routing.ospf.authentication", "arista.eos.routing.ospf.weak_authentication"),
+        ),
+    )
+}
+
+_LEDGERS: "weakref.WeakKeyDictionary[object, _Ledger]" = weakref.WeakKeyDictionary()
+
+
+def _ledger(parser) -> _Ledger:
+    ledger = _LEDGERS.get(parser)
+    if ledger is None:
+        ledger = _Ledger()
+        _LEDGERS[parser] = ledger
+    return ledger
+
+
+def record_control(parser, control_id: str, outcome: ControlOutcome, reason: str) -> None:
+    """Record a check's outcome for a registered control; unknown IDs are a programming error."""
+    if control_id not in CONTROLS:
+        raise KeyError(f"Unregistered control '{control_id}'")
+    ledger = _ledger(parser)
+    current = ledger.results.get(control_id)
+    if current is None or _PRECEDENCE[outcome] > _PRECEDENCE[current[0]]:
+        ledger.results[control_id] = (outcome, [reason])
+    elif outcome == current[0] and reason not in current[1] and len(current[1]) < 3:
+        current[1].append(reason)
+
+
+def record_manual_review(parser, feature: str, reason: str) -> None:
+    """A recognized security construct whose semantics the tool does not evaluate."""
+    ledger = _ledger(parser)
+    entry = (feature[:120], reason[:300])
+    if entry not in ledger.manual_review:
+        ledger.manual_review.append(entry)
+
+
+def control_coverage(parser, *, template_unresolved: bool = False) -> dict:
+    """Additive, sanitized control-outcome section for the coverage report."""
+    ledger = _LEDGERS.get(parser) or _Ledger()
+    device_type = getattr(parser, "device_type", "")
+    context = parser.assessment_context
+    results = []
+    for definition in CONTROLS.values():
+        if device_type not in definition.device_types:
+            continue
+        outcome, reasons = ledger.results.get(
+            definition.control_id,
+            (ControlOutcome.NOT_RECORDED, ["The check did not record an outcome for this input."]),
+        )
+        if not all(context.permits_rule(rule) for rule in definition.rule_ids):
+            outcome, reasons = ControlOutcome.EXCLUDED, ["Excluded by the assessment policy."]
+        elif template_unresolved and outcome == ControlOutcome.NO_FINDING:
+            outcome, reasons = ControlOutcome.UNKNOWN, ["Unrendered template; omitted settings cannot be judged."]
+        results.append({
+            "control-id": definition.control_id,
+            "title": definition.title,
+            "control-version": definition.version,
+            "outcome": outcome.value,
+            "reasons": list(reasons),
+            "rule-ids": list(definition.rule_ids),
+            "references": list(definition.references),
+        })
+    return {
+        "schema-version": CONTROL_SCHEMA_VERSION,
+        "results": results,
+        "manual-review": [{"feature": feature, "reason": reason} for feature, reason in ledger.manual_review],
+        "scope-note": (
+            "Only the listed controls record explicit outcomes. 'evaluated-no-finding' means the check ran on "
+            "the parsed configuration and found no issue; it is not benchmark certification. Other checks report "
+            "findings only, so the absence of their findings is not a verified pass."
+        ),
+    }
+
+
+def outcome_counts(controls: dict) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in controls.get("results", ()):
+        counts[item["outcome"]] = counts.get(item["outcome"], 0) + 1
+    return counts
+
+
+__all__: Iterable[str] = [
+    "CONTROLS", "ControlOutcome", "ControlDefinition", "record_control",
+    "record_manual_review", "control_coverage", "outcome_counts",
+]

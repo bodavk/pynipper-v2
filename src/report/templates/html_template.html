@@ -198,6 +198,27 @@
                         </table>
                     </details>
                 {% endif %}
+                {% if coverage['controls'] is defined and coverage['controls']['results'] %}
+                    <h3>Control outcomes</h3>
+                    <p>{{ coverage['controls']['scope-note'] }}</p>
+                    <table class="table">
+                        <thead><tr><th scope="col">Control</th><th scope="col">Outcome</th><th scope="col">Reason</th><th scope="col">Rules</th></tr></thead>
+                        <tbody>
+                        {% for control in coverage['controls']['results'] %}
+                            <tr>
+                                <td>{{ control['title'] }}<br><small>{{ control['control-id'] }} v{{ control['control-version'] }}</small></td>
+                                <td><span class="chip state-{{ control['outcome'] }}">{{ control['outcome'] }}</span></td>
+                                <td>{{ control['reasons']|join(' ') }}</td>
+                                <td><small>{{ control['rule-ids']|join(', ') }}</small></td>
+                            </tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                {% endif %}
+                {% if coverage['controls'] is defined and coverage['controls']['manual-review'] %}
+                    <h3>Configured features requiring manual review</h3>
+                    <ul>{% for item in coverage['controls']['manual-review'] %}<li><strong>{{ item['feature'] }}</strong>: {{ item['reason'] }}</li>{% endfor %}</ul>
+                {% endif %}
                 {% if coverage['diagnostics'] %}
                     <h3>Parser scope diagnostics</h3>
                     <ul>{% for diagnostic in coverage['diagnostics'] %}<li>{{ diagnostic }}</li>{% endfor %}</ul>

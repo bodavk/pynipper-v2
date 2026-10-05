@@ -1647,14 +1647,14 @@ class AristaEOSParser(CiscoIOSParser):
                 children.append(child)
             yield command, children
 
-    def get_ospf_interface_authentication(self) -> list[tuple[str, str, tuple[ConfigEvidence, ...]]]:
+    def get_ospf_interface_authentication(self) -> Optional[list[tuple[str, str, tuple[ConfigEvidence, ...]]]]:
         """SC-005: OSPFv2 interfaces bound with ``ip ospf area`` and their authentication.
 
         Returns (interface, state, evidence) with state ``none`` (documented default:
         "By default, OSPFv2 does not authenticate packets"), ``simple`` or
         ``message-digest``. Interfaces are omitted when no ``router ospf`` exists, when
-        any ``area ... authentication`` is configured (area-level semantics are not
-        qualified), or when the interface is shut down, a loopback or passive.
+        any ``area ... authentication`` is configured (``None``: area-level semantics are
+        not qualified), or when the interface is shut down, a loopback or passive.
         """
         processes = list(self._top_blocks(r"router\s+ospf\s+\S+(?:\s+vrf\s+\S+)?"))
         if not processes:
@@ -1664,7 +1664,7 @@ class AristaEOSParser(CiscoIOSParser):
             for child in children:
                 folded = " ".join(child.text.casefold().split())
                 if folded.startswith("area ") and " authentication" in folded:
-                    return []
+                    return None
                 if folded == "passive-interface default":
                     passive_default = True
                 elif folded.startswith("no passive-interface "):

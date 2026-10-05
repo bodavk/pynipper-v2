@@ -6,6 +6,7 @@ import re
 
 from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.issue import Finding, FindingBasis, Severity
+from src.analyze.common.controls import ControlOutcome as CO, record_control, record_manual_review
 from src.analyze.common.risky_services import RISKY_PORTS, risky_labels
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.policy_semantics import (
@@ -2204,11 +2205,17 @@ class PluginFortiOSBaseline(BasePlugin):
         if release:
             fixed = _FORTICLOUD_SSO_FIXED.get(release[:2])
             affected = bool(fixed and release < fixed)
+        record_control(parser, "fortinet.fortios.forticloud-sso", CO.NO_FINDING,
+                       "admin-forticloud-sso-login is not explicitly enabled.")
         for scope, settings, path in fortios.iter_scoped_sections("system global"):
             if self._text(settings.get("admin-forticloud-sso-login")).lower() != "enable":
                 continue
             if affected is False:
+                record_control(parser, "fortinet.fortios.forticloud-sso", CO.NO_FINDING,
+                               "Enabled, but the release includes the FG-IR-26-060 fix.")
                 continue  # fixed release: the setting itself is a supported feature
+            record_control(parser, "fortinet.fortios.forticloud-sso", CO.FINDING,
+                           "Enabled on an affected or unidentified release.")
             label = ".".join(map(str, release)) if release else "an unidentified release"
             evidence = self._evidence(fortios, path + ("admin-forticloud-sso-login",), "set admin-forticloud-sso-login enable")
             self.add_issue(self._finding(
@@ -2282,15 +2289,23 @@ class PluginFortiOSBaseline(BasePlugin):
             elif self._text(settings.get("peer-auth"), "disable").lower() != "enable":
                 local.append((username, path))
         if not remote or not local:
+            record_control(parser, "fortinet.fortios.admin-restrict-local", CO.NOT_APPLICABLE,
+                           "Remote-authenticated and local password administrators do not coexist.")
             return
         globals_ = list(fortios.iter_scoped_sections("system global")) or [("global", {}, ("system global",))]
         for scope, settings, path in globals_:
             value = self._text(settings.get("admin-restrict-local")).lower()
             if value in self._LOCAL_RESTRICTED:
+                record_control(parser, "fortinet.fortios.admin-restrict-local", CO.NO_FINDING,
+                               f"admin-restrict-local is '{value}'.")
                 continue
             explicit = bool(value)
             if not explicit and (not release or release < (6, 4, 14)):
+                record_control(parser, "fortinet.fortios.admin-restrict-local", CO.UNKNOWN,
+                               "Setting absent and the release predates the verified default (6.4.14).")
                 continue
+            record_control(parser, "fortinet.fortios.admin-restrict-local", CO.FINDING,
+                           "Local administrators remain usable while remote authentication works.")
             names = ", ".join(sorted(f"'{name}'" for name, _ in local))
             evidence = self._evidence(
                 fortios, path + ("admin-restrict-local",),
@@ -2379,10 +2394,14 @@ class PluginFortiOSBaseline(BasePlugin):
         for scope, settings, path in globals_:
             value = self._text(settings.get("cli-audit-log")).lower()
             if value == "enable":
+                record_control(parser, "fortinet.fortios.cli-audit-log", CO.NO_FINDING, "cli-audit-log is enabled.")
                 continue
             explicit = bool(value)
             if not explicit and (not release or release < (6, 4, 14)):
+                record_control(parser, "fortinet.fortios.cli-audit-log", CO.UNKNOWN,
+                               "Setting absent and the release predates the verified default (6.4.14).")
                 continue
+            record_control(parser, "fortinet.fortios.cli-audit-log", CO.FINDING, "cli-audit-log is not enabled.")
             self.add_issue(self._finding(
                 parser,
                 "fortinet.fortios.cli.audit_disabled",

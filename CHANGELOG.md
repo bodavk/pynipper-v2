@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - SC-005 Arista EOS: `arista.eos.routing.ospf.authentication` (High, documented default no authentication), `ospf.weak_authentication` (simple password) and `isis.cleartext_authentication` (text mode).
 
+- SC-049: per-control assessment outcomes. The coverage section now lists, for migrated controls, whether each produced a finding, was evaluated without a finding, was unknown, unsupported, not applicable, excluded or not recorded, with reasons, plus a "Configured features requiring manual review" list. Eight initial controls across IOS, FortiOS, Junos and EOS; other checks remain findings-only and are not presented as passed.
+
 - SC-013 Cisco IOS: `cisco.ios.vpn.l2tp_without_ipsec` (Medium) for L2TP dial-in on a router with no IPsec configuration.
 
 - SC-047 Junos SRX: `juniper.junos.host_inbound.routing_exposed` (High) when an external interface admits unauthenticated or cleartext-authenticated OSPF/IS-IS running on it, without lo0/interface filters.

@@ -6,6 +6,7 @@ from dataclasses import replace
 from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.credentials import credential_policy_from_context, evaluate_credential
 from src.analyze.common.issue import Finding, FindingBasis, Severity
+from src.analyze.common.controls import ControlOutcome as CO, record_control, record_manual_review
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.juniper.junos import JunOSParser, JunosStatement
 
@@ -1042,9 +1043,22 @@ class PluginJunOSBaseline(BasePlugin):
                 recommendation, severity, evidence, (JUNIPER_OSPF_AUTH_GUIDE,),
             ))
 
-        for record in junos.get_isis_authentication():
-            if not record.interfaces:
-                continue
+        isis_records = [record for record in junos.get_isis_authentication() if record.interfaces]
+        if not isis_records:
+            record_control(parser, "juniper.junos.isis-authentication", CO.NOT_APPLICABLE,
+                           "IS-IS does not run on an adjacency-forming interface.")
+        for record in isis_records:
+            if record.unknown:
+                record_control(parser, "juniper.junos.isis-authentication", CO.UNKNOWN,
+                               "apply-groups inheritance is not expanded.")
+                record_manual_review(parser, "Junos apply-groups with IS-IS",
+                                     "Inherited IS-IS authentication settings are not expanded.")
+            elif record.receive_check_disabled or record.cleartext_levels or not record.authenticated:
+                record_control(parser, "juniper.junos.isis-authentication", CO.FINDING,
+                               f"Routing-instance {record.routing_instance} lacks effective authentication.")
+            else:
+                record_control(parser, "juniper.junos.isis-authentication", CO.NO_FINDING,
+                               f"Routing-instance {record.routing_instance} authenticates IS-IS.")
             scope = f"routing-instance {record.routing_instance}"
             evidence = tuple(record.evidence)
             if record.receive_check_disabled:

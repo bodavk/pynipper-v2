@@ -3,6 +3,7 @@
 from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.credentials import credential_policy_from_context, evaluate_credential
 from src.analyze.common.issue import Finding, FindingBasis, Severity
+from src.analyze.common.controls import ControlOutcome as CO, record_control, record_manual_review
 from src.devices.arista.eos import AristaEOSParser
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.models import CredentialStorageAssessment
@@ -1103,6 +1104,20 @@ class PluginAristaChecks(BasePlugin):
         """SC-005: OSPFv2 interface authentication and explicit IS-IS clear-text mode."""
         eos = self._eos(parser)
         records = eos.get_ospf_interface_authentication()
+        if records is None:
+            record_control(parser, "arista.eos.ospf-authentication", CO.UNSUPPORTED,
+                           "Area-level OSPF authentication is configured; its interaction is not evaluated.")
+            record_manual_review(parser, "OSPF area authentication", "Area-level OSPF authentication is not evaluated.")
+            records = []
+        elif not records:
+            record_control(parser, "arista.eos.ospf-authentication", CO.NOT_APPLICABLE,
+                           "No active, non-passive interface is bound with 'ip ospf area'.")
+        elif any(r[1] != "message-digest" for r in records):
+            record_control(parser, "arista.eos.ospf-authentication", CO.FINDING,
+                           "At least one OSPF interface lacks message-digest authentication.")
+        else:
+            record_control(parser, "arista.eos.ospf-authentication", CO.NO_FINDING,
+                           "All bound OSPF interfaces use message-digest authentication.")
         unauthenticated = [r for r in records if r[1] == "none"]
         if unauthenticated:
             self.add_issue(Finding(

@@ -77,6 +77,8 @@ For VPN checks, start from an active policy or interface attachment and follow n
 
 Every new rule ID must match an entry in `src/analyze/common/guidance.py` (the coverage test fails otherwise). Reuse an existing entry when the weakness is the same kind across vendors; add a new entry, placed before any broader pattern, only for a genuinely different weakness. Keep its text vendor-neutral and within what a static export can prove; device-specific facts belong in the finding's observation.
 
+If the check should report an explicit outcome when it finds nothing (SC-049), register a `ControlDefinition` in `src/analyze/common/controls.py` and call `record_control` on every path: `finding`, `evaluated-no-finding` (the prerequisite was proven and the setting is safe), `unknown` (missing release or inherited configuration), `unsupported` (recognized construct not evaluated; also call `record_manual_review`) or `not-applicable`. Never record `evaluated-no-finding` because nothing was found; record it only where the check proved the safe state.
+
 ### 4. Register explicitly
 
 Add the plugin class to the platform processor's ordered plugin tuple. Never rely on filename scanning or automatic subclass discovery.

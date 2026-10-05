@@ -2,6 +2,7 @@ import re
 
 from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.credentials import credential_policy_from_context, evaluate_credential
+from src.analyze.common.controls import ControlOutcome as CO, record_control, record_manual_review
 from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.policy_semantics import ProofState, network_covers, service_covers
@@ -1274,7 +1275,11 @@ class PluginIOSBaseline(BasePlugin):
 
     def check_pptp_dialin(self, parser: BaseDeviceParser) -> None:
         """SC-013: explicitly configured PPTP dial-in; reachability and logins are not proven."""
-        for group in self._ios(parser).get_pptp_dialin_groups():
+        groups = self._ios(parser).get_pptp_dialin_groups()
+        record_control(parser, "cisco.ios.pptp-dialin", CO.FINDING if groups else CO.NO_FINDING,
+                       "A VPDN group accepts PPTP dial-in." if groups
+                       else "No VPDN group accepts PPTP dial-in while 'vpdn enable' is in effect.")
+        for group in groups:
             template = (f"Virtual-Template{group.virtual_template}" if group.virtual_template
                         else "no virtual-template")
             if group.authentication:
@@ -1302,6 +1307,9 @@ class PluginIOSBaseline(BasePlugin):
         """SC-013: L2TP dial-in on a router with no IPsec configuration at all."""
         ios = self._ios(parser)
         groups = ios.get_l2tp_dialin_groups()
+        if groups and ios.has_ipsec_configuration():
+            record_manual_review(parser, "L2TP dial-in with IPsec configuration present",
+                                 "Whether the L2TP sessions are protected by the configured IPsec policy is not evaluated.")
         if not groups or ios.has_ipsec_configuration():
             return
         for group in groups:
@@ -1417,8 +1425,14 @@ class PluginIOSBaseline(BasePlugin):
     def check_smart_install(self, parser: BaseDeviceParser) -> None:
         """SC-025: Smart Install accepts unauthenticated configuration and image changes."""
         state, evidence = self._ios(parser).get_smart_install()
+        if state is False:
+            record_control(parser, "cisco.ios.smart-install", CO.NO_FINDING, "'no vstack' is configured.")
+        elif state is None:
+            record_control(parser, "cisco.ios.smart-install", CO.UNKNOWN,
+                           "Neither 'vstack' nor 'no vstack' appears; older releases do not show the state.")
         if state is not True:
             return
+        record_control(parser, "cisco.ios.smart-install", CO.FINDING, "'vstack' is configured.")
         self.add_issue(Finding(
             rule_id="cisco.ios.services.smart_install",
             device=parser.device_type,
@@ -1740,6 +1754,7 @@ class PluginIOSBaseline(BasePlugin):
         ios = self._ios(parser)
         servers, groups = ios.get_ldap_servers()
         if not servers:
+            record_control(parser, "cisco.ios.ldap-transport", CO.NOT_APPLICABLE, "No LDAP server is defined.")
             return
         used: dict[str, str] = {}
         for method_list in ios.get_aaa_method_lists():
@@ -1754,10 +1769,23 @@ class PluginIOSBaseline(BasePlugin):
                 elif target in groups:
                     for member in groups[target]:
                         used.setdefault(member.casefold(), f"server group '{target}'")
+        if not any(server.name.casefold() in used for server in servers):
+            record_control(parser, "cisco.ios.ldap-transport", CO.NOT_APPLICABLE,
+                           "LDAP servers are defined but no AAA method list uses them.")
         for server in servers:
             via = used.get(server.name.casefold())
-            if via is None or server.secure or server.port == "636":
+            if via is None:
                 continue
+            if server.secure:
+                record_control(parser, "cisco.ios.ldap-transport", CO.NO_FINDING, "Used LDAP servers set 'mode secure'.")
+                continue
+            if server.port == "636":
+                record_control(parser, "cisco.ios.ldap-transport", CO.UNKNOWN,
+                               "A used LDAP server uses port 636 without 'mode secure'; implicit LDAPS is not documented.")
+                record_manual_review(parser, f"LDAP server '{server.name}' on port 636",
+                                     "Port 636 without 'mode secure' may be implicit LDAPS; verify on the device.")
+                continue
+            record_control(parser, "cisco.ios.ldap-transport", CO.FINDING, "A used LDAP server has no 'mode secure'.")
             self.add_issue(Finding(
                 rule_id="cisco.ios.aaa.ldap_cleartext",
                 device=parser.device_type,

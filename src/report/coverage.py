@@ -7,6 +7,7 @@ import unicodedata
 from enum import Enum
 from typing import Any, Iterable
 
+from src.analyze.common.controls import control_coverage
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.models import KnowledgeState, NormalizedCollection
 
@@ -146,6 +147,9 @@ def build_report_context(parser: BaseDeviceParser) -> dict:
                 field["knowledge-state"] = "unknown"
                 field.pop("item-count", None)
                 field["detail"] = "Unrendered template; field inventory may be incomplete."
+    coverage["controls"] = control_coverage(
+        parser, template_unresolved=bool(getattr(parser, "template_unresolved", False))
+    )
     result = {
         "coverage": coverage,
         "configuration-inventory": (
