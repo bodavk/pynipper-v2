@@ -36,6 +36,7 @@ This queue prioritizes **remaining work**, not already completed stages. P1 = pr
 | **P1 — offline operating requirement** | [SC-045](#sc-045): eliminate implicit outbound advisory requests from ordinary audits. This is a data-handling/product requirement, not a device misconfiguration or Critical vulnerability. |
 | **P2 — deployment-dependent security depth** | [SC-048](#sc-048) IPv6 access-edge/dual-stack controls; multicast and additional address families in [SC-005](#sc-005); DNS in [SC-026](#sc-026). Promote an affected deployment stage to P1 when supplied scope proves an untrusted control-plane or management bypass. Do not prioritize unused protocols. |
 | **P2 — assurance** | [SC-049](#sc-049) per-control coverage and manual-review inventory, after direct high-risk misses; this reduces false assurance without adding a device vulnerability. |
+| **CIS review follow-ups (2026-10-05)** | [SC-055](#sc-055) FortiOS, [SC-056](#sc-056) IOS/IOS-XE, [SC-057](#sc-057) ASA, [SC-058](#sc-058) Junos, [SC-059](#sc-059) EOS, [SC-060](#sc-060) F5, [SC-061](#sc-061) PAN-OS, [SC-062](#sc-062) cross-reference metadata. Each task lists its own P1/P2/P3 items; P1 items: SC-058 Junos routing-protocol authentication (IS-IS suppressed/loose checks, RIP/OSPFv3/BFD/LDP/MSDP/RSVP, GTSM) and REST API, SC-061 PAN-OS update-server identity verification. |
 | **P3 — lower direct security relevance** | [SC-050](#sc-050) batch manifests and offline comparisons. Improve auditor efficiency after ready P1/P2 detection work. |
 
 The 2026-09-26 review proposals were merged as follows: A3/A10 into SC-026; A4 into SC-011; A6 into SC-013; A7/A9 into SC-005; A11 into SC-043. New A1/A2/A5/A8/A12/A13 work is SC-045/046/047/048/049/050 respectively. No duplicate A-series implementation backlog exists. All existing completed scope remains recorded. **SC-044 insecure defaults is unchanged and remains separately owned.**
@@ -61,7 +62,7 @@ The original standards catalog below was accessed **2026-09-22**; sources in the
 | EOS | Arista MLS EOS 4.x NDM V2R2, 2025-02-20; CIS Arista EOS v1.0.0 announced September 2026 | [Official CIS announcement](https://www.cisecurity.org/insights/blog/cis-benchmarks-september-2026-update). Current full CIS control text not obtained; no invented section numbers. |
 | F5 BIG-IP | TMOS NDM V1R2, ALG V1R3; Firewall/VPN/DNS V1R1; CIS F5 Networks v1.0.0 | Current adapter is basic TMOS SCF/tmsh, not UCS/F5OS. LTM, AFM, APM and WAF roles must be separately qualified. |
 
-Full current CIS PDFs were not acquired. Public CIS pages establish publication metadata, not detailed control coverage. CIS-specific requirements or crosswalks requiring those PDFs remain `NEEDS_RESEARCH`; unresolved local applicability remains `NEEDS_HUMAN_REVIEW`. No exact CIS compliance mapping is claimed.
+**Update 2026-10-05:** the maintainer supplied the CIS PDFs (FortiGate 7.4.x v1.0.1, 7.0.x v1.4.0 and v1.1.0; Cisco IOS XE 17.x v2.2.1, 16.x v2.2.0 and v1.0.0; IOS 17.x v2.0.0, IOS 16 v2.0.0, IOS 15 v4.1.1; ASA 9.x v1.1.0; Cisco Firewall 8.x v4.2.0; Juniper OS v2.1.0; Arista EOS v1.0.0; F5 Networks v1.0.0; Palo Alto Firewall 11 v1.2.0 and 10 v1.3.0; Check Point Firewall v1.1.0; IOS XR and NX-OS out of scope). Recommendation-level mapping and the resulting tasks SC-055–SC-062 are in the [CIS coverage review](CIS_BENCHMARK_COVERAGE.md); the PDFs and the verbatim catalogue stay in git-ignored `Claude outputs/cis/`. The historical note below is kept for context. Full current CIS PDFs were not acquired. Public CIS pages establish publication metadata, not detailed control coverage. CIS-specific requirements or crosswalks requiring those PDFs remain `NEEDS_RESEARCH`; unresolved local applicability remains `NEEDS_HUMAN_REVIEW`. No exact CIS compliance mapping is claimed.
 
 ### Control evidence used by tasks
 
@@ -636,6 +637,8 @@ These are smaller-demand or evidence-limited tracks. Do not hold ready current-p
 
 **Acceptance Criteria:** The implemented subset names its exact export revision; unavailable implied policy produces bounded coverage rather than invented permit/deny behavior.
 
+**CIS mapping 2026-10-05:** CIS Check Point Firewall v1.1.0 recommendations 3.9–3.20 (implied rules, Global Properties such as out-of-state TCP/ICMP, accept RIP/DNS/ICMP, NAT options, disk-space alert, global tracking) and 3.12 (anti-spoofing prevent) belong to this task and remain sample-gated. See the [CIS coverage review](CIS_BENCHMARK_COVERAGE.md).
+
 <a id="sc-019"></a>
 ### SC-019 — Qualify ScreenOS screens and authenticated time
 
@@ -704,6 +707,8 @@ These are smaller-demand or evidence-limited tracks. Do not hold ready current-p
 **Test Requirements:** Contract tests for mismatched gateway/release, missing companion, malformed input and redaction; mandatory implementation suite when a parser stage is authorized.
 
 **Acceptance Criteria:** Policy-only analysis remains valid with OS posture unassessed; companion support and benchmark mapping are explicit before detectors are scheduled.
+
+**CIS mapping 2026-10-05:** CIS Check Point Firewall v1.1.0 Gaia items not yet covered: password-policy depth (1.2, 1.5–1.10), MOTD, unused interfaces, DNS/hostname, DHCP (2.1.2, 2.1.5, 2.1.6, 2.1.8, 2.1.10), SNMP traps (2.2.3, 2.2.4), web UI client authentication (2.5.3) and audit/cplogs settings (2.6.1–2.6.3); several existing Gaia checks are marked "verify". See the [CIS coverage review](CIS_BENCHMARK_COVERAGE.md).
 
 <a id="sc-024"></a>
 ### SC-024 — Qualify F5 module-specific protection
@@ -1541,6 +1546,110 @@ These tasks continue numbering after SC-044. Their execution order is governed b
 **Test Requirements:** Real-format fixture plus zero/nonzero counters, two-snapshot delta, reset/reboot, rule re-ID/reorder, duplicate/missing UUID, VDOM/IPv4/IPv6 collision, disabled/new rule, stale window, malformed or partial companion, config-only negative, offline enforcement, redaction, public CLI JSON/HTML and regression gate.
 
 **Acceptance Criteria:** A configuration-only audit never says a rule had zero hits. With qualified supplied counters, the result states its measured interval and uncertainty, and neither a static shadow nor a missing counter is mislabeled as observed nonuse.
+
+<a id="sc-055"></a>
+### SC-055 — Close FortiOS CIS benchmark gaps
+
+**Priority:** P2 (management hardening, security-profile depth), P3 (monitoring/HA).
+
+**Status:** Open (from the 2026-10-05 CIS review).
+
+**Source of Truth:** CIS FortiGate 7.4.x v1.0.1 (primary), 7.0.x v1.4.0, v1.1.0. Recommendation numbers and mapping in the [CIS coverage review](CIS_BENCHMARK_COVERAGE.md). A CIS recommendation is not a source for a vendor default; defaults still need vendor documentation.
+
+**Concrete Requirements:** Implement the configuration-assessable gaps listed under SC-055 in the [CIS coverage review](CIS_BENCHMARK_COVERAGE.md): post-login banner, GUI hostname display, SNMPv3 per-user query, built-in `admin` name, default admin ports, local-in virtual patching, intra-zone allow, DNS servers, unique policy names; IPS botnet, antivirus/outbreak/AI/grayware/sandbox/CDR, DNS-filter botnet and logging, application-control high-risk/non-default-port/logging, ISDB Tor/malicious deny, compromised-host quarantine; SNMP memory traps, CPU overload event, HA monitored interfaces/management interface/group ID when HA is configured. Deepen the partial items (WAN management services, SNMPv3 trusted hosts, local-in policies, `ALL` service, filter attachments).
+
+**Acceptance Criteria:** Each implemented item cites the vendor source and the CIS recommendation number; unassessable items stay manual-review or unassessed rather than passed.
+
+<a id="sc-056"></a>
+### SC-056 — Close Cisco IOS / IOS-XE CIS benchmark gaps
+
+**Priority:** P2 (login block-for, SSH timeout/retries, HTTP limits, TTY lines, zero-touch), P3 (accounting network/system, banners, SNMP traps, naming, services, logging details, source interfaces, CEF, gratuitous ARP).
+
+**Status:** Open (from the 2026-10-05 CIS review).
+
+**Source of Truth:** CIS IOS XE 17.x v2.2.1 (primary), 16.x v2.2.0, v1.0.0; IOS 17.x/16 v2.0.0; IOS 15 v4.1.1. Recommendation numbers and mapping in the [CIS coverage review](CIS_BENCHMARK_COVERAGE.md). A CIS recommendation is not a source for a vendor default; defaults still need vendor documentation.
+
+**Concrete Requirements:** Implement the SC-056 gap list in the [CIS coverage review](CIS_BENCHMARK_COVERAGE.md). Keep preferring AES (type 6) credential storage over `service password-encryption`, which Cisco IOS XE now flags as insecure even though XE17 1.4.2 still recommends it.
+
+**Acceptance Criteria:** Each implemented item cites the vendor source and the CIS recommendation number; unassessable items stay manual-review or unassessed rather than passed.
+
+<a id="sc-057"></a>
+### SC-057 — Close Cisco ASA CIS benchmark gaps
+
+**Priority:** P2 (password recovery, secure HTTP client auth, RSA size, untrusted-interface protections, proxy-ARP, RIP/serial-console auth), P3 (naming, unused interfaces, banners, logging details, SNMP traps).
+
+**Status:** Open (from the 2026-10-05 CIS review).
+
+**Source of Truth:** CIS ASA 9.x Firewall v1.1.0 (primary), Cisco Firewall 8.x v4.2.0. Recommendation numbers and mapping in the [CIS coverage review](CIS_BENCHMARK_COVERAGE.md). A CIS recommendation is not a source for a vendor default; defaults still need vendor documentation.
+
+**Concrete Requirements:** Implement the SC-057 gap list in the [CIS coverage review](CIS_BENCHMARK_COVERAGE.md). Untrusted-interface items require the assessment policy interface roles, as other boundary checks do.
+
+**Acceptance Criteria:** Each implemented item cites the vendor source and the CIS recommendation number; unassessable items stay manual-review or unassessed rather than passed.
+
+<a id="sc-058"></a>
+### SC-058 — Close Junos CIS benchmark gaps
+
+**Priority:** P1 (routing-protocol authentication, REST API, management plane limits), P2 (routing-engine filter completeness, internet-options, console/aux, autoinstall, config encryption), P3 (local log files, ping/echo options, NTP version/boot server).
+
+**Status:** Open (from the 2026-10-05 CIS review).
+
+**Source of Truth:** CIS Juniper OS v2.1.0. Recommendation numbers and mapping in the [CIS coverage review](CIS_BENCHMARK_COVERAGE.md). A CIS recommendation is not a source for a vendor default; defaults still need vendor documentation.
+
+**Concrete Requirements:** Implement the SC-058 gap list in the [CIS coverage review](CIS_BENCHMARK_COVERAGE.md). Start with IS-IS `loose-authentication-check` and `no-hello/psnp/csnp-authentication` (extends the 2026-10-05 SC-005 Junos IS-IS stage), then RIP, OSPFv3, BFD, LDP, MSDP, RSVP authentication and EBGP GTSM, then REST API depth beyond the existing `rest_http` check. Resolve the 15 remaining "verify" entries.
+
+**Acceptance Criteria:** Each implemented item cites the vendor source and the CIS recommendation number; unassessable items stay manual-review or unassessed rather than passed.
+
+<a id="sc-059"></a>
+### SC-059 — Close Arista EOS CIS benchmark gaps
+
+**Priority:** P2 (enable secret, AES-GCM secret encryption, syslog TLS), P3 (DNS, management VRF).
+
+**Status:** Open (from the 2026-10-05 CIS review).
+
+**Source of Truth:** CIS Arista EOS v1.0.0. Recommendation numbers and mapping in the [CIS coverage review](CIS_BENCHMARK_COVERAGE.md). A CIS recommendation is not a source for a vendor default; defaults still need vendor documentation.
+
+**Concrete Requirements:** Implement the SC-059 gap list in the [CIS coverage review](CIS_BENCHMARK_COVERAGE.md). IS-IS absence stays ungraded until Arista documents the default.
+
+**Acceptance Criteria:** Each implemented item cites the vendor source and the CIS recommendation number; unassessable items stay manual-review or unassessed rather than passed.
+
+<a id="sc-060"></a>
+### SC-060 — Close F5 BIG-IP CIS benchmark gaps
+
+**Priority:** P2 (remote-auth fallback, RADIUS authentication-only, remote-user partition/terminal access, SSH MAC/KEX), P3 (banner, tmsh/console idle timeouts, ETag inode, access-log restriction).
+
+**Status:** Open (from the 2026-10-05 CIS review).
+
+**Source of Truth:** CIS F5 Networks v1.0.0 (archived). Recommendation numbers and mapping in the [CIS coverage review](CIS_BENCHMARK_COVERAGE.md). A CIS recommendation is not a source for a vendor default; defaults still need vendor documentation.
+
+**Concrete Requirements:** Implement the SC-060 gap list in the [CIS coverage review](CIS_BENCHMARK_COVERAGE.md).
+
+**Acceptance Criteria:** Each implemented item cites the vendor source and the CIS recommendation number; unassessable items stay manual-review or unassessed rather than passed.
+
+<a id="sc-061"></a>
+### SC-061 — Close PAN-OS CIS benchmark gaps
+
+**Priority:** P1 (update-server identity verification), P2 (management certificate, User-ID scope, application/trusted-IP rules, decryption, DNS sinkhole, URL/data filtering, credential submission), P3 (traps, logging, password profiles, HA monitoring, update schedules, WildFire, inline cloud features).
+
+**Status:** Open (from the 2026-10-05 CIS review).
+
+**Source of Truth:** CIS Palo Alto Firewall 11 v1.2.0 (primary), 10 v1.3.0. Recommendation numbers and mapping in the [CIS coverage review](CIS_BENCHMARK_COVERAGE.md). A CIS recommendation is not a source for a vendor default; defaults still need vendor documentation.
+
+**Concrete Requirements:** Implement the SC-061 gap list in the [CIS coverage review](CIS_BENCHMARK_COVERAGE.md). 1.5.1 (SNMP polling version) stays out of scope under the 2026-09-25 maintainer decision.
+
+**Acceptance Criteria:** Each implemented item cites the vendor source and the CIS recommendation number; unassessable items stay manual-review or unassessed rather than passed.
+
+<a id="sc-062"></a>
+### SC-062 — CIS cross-reference metadata and verification
+
+**Priority:** P3.
+
+**Status:** Open (from the 2026-10-05 CIS review).
+
+**Source of Truth:** CIS All reviewed CIS benchmarks. Recommendation numbers and mapping in the [CIS coverage review](CIS_BENCHMARK_COVERAGE.md). A CIS recommendation is not a source for a vendor default; defaults still need vendor documentation.
+
+**Concrete Requirements:** Resolve every "verify" (V) mapping against actual rule IDs; add CIS recommendation numbers to rule references and to SC-049 control metadata where a rule fully implements a recommendation; keep benchmark versions current. Never copy CIS text into the repository; cite numbers and paraphrase.
+
+**Acceptance Criteria:** Each implemented item cites the vendor source and the CIS recommendation number; unassessable items stay manual-review or unassessed rather than passed.
 
 ## Source appendix and audit validation
 
