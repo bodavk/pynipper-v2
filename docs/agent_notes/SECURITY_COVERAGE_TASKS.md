@@ -1552,7 +1552,7 @@ These tasks continue numbering after SC-044. Their execution order is governed b
 
 **Priority:** P2 (management hardening, security-profile depth), P3 (monitoring/HA).
 
-**Status:** Open (from the 2026-10-05 CIS review). **Progress** FortiOS 2026-10-05: `banner.post_login_disabled` (Informational; 7.4.1+ default disable), `management.login_hostname_disclosed` (explicit gui-display-hostname enable), `management.default_admin_ports` (Informational; HTTPS/SSH allowed on an interface and admin-sport/admin-ssh-port at 443/22), `admin.default_account_name` (enabled built-in `admin`).
+**Status:** Mostly implemented 2026-10-05; see "Implementation status" in the [CIS coverage review](CIS_BENCHMARK_COVERAGE.md) for done and remaining items (from the 2026-10-05 CIS review). **Progress** FortiOS 2026-10-05: `banner.post_login_disabled` (Informational; 7.4.1+ default disable), `management.login_hostname_disclosed` (explicit gui-display-hostname enable), `management.default_admin_ports` (Informational; HTTPS/SSH allowed on an interface and admin-sport/admin-ssh-port at 443/22), `admin.default_account_name` (enabled built-in `admin`).
 
 **Source of Truth:** CIS FortiGate 7.4.x v1.0.1 (primary), 7.0.x v1.4.0, v1.1.0. Recommendation numbers and mapping in the [CIS coverage review](CIS_BENCHMARK_COVERAGE.md). A CIS recommendation is not a source for a vendor default; defaults still need vendor documentation.
 
@@ -1565,7 +1565,7 @@ These tasks continue numbering after SC-044. Their execution order is governed b
 
 **Priority:** P2 (login block-for, SSH timeout/retries, HTTP limits, TTY lines, zero-touch), P3 (accounting network/system, banners, SNMP traps, naming, services, logging details, source interfaces, CEF, gratuitous ARP).
 
-**Status:** Open (from the 2026-10-05 CIS review).
+**Status:** Mostly implemented 2026-10-05; see "Implementation status" in the [CIS coverage review](CIS_BENCHMARK_COVERAGE.md) for done and remaining items (from the 2026-10-05 CIS review).
 
 **Source of Truth:** CIS IOS XE 17.x v2.2.1 (primary), 16.x v2.2.0, v1.0.0; IOS 17.x/16 v2.0.0; IOS 15 v4.1.1. Recommendation numbers and mapping in the [CIS coverage review](CIS_BENCHMARK_COVERAGE.md). A CIS recommendation is not a source for a vendor default; defaults still need vendor documentation.
 
@@ -1578,7 +1578,7 @@ These tasks continue numbering after SC-044. Their execution order is governed b
 
 **Priority:** P2 (password recovery, secure HTTP client auth, RSA size, untrusted-interface protections, proxy-ARP, RIP/serial-console auth), P3 (naming, unused interfaces, banners, logging details, SNMP traps).
 
-**Status:** Open (from the 2026-10-05 CIS review). **Progress** ASA 2026-10-05: `cisco.asa.platform.password_recovery` (Low; documented default enabled per the ASA command reference; secure fixture sets `no service password-recovery`).
+**Status:** Mostly implemented 2026-10-05; see "Implementation status" in the [CIS coverage review](CIS_BENCHMARK_COVERAGE.md) for done and remaining items (from the 2026-10-05 CIS review). **Progress** ASA 2026-10-05: `cisco.asa.platform.password_recovery` (Low; documented default enabled per the ASA command reference; secure fixture sets `no service password-recovery`).
 
 **Source of Truth:** CIS ASA 9.x Firewall v1.1.0 (primary), Cisco Firewall 8.x v4.2.0. Recommendation numbers and mapping in the [CIS coverage review](CIS_BENCHMARK_COVERAGE.md). A CIS recommendation is not a source for a vendor default; defaults still need vendor documentation.
 
@@ -1591,7 +1591,7 @@ These tasks continue numbering after SC-044. Their execution order is governed b
 
 **Priority:** P1 (routing-protocol authentication, REST API, management plane limits), P2 (routing-engine filter completeness, internet-options, console/aux, autoinstall, config encryption), P3 (local log files, ping/echo options, NTP version/boot server).
 
-**Status:** Open (from the 2026-10-05 CIS review). **Progress** Junos 2026-10-05: IS-IS `routing.isis.suppressed_authentication` (no-hello/csnp/psnp-authentication, loose-authentication-check), `routing.rip.authentication` (documented default disabled) and `rip.cleartext_authentication`, `routing.ospf3.authentication` (no ipsec-sa; RFC 5340), `routing.bfd.authentication` (documented default disabled) and `bfd.loose_authentication`, `management.unrestricted_rest` (no allowed-sources) and `management.rest_explorer`. Open: LDP/MSDP/RSVP (no vendor default statement found), GTSM, remaining P2/P3 items.
+**Status:** Mostly implemented 2026-10-05; see "Implementation status" in the [CIS coverage review](CIS_BENCHMARK_COVERAGE.md) for done and remaining items (from the 2026-10-05 CIS review). **Progress** Junos 2026-10-05: IS-IS `routing.isis.suppressed_authentication` (no-hello/csnp/psnp-authentication, loose-authentication-check), `routing.rip.authentication` (documented default disabled) and `rip.cleartext_authentication`, `routing.ospf3.authentication` (no ipsec-sa; RFC 5340), `routing.bfd.authentication` (documented default disabled) and `bfd.loose_authentication`, `management.unrestricted_rest` (no allowed-sources) and `management.rest_explorer`. Open: LDP/MSDP/RSVP (no vendor default statement found), GTSM, remaining P2/P3 items.
 
 **Source of Truth:** CIS Juniper OS v2.1.0. Recommendation numbers and mapping in the [CIS coverage review](CIS_BENCHMARK_COVERAGE.md). A CIS recommendation is not a source for a vendor default; defaults still need vendor documentation.
 
@@ -1604,7 +1604,7 @@ These tasks continue numbering after SC-044. Their execution order is governed b
 
 **Priority:** P2 (enable secret, AES-GCM secret encryption, syslog TLS), P3 (DNS, management VRF).
 
-**Status:** Open (from the 2026-10-05 CIS review).
+**Status:** Mostly implemented 2026-10-05; see "Implementation status" in the [CIS coverage review](CIS_BENCHMARK_COVERAGE.md) for done and remaining items (from the 2026-10-05 CIS review).
 
 **Source of Truth:** CIS Arista EOS v1.0.0. Recommendation numbers and mapping in the [CIS coverage review](CIS_BENCHMARK_COVERAGE.md). A CIS recommendation is not a source for a vendor default; defaults still need vendor documentation.
 
@@ -1617,7 +1617,7 @@ These tasks continue numbering after SC-044. Their execution order is governed b
 
 **Priority:** P2 (remote-auth fallback, RADIUS authentication-only, remote-user partition/terminal access, SSH MAC/KEX), P3 (banner, tmsh/console idle timeouts, ETag inode, access-log restriction).
 
-**Status:** Open (from the 2026-10-05 CIS review).
+**Status:** Mostly implemented 2026-10-05; see "Implementation status" in the [CIS coverage review](CIS_BENCHMARK_COVERAGE.md) for done and remaining items (from the 2026-10-05 CIS review).
 
 **Source of Truth:** CIS F5 Networks v1.0.0 (archived). Recommendation numbers and mapping in the [CIS coverage review](CIS_BENCHMARK_COVERAGE.md). A CIS recommendation is not a source for a vendor default; defaults still need vendor documentation.
 
@@ -1630,7 +1630,7 @@ These tasks continue numbering after SC-044. Their execution order is governed b
 
 **Priority:** P1 (update-server identity verification), P2 (management certificate, User-ID scope, application/trusted-IP rules, decryption, DNS sinkhole, URL/data filtering, credential submission), P3 (traps, logging, password profiles, HA monitoring, update schedules, WildFire, inline cloud features).
 
-**Status:** Open (from the 2026-10-05 CIS review). **Progress** PAN-OS 2026-10-05: `paloalto.panos.update.server_unverified` (High; explicit `server-verification no`; absence ungraded because no vendor default was found).
+**Status:** Mostly implemented 2026-10-05; see "Implementation status" in the [CIS coverage review](CIS_BENCHMARK_COVERAGE.md) for done and remaining items (from the 2026-10-05 CIS review). **Progress** PAN-OS 2026-10-05: `paloalto.panos.update.server_unverified` (High; explicit `server-verification no`; absence ungraded because no vendor default was found).
 
 **Source of Truth:** CIS Palo Alto Firewall 11 v1.2.0 (primary), 10 v1.3.0. Recommendation numbers and mapping in the [CIS coverage review](CIS_BENCHMARK_COVERAGE.md). A CIS recommendation is not a source for a vendor default; defaults still need vendor documentation.
 

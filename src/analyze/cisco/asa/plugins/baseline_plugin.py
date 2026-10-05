@@ -833,6 +833,138 @@ class PluginASABaseline(BasePlugin):
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
+    def check_cis_follow_ups(self, parser: BaseDeviceParser) -> None:
+        """SC-057: CIS ASA follow-ups (authorization, routing authentication, untrusted interfaces, hygiene)."""
+        asa = self._asa(parser)
+        blocks = asa.get_top_level_blocks()
+        top = [" ".join(header.text.split()).lower() for header, _ in blocks]
+
+        def has(*prefixes: str) -> bool:
+            return any(line.startswith(prefix) for line in top for prefix in prefixes)
+
+        # Authorization when management authentication uses a remote server group.
+        remote_auth = [line for line in top if re.fullmatch(r"aaa authentication (ssh|telnet|http|enable|serial) console (\S+).*", line)
+                       and line.split()[4] != "local"]
+        if remote_auth:
+            missing = [label for label, prefix in (("command authorization", "aaa authorization command"),
+                                                   ("exec authorization", "aaa authorization exec"))
+                       if not has(prefix)]
+            if missing:
+                self.add_issue(self._finding(
+                    parser, "cisco.asa.aaa.management_authorization",
+                    "Management authorization is not configured",
+                    f"Management logins authenticate against a server group, but {' and '.join(missing)} is not configured.",
+                    "Every authenticated administrator receives the privilege level configured locally instead of per-user, centrally controlled rights.",
+                    "Configure 'aaa authorization command <group> LOCAL' and 'aaa authorization exec authentication-server' with appropriate server-side roles.",
+                    Severity.MEDIUM, ("aaa authorization command/exec absent",),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
+                ))
+
+        # Routing protocol authentication.
+        interfaces = {header.text.split()[1]: children for header, children in blocks
+                      if header.text.lower().startswith("interface ") and len(header.text.split()) > 1}
+        any_child = lambda pattern: any(re.search(pattern, child, re.IGNORECASE) for children in interfaces.values() for child in children)
+        routing = []
+        for header, children in blocks:
+            text = header.text.lower()
+            if text.startswith("router ospf ") and not any_child(r"^ospf authentication") and not any(
+                    re.search(r"^area \S+ authentication", c, re.IGNORECASE) for c in children):
+                routing.append(("ospf", header))
+            elif text.startswith("router eigrp ") and not any_child(r"^authentication (mode|key) eigrp"):
+                routing.append(("eigrp", header))
+            elif text.startswith("router rip") and not any_child(r"^rip authentication mode md5"):
+                routing.append(("rip", header))
+            elif text.startswith("router bgp "):
+                neighbors = {c.split()[1] for c in children if re.match(r"neighbor \S+ remote-as ", c, re.IGNORECASE)}
+                secured = {c.split()[1] for c in children if re.match(r"neighbor \S+ password ", c, re.IGNORECASE)}
+                if neighbors - secured:
+                    routing.append(("bgp", header))
+        for protocol, header in routing:
+            self.add_issue(self._finding(
+                parser, f"cisco.asa.routing.{protocol}.authentication",
+                f"{protocol.upper()} on the ASA runs without authentication",
+                (f"'{header.text}' is configured, but no {protocol.upper()} authentication was found "
+                 + ("for at least one neighbor." if protocol == "bgp" else "on any interface or area.")),
+                "A device that can reach the routing session can inject or withdraw routes on the firewall.",
+                "Configure MD5 or key-chain authentication for the routing protocol on all neighbors (CIS ASA 9.x 2.1.x).",
+                Severity.HIGH, (header,),
+                basis=FindingBasis.REQUIRED_SETTING_MISSING,
+            ))
+
+        # Untrusted (assessed external) interfaces.
+        context = parser.assessment_context
+        external = []
+        for name, children in interfaces.items():
+            nameif = next((c.split()[1] for c in children if c.lower().startswith("nameif ") and len(c.split()) > 1), "")
+            roles = {context.role_for_interface(name), context.role_for_interface(nameif)} if nameif else {context.role_for_interface(name)}
+            if "external" in roles and nameif:
+                level = next((c.split()[1] for c in children if c.lower().startswith("security-level ")), None)
+                external.append((name, nameif, level))
+        for name, nameif, level in external:
+            if level not in (None, "0"):
+                self.add_issue(self._finding(
+                    parser, "cisco.asa.interface.external_security_level",
+                    "External interface has a non-zero security level",
+                    f"Interface {name} (nameif {nameif}) is classified external but has security-level {level}.",
+                    "A higher security level can allow traffic from the Internet-facing interface to lower-level interfaces without an explicit ACL.",
+                    "Set 'security-level 0' on Internet-facing interfaces (CIS ASA 9.x 3.8).",
+                    Severity.LOW, (f"interface {name} / security-level {level}",),
+                    basis=FindingBasis.EXPLICIT_VALUE,
+                ))
+            if any(line == f"dhcpd enable {nameif.lower()}" for line in top):
+                self.add_issue(self._finding(
+                    parser, "cisco.asa.services.external_dhcp_server",
+                    "DHCP server is enabled on an external interface",
+                    f"'dhcpd enable {nameif}' serves DHCP on an interface classified external.",
+                    "Hosts on the untrusted network can obtain leases and probe the firewall's DHCP service.",
+                    "Remove 'dhcpd enable' from untrusted interfaces (CIS ASA 9.x 2.4).",
+                    Severity.MEDIUM, (f"dhcpd enable {nameif}",),
+                    basis=FindingBasis.EXPLICIT_VALUE,
+                ))
+        if external and has("no dns-guard"):
+            self.add_issue(self._finding(
+                parser, "cisco.asa.services.dns_guard_disabled",
+                "DNS Guard is disabled",
+                "'no dns-guard' is configured on a firewall with external interfaces.",
+                "Without DNS Guard the ASA keeps DNS connections open for multiple responses, which helps DNS spoofing and cache-poisoning attempts.",
+                "Remove 'no dns-guard' (CIS ASA 9.x 2.3).",
+                Severity.LOW, ("no dns-guard",),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+
+        # Lower-priority hygiene, reported once.
+        size = next((int(line.split()[2]) for line in top if re.fullmatch(r"logging buffer-size \d+", line)), 0)
+        unused = [name for name, children in interfaces.items()
+                  if not any(c.lower().startswith("nameif ") for c in children)
+                  and "shutdown" not in [c.lower() for c in children]
+                  and "." not in name and not name.lower().startswith("management")]
+        items = [
+            ("1.2.1", "domain-name", not has("domain-name ")),
+            ("1.2.4", f"shut down unused interfaces ({', '.join(unused[:5])})", bool(unused)),
+            ("1.5.1", "banner asdm", not has("banner asdm")),
+            ("1.5.2", "banner exec", not has("banner exec")),
+            ("1.5.3", "banner login", not has("banner login")),
+            ("1.5.4", "banner motd", not has("banner motd")),
+            ("1.10.2", "disable logging to monitor", has("logging monitor")),
+            ("1.10.4", "logging device-id", not has("logging device-id")),
+            ("1.10.5", "logging history (level 5 or higher)", not has("logging history")),
+            ("1.10.6", "logging timestamp", not has("logging timestamp")),
+            ("1.10.7", "logging buffer-size >= 524288", size < 524288),
+            ("1.10.8", "logging buffered (level 3 or higher)", not has("logging buffered")),
+            ("1.11.4", "snmp-server enable traps", has("snmp-server host") and not has("snmp-server enable traps")),
+        ]
+        missing = [f"CIS {ref}: {label}" for ref, label, gap in items if gap]
+        if missing:
+            self.add_issue(self._finding(
+                parser, "cisco.asa.hardening.cis_hygiene",
+                "CIS hardening items not configured",
+                f"{len(missing)} lower-priority CIS hardening item(s) are not configured: " + "; ".join(missing) + ".",
+                "Each item is minor on its own; together they reduce accountability, log quality and attack-surface hygiene.",
+                "Review the listed items against the organization's baseline and configure those that apply.",
+                Severity.INFORMATIONAL, (f"{len(missing)} CIS hygiene item(s) absent; see observation",),
+                basis=FindingBasis.REQUIRED_SETTING_MISSING,
+            ))
+
     def check_password_recovery(self, parser: BaseDeviceParser) -> None:
         """SC-057 (CIS ASA 9.x 1.1.4): password recovery through ROMMON."""
         enabled, evidence = self._asa(parser).get_password_recovery()
@@ -894,6 +1026,7 @@ class PluginASABaseline(BasePlugin):
         self.check_service_key_storage(parser)
         self.check_url_credentials_and_updates(parser)
         self.check_password_recovery(parser)
+        self.check_cis_follow_ups(parser)
         self.check_ike_aggressive_mode(parser)
         self.check_aaa_transport(parser)
         self.check_http_management(parser)

@@ -23,6 +23,10 @@ RULE_LITERAL = re.compile(
 )
 # Rule IDs assembled with f-strings in plugins, expanded to their known forms.
 DYNAMIC_RULE_IDS = (
+    "cisco.asa.routing.ospf.authentication",
+    "cisco.asa.routing.eigrp.authentication",
+    "cisco.asa.routing.rip.authentication",
+    "cisco.asa.routing.bgp.authentication",
     "cisco.ios.console.session_timeout",
     "cisco.ios.tty.session_timeout",
     "cisco.ios.credentials.enable_storage",

@@ -59,6 +59,7 @@
       },
       "expected_rule_ids": [
         "cisco.ios.aaa.new_model",
+        "cisco.ios.authentication.login_lockout",
         "cisco.ios.auxiliary.authentication",
         "cisco.ios.auxiliary.enabled",
         "cisco.ios.auxiliary.session_timeout",
@@ -77,6 +78,7 @@
         "cisco.ios.crypto.legacy_ipsec",
         "cisco.ios.discovery.cdp.external",
         "cisco.ios.fhrp.authentication",
+        "cisco.ios.hardening.cis_hygiene",
         "cisco.ios.http.access_restriction",
         "cisco.ios.http.cleartext_service",
         "cisco.ios.interface.ip_hardening",
@@ -107,7 +109,7 @@
         "cisco.ios.vty.session_timeout",
         "cisco.ios.vty.telnet"
       ],
-      "expected_finding_count": 48
+      "expected_finding_count": 50
     },
     {
       "name": "cisco-ios-secure",
@@ -130,9 +132,11 @@
       },
       "expected_rule_ids": [
         "cisco.ios.aaa.new_model",
+        "cisco.ios.authentication.login_lockout",
         "cisco.ios.banner.login",
         "cisco.ios.configuration.change_logging",
         "cisco.ios.control_plane.copp",
+        "cisco.ios.hardening.cis_hygiene",
         "cisco.ios.http.cleartext_service",
         "cisco.ios.http.unrestricted_sources",
         "cisco.ios.ip.source_route",
@@ -154,7 +158,7 @@
         "cisco.ios.vty.authentication",
         "cisco.iosxe.crypto.legacy_ikev2"
       ],
-      "expected_finding_count": 24
+      "expected_finding_count": 26
     },
     {
       "name": "cisco-iosxe-secure",
@@ -184,6 +188,7 @@
         "cisco.asa.crypto.legacy_transform",
         "cisco.asa.crypto.legacy_vpn",
         "cisco.asa.failover.authentication",
+        "cisco.asa.hardening.cis_hygiene",
         "cisco.asa.interface.icmp_unrestricted",
         "cisco.asa.interface.reverse_path",
         "cisco.asa.logging.missing",
@@ -199,7 +204,7 @@
         "cisco.asa.vpn.ike_aggressive_mode",
         "cisco.asa.vpn.sysopt_permit_vpn"
       ],
-      "expected_finding_count": 23
+      "expected_finding_count": 24
     },
     {
       "name": "cisco-asa-secure",
@@ -234,6 +239,7 @@
         "fortinet.fortios.crypto.strong_crypto",
         "fortinet.fortios.dos.wan_policy_missing",
         "fortinet.fortios.ha.heartbeat_protection",
+        "fortinet.fortios.hardening.cis_hygiene",
         "fortinet.fortios.logging.missing",
         "fortinet.fortios.management.auxiliary_services",
         "fortinet.fortios.management.default_admin_ports",
@@ -251,7 +257,7 @@
         "fortinet.fortios.tls.minimum_version",
         "fortinet.fortios.vpn.ike_aggressive_mode"
       ],
-      "expected_finding_count": 37
+      "expected_finding_count": 38
     },
     {
       "name": "fortios-secure",
@@ -272,8 +278,8 @@
         "policy_version": "regression-v1",
         "protected_aaa_profiles": ["root:LEGACY-PROTECTED"]
       },
-      "expected_rule_ids": ["fortinet.fortios.admin.local_login_unrestricted", "fortinet.fortios.banner.login_disabled", "fortinet.fortios.banner.post_login_disabled", "fortinet.fortios.cli.audit_disabled", "fortinet.fortios.credentials.private_data_storage", "fortinet.fortios.logging.remote_cleartext", "fortinet.fortios.management.default_admin_ports"],
-      "expected_finding_count": 7
+      "expected_rule_ids": ["fortinet.fortios.admin.local_login_unrestricted", "fortinet.fortios.banner.login_disabled", "fortinet.fortios.banner.post_login_disabled", "fortinet.fortios.cli.audit_disabled", "fortinet.fortios.credentials.private_data_storage", "fortinet.fortios.hardening.cis_hygiene", "fortinet.fortios.logging.remote_cleartext", "fortinet.fortios.management.default_admin_ports"],
+      "expected_finding_count": 8
     },
     {
       "name": "junos-vulnerable",
@@ -296,6 +302,7 @@
         "juniper.junos.discovery.lldp.external",
         "juniper.junos.fhrp.authentication",
         "juniper.junos.filter.broad_accept",
+        "juniper.junos.hardening.cis_hygiene",
         "juniper.junos.host_inbound.management_exposed",
         "juniper.junos.interfaces.redirects",
         "juniper.junos.logging.remote_destination",
@@ -317,7 +324,7 @@
         "juniper.junos.ssh.root_login",
         "juniper.junos.ssh.weak_ciphers"
       ],
-      "expected_finding_count": 32
+      "expected_finding_count": 33
     },
     {
       "name": "junos-secure",
@@ -399,21 +406,23 @@
       "name": "cisco-ios-syntax-variants",
       "device": "IOS_ROUTER",
       "input": "cisco_ios/syntax_variants.conf",
-      "expected_rule_ids": ["cisco.ios.logging.remote_cleartext", "cisco.ios.services.default_enabled", "cisco.ios.services.dns_lookup", "cisco.ios.services.tcp_keepalives"],
-      "expected_finding_count": 4
+      "expected_rule_ids": ["cisco.ios.authentication.login_lockout", "cisco.ios.hardening.cis_hygiene", "cisco.ios.logging.remote_cleartext", "cisco.ios.services.default_enabled", "cisco.ios.services.dns_lookup", "cisco.ios.services.tcp_keepalives"],
+      "expected_finding_count": 6
     },
     {
       "name": "cisco-iosxe-syntax-variants",
       "device": "IOS_XE",
       "input": "cisco_iosxe/syntax_variants.conf",
-      "expected_rule_ids": ["cisco.ios.logging.remote_cleartext", "cisco.ios.ntp.weak_algorithm", "cisco.ios.services.default_enabled", "cisco.ios.services.dns_lookup", "cisco.ios.services.tcp_keepalives", "cisco.ios.ssh.weak_algorithms"],
-      "expected_finding_count": 6
+      "expected_rule_ids": ["cisco.ios.authentication.login_lockout", "cisco.ios.hardening.cis_hygiene", "cisco.ios.logging.remote_cleartext", "cisco.ios.ntp.weak_algorithm", "cisco.ios.services.default_enabled", "cisco.ios.services.dns_lookup", "cisco.ios.services.tcp_keepalives", "cisco.ios.ssh.weak_algorithms"],
+      "expected_finding_count": 8
     },
     {
       "name": "cisco-asa-syntax-variants",
       "device": "ASA",
       "input": "cisco_asa/syntax_variants.conf",
       "expected_rule_ids": [
+        "cisco.asa.aaa.management_authorization",
+        "cisco.asa.hardening.cis_hygiene",
         "cisco.asa.interface.icmp_unrestricted",
         "cisco.asa.interface.icmp_unrestricted",
         "cisco.asa.interface.reverse_path",
@@ -421,7 +430,7 @@
         "cisco.asa.ssh.weak_algorithms",
         "cisco.asa.tls.weak_cipher"
       ],
-      "expected_finding_count": 6
+      "expected_finding_count": 8
     },
     {
       "name": "fortios-syntax-variants",
@@ -432,20 +441,22 @@
         "fortinet.fortios.banner.login_disabled",
         "fortinet.fortios.cli.audit_disabled",
         "fortinet.fortios.dos.wan_policy_missing",
+        "fortinet.fortios.hardening.cis_hygiene",
         "fortinet.fortios.https.management_certificate",
         "fortinet.fortios.logging.remote_cleartext",
         "fortinet.fortios.policy.disabled_permissive_rule"
       ],
-      "expected_finding_count": 7
+      "expected_finding_count": 8
     },
     {
       "name": "junos-hierarchical-variant",
       "device": "JUNOS",
       "input": "junos/hierarchical_variant.conf",
       "expected_rule_ids": [
+        "juniper.junos.hardening.cis_hygiene",
         "juniper.junos.logging.event_coverage"
       ],
-      "expected_finding_count": 1
+      "expected_finding_count": 2
     },
     {
       "name": "screenos-syntax-variants",
@@ -473,7 +484,10 @@
         "paloalto.panos.credentials.password_history_disabled",
         "paloalto.panos.credentials.username_inclusion_allowed",
         "paloalto.panos.dns.servers",
+        "paloalto.panos.hardening.cis_hygiene",
+        "paloalto.panos.logging.system_forwarding",
         "paloalto.panos.management.http",
+        "paloalto.panos.management.tls_profile_missing",
         "paloalto.panos.management.unrestricted_secure_service",
         "paloalto.panos.ntp.servers",
         "paloalto.panos.policy.broad_allow",
@@ -482,11 +496,9 @@
         "paloalto.panos.policy.security_profiles",
         "paloalto.panos.policy.session_logging",
         "paloalto.panos.snmp.secure_user_missing",
-        "paloalto.panos.management.tls_profile_missing",
-        "paloalto.panos.updates.threat_content",
-        "paloalto.panos.logging.system_forwarding"
+        "paloalto.panos.updates.threat_content"
       ],
-      "expected_finding_count": 23
+      "expected_finding_count": 24
     },
     {
       "name": "panos-secure",
@@ -557,23 +569,24 @@
       "device": "ARISTA_EOS",
       "input": "arista_eos/vulnerable.conf",
       "expected_rule_ids": [
-        "arista.eos.authentication.centralized",
-        "arista.eos.authentication.lockout_disabled",
         "arista.eos.admin.idle_timeout",
         "arista.eos.admin.login_banner",
+        "arista.eos.authentication.centralized",
+        "arista.eos.authentication.lockout_disabled",
+        "arista.eos.credentials.local_storage",
         "arista.eos.eapi.https_disabled",
         "arista.eos.eapi.insecure_http",
         "arista.eos.eapi.source_restriction",
-        "arista.eos.ssh.empty_passwords",
-        "arista.eos.ssh.weak_algorithms",
-        "arista.eos.ssh.source_restriction",
-        "arista.eos.credentials.local_storage",
+        "arista.eos.hardening.cis_hygiene",
         "arista.eos.logging.remote_destination",
         "arista.eos.ntp.servers",
         "arista.eos.snmp.default_community",
-        "arista.eos.snmp.secure_user_missing"
+        "arista.eos.snmp.secure_user_missing",
+        "arista.eos.ssh.empty_passwords",
+        "arista.eos.ssh.source_restriction",
+        "arista.eos.ssh.weak_algorithms"
       ],
-      "expected_finding_count": 15
+      "expected_finding_count": 16
     },
     {
       "name": "arista-eos-secure",
@@ -586,8 +599,8 @@
       "name": "arista-eos-inactive-eapi",
       "device": "ARISTA_EOS",
       "input": "arista_eos/inactive_eapi.conf",
-      "expected_rule_ids": [],
-      "expected_finding_count": 0
+      "expected_rule_ids": ["arista.eos.hardening.cis_hygiene"],
+      "expected_finding_count": 1
     },
     {
       "name": "sonicos-vulnerable",

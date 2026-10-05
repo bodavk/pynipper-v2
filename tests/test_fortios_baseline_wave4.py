@@ -22,6 +22,7 @@ set hostname edge-fw
 set admin-maintainer disable
 set pre-login-banner enable
 set post-login-banner enable
+set log-single-cpu-high enable
 set admin-sport 8443
 set admin-ssh-port 2222
 set admin-restrict-local enable
@@ -132,6 +133,11 @@ set action block
 set threshold 2000
 next
 end
+next
+end
+config system automation-action
+edit "Quarantine FortiClient EMS Endpoint"
+set action-type quarantine-forticlient
 next
 end
 '''

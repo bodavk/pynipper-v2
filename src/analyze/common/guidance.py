@@ -203,7 +203,7 @@ _CATALOGUE = (
         "Check whether TCP 4786 is blocked towards this device and whether Smart Install is "
         "still used for deployment.",
     )),
-    (r"^auth\.(root_login_enabled|user_bash_shell|remote_default_admin|nopassword_remote_login)$", _G(
+    (r"^auth\.(root_login_enabled|user_bash_shell|remote_default_admin|nopassword_remote_login|remote_fallback_local|remote_console_access)$", _G(
         "privileged-access", "authorization",
         "An account has more direct or broader privilege than needed: the root account can log in, an administrator gets a full Linux shell, or every remotely authenticated user becomes an administrator.",
         "An attacker who guesses or phishes one password, even for an ordinary directory account, gets full control of the device and its operating system.",
@@ -317,7 +317,7 @@ _CATALOGUE = (
         "Check whether the authentication traffic runs over a separately protected path, and "
         "enable certificate and server-identity validation.",
     )),
-    (r"^(admin\.(role_\w+|conflicting_roles)|authorization\.\w+|vty\.authorization|authentication\.login_class_binding|password\.admin_scope)$", _G(
+    (r"^(admin\.(role_\w+|conflicting_roles)|authorization\.\w+|vty\.authorization|aaa\.management_authorization|authentication\.login_class_binding|password\.admin_scope)$", _G(
         "authorization", "authorization",
         "Administrator accounts have more privilege than they need, or their privilege level "
         "cannot be determined because it points to an undefined role.",
@@ -600,6 +600,41 @@ _CATALOGUE = (
         "A scanner finds the login page on the usual port, reads the device name and tries passwords against the well-known 'admin' account.",
         "These settings do not open access by themselves; they reduce the effort of reconnaissance and guessing. Source restrictions and strong authentication matter more.",
         "Check whether source restrictions and MFA are in place and whether the default names or ports are needed.",
+    )),
+    (r"^(interface\.external_security_level|services\.(external_dhcp_server|dns_guard_disabled))$", _G(
+        "untrusted-interface-hardening", "control-plane",
+        "An interface facing an untrusted network is configured more permissively than recommended.",
+        "A host on the Internet side probes a service the firewall offers on that interface, or benefits from relaxed defaults to reach inside networks.",
+        "Untrusted interfaces should expose as few device services as possible and rely on explicit policy rather than trust levels.",
+        "Confirm the interface roles in the assessment policy and remove the service or setting from untrusted interfaces.",
+    )),
+    (r"^(policy\.(intrazone_allow|antivirus_detection_weakened)|updates\.schedule_disabled)$", _G(
+        "inspection-weakened", "threat-inspection",
+        "A setting explicitly weakens inspection or lets traffic bypass policy.",
+        "Malware or lateral movement passes through because signatures are stale, a detection engine is off, or traffic inside a zone is never inspected.",
+        "These settings are explicit choices that reduce the protection the firewall would otherwise apply.",
+        "Confirm whether the setting was intentional and documented; otherwise restore the protective value.",
+    )),
+    (r"^(services\.autoinstallation|routing\.router_discovery)$", _G(
+        "bootstrap-discovery", "control-plane",
+        "A bootstrap or discovery feature that trusts unauthenticated network input is enabled.",
+        "An attacker on an attached network answers the device's autoinstall or router-discovery requests and supplies a configuration or a route.",
+        "These features are useful during deployment or on trusted segments but accept unauthenticated input.",
+        "Confirm whether the feature is still needed and remove it after deployment.",
+    )),
+    (r"^user_id\.untrusted_zone$", _G(
+        "user-id-untrusted", "authentication",
+        "User identification is enabled on a zone that faces an untrusted network.",
+        "An attacker on the untrusted network answers User-ID probes to capture the probing account's credentials or injects misleading user mappings.",
+        "User-ID should only map users on internal networks; probing and mapping on untrusted zones exposes the service account and policy decisions.",
+        "Check the zone's interface roles and the include/exclude network lists of the User-ID configuration.",
+    )),
+    (r"^hardening\.cis_hygiene$", _G(
+        "cis-hygiene", "platform",
+        "Several lower-priority hardening settings from the CIS benchmark are not configured.",
+        "During an investigation, missing timestamps, source interfaces or login logging make it harder to reconstruct what an attacker did.",
+        "These items are listed together because each one is minor; they improve accountability, log quality and resilience rather than closing a direct attack path.",
+        "Compare the listed items with the organization's configuration baseline and decide which apply to this device.",
     )),
     (r"^platform\.password_recovery$", _G(
         "password-recovery", "platform",

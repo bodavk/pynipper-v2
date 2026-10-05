@@ -1228,6 +1228,82 @@ class PluginJunOSBaseline(BasePlugin):
                 basis=FindingBasis.REQUIRED_SETTING_MISSING,
             ))
 
+    def check_cis_follow_ups(self, parser: BaseDeviceParser) -> None:
+        """SC-058: CIS Juniper OS follow-ups (autoinstallation, router discovery, hygiene)."""
+        junos = self._junos(parser)
+        if junos.parse_error or junos.get_version() == "?" or junos.has_unexpanded_inheritance():
+            return
+        paths = [statement.path for statement in junos.statements if statement.active]
+
+        def has(*prefix: str) -> bool:
+            return any(path[:len(prefix)] == prefix for path in paths)
+
+        def first(*prefix: str):
+            return next((s.evidence for s in junos.statements if s.active and s.path[:len(prefix)] == prefix), None)
+
+        for prefix, rule, title, impact, recommendation, severity in (
+            (("system", "autoinstallation"), "juniper.junos.services.autoinstallation",
+             "Autoinstallation is configured",
+             "The device can fetch a configuration from the network at boot, which an attacker on that network could supply.",
+             "Delete 'system autoinstallation' once the device is deployed (CIS Juniper OS 6.13).", Severity.LOW),
+            (("protocols", "router-discovery"), "juniper.junos.routing.router_discovery",
+             "ICMP router discovery is enabled",
+             "Hosts that trust router advertisements can be redirected by spoofed advertisements.",
+             "Remove 'protocols router-discovery' unless required (CIS Juniper OS 4.10.1).", Severity.LOW),
+        ):
+            evidence = first(*prefix)
+            if evidence is not None:
+                self.add_issue(self._finding(
+                    parser, rule, title, f"'{' '.join(prefix)}' is configured.", impact, recommendation,
+                    severity, (evidence,), (JUNIPER_ACCESS_GUIDE,), basis=FindingBasis.EXPLICIT_VALUE,
+                ))
+        ssh = has("system", "services", "ssh")
+        rest = has("system", "services", "rest")
+        https_web = has("system", "services", "web-management", "https")
+        radius = has("system", "radius-server")
+        aaa_servers = radius or has("system", "tacplus-server")
+        items = [
+            ("6.4.1", "diag-port-authentication", not has("system", "diag-port-authentication")),
+            ("6.5.1", "internet-options icmpv4-rate-limit", not has("system", "internet-options", "icmpv4-rate-limit")),
+            ("6.5.2", "internet-options icmpv6-rate-limit", not has("system", "internet-options", "icmpv6-rate-limit")),
+            ("6.5.3", "internet-options no-source-quench", not has("system", "internet-options", "no-source-quench")),
+            ("6.5.4", "internet-options tcp-drop-synfin-set", not has("system", "internet-options", "tcp-drop-synfin-set")),
+            ("6.5.5", "internet-options no-tcp-reset drop-all-tcp", not has("system", "internet-options", "no-tcp-reset")),
+            ("6.7.4", "NTP version 4 on servers", has("system", "ntp", "server") and not any(
+                p[:3] == ("system", "ntp", "server") and "version" in p for p in paths)),
+            ("6.8.4", "RADIUS password-protocol mschap-v2", radius and not has("system", "radius-options", "password-protocol")),
+            ("6.8.5", "AAA server source-address", aaa_servers and not any(
+                p[:2] == ("system", "radius-server") and "source-address" in p or p[:2] == ("system", "tacplus-server") and "source-address" in p
+                for p in paths)),
+            ("6.10.1.3", "SSH connection-limit", ssh and not has("system", "services", "ssh", "connection-limit")),
+            ("6.10.1.4", "SSH rate-limit", ssh and not has("system", "services", "ssh", "rate-limit")),
+            ("6.10.2.3", "web-management HTTPS PKI certificate", https_web and not any(
+                p[:4] == ("system", "services", "web-management", "https") and "pki-local-certificate" in p for p in paths)),
+            ("6.10.5.4", "REST HTTPS mutual-authentication", rest and has("system", "services", "rest", "https")
+             and not has("system", "services", "rest", "https", "mutual-authentication")),
+            ("6.10.5.5", "REST HTTPS cipher-list", rest and has("system", "services", "rest", "https")
+             and not has("system", "services", "rest", "https", "cipher-list")),
+            ("6.10.5.9", "REST connection-limit", rest and not has("system", "services", "rest", "control", "connection-limit")),
+            ("6.11.1", "auxiliary port disabled", not has("system", "ports", "auxiliary", "disable")),
+            ("6.11.5", "console log-out-on-disconnect", not has("system", "ports", "console", "log-out-on-disconnect")),
+            ("6.12.5", "syslog file for interactive-commands", not any(
+                p[:3] == ("system", "syslog", "file") and "interactive-commands" in p for p in paths)),
+            ("6.15", "no-multicast-echo", not has("system", "no-multicast-echo")),
+            ("6.16", "no-ping-record-route", not has("system", "no-ping-record-route")),
+            ("6.17", "no-ping-time-stamp", not has("system", "no-ping-time-stamp")),
+        ]
+        missing = [f"CIS {ref}: {label}" for ref, label, gap in items if gap]
+        if missing:
+            self.add_issue(self._finding(
+                parser, "juniper.junos.hardening.cis_hygiene",
+                "CIS hardening items not configured",
+                f"{len(missing)} lower-priority CIS hardening item(s) are not configured: " + "; ".join(missing) + ".",
+                "Each item is minor on its own; together they affect brute-force resistance, log quality and attack-surface hygiene.",
+                "Review the listed items against the organization's baseline and configure those that apply.",
+                Severity.INFORMATIONAL, (f"{len(missing)} CIS hygiene item(s) absent; see observation",),
+                (JUNIPER_ACCESS_GUIDE,), basis=FindingBasis.REQUIRED_SETTING_MISSING,
+            ))
+
     def check_discovery(self, parser: BaseDeviceParser) -> None:
         junos = self._junos(parser)
         if junos.parse_error or junos.get_version() == "?":
@@ -1557,4 +1633,5 @@ class PluginJunOSBaseline(BasePlugin):
         self.check_host_inbound(parser)
         self.check_host_inbound_routing(parser)
         self.check_rip_and_ospf3_authentication(parser)
+        self.check_cis_follow_ups(parser)
         self.check_idp_actions(parser)

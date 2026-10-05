@@ -794,6 +794,60 @@ class PluginF5BIGIPChecks(BasePlugin):
                 references=(USER_LATEST, LOCKDOWN_SETTINGS),
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
+        include = parser.get_setting("sys sshd", "include")
+        if include and isinstance(include.value, str):
+            weak = []
+            for directive, bad in (("ciphers", ("cbc", "3des", "arcfour", "blowfish")),
+                                   ("macs", ("md5", "hmac-sha1", "umac-64")),
+                                   ("kexalgorithms", ("group1-sha1", "group14-sha1", "group-exchange-sha1"))):
+                match = re.search(directive + r"\s+(\S+)", include.value, re.IGNORECASE)
+                if match:
+                    weak += [alg for alg in match.group(1).split(",") if any(b in alg.lower() for b in bad)]
+            if weak:
+                self.add_issue(Finding(
+                    rule_id="f5.bigip.ssh.weak_algorithms",
+                    device=parser.device_type,
+                    title="SSH allows weak algorithms",
+                    observation=f"The 'sys sshd include' directives allow: {', '.join(weak)}.",
+                    impact="Legacy SSH algorithms weaken confidentiality, integrity or key exchange of administrative sessions.",
+                    exploitability="Requires a position on the path to the management interface.",
+                    recommendation="Restrict Ciphers, MACs and KexAlgorithms to modern algorithms (CIS F5 4.5–4.7).",
+                    severity=Severity.MEDIUM,
+                    evidence=(include.evidence,),
+                    references=(LOCKDOWN_SETTINGS,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
+                ))
+        source = parser.get_setting("auth source", "type")
+        fallback = parser.get_setting("auth source", "fallback")
+        if source and source.value not in {None, "local"} and fallback and fallback.value == "true":
+            self.add_issue(Finding(
+                rule_id="f5.bigip.auth.remote_fallback_local",
+                device=parser.device_type,
+                title="Remote authentication falls back to local accounts",
+                observation=f"The auth source is '{source.value}' with 'fallback true', so local accounts are accepted when the remote servers are unreachable.",
+                impact="Local accounts sit outside the central password, MFA and offboarding controls; an attacker who can make the AAA servers unreachable can force local logins.",
+                exploitability="Requires a valid local credential and the ability to disrupt reachability of the remote authentication servers.",
+                recommendation="Set 'fallback false' unless a documented break-glass procedure requires it (CIS F5 2.3); protect remaining local accounts strongly.",
+                severity=Severity.LOW,
+                evidence=(source.evidence, fallback.evidence),
+                references=(REMOTE_USER,),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+        console = parser.get_setting("auth remote-user", "remote-console-access")
+        if console and console.value not in {None, "disabled"}:
+            self.add_issue(Finding(
+                rule_id="f5.bigip.auth.remote_console_access",
+                device=parser.device_type,
+                title="Remote users get terminal access",
+                observation=f"'auth remote-user remote-console-access {console.value}' gives remotely authenticated users without a specific mapping command-line access.",
+                impact="Any account accepted by the remote directory can open a CLI session on the BIG-IP.",
+                exploitability="Requires a valid directory account.",
+                recommendation="Set 'remote-console-access disabled' and grant terminal access through 'auth remote-role' mappings only (CIS F5 2.6).",
+                severity=Severity.MEDIUM,
+                evidence=(console.evidence,),
+                references=(REMOTE_USER,),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
         role = parser.get_setting("auth remote-user", "default-role")
         if role and role.value == "admin":
             self.add_issue(Finding(

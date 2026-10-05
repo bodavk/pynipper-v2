@@ -19,8 +19,8 @@ _TOKEN = re.compile(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|#[^\r\n]*|[{}]|[^\s
 _VERSION = re.compile(r"(?m)^\s*#\s*TMSH-VERSION:\s*([0-9][A-Za-z0-9._-]*)\s*$", re.I)
 _SAFE_NAME = re.compile(r"[A-Za-z0-9_./:-]+")
 _FIELDS = {
-    "sys sshd": {"login", "allow", "inactivity-timeout"},
-    "sys httpd": {"allow", "redirect-http-to-https", "ssl-protocol", "ssl-ciphersuite"},
+    "sys sshd": {"login", "allow", "inactivity-timeout", "banner", "include"},
+    "sys httpd": {"allow", "redirect-http-to-https", "ssl-protocol", "ssl-ciphersuite", "include"},
     "sys global-settings": {"hostname", "console-inactivity-timeout"},
     "cli global-settings": {"audit", "idle-timeout"},
     "sys syslog": {"remote-servers"},
@@ -604,7 +604,10 @@ class F5BIGIPParser(BaseDeviceParser):
             if name == "hostname":
                 value = (candidate if candidate not in _FIELDS[scope]
                          and re.fullmatch(r"[A-Za-z0-9._-]+", candidate) else None)
-            elif name in {"login", "redirect-http-to-https", "audit", "policy-enforcement"}:
+            elif name == "include":
+                text = candidate.strip('"')
+                value = text[:2000] if text and candidate not in _FIELDS[scope] else None
+            elif name in {"login", "redirect-http-to-https", "audit", "policy-enforcement", "banner"}:
                 value = candidate if candidate in {"enabled", "disabled"} else None
             elif name in {"inactivity-timeout", "console-inactivity-timeout", "idle-timeout",
                           "max-login-failures", "minimum-length", "password-memory"}:

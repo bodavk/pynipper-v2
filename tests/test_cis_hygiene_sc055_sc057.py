@@ -62,3 +62,18 @@ def test_asa_password_recovery(tmp_path, body, basis):
 
 def test_asa_password_recovery_disabled(tmp_path):
     assert not _asa(tmp_path, "no service password-recovery\n")
+
+
+def test_fortios_security_depth(tmp_path):
+    body = ("config system zone\n    edit \"DMZ\"\n        set intrazone allow\n    next\nend\n"
+            "config system autoupdate schedule\n    set status disable\nend\n"
+            "config antivirus settings\n    set grayware disable\nend\n")
+    path = tmp_path / "fgt2.conf"
+    path.write_text("#config-version=FGT60F-7.4.4-FW-build1517-230606:opmode=0:vdom=0:user=admin\n"
+                    "config system global\n    set hostname fw\nend\n" + body, encoding="utf-8")
+    with contextlib.redirect_stdout(io.StringIO()):
+        rules = {f.rule_id: f for f in process_fortios_conf(get_parser("FORTIOS", str(path))).values()}
+    for rule in ("fortinet.fortios.policy.intrazone_allow", "fortinet.fortios.updates.schedule_disabled",
+                 "fortinet.fortios.policy.antivirus_detection_weakened", "fortinet.fortios.hardening.cis_hygiene"):
+        assert rule in rules and guidance_for(rule)
+    assert "CIS 2.1.12" in rules["fortinet.fortios.hardening.cis_hygiene"].observation

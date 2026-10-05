@@ -69,3 +69,13 @@ def test_bfd_authenticated_and_loose(tmp_path):
     loose = auth + "set protocols bgp group EXT neighbor 192.0.2.1 bfd-liveness-detection authentication loose-check\n"
     findings = _rules(tmp_path, loose, "juniper.junos.routing.bfd.loose_authentication")
     assert len(findings) == 1 and guidance_for(findings[0].rule_id)
+
+
+def test_autoinstall_router_discovery_and_hygiene(tmp_path):
+    body = "set system autoinstallation interfaces ge-0/0/0\nset protocols router-discovery interface ge-0/0/0.0\n"
+    for rule in ("juniper.junos.services.autoinstallation", "juniper.junos.routing.router_discovery",
+                 "juniper.junos.hardening.cis_hygiene"):
+        findings = _rules(tmp_path, body, rule)
+        assert findings and guidance_for(rule)
+    hygiene = _rules(tmp_path, body, "juniper.junos.hardening.cis_hygiene")[0]
+    assert "CIS 6.5.3" in hygiene.observation

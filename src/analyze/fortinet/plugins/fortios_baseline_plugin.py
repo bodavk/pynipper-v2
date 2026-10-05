@@ -2192,6 +2192,7 @@ class PluginFortiOSBaseline(BasePlugin):
         self.check_admin_restrict_local(parser)
         self.check_cli_audit_log(parser)
         self.check_cis_management_hygiene(parser)
+        self.check_cis_security_depth(parser)
 
     def check_forticloud_sso(self, parser: BaseDeviceParser) -> None:
         """FortiCloud SSO administrator login on releases affected by FG-IR-26-060 / FG-IR-25-647.
@@ -2420,6 +2421,90 @@ class PluginFortiOSBaseline(BasePlugin):
                 (FORTINET_CLI_AUDIT_LOG_GUIDE, FORTINET_GLOBAL_741_REFERENCE, FORTINET_LOG_44547_REFERENCE,
                  FORTINET_EVENTFILTER_741_REFERENCE),
                 basis=FindingBasis.EXPLICIT_VALUE if explicit else FindingBasis.DOCUMENTED_DEFAULT,
+            ))
+
+    def check_cis_security_depth(self, parser: BaseDeviceParser) -> None:
+        """SC-055 (CIS FortiGate 7.4.x 1.2, 2.1.12, 2.4.8, 2.5.x, 4.2.x, 4.5.2, 5.1.1, v1.1 3.3).
+
+        Only explicit weakening values are findings; feature settings that are simply not
+        configured are listed together in one informational hygiene finding.
+        """
+        fortios = self._fortios(parser)
+        for scope, section, path in fortios.iter_scoped_sections("system zone"):
+            for name, settings in section.items():
+                if isinstance(settings, dict) and self._text(settings.get("intrazone")).lower() == "allow":
+                    self.add_issue(self._finding(
+                        parser, "fortinet.fortios.policy.intrazone_allow",
+                        "Traffic between interfaces of a zone is always allowed",
+                        f"Zone '{name}' in scope '{scope}' sets intrazone allow, so traffic between its member interfaces bypasses firewall policy.",
+                        "Hosts on different networks of the same zone can reach each other without inspection or logging.",
+                        "Set 'intrazone deny' and allow the required flows with explicit policies (CIS FortiGate 1.2).",
+                        Severity.MEDIUM,
+                        self._evidence(fortios, path + (str(name), "intrazone"), f"zone {name}: set intrazone allow"),
+                        (FORTINET_HARDENING,), basis=FindingBasis.EXPLICIT_VALUE,
+                    ))
+        for scope, settings, path in fortios.iter_scoped_sections("system autoupdate schedule"):
+            if self._text(settings.get("status")).lower() == "disable":
+                self.add_issue(self._finding(
+                    parser, "fortinet.fortios.updates.schedule_disabled",
+                    "Scheduled FortiGuard updates are disabled",
+                    f"Scope '{scope}' sets 'config system autoupdate schedule / set status disable'.",
+                    "Antivirus, IPS and other signatures are not refreshed automatically and can become stale.",
+                    "Set 'status enable' with 'frequency automatic' (CIS FortiGate 4.2.1).",
+                    Severity.MEDIUM,
+                    self._evidence(fortios, path + ("status",), "autoupdate schedule status disable"),
+                    (FORTINET_HARDENING,), basis=FindingBasis.EXPLICIT_VALUE,
+                ))
+        weakened = []
+        for scope, settings, path in fortios.iter_scoped_sections("antivirus settings"):
+            for field in ("machine-learning-detection", "grayware"):
+                if self._text(settings.get(field)).lower() == "disable":
+                    weakened.append((scope, field, path))
+        if weakened:
+            self.add_issue(self._finding(
+                parser, "fortinet.fortios.policy.antivirus_detection_weakened",
+                "Antivirus detection features are disabled",
+                "Explicitly disabled: " + ", ".join(f"{field} (scope '{scope}')" for scope, field, _ in weakened) + ".",
+                "Malware that only heuristic/AI detection or grayware signatures would catch passes the antivirus engine.",
+                "Enable 'machine-learning-detection' and 'grayware' under 'config antivirus settings' (CIS FortiGate 4.2.4, 4.2.5).",
+                Severity.LOW,
+                tuple(text for scope, field, path in weakened for text in self._evidence(fortios, path + (field,), f"antivirus settings {field} disable")),
+                (FORTINET_HARDENING,), basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+        # Hygiene.
+        globals_ = list(fortios.iter_scoped_sections("system global"))
+        ha = [settings for _, settings, _ in fortios.iter_scoped_sections("system ha")
+              if self._text(settings.get("mode")).lower() in {"a-p", "a-a"}]
+        local_in = [entry for _, section, _ in fortios.iter_scoped_sections("firewall local-in-policy")
+                    for entry in section.values() if isinstance(entry, dict)]
+        release = self._release(fortios)
+        apps = [entry for _, section, _ in fortios.iter_scoped_sections("application list")
+                for entry in section.values() if isinstance(entry, dict)]
+        actions = [entry for _, section, _ in fortios.iter_scoped_sections("system automation-action")
+                   for entry in section.values() if isinstance(entry, dict)]
+        names = [self._text(entry.get("name")) for _, section, _ in fortios.iter_scoped_sections("firewall policy")
+                 for entry in section.values() if isinstance(entry, dict) and self._text(entry.get("name"))]
+        items = [
+            ("2.1.12", "log-single-cpu-high enable", not any(self._text(s.get("log-single-cpu-high")).lower() == "enable" for _, s, _ in globals_)),
+            ("2.4.8", "virtual-patch on local-in policies", bool(local_in) and bool(release and release >= (7, 4, 0))
+             and not any(self._text(e.get("virtual-patch")).lower() == "enable" for e in local_in)),
+            ("2.5.2", "HA monitored interfaces", bool(ha) and not any(self._text(s.get("monitor")) for s in ha)),
+            ("2.5.3", "HA reserved management interface", bool(ha) and not any(self._text(s.get("ha-mgmt-status")).lower() == "enable" for s in ha)),
+            ("2.5.4", "HA group-id", bool(ha) and not any(self._text(s.get("group-id")) not in {"", "0"} for s in ha)),
+            ("4.5.2", "enforce-default-app-port on application profiles", bool(apps) and not any(self._text(e.get("enforce-default-app-port")).lower() == "enable" for e in apps)),
+            ("5.1.1", "compromised-host quarantine automation", not any(self._text(e.get("action-type")).lower().startswith("quarantine") for e in actions)),
+            ("v1.1 3.3", "unique firewall policy names", len(names) != len(set(names))),
+        ]
+        missing = [f"CIS {ref}: {label}" for ref, label, gap in items if gap]
+        if missing and release is not None and release >= (6, 4, 14):
+            self.add_issue(self._finding(
+                parser, "fortinet.fortios.hardening.cis_hygiene",
+                "CIS hardening items not configured",
+                f"{len(missing)} lower-priority CIS hardening item(s) are not configured: " + "; ".join(missing) + ".",
+                "Each item is minor on its own; together they affect monitoring, resilience and inspection depth.",
+                "Review the listed items against the organization's baseline and configure those that apply.",
+                Severity.INFORMATIONAL, (f"{len(missing)} CIS hygiene item(s) absent; see observation",),
+                (FORTINET_HARDENING,), basis=FindingBasis.REQUIRED_SETTING_MISSING,
             ))
 
     def check_cis_management_hygiene(self, parser: BaseDeviceParser) -> None:

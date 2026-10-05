@@ -6,7 +6,7 @@ from src.analyze.common.controls import ControlOutcome as CO, record_control, re
 from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.policy_semantics import ProofState, network_covers, service_covers
-from src.devices.cisco.ios import CiscoIOSParser
+from src.devices.cisco.ios import CiscoIOSParser, ConfigurationState
 from src.devices.common.models import DefaultCredentialAssessment
 
 
@@ -1422,6 +1422,68 @@ class PluginIOSBaseline(BasePlugin):
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
+    def check_cis_follow_ups(self, parser: BaseDeviceParser) -> None:
+        """SC-056: CIS IOS/IOS-XE follow-ups.
+
+        Login lockout gets its own finding; lower-priority hardening items that are simply
+        not configured are collected into one informational finding so the report stays short.
+        Absence here means the feature is not configured; no default value is inferred.
+        """
+        lines = self._global_lines(parser)
+        folded = [" ".join(line.split()).lower() for line in lines]
+
+        def has(*prefixes: str) -> bool:
+            return any(line.startswith(prefix) for line in folded for prefix in prefixes)
+
+        ios = self._ios(parser)
+        aaa = has("aaa new-model")
+        if not has("login block-for"):
+            self.add_issue(self._finding(
+                parser, "cisco.ios.authentication.login_lockout",
+                "Login attempts are not rate limited",
+                "'login block-for' is not configured, so repeated failed logins do not trigger a quiet period.",
+                "Password-guessing attacks against SSH, Telnet or HTTP logins are not slowed down.",
+                "Configure 'login block-for <seconds> attempts <n> within <seconds>' with a 'login quiet-mode access-class' for management hosts.",
+                Severity.LOW, ("login block-for absent",),
+                (CISCO_XE_SECURITY_WARNINGS,),
+                basis=FindingBasis.REQUIRED_SETTING_MISSING,
+            ))
+        http_enabled = ConfigurationState.ENABLED in (ios.get_http_server_state(), ios.get_https_server_state())
+        snmp = has("snmp-server community", "snmp-server group", "snmp-server user")
+        logging_host = has("logging host") or any(re.fullmatch(r"logging \d+(?:\.\d+){3}", line) for line in folded)
+        items = [
+            ("1.1.3", "aaa authentication enable default", aaa and not has("aaa authentication enable default")),
+            ("1.1.9", "aaa accounting network", aaa and not has("aaa accounting network")),
+            ("1.1.10", "aaa accounting system", aaa and not has("aaa accounting system")),
+            ("1.2.9", "ip http max-connections", http_enabled and not has("ip http max-connections")),
+            ("1.2.10", "ip http timeout-policy", http_enabled and not has("ip http timeout-policy")),
+            ("1.3.1", "banner exec", not has("banner exec")),
+            ("1.5.7", "snmp-server host", snmp and not has("snmp-server host")),
+            ("1.5.8", "snmp-server enable traps snmp", snmp and not has("snmp-server enable traps snmp", "snmp-server enable traps")),
+            ("2.1.1.1.1", "non-default hostname", not any(line.startswith("hostname ") and line.split()[1] not in {"router", "switch"} for line in folded)),
+            ("2.1.1.1.2", "ip domain name", not has("ip domain-name", "ip domain name")),
+            ("2.2.2", "logging buffered <size>", not any(re.fullmatch(r"logging buffered \d+.*", line) for line in folded)),
+            ("2.2.3", "logging console critical (or no logging console)", not has("logging console critical", "no logging console")),
+            ("2.2.6", "service timestamps debug datetime", not has("service timestamps debug datetime")),
+            ("2.2.7", "logging source-interface", logging_host and not has("logging source-interface")),
+            ("2.2.8", "login on-success/on-failure log", not (has("login on-success log") and has("login on-failure log"))),
+            ("2.4.2", "AAA server source-interface", aaa and has("tacacs", "radius") and not has("ip tacacs source-interface", "ip radius source-interface")),
+            ("2.4.3", "ntp source", has("ntp server") and not has("ntp source")),
+            ("IOS XE 1.0 2.1.8", "ip cef (CEF disabled)", has("no ip cef")),
+        ]
+        missing = [f"CIS {ref}: {label}" for ref, label, gap in items if gap]
+        if missing:
+            self.add_issue(self._finding(
+                parser, "cisco.ios.hardening.cis_hygiene",
+                "CIS hardening items not configured",
+                f"{len(missing)} lower-priority CIS hardening item(s) are not configured: " + "; ".join(missing) + ".",
+                "Each item is minor on its own; together they reduce accountability, log quality and resilience against brute force.",
+                "Review the listed items against the organization's baseline and configure those that apply.",
+                Severity.INFORMATIONAL, (f"{len(missing)} CIS hygiene item(s) absent; see observation",),
+                (CISCO_XE_SECURITY_WARNINGS,),
+                basis=FindingBasis.REQUIRED_SETTING_MISSING,
+            ))
+
     def check_smart_install(self, parser: BaseDeviceParser) -> None:
         """SC-025: Smart Install accepts unauthenticated configuration and image changes."""
         state, evidence = self._ios(parser).get_smart_install()
@@ -2647,6 +2709,7 @@ class PluginIOSBaseline(BasePlugin):
         self.check_ppp_pap(parser)
         self.check_l2tp_dialin(parser)
         self.check_xe_security_warnings(parser)
+        self.check_cis_follow_ups(parser)
         self.check_ike_aggressive_mode(parser)
         self.check_tacacs_keys(parser)
         self.check_ldap_transport(parser)

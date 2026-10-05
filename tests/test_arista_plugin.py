@@ -23,6 +23,9 @@ snmp-server community public ro
 
 SECURE = """! device: secure-leaf (DCS-7050SX3-48YC8, EOS-4.29.2F)
 hostname secure-leaf
+vrf instance MGMT
+ip name-server vrf MGMT 192.0.2.53
+enable password sha512 $6$salt$enablehash
 username breakglass role network-admin secret sha512 $6$salt$hash
 aaa authentication login default group tacacs+ local
 aaa authorization exec default group tacacs+ local
@@ -47,6 +50,7 @@ management ssh
    ip access-group SSH-MGMT in vrf MGMT
    ipv6 access-group SSH-MGMT-V6 in vrf MGMT
 management security
+   password encryption reversible aes-256-gcm
    ssl profile EAPI-TLS
       certificate eapi.pem
       tls versions 1.2 1.3
@@ -54,7 +58,7 @@ snmp-server view MONITOR system included
 snmp-server group SECURE v3 priv read MONITOR
 snmp-server ipv4 access-list SNMP-MGMT
 snmp-server user monitor SECURE v3 auth sha256 redacted priv aes256 redacted
-logging host 192.0.2.20
+logging vrf MGMT host 192.0.2.20 protocol tls ssl-profile SYSLOG
 ntp authenticate
 ntp authentication-key 55 sha1 ciphertext
 ntp trusted-key 55
@@ -109,6 +113,7 @@ def test_vulnerable_eos_has_exact_findings_and_redacted_evidence(tmp_path):
         "arista.eos.ssh.weak_algorithms",
         "arista.eos.ssh.source_restriction",
         "arista.eos.credentials.local_storage",
+        "arista.eos.hardening.cis_hygiene",
         "arista.eos.snmp.default_community",
         "arista.eos.snmp.secure_user_missing",
         "arista.eos.logging.remote_destination",

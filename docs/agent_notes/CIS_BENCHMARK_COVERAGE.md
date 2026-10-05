@@ -80,3 +80,23 @@ Global Properties, implied rules and anti-spoofing gaps (3.9–3.20) join **SC-0
 ### SC-062 — CIS cross-reference metadata (P3)
 
 Resolve every **V** entry against the code; add CIS recommendation numbers to rule references and SC-049 control metadata where a rule fully implements a recommendation; keep the catalogue's benchmark versions current.
+
+## Implementation status (2026-10-05)
+
+Implemented (rule IDs; hygiene items are grouped into one informational `<vendor>.hardening.cis_hygiene` finding per device so the report stays short):
+
+- **FortiOS (SC-055):** `policy.intrazone_allow`, `updates.schedule_disabled`, `policy.antivirus_detection_weakened`, `banner.post_login_disabled`, `management.login_hostname_disclosed`, `management.default_admin_ports`, `admin.default_account_name`; hygiene: 2.1.12, 2.4.8, 2.5.2–2.5.4, 4.5.2, 5.1.1, v1.1 3.3 (releases 6.4.14+ only).
+- **IOS/IOS-XE (SC-056):** `authentication.login_lockout`; hygiene: 1.1.3, 1.1.9, 1.1.10, 1.2.9, 1.2.10, 1.3.1, 1.5.7, 1.5.8, 2.1.1.1.1, 2.1.1.1.2, 2.2.2, 2.2.3, 2.2.6–2.2.8, 2.4.2, 2.4.3, XE v1.0 2.1.8. TTY timeouts were already covered (`tty.session_timeout`).
+- **ASA (SC-057):** `aaa.management_authorization`, `routing.{ospf,eigrp,rip,bgp}.authentication`, `interface.external_security_level`, `services.external_dhcp_server`, `services.dns_guard_disabled`, `platform.password_recovery`; hygiene: 1.2.1, 1.2.4, 1.5.1–1.5.4, 1.10.2, 1.10.4–1.10.8, 1.11.4.
+- **Junos (SC-058):** `routing.isis.suppressed_authentication`, `routing.rip.authentication`, `routing.rip.cleartext_authentication`, `routing.ospf3.authentication`, `routing.bfd.authentication`, `routing.bfd.loose_authentication`, `management.unrestricted_rest`, `management.rest_explorer`, `services.autoinstallation`, `routing.router_discovery`; hygiene: 6.4.1, 6.5.1–6.5.5, 6.7.4, 6.8.4, 6.8.5, 6.10.1.3, 6.10.1.4, 6.10.2.3, 6.10.5.4, 6.10.5.5, 6.10.5.9, 6.11.1, 6.11.5, 6.12.5, 6.15–6.17.
+- **Arista EOS (SC-059):** `logging.remote_cleartext`, `management.insecure_protocol` (telnet); hygiene: 1.1.1.1, 1.1.6, 1.2, 2.1.2.
+- **F5 (SC-060):** `auth.remote_fallback_local`, `auth.remote_console_access`, `ssh.weak_algorithms` (from `sys sshd include`).
+- **PAN-OS (SC-061):** `update.server_unverified`, `user_id.untrusted_zone`; hygiene: 1.1.1.2, 1.1.3, 1.3.10, 3.2, 4.1, 5.6.
+
+Not implemented, with reason:
+
+- **No vendor default or syntax source yet:** Junos LDP/MSDP/RSVP authentication (no default statement), EBGP GTSM (filter + TTL design), Junos authentication-order fallback semantics (6.3.2), SEND (4.9.1); PAN-OS URL filtering, data filtering, DNS sinkhole, credential submission, decryption, WildFire session/upload settings, inline cloud features (XML paths not verified against a vendor schema); FortiOS DNS-filter botnet/logging, application-control categories and logging, ISDB Tor deny, inline sandbox, CDR (profile semantics need vendor CLI references); ASA IPS/botnet/fragment items (module-dependent).
+- **Not provable from configuration:** ASA RSA key size (keys are not in the running configuration), image integrity, organisational items (M/R in the catalogue).
+- **Deliberately dropped:** F5 SSH banner and ETag hygiene (default banner state and ETag syntax not verified; would add a finding to nearly every export).
+- **Sample-gated:** Check Point Global Properties, implied rules, anti-spoofing (SC-017) and Gaia items (SC-023).
+- **Still to verify:** 15 Junos and 11 Check Point catalogue mappings (SC-062).

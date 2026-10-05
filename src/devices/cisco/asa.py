@@ -1667,6 +1667,23 @@ class CiscoASAParser(BaseDeviceParser):
                 found.append(ConfigEvidence(redacted, self.config_filepath, number))
         return found
 
+    def get_top_level_blocks(self) -> list[tuple[ConfigEvidence, list[str]]]:
+        """Top-level commands with their indented children (text stripped), in source order.
+
+        Secret-bearing lines are not filtered here; callers must only report fixed
+        labels or redacted text, never child lines verbatim.
+        """
+        blocks: list[tuple[ConfigEvidence, list[str]]] = []
+        for number, raw in enumerate(self._source_lines, 1):
+            if not raw.strip() or raw.strip() == "!":
+                continue
+            if raw[:1].isspace():
+                if blocks:
+                    blocks[-1][1].append(" ".join(raw.split()))
+                continue
+            blocks.append((ConfigEvidence(raw.strip(), self.config_filepath, number), []))
+        return blocks
+
     def get_password_recovery(self) -> tuple[bool, Optional[ConfigEvidence]]:
         """Effective ``service password-recovery`` (ASA command reference: enabled by default).
 

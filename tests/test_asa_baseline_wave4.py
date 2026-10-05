@@ -37,6 +37,18 @@ failover
 SECURE = """ASA Version 9.18(4)
 hostname secure
 no service password-recovery
+domain-name example.test
+banner asdm Authorized use only
+banner exec Authorized use only
+banner login Authorized use only
+banner motd Authorized use only
+logging device-id hostname
+logging history notifications
+logging timestamp
+logging buffer-size 524288
+logging buffered errors
+aaa authorization command TACACS LOCAL
+aaa authorization exec authentication-server
 username admin password opaquehash pbkdf2 privilege 15
 interface GigabitEthernet0/0
  nameif outside
@@ -78,6 +90,7 @@ def test_asa_baseline_vulnerable_rule_snapshot_and_redaction(tmp_path):
     rule_ids = {issue.rule_id for issue in issues}
     assert rule_ids == {
         "cisco.asa.platform.password_recovery",
+        "cisco.asa.hardening.cis_hygiene",
         "cisco.asa.aaa.management_authentication",
         "cisco.asa.aaa.management_accounting",
         "cisco.asa.credentials.local_user_storage",

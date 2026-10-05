@@ -88,7 +88,11 @@ def test_corpus_line_numbers_point_at_the_cited_configuration():
     located = total = 0
     for case, source, findings in _corpus_findings():
         for finding in findings:
+            # Absence-based findings (PT-009 required-setting-missing) cannot point at a line.
+            absence = getattr(getattr(finding, "basis", None), "value", "") == "required-setting-missing"
             for location in finding.evidence_locations:
+                if absence and location.line_number is None:
+                    continue
                 total += 1
                 if location.line_number is None:
                     continue

@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- CIS follow-ups, second pass (SC-055–SC-061): IOS login lockout; ASA management authorization, routing-protocol authentication, external-interface security level/DHCP/DNS Guard; Junos autoinstallation and router discovery; EOS syslog without TLS and Telnet; F5 remote-auth fallback, remote-user console access and weak SSH include algorithms; PAN-OS User-ID on untrusted zones; FortiOS intrazone allow, disabled update schedule and weakened antivirus detection. Lower-priority CIS items are grouped into one informational `<vendor>.hardening.cis_hygiene` finding per device. Secure fixtures set the hardened values; the evidence-line ratio test now ignores required-setting-missing findings, which have no source line.
+
 - CIS follow-ups (SC-055, SC-057, SC-058, SC-061): PAN-OS update-server identity verification disabled; Junos IS-IS suppressed/loose authentication, RIP and BFD authentication (documented defaults disabled), OSPFv3 without IPsec, REST without allowed-sources and REST API Explorer; ASA password recovery (documented default enabled); FortiOS post-login banner, GUI hostname disclosure, default admin ports and built-in `admin` account (informational/low). Secure fixtures set the hardened values.
 
 - SC-005 Arista EOS: `arista.eos.routing.ospf.authentication` (High, documented default no authentication), `ospf.weak_authentication` (simple password) and `isis.cleartext_authentication` (text mode).

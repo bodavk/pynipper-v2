@@ -42,6 +42,22 @@ crypto ipsec transform-set WEAK esp-3des esp-md5-hmac
 
 SECURE = """version 15.2(4)M7
 hostname secure
+login block-for 120 attempts 3 within 60
+login on-success log
+login on-failure log
+banner exec ^Authorized use only^
+ip domain name example.test
+logging buffered 64000
+logging console critical
+service timestamps debug datetime msec localtime show-timezone
+logging source-interface Loopback0
+ip tacacs source-interface Loopback0
+ntp source Loopback0
+aaa authentication enable default group tacacs+ enable
+aaa accounting network default start-stop group tacacs+
+aaa accounting system default start-stop group tacacs+
+snmp-server enable traps snmp authentication
+snmp-server host 192.0.2.60 version 3 priv SNMPUSER
 aaa new-model
 aaa authentication login default group tacacs+ local
 aaa authorization exec default group tacacs+ local
@@ -111,6 +127,8 @@ def test_ios_baseline_vulnerable_rule_snapshot(tmp_path):
     _, issues = _analyze(tmp_path, VULNERABLE)
     rule_ids = {issue.rule_id for issue in issues}
     assert rule_ids == {
+        "cisco.ios.authentication.login_lockout",
+        "cisco.ios.hardening.cis_hygiene",
         "cisco.ios.aaa.new_model",
         "cisco.ios.vty.telnet",
         "cisco.ios.vty.session_timeout",

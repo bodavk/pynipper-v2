@@ -1366,6 +1366,54 @@ class PluginPANOSChecks(BasePlugin):
                     references=(PANOS_ZONE_PROTECTION_GUIDE,),
                 ))
 
+    def check_cis_follow_ups(self, parser: BaseDeviceParser) -> None:
+        """SC-061: CIS PAN-OS follow-ups (User-ID on external zones, hygiene)."""
+        panos = self._panos(parser)
+        context = panos.assessment_context
+        for vsys, zone, interfaces, evidence in panos.get_user_id_zones():
+            external = [i for i in interfaces if context.role_for_interface(i) == "external"
+                        or context.role_for_interface(i.split(".")[0]) == "external"]
+            if not external:
+                continue
+            self.add_issue(Finding(
+                rule_id="paloalto.panos.user_id.untrusted_zone",
+                device=parser.device_type,
+                title="User-ID is enabled on an untrusted zone",
+                observation=f"Zone '{zone}' ({vsys}) enables User-ID and contains interface(s) classified external: {', '.join(external)}.",
+                impact="User-ID probing and mapping on untrusted networks can leak service-account credentials or accept spoofed user mappings.",
+                exploitability="Requires presence on the untrusted network attached to the zone.",
+                recommendation="Disable User-ID on untrusted zones and use include/exclude networks to limit mapping to internal ranges (CIS PAN-OS 2.3, 2.4).",
+                severity=Severity.MEDIUM,
+                evidence=(evidence,),
+                references=(PANOS_UPDATE_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+        facts = panos.get_cis_hygiene_facts()
+        schedules = {s.content_type for s in panos.get_update_schedules() if s.action == "download-and-install"}
+        items = [
+            ("1.1.1.2", "SNMPv3 trap profile", not facts["snmp_v3_trap"]),
+            ("1.1.3", "log on high dataplane load", not facts["high_dp_load"]),
+            ("1.3.10", "administrator password profile", not facts["password_profile"]),
+            ("3.2", "HA link/path monitoring", facts["ha_enabled"] and not facts["ha_monitoring"]),
+            ("4.1", "antivirus update schedule (download-and-install)", "anti-virus" not in schedules),
+            ("5.6", "WildFire update schedule (download-and-install)", "wildfire" not in schedules),
+        ]
+        missing = [f"CIS {ref}: {label}" for ref, label, gap in items if gap]
+        if missing and not getattr(panos, "panorama_inheritance_unknown", False):
+            self.add_issue(Finding(
+                rule_id="paloalto.panos.hardening.cis_hygiene",
+                device=parser.device_type,
+                title="CIS hardening items not configured",
+                observation=f"{len(missing)} lower-priority CIS hardening item(s) are not configured: " + "; ".join(missing) + ".",
+                impact="Each item is minor on its own; together they affect monitoring, update freshness and resilience.",
+                exploitability="Not directly exploitable; these settings reduce the impact of other weaknesses.",
+                recommendation="Review the listed items against the organization's baseline and configure those that apply.",
+                severity=Severity.INFORMATIONAL,
+                evidence=(f"{len(missing)} CIS hygiene item(s) absent; see observation",),
+                references=(PANOS_UPDATE_GUIDE,),
+                basis=FindingBasis.REQUIRED_SETTING_MISSING,
+            ))
+
     def analyze(self, parser: BaseDeviceParser) -> None:
         self.check_management(parser)
         self.check_zone_protection(parser)
@@ -1379,4 +1427,5 @@ class PluginPANOSChecks(BasePlugin):
         self.check_platform_services(parser)
         self.check_management_tls(parser)
         self.check_updates_and_system_logging(parser)
+        self.check_cis_follow_ups(parser)
         self.check_panorama_scope(parser)

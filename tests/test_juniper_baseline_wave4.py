@@ -83,6 +83,22 @@ def test_junos_secure_baseline_is_clean(tmp_path):
         '''## Model: SRX345
 set version 22.4R1.10
 set system host-name secure-srx
+set system diag-port-authentication encrypted-password "$6$redacted"
+set system internet-options icmpv4-rate-limit packet-rate 1000
+set system internet-options icmpv6-rate-limit packet-rate 1000
+set system internet-options no-source-quench
+set system internet-options tcp-drop-synfin-set
+set system internet-options no-tcp-reset drop-all-tcp
+set system ntp server 192.0.2.20 version 4
+set system tacplus-server 192.0.2.5 source-address 192.0.2.1
+set system services ssh connection-limit 10
+set system services ssh rate-limit 4
+set system ports auxiliary disable
+set system ports console log-out-on-disconnect
+set system syslog file interactive-commands interactive-commands any
+set system no-multicast-echo
+set system no-ping-record-route
+set system no-ping-time-stamp
 set system authentication-order [ tacplus password ]
 set system tacplus-server 192.0.2.5 secret "$9$redacted"
 set system accounting events [ login change-log interactive-commands ]

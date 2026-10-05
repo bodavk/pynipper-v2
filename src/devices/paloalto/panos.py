@@ -1942,6 +1942,33 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                 )
         return schedules
 
+    def get_user_id_zones(self) -> list[tuple[str, str, tuple[str, ...], object]]:
+        """Zones with ``enable-user-identification yes``: (vsys, zone, interfaces, evidence)."""
+        results = []
+        for device in self._device_entries():
+            for vsys in device.findall("./vsys/entry"):
+                for zone in vsys.findall("./zone/entry"):
+                    if self._text(zone.find("enable-user-identification")).casefold() != "yes":
+                        continue
+                    interfaces = tuple(self._text(m) for m in zone.findall("./network/*/member") if self._text(m))
+                    name = zone.get("name") or ""
+                    results.append((vsys.get("name") or "", name, interfaces,
+                                    self._evidence(f"zone {name}: enable-user-identification yes", zone)))
+        return results
+
+    def get_cis_hygiene_facts(self) -> dict[str, bool]:
+        """Presence of lower-priority CIS settings (Palo Alto Firewall 11 benchmark)."""
+        devices = self._device_entries()
+        find = lambda xpath: any(device.find(xpath) is not None for device in devices) or self.root.find(xpath.replace("./", "./shared/", 1)) is not None
+        ha = any(self._text(device.find("./deviceconfig/high-availability/enabled")).casefold() == "yes" for device in devices)
+        return {
+            "password_profile": self.root.find(".//mgt-config/password-profile/entry") is not None,
+            "high_dp_load": any(self._text(device.find("./deviceconfig/setting/management/enable-log-high-dp-load")).casefold() == "yes" for device in devices),
+            "ha_enabled": ha,
+            "ha_monitoring": any(device.find("./deviceconfig/high-availability/group/monitoring") is not None for device in devices),
+            "snmp_v3_trap": self.root.find(".//log-settings/snmptrap/entry/version/v3") is not None,
+        }
+
     def get_update_server_verification(self) -> list[tuple[str, str, object]]:
         """Explicit ``deviceconfig system server-verification`` per device scope.
 

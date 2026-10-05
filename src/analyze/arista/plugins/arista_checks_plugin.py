@@ -1,3 +1,4 @@
+import re
 """Effective-state Arista EOS management and operational baseline checks."""
 
 from src.analyze.common.base_plugin import BasePlugin
@@ -1100,6 +1101,76 @@ class PluginAristaChecks(BasePlugin):
                      "Set a peer-specific 'maximum-routes' value based on the expected route volume.",
                      Severity.MEDIUM, evidence, FindingBasis.EXPLICIT_VALUE)
 
+    def check_cis_follow_ups(self, parser: BaseDeviceParser) -> None:
+        """SC-059: CIS Arista EOS follow-ups (syslog TLS, telnet, secret encryption, hygiene)."""
+        eos = self._eos(parser)
+        top = [c for c in eos.commands if c.indent == 0]
+        folded = [" ".join(c.text.split()).casefold() for c in top]
+
+        def block(header: str) -> list[str]:
+            lines, inside = [], False
+            for command in eos.commands:
+                if command.indent == 0:
+                    inside = " ".join(command.text.split()).casefold() == header
+                    continue
+                if inside:
+                    lines.append(" ".join(command.text.split()).casefold())
+            return lines
+
+        cleartext = [c for c, f in zip(top, folded)
+                     if re.fullmatch(r"logging (?:vrf \S+ )?host \S+.*", f) and " protocol tls" not in f]
+        if cleartext:
+            self.add_issue(Finding(
+                rule_id="arista.eos.logging.remote_cleartext",
+                device=parser.device_type,
+                title="Remote syslog is sent without TLS",
+                observation=f"{len(cleartext)} remote syslog destination(s) do not use 'protocol tls'; EOS then sends syslog over UDP (default) or plain TCP.",
+                impact="Log messages can be read or altered in transit, and an attacker can suppress or forge entries.",
+                exploitability="Requires a position on the path between the switch and the log server.",
+                recommendation="Use 'logging [vrf <vrf>] host <host> protocol tls ssl-profile <profile>' with a trusted SSL profile.",
+                severity=Severity.LOW,
+                evidence=tuple(eos._evidence(c) for c in cleartext[:4]),
+                references=("https://www.arista.com/en/um-eos/eos-control-plane-security",),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+        telnet = block("management telnet")
+        if "no shutdown" in telnet:
+            self.add_issue(Finding(
+                rule_id="arista.eos.management.insecure_protocol",
+                device=parser.device_type,
+                title="Telnet management is enabled",
+                observation="'management telnet' contains 'no shutdown', so the Telnet server accepts logins.",
+                impact="Credentials and session content cross the network in clear text.",
+                exploitability="Requires a position on the path between the administrator and the switch.",
+                recommendation="Shut down 'management telnet' and use SSH.",
+                severity=Severity.HIGH,
+                evidence=tuple(eos._evidence(c) for c in top if c.text.casefold().startswith("management telnet")),
+                references=(ARISTA_SECURITY_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
+        has = lambda *prefixes: any(f.startswith(p) for f in folded for p in prefixes)
+        items = [
+            ("1.1.1.1", "management VRF", not has("vrf instance", "vrf definition")),
+            ("1.1.6", "ip name-server", not has("ip name-server")),
+            ("1.2", "password encryption reversible aes-256-gcm", "password encryption reversible aes-256-gcm" not in block("management security")),
+            ("2.1.2", "enable password/secret", not has("enable password", "enable secret")),
+        ]
+        missing = [f"CIS {ref}: {label}" for ref, label, gap in items if gap]
+        if missing:
+            self.add_issue(Finding(
+                rule_id="arista.eos.hardening.cis_hygiene",
+                device=parser.device_type,
+                title="CIS hardening items not configured",
+                observation=f"{len(missing)} lower-priority CIS hardening item(s) are not configured: " + "; ".join(missing) + ".",
+                impact="Each item is minor on its own; together they affect secret protection, management separation and resilience.",
+                exploitability="Not directly exploitable; these settings reduce the impact of other weaknesses.",
+                recommendation="Review the listed items against the organization's baseline and configure those that apply.",
+                severity=Severity.INFORMATIONAL,
+                evidence=(f"{len(missing)} CIS hygiene item(s) absent; see observation",),
+                references=(ARISTA_SECURITY_GUIDE,),
+                basis=FindingBasis.REQUIRED_SETTING_MISSING,
+            ))
+
     def check_igp_authentication(self, parser: BaseDeviceParser) -> None:
         """SC-005: OSPFv2 interface authentication and explicit IS-IS clear-text mode."""
         eos = self._eos(parser)
@@ -1226,6 +1297,7 @@ class PluginAristaChecks(BasePlugin):
         self.check_credentials(parser)
         self.check_root_and_nopassword_login(parser)
         self.check_igp_authentication(parser)
+        self.check_cis_follow_ups(parser)
         self.check_snmp(parser)
         self.check_operations(parser)
         self.check_control_plane(parser)
