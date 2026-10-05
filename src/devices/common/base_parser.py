@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 import os
 from typing import Dict, List, Optional
 
-from .models import NormalizedConfig
+from .models import ExportScopeKnowledge, KnowledgeState, NormalizedConfig
 from src.common.assessment import AssessmentContext
 
 
@@ -53,6 +53,14 @@ class BaseDeviceParser(ABC):
         """
 
         return self.get_native_config()
+
+    def get_export_scope_knowledge(self, domain: str, scope: str) -> ExportScopeKnowledge:
+        return ExportScopeKnowledge(domain, scope, KnowledgeState.UNKNOWN,
+                                    "Completeness of this configuration domain is not established by the supplied export.")
+
+    def get_export_scopes(self) -> tuple[ExportScopeKnowledge, ...]:
+        """Only parser-qualified domains; inventory never establishes completeness."""
+        return ()
 
     def get_normalized_config(self) -> NormalizedConfig:
         """Return a complete normalized snapshot with explicit unknown state.

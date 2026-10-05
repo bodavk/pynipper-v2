@@ -30,6 +30,8 @@ from src.devices.common.models import (
     NormalizedConfig,
     NormalizedValue,
     SecurityPolicy,
+    KnowledgeState,
+    ExportScopeKnowledge,
 )
 from src.devices.common.policy_semantics import (
     AddressInterval,
@@ -42,6 +44,7 @@ from src.devices.common.policy_semantics import (
     service_covers,
     service_disjoint,
     static_values_cover,
+    TrafficMatch, EffectivePermissionProof, effective_permission,
 )
 
 
@@ -187,6 +190,29 @@ class FortiSSLVPNPasswordOnlyUser:
     auth_rule: str
     group: str | None
     evidence: Tuple[ConfigEvidence, ...]
+    interfaces: Tuple[str, ...] = ()
+    unrestricted_families: Tuple[str, ...] = ("ipv4", "ipv6")
+    unknown_families: Tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class FortiPathPredicate:
+    state: KnowledgeState
+    broad: bool
+    reason: str
+    evidence: Tuple[ConfigEvidence, ...] = ()
+
+
+@dataclass(frozen=True)
+class FortiManagementListener:
+    name: str
+    scope: str
+    owner: str
+    family: str
+    services: Tuple[str, ...]
+    state: KnowledgeState
+    reason: str
+    evidence: Tuple[ConfigEvidence, ...]
 
 
 @dataclass(frozen=True)
@@ -278,6 +304,16 @@ class FortiSecurityInspection:
     resolution_state: str
     profiles: Tuple[FortiInspectionProfile, ...]
     evidence: Tuple[ConfigEvidence, ...]
+    family: str = "ipv4"
+
+
+@dataclass(frozen=True)
+class FortiPolicyInspectionState:
+    policy: "FortiFirewallPolicy"
+    path: Tuple[str, ...]
+    logging: str
+    utm: str
+    attachment: str
 
 
 @dataclass(frozen=True)
@@ -463,6 +499,8 @@ class FortiOSParser(BaseDeviceParser):
         "telnet": (("tcp", 23, 23),),
     }
     _POLICY_UNSUPPORTED_PREDICATES = {
+        "tos", "tos-mask", "tos-negate", "vlan-cos", "vlan-cos-mask", "ip-version",
+        "srcaddr6", "dstaddr6",
         "devices",
         "dst-reputation",
         "fsso-groups",
@@ -1406,6 +1444,8 @@ class FortiOSParser(BaseDeviceParser):
                     name for name in interfaces if name not in active_interfaces
                 ),
                 "source_addresses": tuple(source_addresses),
+                "source_addresses6": tuple(source_addresses6),
+                "source_networks6": source_networks6,
                 "source_networks": source_networks,
                 "source_unrestricted": self._covers_every_ipv4_address(source_networks),
                 "source_address_negated": str(settings.get("source-address-negate", "")).casefold(),
@@ -1421,6 +1461,58 @@ class FortiOSParser(BaseDeviceParser):
             })
         return results
 
+    def get_sslvpn_auth_knowledge(self) -> tuple[ExportScopeKnowledge, ...]:
+        """Export knowledge for exact local authentication-rule identity joins.
+
+        This is not a proof that an authentication rule matches a listener;
+        those family/order predicates remain in the password-only records.
+        """
+        result = []
+        for scope, settings, _ in self._scoped_sections("vpn ssl settings"):
+            if str(settings.get("status", "")).casefold() == "disable":
+                continue
+            rules = settings.get("authentication-rule")
+            if not isinstance(rules, dict) or not rules:
+                result.append(ExportScopeKnowledge("sslvpn-authentication", scope, KnowledgeState.UNKNOWN,
+                    "SSL-VPN authentication rules are unexported; effective identity mapping is unknown."))
+                continue
+            for name, rule in rules.items():
+                reasons = []
+                if str(settings.get("status", "")).casefold() not in {"enable", "disable"}:
+                    reasons.append("SSL-VPN listener enablement is unexported or malformed.")
+                if str(settings.get("reqclientcert", "")).casefold() not in {"enable", "disable"}:
+                    reasons.append("SSL-VPN client-certificate requirement is unexported or malformed.")
+                if not isinstance(rule, dict):
+                    reasons.append("Malformed authentication-rule record.")
+                    rule = {}
+                if str(rule.get("auth", "")).casefold() != "local":
+                    reasons.append("Authentication method is absent or outside the local-password path adapter.")
+                if str(rule.get("client-cert", "")).casefold() not in {"enable", "disable"}:
+                    reasons.append("Authentication-rule client-certificate requirement is unexported or malformed.")
+                users = list(self._as_list(rule.get("users")))
+                for group_name in self._as_list(rule.get("groups")):
+                    group = self._resolve_exact_scoped_object("user group", group_name, scope)
+                    if group is None or not self._as_list(group[1].get("member")):
+                        reasons.append("Referenced group or its members are unexported in this VDOM.")
+                    else:
+                        users.extend(self._as_list(group[1].get("member")))
+                if not users:
+                    reasons.append("No explicit same-VDOM local identity mapping is supplied.")
+                for username in users:
+                    resolved = self._resolve_exact_scoped_object("user local", username, scope)
+                    if resolved is None:
+                        reasons.append("Referenced local user is unexported in this VDOM; another VDOM is not a substitute.")
+                        continue
+                    user = resolved[1]
+                    if (str(user.get("status", "")).casefold() not in {"enable", "disable"}
+                            or str(user.get("type", "")).casefold() not in {"password", "ldap", "radius", "tacacs+"}
+                            or str(user.get("two-factor", "")).casefold() not in {"disable", "email", "sms", "fortitoken", "fortitoken-cloud"}):
+                        reasons.append("Local user status, authentication type or second-factor state is absent/malformed.")
+                result.append(ExportScopeKnowledge("sslvpn-authentication", f"{scope}/auth-rule:{name}",
+                    KnowledgeState.UNKNOWN if reasons else KnowledgeState.KNOWN,
+                    " ".join(dict.fromkeys(reasons)) if reasons else "Explicit local identity references resolve within this VDOM; listener/order proof is separate."))
+        return tuple(result)
+
     def get_sslvpn_password_only_users(self) -> tuple[FortiSSLVPNPasswordOnlyUser, ...]:
         """Prove a mapped local user has an explicit password-only VPN path."""
         release = tuple(int(part) for part in re.findall(r"\d+", self.get_version())[:3])
@@ -1431,7 +1523,7 @@ class FortiOSParser(BaseDeviceParser):
             for scope, name, interface, _ in self.iter_interfaces()
             if str(interface.get("status", "")).casefold() == "down"
         }
-        found: dict[tuple[str, str], FortiSSLVPNPasswordOnlyUser] = {}
+        found: dict[tuple[str, str, str], FortiSSLVPNPasswordOnlyUser] = {}
         for scope, settings, path in self._scoped_sections("vpn ssl settings"):
             if (not self._as_list(settings.get("source-interface"))
                     or str(settings.get("status", "")).casefold() != "enable"
@@ -1446,7 +1538,7 @@ class FortiOSParser(BaseDeviceParser):
             }
             if not listener_interfaces:
                 continue
-            for rule_name, rule in rules.items():
+            for rule_position, (rule_name, rule) in enumerate(rules.items()):
                 if (not isinstance(rule, dict)
                         or str(rule.get("auth", "")).casefold() != "local"
                         or str(rule.get("client-cert", "")).casefold() != "disable"
@@ -1460,7 +1552,7 @@ class FortiOSParser(BaseDeviceParser):
                 user_bindings = [(name, None, self._field_evidence(rule_path + ("users",)))
                                  for name in self._as_list(rule.get("users"))]
                 for group_name in self._as_list(rule.get("groups")):
-                    resolved_group = self._resolve_scoped_object("user group", group_name, scope)
+                    resolved_group = self._resolve_exact_scoped_object("user group", group_name, scope)
                     if resolved_group is None:
                         continue
                     _, group_settings, group_path = resolved_group
@@ -1472,7 +1564,7 @@ class FortiOSParser(BaseDeviceParser):
                     user_bindings.extend((name, group_name, group_evidence)
                                          for name in self._as_list(group_settings.get("member")))
                 for username, group_name, binding_evidence in user_bindings:
-                    resolved = self._resolve_scoped_object("user local", username, scope)
+                    resolved = self._resolve_exact_scoped_object("user local", username, scope)
                     if resolved is None:
                         continue
                     _, user, user_path = resolved
@@ -1493,10 +1585,56 @@ class FortiOSParser(BaseDeviceParser):
                         + self._field_evidence(user_path + ("type",))
                         + self._field_evidence(user_path + ("two-factor",))
                     )
-                    found.setdefault((scope.casefold(), username.casefold()),
+                    family_states = []
+                    unknown_families = []
+                    for family, field, version in (("ipv4", "source-address", 4), ("ipv6", "source-address6", 6)):
+                        if (rule_position > 0 or rule.get("realm")
+                                or str(rule.get("cipher", "any")).casefold() != "any"):
+                            unknown_families.append(family)
+                            continue
+                        if field not in rule:
+                            family_states.append(family)
+                            continue
+                        semantics = self._combine_network_members(self._as_list(rule.get(field)), scope, version)
+                        negate = str(rule.get(field + "-negate", "disable")).casefold()
+                        if not semantics.complete or negate not in {"disable", "enable"}:
+                            unknown_families.append(family)
+                        elif negate == "disable" and (self._covers_every_ipv4_address(semantics) if version == 4 else self._covers_every_ipv6_address(semantics)):
+                            family_states.append(family)
+                    found.setdefault((scope.casefold(), username.casefold(), str(rule_name)),
                                      FortiSSLVPNPasswordOnlyUser(
-                                         scope, username, str(rule_name), group_name, evidence))
+                                         scope, username, str(rule_name), group_name, evidence,
+                                         tuple(sorted(rule_interfaces or listener_interfaces)),
+                                         tuple(family_states), tuple(unknown_families)))
         return tuple(found.values())
+
+    def get_sslvpn_listener_predicate(self, scope: str, name: str, family: str) -> FortiPathPredicate:
+        matches = [(s, settings, path) for s, n, settings, path in self.iter_interfaces()
+                   if n.casefold() == name.casefold()]
+        if len(matches) != 1:
+            return FortiPathPredicate(KnowledgeState.UNKNOWN, False, "SSL-VPN interface is unexported or collides across VDOMs.")
+        section_scope, settings, path = matches[0]
+        owner = str(settings.get("vdom", "root" if section_scope == "global" else section_scope))
+        if owner.casefold() != scope.casefold():
+            return FortiPathPredicate(KnowledgeState.UNKNOWN, False, "SSL-VPN interface belongs to a different VDOM.")
+        if str(settings.get("status", "")).casefold() == "down":
+            return FortiPathPredicate(KnowledgeState.KNOWN, False, "SSL-VPN interface is explicitly down.")
+        if "status" in settings and str(settings["status"]).casefold() not in {"up", "down"}:
+            return FortiPathPredicate(KnowledgeState.UNKNOWN, False, "SSL-VPN interface status is malformed.")
+        if family == "ipv6":
+            ipv6 = settings.get("ipv6", {})
+            if not isinstance(ipv6, dict):
+                ipv6 = {}
+            values = self._as_list(ipv6.get("ip6-address"))
+            try:
+                address = ipaddress.ip_interface(values[0]) if len(values) == 1 else None
+            except ValueError:
+                address = None
+            if (address is None or address.version != 6 or address.ip.is_unspecified or address.ip.is_loopback or address.ip.is_multicast
+                    or str(ipv6.get("ip6-mode", "static")).casefold() != "static"):
+                return FortiPathPredicate(KnowledgeState.UNKNOWN, False,
+                                          "IPv6 SSL-VPN listener address is missing, malformed, wrong-family or dynamic.")
+        return FortiPathPredicate(KnowledgeState.KNOWN, True, "SSL-VPN listener is bound to the same VDOM and address family.", self._field_evidence(path))
 
     def get_sslvpn_active_default_portals(self) -> tuple[FortiSSLVPNActiveDefaultPortal, ...]:
         """Resolve explicitly enabled access modes on an active VPN fallback portal."""
@@ -1841,6 +1979,118 @@ class FortiOSParser(BaseDeviceParser):
                 if isinstance(settings, dict):
                     yield scope, position, str(name), settings, path + (str(name),)
 
+    def get_admin_trust_predicate(self, settings: FortiDict, path: Tuple[str, ...], family: str,
+                                 defaults_known: bool) -> FortiPathPredicate:
+        version = 4 if family == "ipv4" else 6
+        prefix = "trusthost" if version == 4 else "ip6-trusthost"
+        fields = [(str(k), v) for k, v in settings.items() if re.fullmatch(prefix + r"(?:[1-9]|10)", str(k), re.I)]
+        if any(str(k).casefold().startswith(prefix) and not re.fullmatch(prefix + r"(?:[1-9]|10)", str(k), re.I)
+               for k in settings):
+            return FortiPathPredicate(KnowledgeState.UNKNOWN, False, f"Unsupported or malformed {prefix} index.")
+        evidence = tuple(ev for field, _ in fields for ev in self._field_evidence(path + (field,)))
+        networks = [self._address_interval(value, version) for _, value in fields]
+        if any(n is None for n in networks):
+            return FortiPathPredicate(KnowledgeState.UNKNOWN, False,
+                                      f"Malformed or wrong-family {prefix} setting; source restriction is unknown.", evidence)
+        if fields:
+            broad = any(n.first == 0 and n.last == (1 << (32 if version == 4 else 128)) - 1 for n in networks)
+            return FortiPathPredicate(KnowledgeState.KNOWN, broad,
+                                      f"Explicit {prefix} admits every IPv{version} source." if broad else
+                                      f"Explicit valid {prefix} restricts IPv{version} sources.", evidence)
+        if defaults_known:
+            return FortiPathPredicate(KnowledgeState.KNOWN, True,
+                f"No {prefix} is set; the documented 7.4.1+ default {'::/0' if version == 6 else '0.0.0.0 0.0.0.0'} admits every IPv{version} source.")
+        return FortiPathPredicate(KnowledgeState.UNKNOWN, False, f"Absent {prefix}; export completeness and release default are unqualified.")
+
+    @staticmethod
+    def get_admin_path_syntax(settings: FortiDict, global_settings: FortiDict) -> FortiPathPredicate:
+        for field in ("status", "remote-auth", "peer-auth"):
+            valid = {"enable", "disable"}
+            if field in settings and str(settings[field]).casefold() not in valid:
+                return FortiPathPredicate(KnowledgeState.UNKNOWN, False, "Administrator status/authentication toggle is malformed.")
+        for field in ("admin-lockout-threshold", "admin-lockout-duration"):
+            if field in global_settings and not str(global_settings[field]).isdigit():
+                return FortiPathPredicate(KnowledgeState.UNKNOWN, False, "Administrative lockout setting is malformed.")
+        return FortiPathPredicate(KnowledgeState.KNOWN, False, "Exported account/lockout syntax is valid; absence/default qualification is separate.")
+
+    def get_path_management_listeners(self, scope: str, family: str, ssh_password: bool) -> Tuple[FortiManagementListener, ...]:
+        result = []
+        for if_scope, name, settings, path in self.iter_interfaces():
+            owner = str(settings.get("vdom", "root" if if_scope == "global" else if_scope))
+            if if_scope.casefold() != scope.casefold() or str(settings.get("status", "")).casefold() == "down":
+                continue
+            if self.assessment_context.role_for_interface(name) != "external":
+                continue
+            source = settings if family == "ipv4" else settings.get("ipv6", {})
+            if not isinstance(source, dict):
+                continue
+            field = "allowaccess" if family == "ipv4" else "ip6-allowaccess"
+            services = tuple(sorted(set(self._as_list(source.get(field))) & ({"https", "ssh"} if ssh_password else {"https"})))
+            if not services:
+                continue
+            state, reason = KnowledgeState.KNOWN, "Explicit enabled management admission."
+            if "status" in settings and str(settings["status"]).casefold() not in {"up", "down"}:
+                state, reason = KnowledgeState.UNKNOWN, "Management listener status is malformed."
+            ev_path = path if family == "ipv4" else path + ("ipv6",)
+            evidence = self._field_evidence(ev_path + (field,))
+            if family == "ipv6":
+                values = self._as_list(source.get("ip6-address"))
+                try:
+                    address = ipaddress.ip_interface(values[0]) if len(values) == 1 else None
+                except ValueError:
+                    address = None
+                if (address is None or address.version != 6 or address.ip.is_unspecified or address.ip.is_loopback or address.ip.is_multicast
+                        or str(source.get("ip6-mode", "static")).casefold() != "static"):
+                    state, reason = KnowledgeState.UNKNOWN, "IPv6 listener address is missing, malformed, wrong-family or dynamically assigned."
+                evidence += self._field_evidence(ev_path + ("ip6-address",)) + self._field_evidence(ev_path + ("ip6-mode",))
+            if sum(n.casefold() == name.casefold() for _, n, _, _ in self.iter_interfaces()) != 1:
+                state, reason = KnowledgeState.UNKNOWN, "Listener name collides across VDOMs; assessment role is ambiguous."
+            if scope.casefold() == "global" or owner.casefold() != scope.casefold():
+                state, reason = KnowledgeState.UNKNOWN, "Global administrator/listener VDOM ownership is not qualified for this account."
+            if family == "ipv4" and "ip" in settings and self._address_interval(settings["ip"], 4) is None:
+                state, reason = KnowledgeState.UNKNOWN, "IPv4 listener address is malformed or wrong-family."
+            result.append(FortiManagementListener(name, scope, owner, family, services, state, reason, evidence))
+        return tuple(result)
+
+    def iter_transit_policies(self):
+        """Family-qualified native syntax for both supported transit tables."""
+        for section_name, family in (("firewall policy", "ipv4"), ("firewall policy6", "ipv6")):
+            for scope, section, path in self._scoped_sections(section_name):
+                for position, (name, settings) in enumerate(section.items(), start=1):
+                    if isinstance(settings, dict):
+                        yield family, scope, position, str(name), settings, path + (str(name),)
+
+    def get_policy_inspection_states(self) -> Tuple[FortiPolicyInspectionState, ...]:
+        policies = {(p.family, p.scope, p.name): p for p in self.get_firewall_policy_semantics()}
+        result = []
+        for family, scope, _, name, settings, path in self.iter_transit_policies():
+            mode = str(settings.get("profile-type", "single")).casefold()
+            attachment = (str(settings.get("profile-group", "")) if mode == "group" else
+                          "individual" if any(settings.get(f) for f in self.inspection_profile_fields()) else "")
+            result.append(FortiPolicyInspectionState(policies[(family, scope, name)], path,
+                str(settings.get("logtraffic", "unknown")).casefold(),
+                str(settings.get("utm-status", "unknown")).casefold(), attachment))
+        return tuple(result)
+
+    @staticmethod
+    def get_effective_policy_permission(policy: FortiFirewallPolicy, prior: Tuple[FortiFirewallPolicy, ...],
+                                        target: FortiFirewallPolicy | None = None) -> EffectivePermissionProof:
+        if target is not None and (target.scope, target.family) != (policy.scope, policy.family):
+            return EffectivePermissionProof(ProofState.UNKNOWN, "Candidate and target cross VDOM/address-family boundaries.")
+        def match(item, earlier=False):
+            qualified = item.proof_eligible and item.schedule_explicit
+            if earlier:
+                qualified &= all(state == ProofState.PROVEN for state in (
+                    static_values_cover(item.source_interfaces, policy.source_interfaces),
+                    static_values_cover(item.destination_interfaces, policy.destination_interfaces)))
+            return TrafficMatch(item.source_networks, item.destination_networks, item.services, qualified,
+                                "Earlier policy interfaces, schedule or predicates are not fully qualified.")
+        active = tuple(p for p in prior if p.enabled and p.position < policy.position
+                       and p.family == policy.family and p.scope.casefold() == policy.scope.casefold())
+        return effective_permission(match(policy), tuple(match(p, True) for p in active),
+                                    target=match(target) if target else None,
+                                    families=(4 if policy.family == "ipv4" else 6,))
+
     @staticmethod
     def _address_interval(value: object, family: int) -> AddressInterval | None:
         parts = FortiOSParser._as_list(value)
@@ -2146,6 +2396,9 @@ class FortiOSParser(BaseDeviceParser):
                         if not values or all(item.casefold() == "disable" for item in values):
                             continue
                         unsupported.append(field)
+                    for field in ("status", "srcaddr-negate", "dstaddr-negate", "service-negate"):
+                        if field in settings and str(settings[field]).casefold() not in {"enable", "disable"}:
+                            unsupported.append("malformed-" + field)
                     behavior = tuple(
                         (str(field), self._stable_policy_value(value))
                         for field, value in sorted(settings.items())
@@ -2735,6 +2988,14 @@ class FortiOSParser(BaseDeviceParser):
                     return found_scope, settings, path + (object_name,)
         return None
 
+    def _resolve_exact_scoped_object(self, section_name: str, object_name: str, scope: str):
+        """Accounts/groups cannot borrow a namesake from another VDOM."""
+        for found_scope, section, path in self._scoped_sections(section_name):
+            settings = section.get(object_name)
+            if found_scope.casefold() == scope.casefold() and isinstance(settings, dict):
+                return found_scope, settings, path + (object_name,)
+        return None
+
     def _resolve_inspection_profile(
         self, profile_type: str, name: str, policy_scope: str
     ) -> FortiInspectionProfile:
@@ -2778,7 +3039,7 @@ class FortiOSParser(BaseDeviceParser):
         """Resolve UTM attachments for active accept policies by VDOM/global scope."""
 
         inspections: List[FortiSecurityInspection] = []
-        for scope, _, name, settings, path in self.iter_firewall_policies():
+        for family, scope, _, name, settings, path in self.iter_transit_policies():
             if str(settings.get("status", "enable")).casefold() == "disable":
                 continue
             if str(settings.get("action", "deny")).casefold() != "accept":
@@ -2823,6 +3084,7 @@ class FortiOSParser(BaseDeviceParser):
                         resolution_state=state,
                         profiles=profiles,
                         evidence=evidence + group_evidence,
+                        family=family,
                     )
                 )
                 continue
@@ -2845,6 +3107,7 @@ class FortiOSParser(BaseDeviceParser):
                             for profile_type, member in members
                         ),
                         evidence=evidence,
+                        family=family,
                     )
                 )
         return tuple(inspections)

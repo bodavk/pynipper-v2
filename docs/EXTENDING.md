@@ -181,6 +181,21 @@ For a deliberate snapshot change, inspect current output with `--observe`, revie
 
 ## Review checklist
 
+For accuracy/refactoring work, follow [Export evidence](EXPORT_EVIDENCE.md):
+
+- Establish parser-owned knowledge for the exact control/domain and tenant; a
+  header or known inventory field does not qualify unrelated omissions.
+- Keep explicit unsafe values, release defaults and complete-scope absence as
+  separate finding bases. Missing/malformed evidence in fragments stays unknown.
+- Register migrated controls explicitly and record stable instance keys. Retain
+  unknown reasons when another instance has a finding; do not infer passes.
+- Use the parser's bounded effective-permission and NAT qualification APIs for
+  policy/path proof. Unknown predicates or proof exhaustion cannot be ignored.
+- Add adversarial union-deny, partial-export, malformed, tenant/family-collision,
+  order/removal and public JSON/HTML tests with networking forbidden.
+- Developer research may use authoritative vendor documentation; audit code must
+  not retrieve it, connect/probe devices, resolve DNS or make revocation requests.
+
 - [ ] Input format and supported versions are explicit.
 - [ ] Effective state handles negation, removal, disablement, and ordering.
 - [ ] Defaults are version-aware or remain unknown.

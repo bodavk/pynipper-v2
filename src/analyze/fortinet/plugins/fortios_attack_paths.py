@@ -17,6 +17,7 @@ from src.analyze.common.attack_paths import (
     mark_evaluated, record_deny_defeated, record_path, record_path_not_assessed,
 )
 from src.devices.fortinet.fortios import FortiFirewallPolicy, FortiOSParser
+from src.devices.common.models import KnowledgeState
 
 ADMIN = "privileged-admin-guessing"
 SSLVPN = "sslvpn-password-guessing"
@@ -55,12 +56,6 @@ def _text(value: object) -> str:
     return "" if value is None else str(value)
 
 
-def _values(settings: dict, key: str) -> set[str]:
-    value = settings.get(key)
-    items = value if isinstance(value, list) else ([] if value is None else [value])
-    return {str(item).casefold() for item in items}
-
-
 def _external_role_known(fortios: FortiOSParser) -> bool:
     return any(role == "external" for _, role in fortios.assessment_context.interface_roles)
 
@@ -82,50 +77,6 @@ def _local_in_on(fortios: FortiOSParser, family: str, scope_names: set[str] | No
     return names
 
 
-def _admin_listeners(fortios: FortiOSParser, scope: str, family: str, ssh_password: bool):
-    """Enabled external interfaces in the admin scope offering password-capable HTTPS/SSH administration."""
-    wanted = {"https", "ssh"} if ssh_password else {"https"}
-    listeners = []
-    for if_scope, name, settings, path in fortios.iter_interfaces():
-        if if_scope.casefold() != scope.casefold() or _text(settings.get("status")).casefold() == "down":
-            continue
-        if fortios.assessment_context.role_for_interface(name) != "external":
-            continue
-        if family == "ipv4":
-            services = _values(settings, "allowaccess") & wanted
-            evidence = fortios.field_evidence(path + ("allowaccess",))
-        else:
-            ipv6 = settings.get("ipv6") if isinstance(settings.get("ipv6"), dict) else {}
-            addressed = (_text(ipv6.get("ip6-address")) not in {"", "::/0"}
-                         or _text(ipv6.get("ip6-mode")).casefold() in {"dhcp", "pppoe", "delegated"})
-            services = (_values(ipv6, "ip6-allowaccess") & wanted) if addressed else set()
-            evidence = (fortios.field_evidence(path + ("ipv6", "ip6-allowaccess"))
-                        + fortios.field_evidence(path + ("ipv6", "ip6-address"))
-                        + fortios.field_evidence(path + ("ipv6", "ip6-mode")))
-        if services:
-            listeners.append((name, tuple(sorted(services)), evidence))
-    return listeners
-
-
-def _trust(fortios: FortiOSParser, settings: dict, path, family: str, defaults_known: bool):
-    """(state, text, evidence) for broad sources; None when the account is source-restricted."""
-    spec = _FAMILIES[family]
-    trusts = [
-        (str(field), " ".join(_text(value).split()).casefold())
-        for field, value in settings.items()
-        if str(field).casefold().startswith(spec["trust_prefix"])
-    ]
-    if trusts:
-        broad = [field for field, value in trusts if value in spec["unrestricted"]]
-        if not broad:
-            return None
-        return (FactState.KNOWN, f"explicit {', '.join(broad)} admits every {spec['label']} source",
-                tuple(item for field in broad for item in fortios.field_evidence(path + (field,))))
-    if defaults_known:
-        return (FactState.KNOWN,
-                f"no {spec['label']} trusted host is set; the documented 7.4.1+ default {spec['default']} admits every source",
-                (f"{spec['trust_prefix']} absent: documented default {spec['default']}",))
-    return (FactState.UNKNOWN, "", ())
 
 
 def produce_admin_paths(plugin, fortios: FortiOSParser, release) -> None:
@@ -143,6 +94,11 @@ def produce_admin_paths(plugin, fortios: FortiOSParser, release) -> None:
         if _text(settings.get("status")).casefold() == "disable":
             continue
         account = f"{scope}/admin:{username}"
+        global_settings, global_path = globals_.get(scope.casefold(), ({}, ("system global",)))
+        syntax = fortios.get_admin_path_syntax(settings, global_settings)
+        if syntax.state != KnowledgeState.KNOWN:
+            record_path_not_assessed(fortios, ADMIN, f"{account}: {syntax.reason}")
+            continue
         if _text(settings.get("remote-auth")).casefold() == "enable" or _text(settings.get("peer-auth")).casefold() == "enable":
             continue  # not a locally verified password account
         role = roles.get((scope, username))
@@ -164,7 +120,6 @@ def produce_admin_paths(plugin, fortios: FortiOSParser, release) -> None:
             record_path_not_assessed(fortios, ADMIN, f"{account}: the second-factor state is not established.")
             continue
 
-        global_settings, global_path = globals_.get(scope.casefold(), ({}, ("system global",)))
         threshold = _text(global_settings.get("admin-lockout-threshold"))
         duration = _text(global_settings.get("admin-lockout-duration"))
         weak = []
@@ -209,17 +164,21 @@ def produce_admin_paths(plugin, fortios: FortiOSParser, release) -> None:
             ),
         )
         for family, spec in _FAMILIES.items():
-            listeners = _admin_listeners(fortios, scope, family, ssh_password)
+            records = fortios.get_path_management_listeners(scope, family, ssh_password)
+            for listener in records:
+                if listener.state != KnowledgeState.KNOWN:
+                    record_path_not_assessed(fortios, ADMIN, f"{account}/{family}: {listener.reason}")
+            listeners = [(r.name, r.services, r.evidence) for r in records if r.state == KnowledgeState.KNOWN]
             if not listeners:
                 continue
             key = f"{scope}/{family}/admin:{username}"
-            trust = _trust(fortios, settings, path, family, defaults_known)
-            if trust is None:
-                continue
-            if trust[0] != FactState.KNOWN:
+            trust = fortios.get_admin_trust_predicate(settings, path, family, defaults_known)
+            if trust.state != KnowledgeState.KNOWN:
                 record_path_not_assessed(
-                    fortios, ADMIN, f"{key}: no {spec['label']} trusted host is set and the release default is not qualified.",
+                    fortios, ADMIN, f"{key}: {trust.reason}",
                 )
+                continue
+            if not trust.broad:
                 continue
             local_in = _local_in_on(fortios, family, None, {name.casefold() for name, _, _ in listeners})
             if local_in:
@@ -242,7 +201,7 @@ def produce_admin_paths(plugin, fortios: FortiOSParser, release) -> None:
                 ),
                 PathFact(
                     "admin-source-restriction", key, scope, family, FactState.KNOWN,
-                    f"Administrator '{username}': {trust[1]}.", evidence_locations(trust[2]),
+                    f"Administrator '{username}': {trust.reason}", evidence_locations(trust.evidence),
                     linked_findings(findings, ("fortinet.fortios.admin.trusted_hosts",), account_evidence),
                 ),
             ) + shared
@@ -252,6 +211,9 @@ def produce_admin_paths(plugin, fortios: FortiOSParser, release) -> None:
 def produce_sslvpn_paths(plugin, fortios: FortiOSParser) -> None:
     mark_evaluated(fortios, SSLVPN)
     findings = plugin.get_issues()
+    for knowledge in fortios.get_sslvpn_auth_knowledge():
+        if knowledge.state != KnowledgeState.KNOWN:
+            record_path_not_assessed(fortios, SSLVPN, f"{knowledge.scope}: {knowledge.reason}")
     users = list(fortios.get_sslvpn_password_only_users())
     for vpn in fortios.get_sslvpn_settings():
         scope = vpn["scope"]
@@ -282,13 +244,28 @@ def produce_sslvpn_paths(plugin, fortios: FortiOSParser) -> None:
             ("ipv6", "IPv6", "6", "fortinet.fortios.sslvpn.unrestricted_sources6"),
         ):
             configured = vpn.get(f"source_addresses{suffix}")
+            semantics = vpn.get(f"source_networks{suffix}")
+            if configured and (semantics is None or not semantics.complete):
+                record_path_not_assessed(fortios, SSLVPN, f"{scope}/{family}/sslvpn: source-address{suffix} is malformed or unresolved.")
+                continue
             if family == "ipv4" and not configured:
                 record_path_not_assessed(
                     fortios, SSLVPN, f"{scope}/ipv4/sslvpn: source-address is not set; the release default is not qualified.",
                 )
                 continue
             if not (vpn[f"source_unrestricted{suffix}"] and vpn[f"source_address{suffix}_negated"] == "disable"):
+                if configured and vpn[f"source_address{suffix}_negated"] not in {"enable", "disable"}:
+                    record_path_not_assessed(fortios, SSLVPN, f"{scope}/{family}/sslvpn: source-address negation state is unqualified.")
                 continue  # restricted, negated or (IPv6) not explicitly opened to every source
+            qualified_external = []
+            for name in external:
+                predicate = fortios.get_sslvpn_listener_predicate(scope, name, family)
+                if predicate.state != KnowledgeState.KNOWN:
+                    record_path_not_assessed(fortios, SSLVPN, f"{scope}/{family}/sslvpn: {predicate.reason}")
+                elif predicate.broad:
+                    qualified_external.append(name)
+            if not qualified_external:
+                continue
             local_in = _local_in_on(fortios, family, {scope.casefold()}, {name.casefold() for name in external})
             if local_in:
                 record_path_not_assessed(
@@ -298,13 +275,26 @@ def produce_sslvpn_paths(plugin, fortios: FortiOSParser) -> None:
                 continue
             listener_evidence = tuple(vpn["interface_evidence"]) + tuple(vpn[f"source_evidence{suffix}"])
             listener = PathFact(
-                "sslvpn-listener", f"{scope}/{family}/sslvpn:{','.join(external)}", scope, family, FactState.KNOWN,
-                (f"Active SSL-VPN listens on external interface(s) {', '.join(external)} and its "
+                "sslvpn-listener", f"{scope}/{family}/sslvpn:{','.join(qualified_external)}", scope, family, FactState.KNOWN,
+                (f"Active SSL-VPN listens on external interface(s) {', '.join(qualified_external)} and its "
                  f"source-address{suffix} covers every {label} address (negate disabled)."),
                 evidence_locations(listener_evidence + tuple(f"assessment policy: {name} role external" for name in external)),
                 linked_findings(findings, (rule,), listener_evidence),
             )
             for user in sorted(scope_users, key=lambda item: (item.username, item.auth_rule)):
+                if family in user.unknown_families:
+                    record_path_not_assessed(fortios, SSLVPN, f"{scope}/{family}/sslvpn: authentication-rule source restriction is unresolved.")
+                    continue
+                if family not in user.unrestricted_families:
+                    continue
+                selected = [name for name in qualified_external if name.casefold() in user.interfaces]
+                if not selected:
+                    continue
+                if any(name not in selected for name in qualified_external):
+                    # A rule-specific interface restriction cannot be described
+                    # as a password path on all parent listeners.
+                    record_path_not_assessed(fortios, SSLVPN, f"{scope}/{family}/sslvpn: auth-rule listener subset requires a separate qualified binding.")
+                    continue
                 key = f"{scope}/{family}/sslvpn-user:{user.username}"
                 binding = f"group '{user.group}'" if user.group else "a direct user mapping"
                 account = PathFact(
@@ -321,16 +311,23 @@ def produce_deny_shadow_paths(fortios: FortiOSParser, candidates) -> None:
     mark_evaluated(fortios, DENY)
     for candidate in candidates:
         deny, covering = candidate.deny, candidate.covering
+        policies = fortios.get_firewall_policy_semantics()
+        proofs = [fortios.get_effective_policy_permission(p, policies, deny) for p in covering]
+        from src.devices.common.policy_semantics import ProofState
+        permission = next((p for p in proofs if p.state == ProofState.PROVEN),
+                          next((p for p in proofs if p.state == ProofState.UNKNOWN), proofs[0]))
         record_deny_defeated(
             fortios, scope=deny.scope, family=deny.family,
             instance_key=f"{deny.scope}/{deny.family}/policy:{deny.name}",
             allow_entity=f"{deny.scope}/{deny.family}/policy:{','.join(item.name for item in covering)}",
             allow_text=("Earlier enabled accept policy "
                         + ", ".join(f"'{item.name}' (position {item.position})" for item in covering)
-                        + " statically covers the deny's interfaces, sources, destinations and services."),
-            allow_evidence=(item for policy in covering for item in policy.evidence),
+                        + " statically covers the deny's interfaces, sources, destinations and services; only the proven remainder is effective permission."),
+            allow_evidence=(item for policy in (*covering, *(p for p in policies
+                if p.scope == deny.scope and p.family == deny.family and p.position < max(c.position for c in covering)))
+                for item in policy.evidence),
             deny_text=f"Enabled deny policy '{deny.name}' at position {deny.position} is never reached under first-match evaluation.",
-            deny_evidence=deny.evidence, finding=candidate.finding,
+            deny_evidence=deny.evidence, finding=candidate.finding, permission=permission,
         )
 
 

@@ -20,6 +20,17 @@ This table separates registry support from detection depth. “Target baseline�
 
 The canonical IDs and accepted aliases are defined in `src/devices/registry.py`.
 
+Offline accuracy cleanup (SC-064–SC-067) qualifies selected PAN-OS/ASA absence
+checks, FortiOS IPv4 `policy`/IPv6 `policy6` logging and inspection, and effective
+allow remainders for FortiOS/ASA/PAN-OS protective-deny paths. Inactive or proven
+irrelevant PAN-OS NAT no longer suppresses unrelated static comparisons; relevant
+or unresolved interactions remain unassessed. FortiOS malformed IPv6 predicates
+and cross-VDOM identity/listener collisions cannot complete known paths. The
+three active patterns and seven expansion gates are retained. Modern unified
+FortiOS IPv6 policy syntax, PAN-OS IPv4-as-IPv6 remainder matching and unqualified
+global administrator ownership remain explicit evidence gates. See
+[Export evidence](EXPORT_EVIDENCE.md) for scoped outcomes and remaining migrations.
+
 Junos REST coverage includes explicitly configured HTTP network listeners with source/port evidence. Loopback-only, omitted-address defaults, malformed values and unexpanded group inheritance are ungraded. This check establishes configured clear-text transport, not Internet reachability or a live listener.
 
 Junos classic JET gRPC coverage reports clear-text listeners with explicit valid non-loopback addresses and ports, and separately reports `skip-authentication` on a resolved network listener when mandatory verified client certificates are not configured. SSL listeners require an explicit local-certificate to be assessed. Inactive, malformed, inherited and omitted bindings remain ungraded. Certificate validity, individual RPC authorization, newer `system services http servers` instances and actual reachability are not assessed.

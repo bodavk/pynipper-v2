@@ -15,7 +15,7 @@ from src.report.coverage import build_report_context
 
 PAN_TEMPLATE = """<config><devices><entry name="device"><deviceconfig><system>
 <hostname>{{ hostname }}</hostname>
-<update-schedule><threats><recurring><daily><action>download-only</action></daily></recurring></threats></update-schedule>
+<update-schedule><threats><recurring><daily><at>01:00</at><action>download-only</action></daily></recurring></threats></update-schedule>
 </system></deviceconfig></entry></devices></config>"""
 
 FORTI_TEMPLATE = """#config-version=FGT60F-7.2.8-FW-build1639-240313:opmode=0:vdom=0:user=admin
@@ -94,7 +94,7 @@ def test_template_filter_preserves_only_explicit_fortios_findings(tmp_path):
 def test_template_without_threat_schedule_does_not_infer_absence(tmp_path):
     path = tmp_path / "template.xml"
     path.write_text(PAN_TEMPLATE.replace(
-        "<update-schedule><threats><recurring><daily><action>download-only</action></daily></recurring></threats></update-schedule>",
+        "<update-schedule><threats><recurring><daily><at>01:00</at><action>download-only</action></daily></recurring></threats></update-schedule>",
         "",
     ), encoding="utf-8")
     parser = PaloAltoPANOSParser(str(path))

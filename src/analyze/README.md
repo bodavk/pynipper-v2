@@ -39,6 +39,11 @@ Every finding constructed by the twelve corpus pipelines now includes at least o
 
 ## Plugin requirements
 
+Accuracy cleanup uses parser-owned scoped export knowledge and typed bounded
+effective-permission/NAT qualification APIs. Missing evidence is unknown, not a
+negative finding or a pass. Migrated controls record stable scoped outcomes and
+retain uncertainty beside findings. See [Export evidence](../../docs/EXPORT_EVIDENCE.md).
+
 - Extend `BasePlugin`.
 - Accept a parser object rather than reopening the configuration file.
 - Evaluate ordered effective state, including negation, disablement, deletion, attachment, and scope.

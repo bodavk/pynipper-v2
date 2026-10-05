@@ -3,7 +3,7 @@ import shlex
 import base64
 import ipaddress
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional
 from ciscoconfparse import CiscoConfParse
 from src.common.certificates import (
@@ -19,6 +19,7 @@ from src.devices.common.policy_semantics import (
     NetworkSemantics,
     ServiceInterval,
     ServiceSemantics,
+    TrafficMatch, EffectivePermissionProof, effective_permission,
 )
 from src.devices.common.models import (
     BlocklistCredentialAssessment,
@@ -2278,6 +2279,9 @@ class CiscoASAParser(BaseDeviceParser):
             if negated:
                 entries.pop(key, None)
             else:
+                if key in entries:
+                    entry = replace(entry, sequence=entries[key].sequence,
+                                    unsupported_predicates=tuple(sorted(set(entry.unsupported_predicates) | {"duplicate-ace-order"})))
                 entries[key] = entry
         return sorted(
             entries.values(),
@@ -2733,6 +2737,19 @@ class CiscoASAParser(BaseDeviceParser):
             [entry.protocol, *qualifiers], frozenset(),
             [self._MAX_ACL_OBJECT_EXPANSION],
         )
+
+    def get_effective_acl_permission(self, entry: ASAACLEntry, prior: tuple[ASAACLEntry, ...],
+                                     target: ASAACLEntry) -> EffectivePermissionProof:
+        if target.acl_name != entry.acl_name or any(p.acl_name != entry.acl_name for p in prior):
+            return EffectivePermissionProof(ProofState.UNKNOWN, "Candidate, prior ACEs and target must belong to the same ACL.")
+        if any("duplicate-ace-order" in p.unsupported_predicates for p in self.get_acl_entries(entry.acl_name)):
+            return EffectivePermissionProof(ProofState.UNKNOWN, "Repeated identical ACE commands make exported ACL order unqualified.")
+        def match(item):
+            return TrafficMatch(self.resolve_acl_network(item.source), self.resolve_acl_network(item.destination),
+                                self.resolve_acl_service(item),
+                                not item.time_range and not item.unsupported_predicates and item.action in {"permit", "deny"},
+                                "Earlier ACE has unsupported predicates, time range or action.")
+        return effective_permission(match(entry), tuple(match(p) for p in prior if not p.inactive), target=match(target))
 
     def get_normalized_config(self) -> NormalizedConfig:
         """Expose only ASA state already reconstructed by native parser methods."""

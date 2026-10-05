@@ -1,6 +1,7 @@
 import re
 
 from src.analyze.common.base_plugin import BasePlugin
+from src.analyze.common.controls import ControlOutcome, record_control
 from src.analyze.common.credentials import credential_policy_from_context, evaluate_credential
 from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.devices.common.models import DefaultCredentialAssessment
@@ -603,8 +604,21 @@ class PluginASAChecks(BasePlugin):
         self._deny_shadows = []
         for binding in asa.get_acl_bindings():
             entries = asa.get_acl_entries(binding["acl_name"])
+            order_unknown = any("duplicate-ace-order" in e.unsupported_predicates for e in entries)
+            if order_unknown:
+                record_path_not_assessed(parser, "protective-deny-defeated", "Repeated identical ACE commands make bound ACL order unqualified.")
             previous = []
             for position, entry in enumerate(entries, start=1):
+                instance = f"system/acl:{entry.acl_name}/entry:{position}/{binding['direction']}:{binding['interface']}"
+                def complete(item):
+                    return (not item.time_range and not item.unsupported_predicates and all((
+                        asa.resolve_acl_network(item.source).complete, asa.resolve_acl_network(item.destination).complete,
+                        asa.resolve_acl_service(item).complete)))
+                known = not order_unknown and complete(entry) and len(previous) <= 64 and all(complete(p) for _, p in previous)
+                record_control(parser, "cisco.asa.policy-order",
+                               ControlOutcome.NOT_APPLICABLE if entry.inactive else ControlOutcome.NO_FINDING if known else ControlOutcome.UNKNOWN,
+                               "Inactive ACE." if entry.inactive else "Bounded static bound-ACL comparison qualified." if known else
+                               "Objects, source-port/time predicates or earlier-rule proof budget are unqualified.", instance=instance)
                 evidence = (
                     entry.raw_line,
                     f"access-group {entry.acl_name} {binding['direction']} interface {binding['interface']}",
@@ -688,7 +702,7 @@ class PluginASAChecks(BasePlugin):
                         references=(CISCO_ASA_ACCESS_RULES_GUIDE,),
                     ))
 
-                if entry.time_range or entry.unsupported_predicates:
+                if order_unknown or entry.time_range or entry.unsupported_predicates:
                     previous.append((position, entry))
                     continue
                 current_source = asa.resolve_acl_network(entry.source)
@@ -724,8 +738,11 @@ class PluginASAChecks(BasePlugin):
                         severity=Severity.LOW if same_action else Severity.HIGH,
                         evidence=evidence + (earlier.raw_line,),
                         references=(CISCO_ASA_ACCESS_RULES_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                     self.add_issue(finding)
+                    record_control(parser, "cisco.asa.policy-order", ControlOutcome.FINDING,
+                                   "Proven static shadow/redundancy, not observed nonuse or effective permission.", instance=instance)
                     if earlier.action == "permit" and entry.action == "deny":
                         self._deny_shadows.append((binding, position, entry, earlier_position, earlier, finding))
                     break
@@ -767,12 +784,15 @@ class PluginASAChecks(BasePlugin):
         for key, items in sorted(grouped.items()):
             binding, position, entry, earlier_position, earlier, finding = items[0]
             bindings = sorted({f"{item[0]['direction']} on {item[0]['interface']}" for item in items})
+            permission = parser.get_effective_acl_permission(
+                earlier, tuple(parser.get_acl_entries(entry.acl_name)[:earlier_position-1]), entry)
             record_deny_defeated(
                 parser, scope="system", family="any", instance_key=key,
                 allow_entity=f"system/acl:{entry.acl_name}/entry:{earlier_position}",
+                permission=permission,
                 allow_text=(f"Earlier active permit entry {earlier_position} in access list '{entry.acl_name}' statically "
                             "covers the deny's sources, destinations and services."),
-                allow_evidence=(earlier.raw_line,),
+                allow_evidence=(earlier.raw_line,) + tuple(p.raw_line for p in parser.get_acl_entries(entry.acl_name)[:earlier_position-1]),
                 deny_text=(f"Deny entry {position} in access list '{entry.acl_name}', applied {', '.join(bindings)}, "
                            "is never reached under first-match evaluation."),
                 deny_evidence=(entry.raw_line,) + tuple(

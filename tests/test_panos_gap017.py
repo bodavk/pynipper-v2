@@ -1,6 +1,7 @@
 from src.analyze.paloalto.core.process_panos_conf import process_panos_conf
 from src.analyze.paloalto.plugins.panos_checks_plugin import PluginPANOSChecks
 from src.devices.paloalto.panos import PaloAltoPANOSParser
+from src.analyze.common.controls import control_coverage
 
 
 def _parse(tmp_path, content: str, name: str = "panos-gap017.xml"):
@@ -79,10 +80,8 @@ def test_administrator_role_authentication_and_mfa_resolution(tmp_path):
     assert policies["sequenced"].mfa_state == "configured"
     assert policies["broken"].role_resolution == "unresolved"
     assert policies["broken"].authentication_resolution == "unresolved"
-    assert {item.rule_id for item in _administrative_findings(parser)} == {
-        "paloalto.panos.admin.role_assignment",
-        "paloalto.panos.admin.authentication_profile_unresolved",
-    }
+    assert _administrative_findings(parser) == []
+    assert next(r for r in control_coverage(parser)["results"] if r["control-id"] == "paloalto.panos.administrator-policy")["unassessed-instance-count"] == 2
 
 
 def test_global_external_administrator_profile_or_sequence_is_resolved(tmp_path):
@@ -94,9 +93,10 @@ def test_global_external_administrator_profile_or_sequence_is_resolved(tmp_path)
         "global-unresolved.xml",
     )
     assert unresolved.get_administrative_settings()[0].authentication_resolution == "unresolved"
-    assert "paloalto.panos.admin.authentication_profile_unresolved" in {
+    assert "paloalto.panos.admin.authentication_profile_unresolved" not in {
         item.rule_id for item in _administrative_findings(unresolved)
     }
+    assert next(r for r in control_coverage(unresolved)["results"] if r["control-id"] == "paloalto.panos.administrator-policy")["outcome"] == "unknown"
 
     known = _parse(
         tmp_path,
@@ -140,14 +140,17 @@ def test_management_ssh_profile_attachment_and_algorithm_resolution(tmp_path):
     assert {
         item.rule_id for item in _administrative_findings(missing)
         if ".ssh_" in item.rule_id
-    } == {"paloalto.panos.admin.ssh_profile_missing"}
+    } == set()
+    from src.analyze.common.controls import control_coverage
+    assert next(r for r in control_coverage(missing)["results"] if r["control-id"] == "paloalto.panos.management-ssh")["outcome"] == "unknown"
 
     unresolved_xml = "<ssh><mgmt><server-profile>GHOST</server-profile></mgmt></ssh>"
     unresolved = _parse(tmp_path, xml(unresolved_xml), "unresolved.xml")
     assert {
         item.rule_id for item in _administrative_findings(unresolved)
         if ".ssh_" in item.rule_id
-    } == {"paloalto.panos.admin.ssh_profile_unresolved"}
+    } == set()
+    assert next(r for r in control_coverage(unresolved)["results"] if r["control-id"] == "paloalto.panos.management-ssh")["outcome"] == "unknown"
 
     weak_xml = """<ssh><profiles><mgmt-profiles><server-profiles><entry name="MGMT">
       <ciphers><aes256-cbc/></ciphers><kex><diffie-hellman-group14-sha1/></kex><mac><hmac-sha1/></mac>
@@ -184,7 +187,6 @@ def test_new_panos_findings_reach_public_processor_with_references(tmp_path):
         "paloalto.panos.admin.idle_timeout",
         "paloalto.panos.admin.login_attempts",
         "paloalto.panos.admin.concurrent_sessions",
-        "paloalto.panos.admin.ssh_profile_missing",
     }.issubset({item.rule_id for item in administrative})
     assert all(item.references for item in administrative)
     identities = [(item.rule_id, item.evidence) for item in findings]

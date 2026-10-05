@@ -6,6 +6,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Offline accuracy cleanup (SC-064–SC-067): partial PAN-OS password, management,
+  role/authentication, inspection and update exports, plus absent ASA management
+  AAA bindings, retain unknown evidence instead of unsupported absence findings.
+  Explicit unsafe settings remain findings; release-default data is unchanged.
+- FortiOS logging/inspection now shares family/VDOM records and bounded effective
+  permission proof for IPv4 policy and IPv6 policy6. Fully blocked accepts no
+  longer claim effective unlogged/uninspected boundary traffic; unresolved
+  selectors, profiles, schedules and boundary context remain unassessed.
+- Protective-deny paths on FortiOS/ASA/PAN-OS require a proven nonempty allow
+  remainder. Malformed FortiOS IPv6/trusted-host values and cross-VDOM identity or
+  listener collisions are unassessed, and IPv6 explanations/remediation are
+  family-correct. PAN-OS NAT suppression is per comparison: inactive/irrelevant
+  NAT permits proof, relevant or unresolved interaction withholds it.
+- SC-049 coverage preserves aggregate outcomes and adds scoped outcomes,
+  uncertainty counts/reasons, export knowledge and explicit offline/dialect,
+  rule-hit and advisory limitations in JSON/HTML. See `docs/EXPORT_EVIDENCE.md`.
+
 - IPv6 first-hop protection (SC-048, IOS/IOS-XE): `cisco.ios.layer2.access_edge.ipv6_ra_trusted` and `ipv6_dhcp_server_trusted` report assessed access-edge ports whose attached RA guard or DHCPv6 guard policy is `device-role router`/`server` or `trusted-port`, resolving interface and `vlan configuration` attachments; missing or ambiguous policies are not graded.
 
 - CIS references (SC-062): JSON findings gain `cis-references` and the HTML report shows benchmark recommendation numbers for 211 rules that fully implement a covered CIS recommendation; control outcomes list them too. The 26 pending Junos and Check Point mappings were verified. Fix: Junos `snmp.v3_security` now reports `authentication-none` and `privacy-3des`.

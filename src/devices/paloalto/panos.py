@@ -21,6 +21,8 @@ from src.devices.common.policy_semantics import (
     NetworkSemantics,
     ServiceInterval,
     ServiceSemantics,
+    TrafficMatch, EffectivePermissionProof, effective_permission, ProofState, static_values_cover,
+    network_disjoint, service_disjoint,
 )
 from src.common.unix_crypt import crypt_matches
 from src.devices.common.base_parser import BaseDeviceParser
@@ -37,6 +39,8 @@ from src.devices.common.models import (
     NormalizedConfig,
     NormalizedValue,
     SecurityPolicy,
+    ExportScopeKnowledge,
+    KnowledgeState,
 )
 
 
@@ -103,6 +107,7 @@ class PanosSecurityRule:
     profile_group: str
     individual_profiles: tuple[tuple[str, str], ...]
     evidence: tuple[ConfigEvidence, ...]
+    unsupported_predicates: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -114,6 +119,27 @@ class PanosDefaultSecurityRule:
     resolution_state: str
     definition_scope: str
     evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class PanosNATRule:
+    device_scope: str
+    scope: str
+    rulebase: str
+    position: int
+    state: str
+    from_zones: tuple[str, ...]
+    sources: NetworkSemantics
+    destinations: NetworkSemantics
+    services: ServiceSemantics
+    reverse_possible: bool
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class PanosNATQualification:
+    state: ProofState
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -202,6 +228,7 @@ class PanosPasswordPolicy:
     history_count: int | None
     blocks_username: bool | None
     evidence: tuple[ConfigEvidence, ...]
+    knowledge: ExportScopeKnowledge | None = None
 
 
 @dataclass(frozen=True)
@@ -250,6 +277,7 @@ class PanosSSHManagementPolicy:
     key_exchanges: tuple[str, ...]
     macs: tuple[str, ...]
     evidence: tuple[ConfigEvidence, ...]
+    knowledge: ExportScopeKnowledge | None = None
 
 
 @dataclass(frozen=True)
@@ -302,6 +330,7 @@ class PanosUpdateSchedule:
     recurrence: str
     action: str
     evidence: tuple[ConfigEvidence, ...]
+    knowledge: ExportScopeKnowledge | None = None
 
 
 @dataclass(frozen=True)
@@ -1167,12 +1196,126 @@ class PaloAltoPANOSParser(BaseDeviceParser):
             visit(name, frozenset())
         return ServiceSemantics(any_match, tuple(sorted(intervals)), not unresolved, tuple(sorted(unresolved, key=str.casefold)))
 
+    @staticmethod
+    def is_static_security_rule(rule: PanosSecurityRule) -> bool:
+        return (rule.action in {"allow", "deny", "drop", "reset-client", "reset-server", "reset-both"}
+                and not rule.unsupported_predicates and not rule.source_negated and not rule.destination_negated
+                and rule.schedule.casefold() in {"none", "any"}
+                and all(values and all(v.casefold() == "any" for v in values)
+                        for values in (rule.applications, rule.source_users, rule.categories)))
+
+    def get_effective_security_permission(self, rule: PanosSecurityRule, prior: tuple[PanosSecurityRule, ...],
+                                         target: PanosSecurityRule) -> EffectivePermissionProof:
+        nat = self.qualify_nat_comparison(rule, target)
+        if nat.state != ProofState.PROVEN:
+            return EffectivePermissionProof(ProofState.UNKNOWN, nat.reason)
+        def match(item, earlier=False):
+            qualified = self.is_static_security_rule(item)
+            if earlier:
+                qualified &= all(state == ProofState.PROVEN for state in (
+                    static_values_cover(item.from_zones, rule.from_zones),
+                    static_values_cover(item.to_zones, rule.to_zones)))
+            return TrafficMatch(self.resolve_network_semantics(item.sources, device_scope=item.device_scope, scope=item.scope),
+                                self.resolve_network_semantics(item.destinations, device_scope=item.device_scope, scope=item.scope),
+                                self.resolve_service_semantics(item.services, device_scope=item.device_scope, scope=item.scope),
+                                qualified, "Earlier rule zone, application, user, schedule or other predicates are unqualified.")
+        matches = tuple(match(p, True) for p in prior if p.enabled and p.position < rule.position)
+        candidate, target_match = match(rule), match(target)
+        # Unqualified universal IPv6 availability must not create a witness for
+        # an IPv4 comparison. Explicit literal family evidence selects IPv6.
+        families = tuple(sorted({x.family for m in (candidate, target_match)
+                                 for n in (m.sources, m.destinations) for x in n.intervals})) or (4,)
+        if 6 in families or any(x.family == 6 for m in matches for n in (m.sources, m.destinations) for x in n.intervals):
+            return EffectivePermissionProof(ProofState.UNKNOWN,
+                "PAN-OS IPv4-as-IPv6 matching is not qualified for an explicit IPv6 remainder.")
+        proof = effective_permission(candidate, matches, target=target_match, families=families)
+        if proof.state == ProofState.DISPROVEN and not any(
+                n.intervals and not n.any for m in (candidate, target_match) for n in (m.sources, m.destinations)):
+            return EffectivePermissionProof(ProofState.UNKNOWN,
+                "The IPv4 candidate remainder is empty; universal PAN-OS IPv6 permission remains unassessed.")
+        return proof
+
     def has_nat_policy(self) -> bool:
         return bool(
             self.root.findall(".//rulebase/nat/rules/entry")
             or self.root.findall(".//pre-rulebase/nat/rules/entry")
             or self.root.findall(".//post-rulebase/nat/rules/entry")
         )
+
+    def get_nat_rules(self) -> tuple[PanosNATRule, ...]:
+        """Local original-packet NAT selectors, without inferred routing state.
+
+        Security matches pre-NAT addresses and post-NAT zones. Destination
+        zones therefore cannot prove NAT irrelevance. Reverse static mappings
+        and unmerged/unlocated rules stay unknown.
+        """
+        result = []
+        located = set()
+        for device in self._device_entries():
+            device_scope = self._device_scope(device)
+            for vsys in device.findall("./vsys/entry"):
+                scope = vsys.get("name") or "vsys"
+                for rulebase in ("pre-rulebase", "rulebase", "post-rulebase"):
+                    for position, entry in enumerate(vsys.findall(f"./{rulebase}/nat/rules/entry"), 1):
+                        located.add(id(entry))
+                        disabled = self._text(entry.find("disabled")).casefold()
+                        state = "inactive" if disabled == "yes" else "active" if disabled in {"", "no"} else "unknown"
+                        if len(entry.findall("disabled")) > 1:
+                            state = "unknown"
+                        sources = self._members(entry, "source")
+                        destinations = self._members(entry, "destination")
+                        service = self._text(entry.find("service"))
+                        reverse = any(self._text(n).casefold() != "no" for n in entry.findall(".//bi-directional"))
+                        # Unsupported original-packet selectors cannot certify
+                        # an unrelated forward/reverse comparison.
+                        if any(entry.find(k) is not None for k in ("source-negate", "destination-negate", "nat-type")):
+                            reverse = True
+                        result.append(PanosNATRule(device_scope, scope, rulebase, position, state,
+                            self._members(entry, "from"),
+                            self.resolve_network_semantics(sources, device_scope=device_scope, scope=scope),
+                            self.resolve_network_semantics(destinations, device_scope=device_scope, scope=scope),
+                            self.resolve_service_semantics((service,) if service else (), device_scope=device_scope, scope=scope),
+                            reverse, (self._evidence(f"{scope}: NAT rule {position}", entry),)))
+        for entry in self.root.findall(".//nat/rules/entry"):
+            if id(entry) not in located:
+                state = "inactive" if self._text(entry.find("disabled")).casefold() == "yes" else "unknown"
+                result.append(PanosNATRule("", "", "unresolved", 0, state, (),
+                    NetworkSemantics(complete=False), NetworkSemantics(complete=False),
+                    ServiceSemantics(complete=False), True, ()))
+        return tuple(result)
+
+    def qualify_nat_comparison(self, first: PanosSecurityRule, second: PanosSecurityRule) -> PanosNATQualification:
+        if (first.device_scope, first.scope, first.rulebase) != (second.device_scope, second.scope, second.rulebase):
+            return PanosNATQualification(ProofState.UNKNOWN, "Security comparison crosses device, vsys or rulebase boundaries.")
+        if self.panorama_inheritance_unknown:
+            return PanosNATQualification(ProofState.UNKNOWN, "Panorama inheritance is unresolved.")
+        rules = tuple(n for n in self.get_nat_rules() if n.state != "inactive" and
+                      (not n.device_scope or not n.scope or (n.device_scope, n.scope) == (first.device_scope, first.scope)))
+        if len(rules) > 64:
+            return PanosNATQualification(ProofState.UNKNOWN, "NAT relevance proof budget exceeded (64 active/unresolved rules).")
+        for nat in rules:
+            if nat.device_scope and nat.scope and (nat.device_scope != first.device_scope or nat.scope != first.scope):
+                continue
+            if nat.state == "unknown":
+                return PanosNATQualification(ProofState.UNKNOWN, "NAT scope or enablement is unresolved.")
+            if nat.reverse_possible:
+                return PanosNATQualification(ProofState.UNKNOWN, "Same-vsys NAT reverse mapping or unsupported selector may affect this comparison.")
+            for rule in (first, second):
+                if (nat.from_zones and rule.from_zones and "any" not in {v.casefold() for v in (*nat.from_zones, *rule.from_zones)}
+                        and {v.casefold() for v in nat.from_zones}.isdisjoint(v.casefold() for v in rule.from_zones)):
+                    continue
+                sources = self.resolve_network_semantics(rule.sources, device_scope=rule.device_scope, scope=rule.scope)
+                destinations = self.resolve_network_semantics(rule.destinations, device_scope=rule.device_scope, scope=rule.scope)
+                services = self.resolve_service_semantics(rule.services, device_scope=rule.device_scope, scope=rule.scope)
+                if any(i.family == 6 for n in (nat.sources, nat.destinations, sources, destinations) for i in n.intervals):
+                    return PanosNATQualification(ProofState.UNKNOWN,
+                        "PAN-OS IPv4-as-IPv6 prefix matching in NAT is not qualified for this comparison.")
+                if (not self.is_static_security_rule(rule) or not any(state == ProofState.PROVEN for state in (
+                    network_disjoint(nat.sources, sources), network_disjoint(nat.destinations, destinations),
+                    service_disjoint(nat.services, services)))):
+                    return PanosNATQualification(ProofState.UNKNOWN,
+                        "Same-vsys NAT may intersect the comparison; pre-NAT address/post-NAT zone interaction is unassessed.")
+        return PanosNATQualification(ProofState.PROVEN, "All supplied NAT rules are inactive, outside this vsys or proven disjoint on original-packet selectors.")
 
     def get_security_rules(self) -> list[PanosSecurityRule]:
         rules = []
@@ -1242,6 +1385,14 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                                 f"{device_scope}/{scope}/{rulebase_name}: security rule {position} {name}",
                                 entry,
                             ),),
+                            unsupported_predicates=tuple(sorted(
+                                [field for field in ("hip-profiles", "source-hip", "destination-hip", "source-device", "destination-device")
+                                 if entry.find(field) is not None and self._members(entry, field) != ("any",)]
+                                + [field for field in ("disabled", "negate-source", "negate-destination")
+                                   if self._text(entry.find(field)).casefold() not in {"", "yes", "no"}]
+                                + (["rule-type"] if self._text(entry.find("rule-type"), "universal") != "universal" else [])
+                                + (["action"] if len(entry.findall("action")) != 1 else [])
+                            )),
                         )
                     )
         return rules
@@ -1567,12 +1718,18 @@ class PaloAltoPANOSParser(BaseDeviceParser):
         if node is None:
             node = self.root.find(".//deviceconfig/system/password-complexity")
         if node is None:
-            return PanosPasswordPolicy(None, None, None, None, None, None, None, None, ())
+            return PanosPasswordPolicy(None, None, None, None, None, None, None, None, (),
+                ExportScopeKnowledge("password-complexity", "management", KnowledgeState.UNKNOWN,
+                                     "Password-complexity section not supplied; management-policy completeness is unqualified."))
 
         def number(name: str) -> int | None:
+            if len(node.findall(name)) != 1:
+                return None
             return self._safe_int(self._text(node.find(name)))
 
         def yes_no(name: str) -> bool | None:
+            if len(node.findall(name)) != 1:
+                return None
             value = self._text(node.find(name)).casefold()
             if value == "yes":
                 return True
@@ -1593,7 +1750,25 @@ class PaloAltoPANOSParser(BaseDeviceParser):
             history_count=history_count,
             blocks_username=yes_no("block-username-inclusion"),
             evidence=(self._evidence("mgt-config password-complexity", node),),
+            knowledge=ExportScopeKnowledge("password-complexity", "management",
+                KnowledgeState.KNOWN if (yes_no("enabled") is not None and all(
+                    number(field) is not None and number(field) >= 0 for field in (
+                        "minimum-length", "minimum-uppercase-letters", "minimum-lowercase-letters",
+                        "minimum-numeric-letters", "minimum-special-characters")))
+                and not self.panorama_inheritance_unknown else KnowledgeState.UNKNOWN,
+                "Only explicit valid password-complexity fields are assessed; omitted, malformed or inherited fields remain unknown."),
         )
+
+    def get_export_scope_knowledge(self, domain: str, scope: str) -> ExportScopeKnowledge:
+        if domain == "password-complexity" and scope == "management":
+            return self.get_password_policy().knowledge
+        if domain == "management-ssh":
+            return next((p.knowledge for p in self.get_ssh_management_policies() if p.device_scope == scope),
+                        super().get_export_scope_knowledge(domain, scope))
+        return super().get_export_scope_knowledge(domain, scope)
+
+    def get_export_scopes(self) -> tuple[ExportScopeKnowledge, ...]:
+        return (self.get_password_policy().knowledge,) + tuple(p.knowledge for p in self.get_ssh_management_policies())
 
     def get_administrative_settings(self) -> tuple[PanosAdministrativeSettings, ...]:
         """Return explicit management authentication/session settings per device."""
@@ -1735,6 +1910,17 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                 )
             else:
                 resolution = "known"
+            if ssh is not None and (len(ssh.findall("./mgmt/server-profile")) > 1 or
+                    sum((e.get("name") or "").casefold() == selected.casefold()
+                        for e in ssh.findall("./profiles/mgmt-profiles/server-profiles/entry")) > 1):
+                resolution = "unresolved"
+            algorithms = tuple(self._element_values(profile.find(field))
+                               if profile is not None and len(profile.findall(field)) == 1 else ()
+                               for field in ("ciphers", "kex", "mac"))
+            knowledge = ExportScopeKnowledge("management-ssh", scope,
+                KnowledgeState.KNOWN if resolution == "known" and all(algorithms) else KnowledgeState.UNKNOWN,
+                "Explicit applied management SSH algorithm lists are supplied." if resolution == "known" and all(algorithms) else
+                "Management SSH attachment or algorithm fields are unexported, malformed, unsupported or inherited.")
             evidence = [self._evidence(f"{scope}: management SSH profile {selected or 'absent'}", ssh)]
             policies.append(
                 PanosSSHManagementPolicy(
@@ -1743,10 +1929,11 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                     supported=supported,
                     selected_profile=selected,
                     resolution_state=resolution,
-                    ciphers=self._element_values(profile.find("ciphers")) if profile is not None else (),
-                    key_exchanges=self._element_values(profile.find("kex")) if profile is not None else (),
-                    macs=self._element_values(profile.find("mac")) if profile is not None else (),
+                    ciphers=algorithms[0],
+                    key_exchanges=algorithms[1],
+                    macs=algorithms[2],
                     evidence=tuple(evidence),
+                    knowledge=knowledge,
                 )
             )
         return tuple(policies)
@@ -1931,6 +2118,19 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                     recurrence = child.tag
                     action = self._text(child.find("action")).casefold()
                     break
+                children = list(recurring)
+                timing_known = False
+                if len(children) == 1:
+                    child = children[0]
+                    at = self._text(child.find("at"))
+                    if recurrence == "hourly":
+                        timing_known = len(child.findall("at")) == 1 and at.isdigit() and 0 <= int(at) <= 59
+                    elif recurrence in {"daily", "weekly"}:
+                        clock = re.fullmatch(r"([01]\d|2[0-3]):([0-5]\d)", at)
+                        timing_known = len(child.findall("at")) == 1 and clock is not None
+                        if recurrence == "weekly":
+                            timing_known &= (len(child.findall("day")) == 1 and self._text(child.find("day")).casefold()
+                                in {"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"})
                 schedules.append(
                     PanosUpdateSchedule(
                         device_scope=scope,
@@ -1938,6 +2138,12 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                         recurrence=recurrence,
                         action=action,
                         evidence=(self._evidence(f"{scope}: update-schedule {content_type} {recurrence or 'unresolved'} {action or 'no-action'}", recurring),),
+                        knowledge=ExportScopeKnowledge("content-updates", scope + "/" + content_type,
+                            KnowledgeState.KNOWN if len(children) == 1 and (
+                                recurrence == "none" and not list(children[0]) or
+                                len(children[0].findall("action")) == 1 and timing_known
+                                and action in {"download-only", "download-and-install"}) else KnowledgeState.UNKNOWN,
+                            "Only a single explicit supported recurrence/action establishes configured automatic installation; delivery is not observed."),
                     )
                 )
         return schedules

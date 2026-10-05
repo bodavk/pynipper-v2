@@ -151,6 +151,25 @@ def build_report_context(parser: BaseDeviceParser) -> dict:
     coverage["controls"] = control_coverage(
         parser, template_unresolved=bool(getattr(parser, "template_unresolved", False))
     )
+    coverage["export-scopes"] = [
+        {"domain": _safe_text(item.domain), "scope": _safe_text(item.scope),
+         "knowledge-state": item.state.value, "reason": _safe_text(item.reason)}
+        for item in parser.get_export_scopes()
+    ]
+    coverage["limitations"] = [
+        "Configuration exports do not establish observed rule hits, live reachability or actual exploitability.",
+        "Local advisory release matches do not establish affected-feature enablement or the live running release.",
+    ]
+    dialect_limits = {
+        "ASA": "PIX shares the ASA parser provisionally; PIX policy and management dialects are not independently qualified.",
+        "CHECKPOINT_FW1": "Firewall-1 policy input does not assess Gaia operating-system posture.",
+        "CHECKPOINT_GAIA": "Gaia Clish operating-system input does not assess Firewall-1 security policy.",
+        "SONICOS": "Only SonicOS 7 custom E-CLI exports are qualified; legacy preference formats are not.",
+        "PIX": "PIX policy and management dialects are not independently qualified; the shared ASA parser is provisional.",
+        "F5_BIGIP": "Saved TMOS text has bounded LTM/AFM/ASM coverage; APM, AFM rule contents, F5OS and UCS are unassessed.",
+    }
+    if normalized.device_type in dialect_limits:
+        coverage["limitations"].append(dialect_limits[normalized.device_type])
     attack_paths = attack_path_section(
         parser, template_unresolved=bool(getattr(parser, "template_unresolved", False))
     )

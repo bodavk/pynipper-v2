@@ -354,9 +354,12 @@ def test_ipv6_local_in_policy_blocks_only_ipv6(tmp_path):
 def test_ipv6_sslvpn_path_needs_explicit_unrestricted_source6(tmp_path):
     vpn6 = VPN.replace("    set source-address-negate disable\n",
                        '    set source-address-negate disable\n    set source-address6 "all"\n    set source-address6-negate disable\n')
-    _, _, section = _scan(tmp_path, WAN + USER + vpn6)
+    _, _, section = _scan(tmp_path, WAN6 + USER + vpn6)
     keys = [item["instance-key"] for item in _paths(section, "sslvpn-password-guessing")]
     assert keys == ["root/ipv4/sslvpn-user:alice", "root/ipv6/sslvpn-user:alice"]
+    path6 = next(p for p in section["results"] if p["family"] == "ipv6")
+    assert "every IPv6 source" in path6["summary"] and "IPv4" not in path6["summary"]
+    assert any("source-address6" in text for text in path6["breakpoints"])
     _, _, section = _scan(tmp_path, WAN + USER + VPN)
     assert [item["family"] for item in _paths(section, "sslvpn-password-guessing")] == ["ipv4"]
 

@@ -55,11 +55,39 @@ class ControlDefinition:
 class _Ledger:
     results: dict[str, tuple[ControlOutcome, list[str]]] = field(default_factory=dict)
     manual_review: list[tuple[str, str]] = field(default_factory=list)
+    instances: dict[str, dict[str, tuple[ControlOutcome, list[str]]]] = field(default_factory=dict)
+    unassessed: dict[str, dict[str, list[str]]] = field(default_factory=dict)
 
 
 CONTROLS: dict[str, ControlDefinition] = {
     definition.control_id: definition
     for definition in (
+        ControlDefinition("paloalto.panos.threat-updates", "Explicit recurring threat-content installation", 1, frozenset({"PAN_OS"}),
+                          ("paloalto.panos.updates.threat_content",)),
+        ControlDefinition("paloalto.panos.administrator-policy", "Administrator role and authentication binding knowledge", 1, frozenset({"PAN_OS"}),
+                          ("paloalto.panos.admin.role_assignment", "paloalto.panos.admin.authentication_profile_unresolved")),
+        ControlDefinition("paloalto.panos.policy-inspection", "Exported attached security-profile actions", 1, frozenset({"PAN_OS"}),
+                          ("paloalto.panos.policy.security_profiles", "paloalto.panos.policy.security_profile_unresolved", "paloalto.panos.policy.security_profile_ineffective", "paloalto.panos.policy.threat_selector_nonblocking")),
+        ControlDefinition("paloalto.panos.management-ssh", "Explicit applied management SSH algorithms", 1, frozenset({"PAN_OS"}),
+                          ("paloalto.panos.admin.ssh_profile_missing", "paloalto.panos.admin.ssh_profile_unresolved", "paloalto.panos.admin.ssh_profile_algorithms")),
+        ControlDefinition("paloalto.panos.management-tls", "Explicit management TLS policy", 1, frozenset({"PAN_OS"}),
+                          ("paloalto.panos.management.tls_profile_missing", "paloalto.panos.management.tls_profile_unresolved", "paloalto.panos.management.tls_minimum_version")),
+        ControlDefinition("fortinet.fortios.policy-order", "Bounded transit-policy effectiveness", 1, frozenset({"FORTIOS"}),
+                          ("fortinet.fortios.policy.shadowed_rule", "fortinet.fortios.policy.redundant_rule")),
+        ControlDefinition("cisco.asa.policy-order", "Bounded bound-ACL effectiveness", 1, frozenset({"ASA"}),
+                          ("cisco.asa.acl.shadowed_rule", "cisco.asa.acl.redundant_rule")),
+        ControlDefinition("paloalto.panos.policy-order", "Bounded security-rule effectiveness and NAT relevance", 1, frozenset({"PAN_OS"}),
+                          ("paloalto.panos.policy.shadowed_rule", "paloalto.panos.policy.redundant_rule")),
+        ControlDefinition("fortinet.fortios.policy-logging", "Effective boundary-policy logging", 1,
+                          frozenset({"FORTIOS"}), ("fortinet.fortios.policy.logging",)),
+        ControlDefinition("fortinet.fortios.policy-inspection", "Effective boundary-policy inspection", 1,
+                          frozenset({"FORTIOS"}), ("fortinet.fortios.policy.security_profiles", "fortinet.fortios.policy.security_profile_ineffective", "fortinet.fortios.policy.security_profile_unresolved")),
+        ControlDefinition("paloalto.panos.password-complexity", "Explicit administrator password complexity", 1,
+                          frozenset({"PAN_OS"}), ("paloalto.panos.credentials.password_complexity",)),
+        ControlDefinition("cisco.asa.management-authentication", "Management AAA authentication binding", 1,
+                          frozenset({"ASA"}), ("cisco.asa.aaa.management_authentication",)),
+        ControlDefinition("cisco.asa.management-accounting", "Management session accounting binding", 1,
+                          frozenset({"ASA"}), ("cisco.asa.aaa.management_accounting",)),
         ControlDefinition(
             "cisco.ios.smart-install", "Smart Install (vstack) disabled", 1, _IOS_FAMILY,
             ("cisco.ios.services.smart_install",),
@@ -110,11 +138,21 @@ def _ledger(parser) -> _Ledger:
     return ledger
 
 
-def record_control(parser, control_id: str, outcome: ControlOutcome, reason: str) -> None:
+def record_control(parser, control_id: str, outcome: ControlOutcome, reason: str, *, instance: str = "device") -> None:
     """Record a check's outcome for a registered control; unknown IDs are a programming error."""
     if control_id not in CONTROLS:
         raise KeyError(f"Unregistered control '{control_id}'")
     ledger = _ledger(parser)
+    if outcome in {ControlOutcome.UNKNOWN, ControlOutcome.UNSUPPORTED}:
+        details = ledger.unassessed.setdefault(control_id, {}).setdefault(instance, [])
+        if reason not in details and len(details) < 3:
+            details.append(reason)
+    scoped = ledger.instances.setdefault(control_id, {})
+    previous = scoped.get(instance)
+    if previous is None or _PRECEDENCE[outcome] > _PRECEDENCE[previous[0]]:
+        scoped[instance] = (outcome, [reason])
+    elif outcome == previous[0] and reason not in previous[1] and len(previous[1]) < 3:
+        previous[1].append(reason)
     current = ledger.results.get(control_id)
     if current is None or _PRECEDENCE[outcome] > _PRECEDENCE[current[0]]:
         ledger.results[control_id] = (outcome, [reason])
@@ -147,6 +185,11 @@ def control_coverage(parser, *, template_unresolved: bool = False) -> dict:
             outcome, reasons = ControlOutcome.EXCLUDED, ["Excluded by the assessment policy."]
         elif template_unresolved and outcome == ControlOutcome.NO_FINDING:
             outcome, reasons = ControlOutcome.UNKNOWN, ["Unrendered template; omitted settings cannot be judged."]
+        unassessed = {key: list(details) for key, details in ledger.unassessed.get(definition.control_id, {}).items()}
+        if template_unresolved:
+            for key, (state, _) in ledger.instances.get(definition.control_id, {}).items():
+                if state == ControlOutcome.NO_FINDING:
+                    unassessed.setdefault(key, []).append("Unrendered template; omitted settings cannot be judged.")
         results.append({
             "control-id": definition.control_id,
             "title": definition.title,
@@ -156,6 +199,18 @@ def control_coverage(parser, *, template_unresolved: bool = False) -> dict:
             "rule-ids": list(definition.rule_ids),
             "references": list(definition.references),
             "cis-references": cis_references_for_rules(definition.rule_ids),
+            "instances": [
+                {"instance-key": key, "outcome": (
+                    ControlOutcome.EXCLUDED.value if outcome == ControlOutcome.EXCLUDED else
+                    ControlOutcome.UNKNOWN.value if template_unresolved and state == ControlOutcome.NO_FINDING else state.value),
+                 "reasons": (["Excluded by the assessment policy."] if outcome == ControlOutcome.EXCLUDED else
+                             ["Unrendered template; omitted settings cannot be judged."] if template_unresolved and state == ControlOutcome.NO_FINDING else list(details))}
+                for key, (state, details) in sorted(ledger.instances.get(definition.control_id, {}).items())
+            ],
+            "unassessed-instances": ([] if outcome == ControlOutcome.EXCLUDED else [
+                {"instance-key": key, "reasons": list(details)}
+                for key, details in sorted(unassessed.items())]),
+            "unassessed-instance-count": (0 if outcome == ControlOutcome.EXCLUDED else len(unassessed)),
         })
     return {
         "schema-version": CONTROL_SCHEMA_VERSION,

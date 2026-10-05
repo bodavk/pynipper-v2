@@ -1,6 +1,7 @@
 import re
 
 from src.analyze.common.base_plugin import BasePlugin
+from src.analyze.common.controls import ControlOutcome, record_control
 from src.analyze.common.credentials import credential_policy_from_context, evaluate_credential
 from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.devices.common.base_parser import BaseDeviceParser
@@ -145,44 +146,31 @@ class PluginASABaseline(BasePlugin):
             (item.binding_type, item.protocol): item
             for item in asa.get_administrative_aaa_bindings()
         }
+        if not active_protocols:
+            for control in ("cisco.asa.management-authentication", "cisco.asa.management-accounting"):
+                record_control(parser, control, ControlOutcome.UNKNOWN,
+                               "No explicit active management grant is supplied; service-domain completeness is unqualified.")
         for protocol in sorted(active_protocols):
             authentication = bindings.get(("authentication", protocol))
-            if authentication is None or not authentication.resolved:
-                detail = (
-                    "is missing"
-                    if authentication is None
-                    else f"references undefined server group '{authentication.server_group}'"
-                )
-                self.add_issue(self._finding(
-                    parser, "cisco.asa.aaa.management_authentication",
-                    "Management authentication binding is unresolved",
-                    f"Active {protocol.upper()} management {detail} for its AAA authentication binding.",
-                    "Management access may rely on an unintended authentication path or an unavailable server group.",
-                    "Bind the protocol to LOCAL with a defined local user, or to a defined resilient AAA server group with an appropriate LOCAL fallback.",
-                    Severity.HIGH,
-                    (authentication.raw_line,) if authentication else (f"active {protocol} management grant",),
-                    CISCO_ASA_AAA_REFERENCE,
-                ))
+            control = "cisco.asa.management-authentication"
+            if authentication is None:
+                knowledge = asa.get_export_scope_knowledge("management-aaa", protocol)
+                record_control(parser, control, ControlOutcome.UNKNOWN, knowledge.reason, instance=protocol)
+            elif not authentication.resolved:
+                record_control(parser, control, ControlOutcome.UNKNOWN, "Referenced AAA group is not supplied or cannot be resolved.", instance=protocol)
+            else:
+                record_control(parser, control, ControlOutcome.NO_FINDING, "Explicit authentication binding resolves to the supplied AAA state.", instance=protocol)
             if protocol not in {"ssh", "telnet"}:
                 # ASA administrative-session accounting has no HTTP/ASDM keyword.
                 continue
             accounting = bindings.get(("accounting", protocol))
+            control = "cisco.asa.management-accounting"
             if accounting is None or not accounting.resolved:
-                detail = (
-                    "is missing"
-                    if accounting is None
-                    else f"references undefined server group '{accounting.server_group}'"
-                )
-                self.add_issue(self._finding(
-                    parser, "cisco.asa.aaa.management_accounting",
-                    "Management accounting binding is unresolved",
-                    f"Active {protocol.upper()} management {detail} for its AAA session-accounting binding.",
-                    "Administrative sessions may not be attributable in a central audit trail.",
-                    "Configure administrative-session accounting to a defined RADIUS or TACACS+ server group for each supported protocol.",
-                    Severity.MEDIUM,
-                    (accounting.raw_line,) if accounting else (f"active {protocol} management grant",),
-                    CISCO_ASA_AAA_REFERENCE,
-                ))
+                record_control(parser, control, ControlOutcome.UNKNOWN,
+                               "Session-accounting binding or referenced group is unexported/unresolved.", instance=protocol)
+            else:
+                record_control(parser, control, ControlOutcome.NO_FINDING,
+                               "Explicit session-accounting binding resolves to a supplied group.", instance=protocol)
 
     def check_management_sessions_and_ssh(self, parser: BaseDeviceParser) -> None:
         asa = self._asa(parser)

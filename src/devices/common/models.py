@@ -24,6 +24,21 @@ class ConfigurationState(str, Enum):
     UNKNOWN = "unknown"
 
 
+@dataclass(frozen=True)
+class ExportScopeKnowledge:
+    """Evidence completeness for one domain, not a format-wide certificate.
+
+    KNOWN requires a parser-qualified complete set of relevant explicit fields
+    or separately qualified export provenance. Parse success is insufficient.
+    This contract does not qualify vendor defaults.
+    """
+
+    domain: str
+    scope: str
+    state: KnowledgeState
+    reason: str
+
+
 class CredentialStorageAssessment(str, Enum):
     """What the supplied configuration proves about credential storage."""
 

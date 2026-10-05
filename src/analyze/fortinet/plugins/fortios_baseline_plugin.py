@@ -1076,138 +1076,119 @@ class PluginFortiOSBaseline(BasePlugin):
     def check_logging_and_policy_profiles(self, parser: BaseDeviceParser) -> None:
         fortios = self._fortios(parser)
         inspections = {
-            (inspection.scope, inspection.policy_name): inspection
+            (inspection.family, inspection.scope, inspection.policy_name): inspection
             for inspection in fortios.get_security_inspection()
         }
-        wan_by_scope: dict[str, set[str]] = defaultdict(set)
-        for scope, name, settings, _ in fortios.iter_interfaces():
-            if self._enabled(settings) and (
-                self._text(settings.get("role")).lower() == "wan" or name.lower().startswith("wan")
-            ):
-                wan_by_scope[scope].add(name.lower())
-
-        for scope, _, name, settings, path in fortios.iter_firewall_policies():
-            if not self._enabled(settings) or self._text(settings.get("action"), "deny").lower() != "accept":
+        policies = fortios.get_firewall_policy_semantics()
+        boundary = {(p.family, p.scope, p.name) for p, _ in fortios.get_assessed_boundary_policies(
+            policies, source_role="internal", destination_role="external")}
+        previous = defaultdict(list)
+        states = fortios.get_policy_inspection_states()
+        if not states:
+            for control in ("fortinet.fortios.policy-logging", "fortinet.fortios.policy-inspection"):
+                record_control(parser, control, CO.UNKNOWN, "Transit policy sections are unexported; their completeness is unqualified.")
+        for state in states:
+            policy, path = state.policy, state.path
+            family, scope, name = policy.family, policy.scope, policy.name
+            prior = tuple(previous[(family, scope)])
+            if policy.enabled:
+                previous[(family, scope)].append(policy)
+            instance = f"{scope}/{family}/policy:{name}"
+            controls = ("fortinet.fortios.policy-logging", "fortinet.fortios.policy-inspection")
+            if not policy.enabled or policy.action != "accept":
+                for control in controls:
+                    record_control(parser, control, CO.NOT_APPLICABLE, "Policy is inactive or is not an accept policy.", instance=instance)
                 continue
-            destinations = {value.lower() for value in self._values(settings, "dstintf")}
-            outbound = bool(destinations.intersection(wan_by_scope.get(scope, set()))) or any(
-                value.startswith("wan") for value in destinations
-            )
-            if not outbound:
+            proof = fortios.get_effective_policy_permission(policy, prior)
+            if proof.state == ProofState.DISPROVEN:
+                for control in controls:
+                    record_control(parser, control, CO.NOT_APPLICABLE, proof.reason, instance=instance)
                 continue
-            if self._text(settings.get("logtraffic"), "disable").lower() not in {"all", "utm"}:
+            if (family, scope, name) not in boundary or proof.state == ProofState.UNKNOWN:
+                reason = (proof.reason if proof.state == ProofState.UNKNOWN else
+                          "Internal-to-external boundary, active same-VDOM interfaces and assessment roles are not qualified.")
+                for control in controls:
+                    record_control(parser, control, CO.UNKNOWN, reason, instance=instance)
+                continue
+            if state.logging == "disable":
+                record_control(parser, controls[0], CO.FINDING, "Explicit disabled logging on a proven nonempty permission.", instance=instance)
                 self.add_issue(
                     self._finding(
                         parser,
                         "fortinet.fortios.policy.logging",
-                        "Internet-bound policy logging is disabled",
-                        f"Enabled accept policy '{name}' in scope '{scope}' reaches a WAN interface but logtraffic is not all or utm.",
+                        "Assessed boundary policy logging is disabled",
+                        f"Enabled {family} accept policy '{name}' in scope '{scope}' has a proven nonempty permission on an assessed internal-to-external boundary and explicitly disabled logging. {proof.witness}. Routing, Internet reachability and actual traffic are not established.",
                         "Unlogged permitted traffic reduces detection and investigation visibility.",
                         "Enable logtraffic all or utm according to the policy's inspection design.",
                         Severity.MEDIUM,
                         self._evidence(fortios, path + ("logtraffic",), f"firewall policy {name}: logtraffic disable"),
                         (FORTINET_HARDENING,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
-            utm_enabled = self._text(settings.get("utm-status"), "disable").lower() == "enable"
-            group_attached = (
-                self._text(settings.get("profile-type"), "single").lower() == "group"
-                and bool(self._text(settings.get("profile-group")))
-            )
-            individual_attached = any(
-                self._text(settings.get(field))
-                for field in fortios.inspection_profile_fields()
-            )
-            has_profile = utm_enabled and (group_attached or individual_attached)
-            if not has_profile:
+            elif state.logging == "all" or (state.logging == "utm" and state.utm == "enable"
+                    and (inspection := inspections.get((family, scope, name))) is not None
+                    and inspection.resolution_state == "resolved" and inspection.profiles
+                    and all(p.resolution_state in {"resolved", "builtin"} for p in inspection.profiles)):
+                record_control(parser, controls[0], CO.NO_FINDING, "Explicit policy logging configuration; runtime delivery unassessed.", instance=instance)
+            else:
+                record_control(parser, controls[0], CO.UNKNOWN, "Logging setting is missing/malformed or UTM-only logging has no qualified inspection attachment.", instance=instance)
+            if state.utm == "disable":
+                record_control(parser, controls[1], CO.FINDING, "Explicit UTM disablement on a proven nonempty boundary permission.", instance=instance)
                 self.add_issue(
                     self._finding(
                         parser,
                         "fortinet.fortios.policy.security_profiles",
-                        "Internet-bound policy lacks security inspection",
-                        f"Enabled accept policy '{name}' in scope '{scope}' reaches a WAN interface without UTM or a referenced security profile.",
+                        "Assessed boundary policy explicitly disables security inspection",
+                        f"Enabled {family} accept policy '{name}' in scope '{scope}' has a proven nonempty permission on an assessed internal-to-external boundary and explicitly disables UTM. {proof.witness}. Actual traffic and runtime inspection are not established.",
                         "Uninspected allowed traffic can carry malware, exploits, or prohibited applications.",
                         "Enable the required inspection mode and attach appropriate IPS, antivirus, web, application, DNS, and SSL/SSH profiles.",
                         Severity.HIGH,
                         self._evidence(fortios, path, f"firewall policy {name}"),
                         (FORTINET_INSPECTION_GUIDE, FORTINET_HARDENING),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
                 continue
-
-            inspection = inspections.get((scope, name))
-            if inspection is None:
+            inspection = inspections.get((family, scope, name))
+            if state.utm != "enable" or inspection is None:
+                record_control(parser, controls[1], CO.UNKNOWN, "UTM or its profile attachment is missing, malformed or unexported.", instance=instance)
                 continue
+            if inspection.resolution_state != "resolved" or any(
+                p.resolution_state not in {"resolved", "builtin"} or p.content_state in {"unknown", "empty", "vendor-default"}
+                for p in inspection.profiles):
+                record_control(parser, controls[1], CO.UNKNOWN, "Profile/group attachment or exported content is unresolved; absence does not prove ineffective protection.", instance=instance)
+            if inspection.resolution_state in {"unresolved", "unknown-inherited", "empty"}:
+                continue
+            if inspection.profiles and all(p.resolution_state == "resolved" and p.actions
+                                          and all(a in {"block", "reset", "reset-client", "reset-server", "reset-both", "drop"} for a in p.actions)
+                                          for p in inspection.profiles):
+                record_control(parser, controls[1], CO.NO_FINDING,
+                               "Resolved exported attachments contain explicit blocking actions; runtime and full threat coverage unassessed.", instance=instance)
+            elif not any(p.content_state == "nonblocking" for p in inspection.profiles):
+                record_control(parser, controls[1], CO.UNKNOWN,
+                               "Exported attachments do not fully establish blocking content for this inspection check.", instance=instance)
             policy_evidence = self._evidence(fortios, path, f"firewall policy {name}")
-            attachment_evidence = policy_evidence + (
-                f"{scope}: {inspection.attachment_mode} {inspection.attachment_name}",
-            )
-            if inspection.resolution_state == "unresolved":
-                self.add_issue(
-                    self._finding(
-                        parser,
-                        "fortinet.fortios.policy.security_profile_unresolved",
-                        "Internet-bound policy references an unresolved profile group",
-                        f"Enabled accept policy '{name}' in scope '{scope}' references profile group '{inspection.attachment_name}', but no same-VDOM, global, or root definition is present.",
-                        "The static export does not prove that the intended UTM controls can be applied.",
-                        "Attach an existing profile group in the applicable VDOM or global scope and verify its members.",
-                        Severity.HIGH,
-                        attachment_evidence,
-                        (FORTINET_PROFILE_GROUP_REFERENCE, FORTINET_INSPECTION_GUIDE),
-                    )
-                )
-                continue
-            if inspection.resolution_state == "empty":
-                self.add_issue(
-                    self._finding(
-                        parser,
-                        "fortinet.fortios.policy.security_profile_ineffective",
-                        "Internet-bound policy uses an empty profile group",
-                        f"Enabled accept policy '{name}' in scope '{scope}' references group '{inspection.attachment_name}', but the resolved group contains no supported threat-inspection profile members.",
-                        "An empty group does not provide the threat inspection implied by its attachment.",
-                        "Populate the group with reviewed IPS, antivirus, web, application, DNS, file, or other required inspection profiles.",
-                        Severity.HIGH,
-                        attachment_evidence,
-                        (FORTINET_PROFILE_GROUP_REFERENCE, FORTINET_HARDENING),
-                    )
-                )
 
             for profile in inspection.profiles:
                 profile_evidence = policy_evidence + tuple(
                     item for item in profile.evidence
                 ) + (f"{scope}: {profile.profile_type} profile {profile.name}",)
-                if profile.resolution_state == "unresolved":
-                    self.add_issue(
-                        self._finding(
-                            parser,
-                            "fortinet.fortios.policy.security_profile_unresolved",
-                            "Internet-bound policy references an unresolved security profile",
-                            f"Enabled accept policy '{name}' in scope '{scope}' references {profile.profile_type} '{profile.name}', but no same-VDOM, global, root, or known built-in definition is present.",
-                            "The static export does not prove that this inspection function can be applied.",
-                            f"Attach an existing {profile.profile_type} in the applicable scope.",
-                            Severity.HIGH,
-                            profile_evidence,
-                            (FORTINET_INSPECTION_GUIDE, FORTINET_PROFILE_GROUP_REFERENCE),
-                        )
-                    )
-                elif profile.content_state in {"empty", "nonblocking"}:
-                    reason = (
-                        "has no exported inspection settings"
-                        if profile.content_state == "empty"
-                        else "contains only explicitly non-blocking actions: "
-                        + ", ".join(profile.actions)
-                    )
+                if profile.content_state == "nonblocking":
+                    record_control(parser, controls[1], CO.FINDING, "Resolved attachment with explicit nonblocking actions.", instance=instance)
+                    reason = "contains only explicitly non-blocking actions: " + ", ".join(profile.actions)
                     self.add_issue(
                         self._finding(
                             parser,
                             "fortinet.fortios.policy.security_profile_ineffective",
-                            "Internet-bound policy uses an ineffective security profile",
-                            f"Enabled accept policy '{name}' in scope '{scope}' uses {profile.profile_type} '{profile.name}', which {reason}.",
+                            "Assessed boundary policy uses an explicitly nonblocking security profile",
+                            f"Enabled {family} accept policy '{name}' in scope '{scope}' has a proven nonempty boundary permission and uses {profile.profile_type} '{profile.name}', which {reason}. Runtime inspection and Internet reachability are not established.",
                             "The attached profile does not block the threats its name may imply.",
                             f"Configure '{profile.name}' with reviewed blocking actions appropriate to the protected traffic.",
                             Severity.HIGH,
                             profile_evidence,
                             (FORTINET_IPS_REFERENCE, FORTINET_HARDENING),
+                            basis=FindingBasis.EXPLICIT_VALUE,
                         )
                     )
 
@@ -1407,6 +1388,15 @@ class PluginFortiOSBaseline(BasePlugin):
         )
         for policy in fortios.get_firewall_policy_semantics():
             key = (policy.scope.casefold(), policy.family)
+            instance = f"{policy.scope}/{policy.family}/policy:{policy.name}"
+            def complete(item):
+                return item.proof_eligible and item.schedule_explicit and all((
+                    item.source_networks.complete, item.destination_networks.complete, item.services.complete))
+            known = complete(policy) and len(seen_by_scope[key]) <= 64 and all(complete(p) for p in seen_by_scope[key])
+            record_control(parser, "fortinet.fortios.policy-order",
+                           CO.NOT_APPLICABLE if not policy.enabled else CO.NO_FINDING if known else CO.UNKNOWN,
+                           "Inactive policy." if not policy.enabled else "Bounded static policy comparison qualified." if known else
+                           "Selectors, schedule, earlier predicates or policy-order proof budget are unqualified.", instance=instance)
             evidence = tuple(item for item in policy.evidence) or (
                 f"firewall policy {policy.name}",
             )
@@ -1525,8 +1515,11 @@ class PluginFortiOSBaseline(BasePlugin):
                     Severity.LOW if same_action else Severity.HIGH,
                     evidence + tuple(item for item in earlier.evidence),
                     references,
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 )
                 self.add_issue(finding)
+                record_control(parser, "fortinet.fortios.policy-order", CO.FINDING,
+                               "Proven static shadow/redundancy; this does not prove effective permission or observed nonuse.", instance=instance)
                 if policy.action == "deny" and earlier.action == "accept":
                     self._deny_shadows.append(DenyShadow(policy, (earlier,), finding))
                 break
@@ -1552,8 +1545,11 @@ class PluginFortiOSBaseline(BasePlugin):
                         Severity.LOW if same_action else Severity.HIGH,
                         evidence + tuple(item for prior in covering for item in prior.evidence),
                         references,
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                     self.add_issue(finding)
+                    record_control(parser, "fortinet.fortios.policy-order", CO.FINDING,
+                                   "Proven bounded rule-union shadow/redundancy, not observed nonuse.", instance=instance)
                     if policy.action == "deny" and action == "accept":
                         self._deny_shadows.append(DenyShadow(policy, tuple(covering), finding))
                     break

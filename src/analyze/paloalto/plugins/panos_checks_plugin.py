@@ -1,6 +1,8 @@
 """Attachment- and scope-aware PAN-OS management and policy checks."""
 
 from src.analyze.common.base_plugin import BasePlugin
+from src.analyze.common.controls import ControlOutcome, record_control
+from src.devices.common.models import KnowledgeState
 from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.analyze.common.attack_paths import mark_evaluated, record_deny_defeated, record_path_not_assessed
 from src.devices.common.policy_semantics import (
@@ -202,61 +204,31 @@ class PluginPANOSChecks(BasePlugin):
 
     def check_administrative_policy(self, parser: BaseDeviceParser) -> None:
         panos = self._panos(parser)
-        for account in panos.get_administrator_policies():
-            evidence = self._evidence(account.evidence)
-            if account.role_resolution in {"missing", "unresolved"}:
-                self.add_issue(
-                    Finding(
-                        rule_id="paloalto.panos.admin.role_assignment",
-                        device=parser.device_type,
-                        title="Administrator role is missing or unresolved",
-                        observation=(
-                            f"Administrator '{account.username}' has no resolved role assignment."
-                            if account.role_resolution == "missing"
-                            else f"Administrator '{account.username}' references custom role '{account.role or 'unnamed'}', but that role is not defined in the supplied configuration."
-                        ),
-                        impact="The export does not establish the privileges granted to the administrative identity.",
-                        exploitability="An incorrectly resolved role can grant unintended management capabilities or prevent intended separation of duties.",
-                        recommendation="Assign a defined dynamic or custom Admin Role profile that matches the administrator's approved duties.",
-                        severity=Severity.HIGH,
-                        evidence=evidence,
-                        references=(PANOS_ADMIN_ROLE_GUIDE,),
-                    )
-                )
-            if account.authentication_resolution in {"unresolved", "ambiguous"}:
-                self.add_issue(
-                    Finding(
-                        rule_id="paloalto.panos.admin.authentication_profile_unresolved",
-                        device=parser.device_type,
-                        title="Administrator authentication profile is unresolved",
-                        observation=f"Administrator '{account.username}' references authentication profile '{account.authentication_profile}', but the profile cannot be resolved uniquely in the supplied configuration.",
-                        impact="The static export cannot establish the authentication method protecting this administrator.",
-                        exploitability="A missing or incorrectly scoped profile can cause unexpected authentication behavior or reliance on an unintended method.",
-                        recommendation="Define the referenced authentication profile in the correct scope or provide the merged effective Panorama configuration.",
-                        severity=Severity.HIGH,
-                        evidence=evidence,
-                        references=(PANOS_ADMIN_GUIDE,),
-                    )
-                )
+        accounts = panos.get_administrator_policies()
+        if not accounts:
+            record_control(parser, "paloalto.panos.administrator-policy", ControlOutcome.UNKNOWN,
+                           "Administrator identity/role scope is unexported; completeness is unqualified.")
+        for account in accounts:
+            control = "paloalto.panos.administrator-policy"
+            instance = "management/admin:" + account.username
+            record_control(parser, control,
+                           ControlOutcome.NO_FINDING if account.role_resolution == "known" else ControlOutcome.UNKNOWN,
+                           "Explicit role resolves in the supplied configuration." if account.role_resolution == "known" else
+                           "Administrator role is absent, unexported or inherited; privilege completeness is unqualified.",
+                           instance=instance + "/role")
+            record_control(parser, control,
+                           ControlOutcome.NO_FINDING if account.authentication_resolution == "known" and account.authentication_profile else ControlOutcome.UNKNOWN,
+                           "Explicit authentication binding resolves." if account.authentication_resolution == "known" and account.authentication_profile else
+                           "Authentication binding is unexported, ambiguous or inherited; it is not a proven missing control.",
+                           instance=instance + "/authentication")
 
         if not panos.panorama_inheritance_unknown:
             for settings in panos.get_administrative_settings():
                 evidence = self._evidence(settings.evidence)
                 if settings.authentication_resolution in {"unresolved", "ambiguous"}:
-                    self.add_issue(
-                        Finding(
-                            rule_id="paloalto.panos.admin.authentication_profile_unresolved",
-                            device=parser.device_type,
-                            title="Global administrator authentication profile is unresolved",
-                            observation=f"Device scope '{settings.device_scope}' references global authentication profile or sequence '{settings.authentication_profile}', but it cannot be resolved uniquely in the supplied configuration.",
-                            impact="The static export cannot establish authentication for externally defined administrators.",
-                            exploitability="A missing or incorrectly scoped global profile can cause unexpected authentication behavior or prevent the intended external control from applying.",
-                            recommendation="Define the referenced profile or sequence in the correct scope, or provide the merged effective Panorama configuration.",
-                            severity=Severity.HIGH,
-                            evidence=evidence,
-                            references=(PANOS_ADMIN_GUIDE,),
-                        )
-                    )
+                    record_control(parser, "paloalto.panos.administrator-policy", ControlOutcome.UNKNOWN,
+                                   "Global authentication profile/sequence is unexported or ambiguous.",
+                                   instance=settings.device_scope + "/authentication")
                 if not settings.login_banner_configured:
                     self.add_issue(
                         Finding(
@@ -369,58 +341,35 @@ class PluginPANOSChecks(BasePlugin):
         weak_ciphers = {"aes128-cbc", "aes192-cbc", "aes256-cbc"}
         weak_kex = {"diffie-hellman-group14-sha1"}
         weak_macs = {"hmac-sha1"}
-        for policy in panos.get_ssh_management_policies():
+        ssh_policies = panos.get_ssh_management_policies()
+        if not ssh_policies:
+            record_control(parser, "paloalto.panos.management-ssh", ControlOutcome.UNKNOWN, "Management SSH scope is unexported.")
+        for policy in ssh_policies:
+            control = "paloalto.panos.management-ssh"
             if not policy.enabled or not policy.supported:
+                record_control(parser, control, ControlOutcome.UNSUPPORTED if not policy.supported else ControlOutcome.UNKNOWN,
+                               "Management SSH profile dialect/release is unsupported." if not policy.supported else
+                               "No explicit active management SSH attachment is supplied; service completeness is unqualified.",
+                               instance=policy.device_scope)
                 continue
             evidence = self._evidence(policy.evidence)
-            if policy.resolution_state == "missing":
-                self.add_issue(
-                    Finding(
-                        rule_id="paloalto.panos.admin.ssh_profile_missing",
-                        device=parser.device_type,
-                        title="Management SSH service profile is not applied",
-                        observation=f"SSH management is enabled in device scope '{policy.device_scope}' without an applied management SSH service profile.",
-                        impact="The management SSH server can advertise the full default algorithm set instead of an explicitly restricted policy.",
-                        exploitability="A reachable SSH client can negotiate any algorithm that remains available in the default server set.",
-                        recommendation="Create, apply, and activate a management SSH service profile containing only approved algorithms.",
-                        severity=Severity.HIGH,
-                        evidence=evidence,
-                        references=(PANOS_SSH_PROFILE_GUIDE,),
-                    )
-                )
-                continue
-            if policy.resolution_state == "unresolved":
-                self.add_issue(
-                    Finding(
-                        rule_id="paloalto.panos.admin.ssh_profile_unresolved",
-                        device=parser.device_type,
-                        title="Management SSH service profile is unresolved",
-                        observation=f"SSH management in device scope '{policy.device_scope}' references profile '{policy.selected_profile}', but its definition is absent.",
-                        impact="The exported configuration does not establish the algorithms offered by the management SSH server.",
-                        exploitability="A broken or incorrectly scoped reference can leave the intended SSH hardening unapplied.",
-                        recommendation="Define and apply the referenced management SSH service profile in the correct device or template scope.",
-                        severity=Severity.HIGH,
-                        evidence=evidence,
-                        references=(PANOS_SSH_PROFILE_GUIDE,),
-                    )
-                )
-                continue
             if policy.resolution_state != "known":
+                record_control(parser, control, ControlOutcome.UNKNOWN,
+                               "Management SSH attachment or profile is absent, unresolved or inherited; export completeness is unqualified.",
+                               instance=policy.device_scope)
                 continue
             weaknesses = []
-            if not policy.ciphers:
-                weaknesses.append("cipher list is not restricted")
-            elif weak := sorted(set(policy.ciphers).intersection(weak_ciphers)):
+            if not all((policy.ciphers, policy.key_exchanges, policy.macs)):
+                record_control(parser, control, ControlOutcome.UNKNOWN,
+                               policy.knowledge.reason, instance=policy.device_scope + "/incomplete-fields")
+            if weak := sorted(set(policy.ciphers).intersection(weak_ciphers)):
                 weaknesses.append("CBC ciphers: " + ", ".join(weak))
-            if not policy.key_exchanges:
-                weaknesses.append("key-exchange list is not restricted")
-            elif weak := sorted(set(policy.key_exchanges).intersection(weak_kex)):
+            if weak := sorted(set(policy.key_exchanges).intersection(weak_kex)):
                 weaknesses.append("legacy key exchange: " + ", ".join(weak))
-            if not policy.macs:
-                weaknesses.append("MAC list is not restricted")
-            elif weak := sorted(set(policy.macs).intersection(weak_macs)):
+            if weak := sorted(set(policy.macs).intersection(weak_macs)):
                 weaknesses.append("legacy MAC: " + ", ".join(weak))
             if weaknesses:
+                record_control(parser, control, ControlOutcome.FINDING, "Explicit weak applied management SSH algorithms.", instance=policy.device_scope)
                 self.add_issue(
                     Finding(
                         rule_id="paloalto.panos.admin.ssh_profile_algorithms",
@@ -433,8 +382,11 @@ class PluginPANOSChecks(BasePlugin):
                         severity=Severity.HIGH,
                         evidence=evidence,
                         references=(PANOS_SSH_PROFILE_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
+            elif all((policy.ciphers, policy.key_exchanges, policy.macs)):
+                record_control(parser, control, ControlOutcome.NO_FINDING, "Exported algorithm lists contain no supported explicit legacy algorithm; runtime activation unassessed.", instance=policy.device_scope)
 
     def check_platform_services(self, parser: BaseDeviceParser) -> None:
         panos = self._panos(parser)
@@ -589,6 +541,8 @@ class PluginPANOSChecks(BasePlugin):
     def check_management_tls(self, parser: BaseDeviceParser) -> None:
         panos = self._panos(parser)
         if panos.panorama_inheritance_unknown:
+            record_control(parser, "paloalto.panos.management-tls", ControlOutcome.UNKNOWN,
+                           "Panorama management TLS inheritance is unresolved.")
             return
         profiles = {
             (profile.scope, profile.name): profile
@@ -608,11 +562,18 @@ class PluginPANOSChecks(BasePlugin):
             if interface.enabled and profile and "https" in profile.protocols:
                 https_scopes.add(interface.device_scope)
 
-        for setting in panos.get_management_tls():
+        tls_settings = panos.get_management_tls()
+        if not tls_settings:
+            record_control(parser, "paloalto.panos.management-tls", ControlOutcome.UNKNOWN, "Management TLS scope is unexported.")
+        for setting in tls_settings:
             if setting.device_scope not in https_scopes:
+                record_control(parser, "paloalto.panos.management-tls", ControlOutcome.UNKNOWN,
+                               "No explicit active management HTTPS attachment is supplied; service completeness is unqualified.", instance=setting.device_scope)
                 continue
             evidence = self._evidence(setting.evidence)
             if setting.tls_mode == "tlsv1.3_only":
+                record_control(parser, "paloalto.panos.management-tls", ControlOutcome.NO_FINDING,
+                               "Explicit TLS 1.3-only mode; certificate and runtime state are separate.", instance=setting.device_scope)
                 if not setting.certificate:
                     self.add_issue(
                         Finding(
@@ -630,25 +591,15 @@ class PluginPANOSChecks(BasePlugin):
                     )
                 continue
             if not setting.profile:
-                self.add_issue(
-                    Finding(
-                        rule_id="paloalto.panos.management.tls_profile_missing",
-                        device=parser.device_type,
-                        title="Management HTTPS lacks an SSL/TLS service profile",
-                        observation=f"HTTPS management is enabled in '{setting.device_scope}' without an attached SSL/TLS service profile.",
-                        impact="The management web service can use platform-default certificate and protocol settings rather than an approved policy.",
-                        exploitability="A reachable attacker may target legacy protocol support or exploit administrators accepting an untrusted default certificate.",
-                        recommendation="Attach an SSL/TLS service profile with a signed certificate and TLS 1.2 or later.",
-                        severity=Severity.HIGH,
-                        evidence=evidence,
-                        references=(PANOS_TLS_GUIDE,),
-                    )
-                )
+                record_control(parser, "paloalto.panos.management-tls", ControlOutcome.UNKNOWN,
+                               "Management TLS profile attachment is absent; export completeness is unqualified.", instance=setting.device_scope)
                 continue
             profile = profiles.get((setting.device_scope, setting.profile)) or profiles.get(
                 ("shared", setting.profile)
             )
             if profile is None:
+                record_control(parser, "paloalto.panos.management-tls", ControlOutcome.UNKNOWN,
+                               "Referenced management TLS profile is unexported or unresolved.", instance=setting.device_scope)
                 self.add_issue(
                     Finding(
                         rule_id="paloalto.panos.management.tls_profile_unresolved",
@@ -680,7 +631,9 @@ class PluginPANOSChecks(BasePlugin):
                         references=(PANOS_TLS_GUIDE,),
                     )
                 )
-            if profile.minimum_version not in {"tls1-2", "tls1-3", "tlsv1.2", "tlsv1.3"}:
+            if profile.minimum_version in {"tls1-0", "tls1-1", "tlsv1.0", "tlsv1.1"}:
+                record_control(parser, "paloalto.panos.management-tls", ControlOutcome.FINDING,
+                               "Explicit legacy TLS minimum on an applied profile.", instance=setting.device_scope)
                 self.add_issue(
                     Finding(
                         rule_id="paloalto.panos.management.tls_minimum_version",
@@ -693,8 +646,15 @@ class PluginPANOSChecks(BasePlugin):
                         severity=Severity.HIGH,
                         evidence=profile_evidence,
                         references=(PANOS_TLS_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
+            elif profile.minimum_version in {"tls1-2", "tls1-3", "tlsv1.2", "tlsv1.3"}:
+                record_control(parser, "paloalto.panos.management-tls", ControlOutcome.NO_FINDING,
+                               "Applied profile has an explicit modern TLS minimum; certificate and runtime state are separate.", instance=setting.device_scope)
+            else:
+                record_control(parser, "paloalto.panos.management-tls", ControlOutcome.UNKNOWN,
+                               "TLS minimum is absent, malformed or unsupported; no release default is inferred.", instance=setting.device_scope)
 
         for binding in panos.get_management_certificate_bindings():
             evidence = self._evidence(binding.evidence)
@@ -800,32 +760,41 @@ class PluginPANOSChecks(BasePlugin):
     def check_updates_and_system_logging(self, parser: BaseDeviceParser) -> None:
         panos = self._panos(parser)
         if panos.panorama_inheritance_unknown:
+            record_control(parser, "paloalto.panos.threat-updates", ControlOutcome.UNKNOWN, "Panorama threat-update inheritance is unresolved.")
             return
         threat_schedules = [
             schedule for schedule in panos.get_update_schedules()
             if schedule.content_type == "threats"
         ]
-        if not threat_schedules or not any(
-            schedule.recurrence not in {"", "none"}
-            and schedule.action == "download-and-install"
-            for schedule in threat_schedules
-        ):
-            self.add_issue(
-                Finding(
-                    rule_id="paloalto.panos.updates.threat_content",
-                    device=parser.device_type,
-                    title="Threat content is not scheduled for automatic installation",
-                    observation="No recurring Applications and Threats schedule with action 'download-and-install' was parsed.",
-                    impact="Threat signatures and decoders can remain stale even when update packages are downloaded.",
-                    exploitability="Attackers may use techniques covered by signatures that have not yet been installed.",
-                    recommendation="Configure a recurring Applications and Threats update schedule using download-and-install with an approved rollout threshold.",
-                    severity=Severity.HIGH,
-                    evidence=tuple(
-                        item for schedule in threat_schedules for item in schedule.evidence
-                    ) or ("deviceconfig system update-schedule threats absent",),
-                    references=(PANOS_UPDATE_GUIDE,),
-                )
-            )
+        control = "paloalto.panos.threat-updates"
+        if not threat_schedules:
+            record_control(parser, control, ControlOutcome.UNKNOWN,
+                           "Threat update schedule is unexported; completeness is unqualified.")
+        for schedule in threat_schedules:
+            instance = schedule.device_scope + "/threats"
+            if schedule.knowledge.state != KnowledgeState.KNOWN:
+                record_control(parser, control, ControlOutcome.UNKNOWN,
+                               "Threat schedule recurrence/action is absent, malformed or unsupported.", instance=instance)
+                continue
+            if schedule.action == "download-and-install":
+                record_control(parser, control, ControlOutcome.NO_FINDING,
+                               "Explicit automatic threat-content installation; delivery and freshness unassessed.", instance=instance)
+                continue
+            record_control(parser, control, ControlOutcome.FINDING,
+                           "Explicit manual/download-only threat schedule does not automatically install content.", instance=instance)
+            self.add_issue(Finding(
+                rule_id="paloalto.panos.updates.threat_content",
+                device=parser.device_type,
+                title="Threat content is not scheduled for automatic installation",
+                observation=f"Scope '{schedule.device_scope}' explicitly selects {'manual (none)' if schedule.recurrence == 'none' else 'download-only'} for its threat-content schedule.",
+                impact="Threat signatures and decoders can remain stale even when update packages are downloaded.",
+                exploitability="Attackers may use techniques covered by signatures that have not yet been installed.",
+                recommendation="Configure the existing recurring Applications and Threats schedule using download-and-install with an approved rollout threshold.",
+                severity=Severity.HIGH,
+                evidence=self._evidence(schedule.evidence),
+                references=(PANOS_UPDATE_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
+            ))
         for scope, value, evidence in panos.get_update_server_verification():
             if value != "no":
                 continue
@@ -895,6 +864,10 @@ class PluginPANOSChecks(BasePlugin):
 
     def check_security_rules(self, parser: BaseDeviceParser) -> None:
         panos = self._panos(parser)
+        rules = panos.get_security_rules()
+        if not rules:
+            record_control(parser, "paloalto.panos.policy-inspection", ControlOutcome.UNKNOWN,
+                           "Security policy/inspection scope is unexported; completeness is unqualified.")
         profiles = {
             (profile.scope, profile.name): profile
             for profile in panos.get_log_forwarding_profiles()
@@ -903,7 +876,7 @@ class PluginPANOSChecks(BasePlugin):
             (inspection.rule_scope, inspection.rule_position, inspection.rule_name): inspection
             for inspection in panos.get_security_inspection()
         }
-        for rule in panos.get_security_rules():
+        for rule in rules:
             evidence = self._evidence(rule.evidence)
             if not rule.enabled:
                 if rule.action == "allow" and self._broad(rule):
@@ -989,87 +962,33 @@ class PluginPANOSChecks(BasePlugin):
                     )
                 )
 
+            control = "paloalto.panos.policy-inspection"
+            instance = f"{rule.device_scope}/{rule.scope}/{rule.rulebase}/rule:{rule.name}"
             if not rule.profile_setting:
-                self.add_issue(
-                    Finding(
-                        rule_id="paloalto.panos.policy.security_profiles",
-                        device=parser.device_type,
-                        title="Allow rule has no security profile attachment",
-                        observation=f"Enabled allow rule '{rule.name}' in '{rule.scope}' has no profile group or individual security profiles.",
-                        impact="Permitted traffic may bypass threat, malware, URL, file, and data inspection controls.",
-                        exploitability="An attacker can deliver malicious content through traffic permitted by the uninspected rule.",
-                        recommendation="Attach the organization's approved Security Profile Group or explicit profiles to the allow rule.",
-                        severity=Severity.HIGH,
-                        evidence=evidence,
-                        references=(PANOS_POLICY_GUIDE,),
-                    )
-                )
+                record_control(parser, control, ControlOutcome.UNKNOWN,
+                               "Inspection attachment is absent; policy-section completeness is unqualified.", instance=instance)
                 continue
-
             inspection = inspections.get((rule.scope, rule.position, rule.name))
-            if inspection is None:
+            if inspection is None or inspection.resolution_state != "resolved":
+                record_control(parser, control, ControlOutcome.UNKNOWN,
+                               "Inspection group or membership is unexported, empty or inherited; absence is not a proven ineffective attachment.",
+                               instance=instance)
                 continue
-            attachment_evidence = evidence + (
-                f"{rule.scope}: {inspection.attachment_mode} {inspection.attachment_name}",
-            )
-            if inspection.resolution_state == "unresolved":
-                self.add_issue(
-                    Finding(
-                        rule_id="paloalto.panos.policy.security_profile_unresolved",
-                        device=parser.device_type,
-                        title="Allow rule references an unresolved security profile group",
-                        observation=f"Enabled allow rule '{rule.name}' in '{rule.scope}' references security profile group '{inspection.attachment_name}', but no same-vsys or shared definition is present.",
-                        impact="The static export does not prove that threat inspection is attached to the permitted traffic.",
-                        exploitability="Traffic matching the rule may avoid the intended threat-prevention controls if the reference is invalid.",
-                        recommendation="Attach an existing same-vsys or shared Security Profile Group and verify its member profiles.",
-                        severity=Severity.HIGH,
-                        evidence=attachment_evidence,
-                        references=(PANOS_POLICY_GUIDE, PANOS_SECURITY_PROFILES_GUIDE),
-                    )
-                )
-                continue
-            if inspection.resolution_state == "empty":
-                self.add_issue(
-                    Finding(
-                        rule_id="paloalto.panos.policy.security_profile_ineffective",
-                        device=parser.device_type,
-                        title="Allow rule uses an empty security profile group",
-                        observation=f"Enabled allow rule '{rule.name}' in '{rule.scope}' references group '{inspection.attachment_name}', but the resolved group has no profile members.",
-                        impact="An empty group does not provide the threat, malware, URL, file, or data inspection implied by its attachment.",
-                        exploitability="Malicious content can traverse traffic matched by the rule without the intended profile controls.",
-                        recommendation="Populate the group with the approved inspection profiles or attach suitable individual profiles.",
-                        severity=Severity.HIGH,
-                        evidence=attachment_evidence,
-                        references=(PANOS_SECURITY_PROFILES_GUIDE,),
-                    )
-                )
+            record_control(parser, control, ControlOutcome.UNKNOWN,
+                           "Only exported explicit inspection actions are assessed; full threat coverage and runtime enforcement are unassessed.",
+                           instance=instance + "/coverage")
 
             for profile in inspection.profiles:
                 profile_evidence = evidence + self._evidence(profile.evidence) + (
                     f"{rule.scope}: {profile.profile_type} profile {profile.name}",
                 )
-                if profile.resolution_state == "unresolved":
-                    self.add_issue(
-                        Finding(
-                            rule_id="paloalto.panos.policy.security_profile_unresolved",
-                            device=parser.device_type,
-                            title="Allow rule references an unresolved security profile",
-                            observation=f"Enabled allow rule '{rule.name}' in '{rule.scope}' references {profile.profile_type} profile '{profile.name}', but no same-vsys, shared, or known built-in definition is present.",
-                            impact="The static export does not prove that the referenced inspection function can be applied.",
-                            exploitability="Traffic matching the rule may avoid this inspection control if the reference is invalid.",
-                            recommendation=f"Attach an existing {profile.profile_type} profile in the rule's vsys or shared scope.",
-                            severity=Severity.HIGH,
-                            evidence=profile_evidence,
-                            references=(PANOS_POLICY_GUIDE, PANOS_SECURITY_PROFILES_GUIDE),
-                        )
-                    )
-                elif profile.content_state in {"empty", "nonblocking"}:
-                    reason = (
-                        "has no exported inspection settings"
-                        if profile.content_state == "empty"
-                        else "contains only explicitly non-blocking actions: "
-                        + ", ".join(profile.actions)
-                    )
+                if profile.resolution_state != "resolved" or profile.content_state in {"empty", "unknown", "vendor-default"}:
+                    record_control(parser, control, ControlOutcome.UNKNOWN,
+                                   "Referenced profile or its inspection content is unexported/unsupported.",
+                                   instance=instance + "/profile:" + profile.profile_type + ":" + profile.name)
+                elif profile.content_state == "nonblocking":
+                    record_control(parser, control, ControlOutcome.FINDING, "Explicit nonblocking attached inspection actions.", instance=instance)
+                    reason = "contains only explicitly non-blocking actions: " + ", ".join(profile.actions)
                     self.add_issue(
                         Finding(
                             rule_id="paloalto.panos.policy.security_profile_ineffective",
@@ -1082,6 +1001,7 @@ class PluginPANOSChecks(BasePlugin):
                             severity=Severity.HIGH,
                             evidence=profile_evidence,
                             references=(PANOS_SECURITY_PROFILES_GUIDE,),
+                            basis=FindingBasis.EXPLICIT_VALUE,
                         )
                     )
                 elif profile.resolution_state == "resolved" and profile.content_state == "configured":
@@ -1101,6 +1021,7 @@ class PluginPANOSChecks(BasePlugin):
                             weak_severities.append(target)
                             selector_evidence.extend(self._evidence(first.evidence))
                     if weak_severities:
+                        record_control(parser, control, ControlOutcome.FINDING, "Explicit selected high-severity nonblocking actions.", instance=instance)
                         self.add_issue(Finding(
                             rule_id="paloalto.panos.policy.threat_selector_nonblocking",
                             device=parser.device_type,
@@ -1118,22 +1039,13 @@ class PluginPANOSChecks(BasePlugin):
                             severity=Severity.HIGH,
                             evidence=profile_evidence + tuple(dict.fromkeys(selector_evidence)),
                             references=(PANOS_SECURITY_PROFILES_GUIDE,),
+                            basis=FindingBasis.EXPLICIT_VALUE,
                         ))
 
     @staticmethod
     def _static_effectiveness_comparable(rule: PanosSecurityRule) -> bool:
         """Limit proof to rules without dynamic or time-dependent predicates."""
-        return (
-            not rule.source_negated
-            and not rule.destination_negated
-            and rule.schedule.casefold() in {"none", "any"}
-            and bool(rule.applications)
-            and all(value.casefold() == "any" for value in rule.applications)
-            and bool(rule.source_users)
-            and all(value.casefold() == "any" for value in rule.source_users)
-            and bool(rule.categories)
-            and all(value.casefold() == "any" for value in rule.categories)
-        )
+        return PaloAltoPANOSParser.is_static_security_rule(rule)
 
     def _rule_covers(
         self,
@@ -1167,20 +1079,53 @@ class PluginPANOSChecks(BasePlugin):
         panos = self._panos(parser)
         pattern = "protective-deny-defeated"
         mark_evaluated(parser, pattern)
-        if panos.panorama_inheritance_unknown or panos.has_nat_policy():
+        control = "paloalto.panos.policy-order"
+        if panos.panorama_inheritance_unknown:
+            record_control(parser, control, ControlOutcome.UNKNOWN, "Unresolved Panorama inheritance.")
             record_path_not_assessed(
                 parser, pattern,
-                "Panorama inheritance is unresolved or a NAT policy exists; first-match rule proof was withheld.",
+                "Panorama inheritance is unresolved; first-match rule proof was withheld.",
             )
             return
         previous_by_scope: dict[tuple[str, str, str], list[PanosSecurityRule]] = {}
-        for rule in panos.get_security_rules():
+        rules = panos.get_security_rules()
+        if not rules:
+            record_control(parser, control, ControlOutcome.UNKNOWN, "Security-rule scope not supplied or its completeness is unqualified.")
+        for rule in rules:
             scope = (rule.device_scope, rule.scope, rule.rulebase)
             previous = previous_by_scope.setdefault(scope, [])
-            if not rule.enabled or rule.action not in self._TERMINAL_ACTIONS:
+            instance = f"{rule.device_scope}/{rule.scope}/{rule.rulebase}/rule:{rule.name}"
+            if not rule.enabled:
+                record_control(parser, control, ControlOutcome.NOT_APPLICABLE, "Security rule is explicitly disabled.", instance=instance)
                 continue
+            if rule.action not in self._TERMINAL_ACTIONS:
+                record_control(parser, control, ControlOutcome.UNKNOWN, "Security rule action is unsupported or malformed.", instance=instance)
+                record_path_not_assessed(parser, pattern, f"{instance}: terminal action is unqualified.")
+                previous.append(rule)
+                continue
+            static_known = (self._static_effectiveness_comparable(rule) and all((
+                panos.resolve_network_semantics(rule.sources, device_scope=rule.device_scope, scope=rule.scope).complete,
+                panos.resolve_network_semantics(rule.destinations, device_scope=rule.device_scope, scope=rule.scope).complete,
+                panos.resolve_service_semantics(rule.services, device_scope=rule.device_scope, scope=rule.scope).complete)))
+            all_prior_known = len(previous) <= 64 and all(self._static_effectiveness_comparable(p) and all((
+                panos.resolve_network_semantics(p.sources, device_scope=p.device_scope, scope=p.scope).complete,
+                panos.resolve_network_semantics(p.destinations, device_scope=p.device_scope, scope=p.scope).complete,
+                panos.resolve_service_semantics(p.services, device_scope=p.device_scope, scope=p.scope).complete)) for p in previous)
+            nat = panos.qualify_nat_comparison(rule, rule)
+            qualified = static_known and all_prior_known and nat.state == ProofState.PROVEN
+            record_control(parser, control, ControlOutcome.NO_FINDING if qualified else ControlOutcome.UNKNOWN,
+                           "Bounded static comparisons and NAT relevance qualified." if qualified else
+                           nat.reason if nat.state != ProofState.PROVEN else "Current/earlier rule selectors or comparison budget are unqualified.", instance=instance)
+            if not self._static_effectiveness_comparable(rule):
+                record_control(parser, control, ControlOutcome.UNKNOWN, "Rule has unsupported application/user/category/schedule or negated predicates.", instance=instance)
+                record_path_not_assessed(parser, pattern, f"{instance}: rule predicates are unqualified.")
             for earlier in previous:
                 if not self._rule_covers(panos, earlier, rule):
+                    continue
+                nat = panos.qualify_nat_comparison(earlier, rule)
+                if nat.state != ProofState.PROVEN:
+                    record_control(parser, control, ControlOutcome.UNKNOWN, nat.reason, instance=instance)
+                    record_path_not_assessed(parser, pattern, f"{instance}: {nat.reason}")
                     continue
                 same_action = earlier.action == rule.action
                 finding = Finding(
@@ -1194,45 +1139,57 @@ class PluginPANOSChecks(BasePlugin):
                         severity=Severity.LOW if same_action else Severity.HIGH,
                         evidence=self._evidence(rule.evidence) + self._evidence(earlier.evidence),
                         references=(PANOS_POLICY_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 self.add_issue(finding)
+                record_control(parser, control, ControlOutcome.FINDING, "Static same-scope containment with qualified NAT relevance.", instance=instance)
                 if earlier.action == "allow" and rule.action != "allow":
                     where = f"{rule.device_scope}/{rule.scope}/{rule.rulebase}"
+                    permission = panos.get_effective_security_permission(earlier, tuple(previous), rule)
+                    if permission.state == ProofState.UNKNOWN:
+                        record_control(parser, control, ControlOutcome.UNKNOWN, permission.reason, instance=instance + "/effective-permission")
                     record_deny_defeated(
                         parser, scope=where, family="any", instance_key=f"{where}/rule:{rule.name}",
                         allow_entity=f"{where}/rule:{earlier.name}",
                         allow_text=(f"Earlier enabled allow rule '{earlier.name}' at position {earlier.position} statically "
                                     "covers the rule's zones, sources, destinations and services, with any application, user and category."),
-                        allow_evidence=earlier.evidence,
+                        allow_evidence=earlier.evidence + tuple(ev for p in previous if p.position < earlier.position for ev in p.evidence),
                         deny_text=(f"Enabled {rule.action} rule '{rule.name}' at position {rule.position} in "
                                    f"'{rule.scope}/{rule.rulebase}' is never reached under first-match evaluation."),
-                        deny_evidence=rule.evidence, finding=finding,
+                        deny_evidence=rule.evidence, finding=finding, permission=permission,
                     )
                 break
             previous.append(rule)
 
     def check_password_policy(self, parser: BaseDeviceParser) -> None:
         panos = self._panos(parser)
-        if panos.panorama_inheritance_unknown:
-            return
         policy = panos.get_password_policy()
+        control = "paloalto.panos.password-complexity"
+        if panos.panorama_inheritance_unknown:
+            record_control(parser, control, ControlOutcome.UNKNOWN, "Unresolved Panorama management-policy inheritance.", instance="management")
+            return
+        if policy.knowledge.state != KnowledgeState.KNOWN:
+            record_control(parser, control, ControlOutcome.UNKNOWN, policy.knowledge.reason, instance="management:incomplete-fields")
         weaknesses = []
-        if policy.enabled is not True:
-            weaknesses.append("complexity is absent or disabled")
+        if policy.enabled is False:
+            weaknesses.append("complexity is explicitly disabled")
         # NEEDS_HUMAN_REVIEW: 12 is the project baseline; PAN-OS documents a
         # product minimum of eight but organizations may require a higher value.
-        if policy.minimum_length is None or policy.minimum_length < 12:
-            weaknesses.append("minimum length is below 12 or unparseable")
+        if policy.minimum_length is not None and 0 <= policy.minimum_length < 12:
+            weaknesses.append("minimum length is explicitly below 12")
         for label, value in (
             ("uppercase", policy.minimum_uppercase),
             ("lowercase", policy.minimum_lowercase),
             ("numeric", policy.minimum_numeric),
             ("special", policy.minimum_special),
         ):
-            if value is None or value < 1:
-                weaknesses.append(f"{label} character minimum is below 1 or unparseable")
+            if value == 0:
+                weaknesses.append(f"{label} character minimum is explicitly below 1")
         if not weaknesses:
+            if policy.knowledge.state == KnowledgeState.KNOWN:
+                record_control(parser, control, ControlOutcome.NO_FINDING, "Every explicit password-complexity field meets the existing baseline.", instance="management")
             return
+        record_control(parser, control, ControlOutcome.FINDING, "Explicit weak password-complexity setting.", instance="management")
         self.add_issue(
             Finding(
                 rule_id="paloalto.panos.credentials.password_complexity",
@@ -1245,6 +1202,7 @@ class PluginPANOSChecks(BasePlugin):
                 severity=Severity.HIGH,
                 evidence=self._evidence(policy.evidence) or ("password-complexity absent",),
                 references=(PANOS_PASSWORD_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
             )
         )
 

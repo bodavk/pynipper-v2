@@ -25,6 +25,11 @@ Classic JET gRPC clear-text listener records retain explicit address/port, routi
 
 Registered aliases are resolved centrally. Additions must include registry, parser-contract, analyzer-dispatch, and alias tests.
 
-The permanent corpus includes 36 inputs across twelve public pipelines, including a FortiOS export with multi-line quoted private-key, certificate and replacement-message values. Its paired and edge-case configurations cover unknown defaults, inactive APIs and objects, format rejection, scope isolation, reference resolution, ordered negation, and bounded administrative-policy state. F5 has paired and syntax-variant basic-support cases.
+The permanent corpus includes 39 inputs across thirteen public pipelines, including a FortiOS export with multi-line quoted private-key, certificate and replacement-message values. Its paired and edge-case configurations cover unknown defaults, inactive APIs and objects, format rejection, scope isolation, reference resolution, ordered negation, and bounded administrative-policy state. F5 has paired and syntax-variant basic-support cases.
+
+Parser-owned `ExportScopeKnowledge` establishes only the named domain/instance;
+inventory or a parsed header cannot certify unrelated omitted sections. Native
+policy records also qualify bounded effective-permission and NAT relevance for
+the existing path producers. See [Export evidence](../../docs/EXPORT_EVIDENCE.md).
 
 See [`docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md) for parser responsibilities and [`docs/EXTENDING.md`](../../docs/EXTENDING.md) before adding a device or input dialect.

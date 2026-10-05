@@ -1,12 +1,15 @@
 from src.analyze.fortinet.core.process_fortios_conf import process_fortios_conf
 from src.analyze.fortinet.plugins.fortios_baseline_plugin import PluginFortiOSBaseline
 from src.devices.fortinet.fortios import FortiOSParser
+from src.common.assessment import AssessmentContext
 
 
 def _parser(tmp_path, config):
     path = tmp_path / "fortigate-wave4.conf"
     path.write_text(config, encoding="utf-8")
-    return FortiOSParser(str(path))
+    parser = FortiOSParser(str(path))
+    parser.set_assessment_context(AssessmentContext.from_mapping({"interface_roles": {"lan": "internal", "wan1": "external"}}))
+    return parser
 
 
 def _issues(tmp_path, config):
@@ -66,11 +69,13 @@ set reuse-password disable
 end
 config system interface
 edit wan1
+set status up
 set role wan
 set ip 198.51.100.1 255.255.255.0
 set allowaccess ping https ssh snmp
 next
 edit lan
+set status up
 set role lan
 set ip 10.0.0.1 255.255.255.0
 next
@@ -115,11 +120,17 @@ set dstintf wan1
 set srcaddr CorpNet
 set dstaddr all
 set service HTTPS DNS
+set schedule always
 set action accept
 set logtraffic all
 set utm-status enable
 set ips-sensor default
 set ssl-ssh-profile certificate-inspection
+next
+end
+config firewall address
+edit CorpNet
+set subnet 10.0.0.0 255.0.0.0
 next
 end
 config firewall DoS-policy
@@ -272,8 +283,6 @@ end
         "fortinet.fortios.snmp.secure_user_missing",
         "fortinet.fortios.ntp.weak_algorithm",
         "fortinet.fortios.logging.events_filtered",
-        "fortinet.fortios.policy.logging",
-        "fortinet.fortios.policy.security_profiles",
         "fortinet.fortios.fortiguard.automatic_updates",
         "fortinet.fortios.firmware.automatic_updates",
         "fortinet.fortios.management.auxiliary_services",
@@ -512,7 +521,11 @@ end
 
     assert "fortinet.fortios.password_policy.weak" not in ids
     assert "fortinet.fortios.ntp.custom_server_missing" in ids
-    assert "fortinet.fortios.policy.security_profiles" in ids
+    assert "fortinet.fortios.policy.security_profiles" not in ids  # unexported CorpNet/schedule and unqualified interface state
+    from src.analyze.common.controls import control_coverage
+    parser = _parser(tmp_path, config)
+    process_fortios_conf(parser)
+    assert next(c for c in control_coverage(parser)["results"] if c["control-id"] == "fortinet.fortios.policy-inspection")["outcome"] == "unknown"
 
 
 def test_local_log_filter_is_checked_only_when_its_destination_is_enabled(tmp_path):

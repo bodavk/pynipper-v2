@@ -7,6 +7,7 @@ is reviewed for incomplete input.
 
 _EXPLICIT_RULES = {
     "PAN_OS": frozenset({
+        "paloalto.panos.credentials.password_complexity",
         "paloalto.panos.management.telnet",
         "paloalto.panos.management.http",
         "paloalto.panos.policy.broad_allow",

@@ -176,11 +176,11 @@ PATTERNS: dict[str, PathPattern] = {
             "protective-deny-defeated", 1, "Protective deny defeated by an earlier allow",
             Severity.HIGH, frozenset({"FORTIOS", "ASA", "PAN_OS"}),
             ("fortinet.fortios.policy.shadowed_rule", "cisco.asa.acl.shadowed_rule", "paloalto.panos.policy.shadowed_rule"),
-            ("Earlier enabled allow rules statically cover every source, destination and service of a later deny "
-             "in the same ordered rule set (FortiOS policy scope and interface pair, ASA bound access list, PAN-OS "
-             "rulebase and zones), so the deny is never reached."),
+            ("An earlier allow has a proven nonempty effective permitted remainder intersecting a later "
+             "shadowed deny in the same ordered rule set. Preceding terminal rules were considered; "
+             "only the described remainder is proven permitted, not every flow matched by the deny."),
             ("Traffic matching the deny was not observed; the intended effect of the deny is inferred from its order.",
-             "Rules with schedules, time ranges, users, applications, negation or unresolved objects were left out of the proof."),
+             "Unqualified schedules, time ranges, users, applications, negation or unresolved objects prevent permission proof."),
             ("Move the deny above the covering allow rules, or narrow the allow rules.",
              "Remove the deny if its intent is obsolete, so policy review is not misled."),
         ),
@@ -320,12 +320,27 @@ def record_path(parser, result: PathResult) -> bool:
 
 def record_deny_defeated(
     parser, *, scope: str, family: str, instance_key: str, allow_entity: str, allow_text: str,
-    allow_evidence: Iterable, deny_text: str, deny_evidence: Iterable, finding,
+    allow_evidence: Iterable, deny_text: str, deny_evidence: Iterable, finding, permission,
 ) -> bool:
-    """Shared step shape for ``protective-deny-defeated``; callers supply a first-match proof."""
+    """A shadow is insufficient: require a parser-owned nonempty permission proof."""
+    from src.devices.common.policy_semantics import EffectivePermissionProof, ProofState
+    if not isinstance(permission, EffectivePermissionProof):
+        raise TypeError("A typed effective permission proof is required")
+    if permission.state == ProofState.UNKNOWN:
+        from src.analyze.common.controls import ControlOutcome, record_control
+        control = {"FORTIOS": "fortinet.fortios.policy-order", "ASA": "cisco.asa.policy-order",
+                   "PAN_OS": "paloalto.panos.policy-order"}.get(parser.device_type)
+        if control:
+            record_control(parser, control, ControlOutcome.UNKNOWN, permission.reason,
+                           instance=instance_key + "/effective-permission")
+        record_path_not_assessed(parser, "protective-deny-defeated", f"{instance_key}: {permission.reason}")
+        return False
+    if permission.state != ProofState.PROVEN:
+        return False
     link = ((finding.rule_id, finding.title),) if finding is not None else ()
     steps = (
-        PathFact("earlier-allow", allow_entity, scope, family, FactState.KNOWN, allow_text,
+        PathFact("earlier-allow", allow_entity, scope, family, FactState.KNOWN,
+                 allow_text + " Effective permitted remainder: " + permission.witness + ". " + permission.reason,
                  evidence_locations(allow_evidence), link),
         PathFact("defeated-deny", instance_key, scope, family, FactState.KNOWN, deny_text,
                  evidence_locations(deny_evidence), link),
@@ -348,11 +363,12 @@ def _result_dict(pattern: PathPattern, result: PathResult) -> dict:
         "priority": pattern.priority.value,
         "scope": result.scope,
         "family": result.family,
-        "summary": pattern.summary,
+        "summary": (pattern.summary.replace("IPv4", "IPv6") if result.family == "ipv6" else pattern.summary),
         "steps": [step.to_dict(order) for order, step in enumerate(result.steps, start=1)],
         "linked-findings": links,
         "assumptions": list(pattern.assumptions),
-        "breakpoints": list(pattern.breakpoints),
+        "breakpoints": [text.replace("trusthost", "ip6-trusthost").replace("allowaccess", "ip6-allowaccess").replace("source-address", "source-address6")
+                        if result.family == "ipv6" else text for text in pattern.breakpoints],
     }
 
 

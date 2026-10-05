@@ -11,7 +11,7 @@ The installed command is `pynipper-ng`, kept for compatibility with the original
 **Full baselines**
 
 - Cisco IOS and IOS-XE
-- Cisco ASA (and PIX)
+- Cisco ASA (PIX aliases remain provisional)
 - Fortinet FortiGate (FortiOS)
 - Juniper Junos
 - Juniper ScreenOS
@@ -82,7 +82,7 @@ Keep in mind:
 
 - **This is a static review of a saved file, not a live test.** It can't see whether a policy is installed, what certificate is actually served, or whether a backup succeeded.
 - **No findings doesn't mean secure.** Missing data, inherited settings and runtime behavior may be unknown. Check the coverage section.
-- **Unset values are not reported as problems** unless the vendor documents an insecure default. Each finding says whether it comes from an explicit value, a documented default or a missing required setting.
+- **Missing evidence is not a verdict.** Migrated checks show scoped unknown reasons; some legacy checks remain findings-only. See [export evidence and limitations](docs/EXPORT_EVIDENCE.md). Release-qualified defaults are assessed separately.
 - If a report shows a `parse_error`, the export couldn't be read. PAN-OS and FortiOS templates with unfilled placeholders are marked `unrendered-template`; use a real device export instead.
 
 ## Known CVEs and end of support (opt-in)
@@ -115,7 +115,7 @@ Reports hide passwords, keys and community strings by default. `--show-secrets` 
 Run the unit tests and the permanent configuration corpus:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m pytest tests -q
 .\.venv\Scripts\python.exe scripts\run_full_regression.py
 ```
 
@@ -123,6 +123,7 @@ Where to start:
 
 - [Architecture](docs/ARCHITECTURE.md): how parsers, analyzers and reports fit together
 - [Extending pynipper-v2](docs/EXTENDING.md): adding checks or a new device
+- [Export evidence](docs/EXPORT_EVIDENCE.md): incomplete exports, scoped outcomes and policy-proof limits
 - [Parser guide](src/devices/README.md) and [analyzer guide](src/analyze/README.md)
 - [Contributing](CONTRIBUTING.md), [Security](SECURITY.md), [open work](docs/TODO.md), [changelog](CHANGELOG.md)
 

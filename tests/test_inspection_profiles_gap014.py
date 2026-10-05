@@ -4,6 +4,8 @@ from src.analyze.paloalto.core.process_panos_conf import process_panos_conf
 from src.analyze.paloalto.plugins.panos_checks_plugin import PluginPANOSChecks
 from src.devices.fortinet.fortios import FortiOSParser
 from src.devices.paloalto.panos import PaloAltoPANOSParser
+from src.analyze.common.controls import control_coverage
+from src.common.assessment import AssessmentContext
 
 
 def _panos(tmp_path, xml: str) -> PaloAltoPANOSParser:
@@ -15,7 +17,9 @@ def _panos(tmp_path, xml: str) -> PaloAltoPANOSParser:
 def _fortios(tmp_path, config: str) -> FortiOSParser:
     path = tmp_path / "gap014-fortios.conf"
     path.write_text(config, encoding="utf-8")
-    return FortiOSParser(str(path))
+    parser = FortiOSParser(str(path))
+    parser.set_assessment_context(AssessmentContext.from_mapping({"interface_roles": {"lan": "internal", "wan1": "external"}}))
+    return parser
 
 
 def _panos_policy(name: str, profile: str, disabled: bool = False) -> str:
@@ -67,9 +71,9 @@ def test_panos_resolves_shared_profiles_with_vsys_override_and_isolation(tmp_pat
     ]
     assert [(item.rule_id, "LOCAL-WEAK" in item.observation) for item in material] == [
         ("paloalto.panos.policy.security_profile_ineffective", True),
-        ("paloalto.panos.policy.security_profile_unresolved", False),
     ]
-    assert "WRONG-VSYS" in material[1].observation
+    result = next(c for c in control_coverage(parser)["results"] if c["control-id"] == "paloalto.panos.policy-inspection")
+    assert result["outcome"] == "finding" and result["unassessed-instance-count"] >= 1
 
 
 def test_panos_group_empty_and_weak_members_are_attached_findings_only(tmp_path):
@@ -91,9 +95,10 @@ def test_panos_group_empty_and_weak_members_are_attached_findings_only(tmp_path)
         for item in plugin.get_issues()
         if item.rule_id == "paloalto.panos.policy.security_profile_ineffective"
     ]
-    assert len(findings) == 2
+    assert len(findings) == 1
     combined = " ".join(item.observation for item in findings)
-    assert "WEAK-RULE" in combined and "EMPTY-RULE" in combined
+    assert "WEAK-RULE" in combined and "EMPTY-RULE" not in combined
+    assert next(c for c in control_coverage(parser)["results"] if c["control-id"] == "paloalto.panos.policy-inspection")["unassessed-instance-count"] >= 1
     assert "UNBOUND" not in combined
 
 
@@ -200,10 +205,8 @@ config firewall policy
         for item in plugin.get_issues()
         if item.rule_id.startswith("fortinet.fortios.policy.security_profile_")
     ]
-    assert [item.rule_id for item in findings] == [
-        "fortinet.fortios.policy.security_profile_ineffective",
-        "fortinet.fortios.policy.security_profile_unresolved",
-    ]
+    assert findings == []  # names collide across VDOMs and the traffic selectors are incomplete
+    assert next(c for c in control_coverage(parser)["results"] if c["control-id"] == "fortinet.fortios.policy-inspection")["unassessed-instance-count"] >= 2
 
 
 def test_fortios_profile_group_empty_and_weak_members_are_resolved(tmp_path):
@@ -271,10 +274,8 @@ end
         for item in plugin.get_issues()
         if item.rule_id == "fortinet.fortios.policy.security_profile_ineffective"
     ]
-    assert len(findings) == 2
-    combined = " ".join(item.observation for item in findings)
-    assert "ips-sensor 'WEAK'" in combined and "EMPTY-GROUP" in combined
-    assert "UNBOUND" not in combined
+    assert findings == []  # source/destination/service/schedule are unexported
+    assert next(c for c in control_coverage(parser)["results"] if c["control-id"] == "fortinet.fortios.policy-inspection")["outcome"] == "unknown"
 
 
 def test_controller_unknowns_and_public_processors_preserve_new_findings(tmp_path):
@@ -328,9 +329,10 @@ config firewall policy
         + _forti_policy(7, "EMPTY")
         + "end\n",
     )
-    assert "fortinet.fortios.policy.security_profile_ineffective" in {
+    assert "fortinet.fortios.policy.security_profile_ineffective" not in {
         item.rule_id for item in process_fortios_conf(weak_forti).values()
     }
+    assert next(c for c in control_coverage(weak_forti)["results"] if c["control-id"] == "fortinet.fortios.policy-inspection")["outcome"] == "unknown"
 
     panos = _panos(
         tmp_path,
@@ -339,6 +341,7 @@ config firewall policy
         + _panos_policy("EMPTY", "EMPTY")
         + "</rules></security></rulebase></entry></vsys></entry></devices></config>",
     )
-    assert "paloalto.panos.policy.security_profile_ineffective" in {
+    assert "paloalto.panos.policy.security_profile_ineffective" not in {
         item.rule_id for item in process_panos_conf(panos).values()
     }
+    assert next(c for c in control_coverage(panos)["results"] if c["control-id"] == "paloalto.panos.policy-inspection")["outcome"] == "unknown"

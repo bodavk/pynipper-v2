@@ -253,7 +253,12 @@
                             <tr>
                                 <td>{{ control['title'] }}<br><small>{{ control['control-id'] }} v{{ control['control-version'] }}</small></td>
                                 <td><span class="chip state-{{ control['outcome'] }}">{{ control['outcome'] }}</span></td>
-                                <td>{{ control['reasons']|join(' ') }}</td>
+                                <td>{{ control['reasons']|join(' ') }}
+                                    {% if control['unassessed-instances'] is defined %}
+                                    {% for instance in control['unassessed-instances'] %}
+                                    <br><small>{{ instance['instance-key'] }} — unassessed: {{ instance['reasons']|join(' ') }}</small>
+                                    {% endfor %}{% endif %}
+                                </td>
                                 <td><small>{{ control['rule-ids']|join(', ') }}</small></td>
                             </tr>
                         {% endfor %}
@@ -267,6 +272,14 @@
                 {% if coverage['diagnostics'] %}
                     <h3>Parser scope diagnostics</h3>
                     <ul>{% for diagnostic in coverage['diagnostics'] %}<li>{{ diagnostic }}</li>{% endfor %}</ul>
+                {% endif %}
+                {% if coverage['export-scopes'] is defined and coverage['export-scopes'] %}
+                    <h3>Export evidence scope</h3>
+                    <ul>{% for item in coverage['export-scopes'] %}<li>{{ item['scope'] }}/{{ item['domain'] }} — {{ item['knowledge-state'] }}: {{ item['reason'] }}</li>{% endfor %}</ul>
+                {% endif %}
+                {% if coverage['limitations'] is defined %}
+                    <h3>Assessment limitations</h3>
+                    <ul>{% for item in coverage['limitations'] %}<li>{{ item }}</li>{% endfor %}</ul>
                 {% endif %}
             </section>
 
