@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections import OrderedDict
 import ipaddress
 import re
 import xml.etree.ElementTree as ET
@@ -376,6 +377,9 @@ class PaloAltoPANOSParser(BaseDeviceParser):
         super().__init__(config_filepath)
         self.tree, self._element_lines = self._parse_with_line_numbers(config_filepath)
         self.root = self.tree.getroot()
+        self._policy_cache = OrderedDict()
+        self._policy_cache_root = self.root
+        self._policy_cache_enabled = True
         for element in self.root.iter():
             element.tag = element.tag.rsplit("}", 1)[-1]
         self.template_unresolved = any(
@@ -991,8 +995,33 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                     result[protocol] = result[protocol] or protocol in profile.protocols
         return result
 
+    def invalidate_policy_cache(self) -> None:
+        """Drop snapshot caches after a supported caller changes native XML."""
+        self._policy_cache.clear()
+        self._policy_cache_root = self.root
+
+    def _policy_cached(self, key):
+        if self._policy_cache_root is not self.root:
+            self.invalidate_policy_cache()
+        if self._policy_cache_enabled and key in self._policy_cache:
+            self._policy_cache.move_to_end(key)
+            return self._policy_cache[key]
+        return None
+
+    def _remember_policy(self, key, value):
+        size = (len(value.intervals) + len(value.unresolved)
+                if isinstance(value, (NetworkSemantics, ServiceSemantics)) else len(value))
+        if self._policy_cache_enabled and size <= 4096:
+            self._policy_cache[key] = value
+            self._policy_cache.move_to_end(key)
+            if len(self._policy_cache) > 512:
+                self._policy_cache.popitem(last=False)
+        return value
+
     def get_policy_address_objects(self) -> tuple[PanosAddressObject, ...]:
         """Return local-vsys and shared address objects without resolving dynamics."""
+        if (cached := self._policy_cached(("address-objects",))) is not None:
+            return cached
         result: list[PanosAddressObject] = []
 
         def collect(parent: ET.Element, device_scope: str, scope: str) -> None:
@@ -1023,10 +1052,12 @@ class PaloAltoPANOSParser(BaseDeviceParser):
             device_scope = self._device_scope(device)
             for vsys in device.findall("./vsys/entry"):
                 collect(vsys, device_scope, vsys.get("name") or "vsys")
-        return tuple(result)
+        return self._remember_policy(("address-objects",), tuple(result))
 
     def get_policy_service_objects(self) -> tuple[PanosServiceObject, ...]:
         """Return static TCP/UDP services and service groups by policy scope."""
+        if (cached := self._policy_cached(("service-objects",))) is not None:
+            return cached
         result: list[PanosServiceObject] = []
 
         def collect(parent: ET.Element, device_scope: str, scope: str) -> None:
@@ -1061,7 +1092,7 @@ class PaloAltoPANOSParser(BaseDeviceParser):
             device_scope = self._device_scope(device)
             for vsys in device.findall("./vsys/entry"):
                 collect(vsys, device_scope, vsys.get("name") or "vsys")
-        return tuple(result)
+        return self._remember_policy(("service-objects",), tuple(result))
 
     @staticmethod
     def _address_interval(value: str) -> AddressInterval | None:
@@ -1098,6 +1129,9 @@ class PaloAltoPANOSParser(BaseDeviceParser):
         self, names: tuple[str, ...], *, device_scope: str, scope: str,
         expansion_limit: int = 4096,
     ) -> NetworkSemantics:
+        cache_key = ("network", device_scope, scope, names, expansion_limit)
+        if (cached := self._policy_cached(cache_key)) is not None:
+            return cached
         objects = self.get_policy_address_objects()
         shared = {item.name: item for item in objects if item.scope == "shared"}
         local = {item.name: item for item in objects if item.device_scope == device_scope and item.scope == scope}
@@ -1144,12 +1178,16 @@ class PaloAltoPANOSParser(BaseDeviceParser):
             unresolved.add("<empty-network-dimension>")
         for name in names:
             visit(name, frozenset())
-        return NetworkSemantics(any_match, tuple(sorted(intervals)), not unresolved, tuple(sorted(unresolved, key=str.casefold)))
+        # Only the whole top-level result is cached, never ancestor-dependent recursion.
+        return self._remember_policy(cache_key, NetworkSemantics(any_match, tuple(sorted(intervals)), not unresolved, tuple(sorted(unresolved, key=str.casefold))))
 
     def resolve_service_semantics(
         self, names: tuple[str, ...], *, device_scope: str, scope: str,
         expansion_limit: int = 4096,
     ) -> ServiceSemantics:
+        cache_key = ("service", device_scope, scope, names, expansion_limit)
+        if (cached := self._policy_cached(cache_key)) is not None:
+            return cached
         objects = self.get_policy_service_objects()
         shared = {item.name: item for item in objects if item.scope == "shared"}
         local = {item.name: item for item in objects if item.device_scope == device_scope and item.scope == scope}
@@ -1205,7 +1243,7 @@ class PaloAltoPANOSParser(BaseDeviceParser):
             unresolved.add("<empty-service-dimension>")
         for name in names:
             visit(name, frozenset())
-        return ServiceSemantics(any_match, tuple(sorted(intervals)), not unresolved, tuple(sorted(unresolved, key=str.casefold)))
+        return self._remember_policy(cache_key, ServiceSemantics(any_match, tuple(sorted(intervals)), not unresolved, tuple(sorted(unresolved, key=str.casefold))))
 
     @staticmethod
     def is_static_security_rule(rule: PanosSecurityRule) -> bool:
@@ -1260,6 +1298,8 @@ class PaloAltoPANOSParser(BaseDeviceParser):
         zones therefore cannot prove NAT irrelevance. Reverse static mappings
         and unmerged/unlocated rules stay unknown.
         """
+        if (cached := self._policy_cached(("nat-rules",))) is not None:
+            return cached
         result = []
         located = set()
         for device in self._device_entries():
@@ -1293,7 +1333,7 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                 result.append(PanosNATRule("", "", "unresolved", 0, state, (),
                     NetworkSemantics(complete=False), NetworkSemantics(complete=False),
                     ServiceSemantics(complete=False), True, ()))
-        return tuple(result)
+        return self._remember_policy(("nat-rules",), tuple(result))
 
     def qualify_nat_comparison(self, first: PanosSecurityRule, second: PanosSecurityRule) -> PanosNATQualification:
         if (first.device_scope, first.scope, first.rulebase) != (second.device_scope, second.scope, second.rulebase):
@@ -2445,6 +2485,10 @@ class PaloAltoPANOSParser(BaseDeviceParser):
         return users
 
     def get_native_config(self) -> Any:
+        # A retained mutable tree can change later without another getter call.
+        # Bypass snapshot caches once it is handed out; reinitialization resets them.
+        self.invalidate_policy_cache()
+        self._policy_cache_enabled = False
         return self.root
 
     def get_normalized_config(self) -> NormalizedConfig:

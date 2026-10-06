@@ -6,6 +6,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- FortiOS trusted hosts: an administrator who restricts only one address family is now reported when the omitted `trusthost`/`ip6-trusthost` takes its documented 7.4.1+ default (any source) and an interface allows administration in that family; older releases record unknown.
+
+- Control outcomes (SC-049, fifth batch): 15 more controls (74 in total), the first for F5 BIG-IP and Check Point Gaia.
+
+- Batch input preservation (SC-068): preflight all JSON/HTML/index destinations
+  against configurations, directory exports, manifest, policies and local bundles,
+  including resolved and hard-link identities. Unsafe collisions and duplicate
+  destinations fail before any output creation, even with overwrite enabled.
+- FortiOS trusted-host accuracy (SC-069): baseline and paths share typed parser
+  syntax validation. Malformed selectors are unknown, not successful restrictions;
+  known broad selectors retain findings alongside uncertainty. Valid IPv4-only
+  accounts and existing role/MFA/path eligibility are preserved.
+- Comparison accuracy (SC-050 stages 1–2): retain mixed-instance uncertainty and
+  require canonical-family, analyzer and policy provenance. Legacy aggregate-only
+  reports remain readable; stable subject identity is still a separate future stage.
+  Profile-qualified PAN-OS snapshot caches (SC-066) reduce repeated object parsing
+  without changing proof bounds, NAT semantics or findings.
+
 - Attack paths (SC-063): `cleartext-admin-unrestricted` for IOS/IOS-XE VTY Telnet and ASA Telnet grants, and `writable-default-snmp` for IOS/IOS-XE. ASA was removed from the SNMP pattern because the ASA supports SNMP read-only access only. Findings are unchanged.
 
 - Control outcomes (SC-049, fourth batch): 13 more controls (59 in total) for FortiOS, Junos, EOS and PAN-OS banners, idle timeouts, lockout, SNMP, NTP authentication and policy logging.

@@ -9,6 +9,7 @@ from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.analyze.common.controls import ControlOutcome as CO, record_control, record_manual_review
 from src.analyze.common.risky_services import RISKY_PORTS, risky_labels
 from src.devices.common.base_parser import BaseDeviceParser
+from src.devices.common.models import KnowledgeState
 from src.devices.common.policy_semantics import (
     ProofState,
     network_covers,
@@ -28,6 +29,11 @@ FORTINET_HARDENING = (
 FORTINET_ADMIN_GUIDE = (
     "https://docs.fortinet.com/document/fortigate/7.2.11/administration-guide/14906/"
     "administrator-account-options"
+)
+# Same config system admin defaults as the 7.4.1 reference used by SC-063 (trusthost1
+# 0.0.0.0 0.0.0.0, ip6-trusthost1 ::/0).
+FORTINET_ADMIN_REFERENCE_74 = (
+    "https://docs.fortinet.com/document/fortigate/7.4.0/cli-reference/13620/config-system-admin"
 )
 FORTINET_ADMIN_REFERENCE = (
     "https://docs.fortinet.com/document/fortigate/7.2.0/cli-reference/16620/"
@@ -423,35 +429,94 @@ class PluginFortiOSBaseline(BasePlugin):
                 "super_admin account" if profile == "super_admin"
                 else f"privileged account using profile '{profile}'"
             )
-            trusts = [
-                " ".join(self._values(settings, key)).lower()
-                for key in settings
-                if str(key).lower().startswith(("trusthost", "ip6-trusthost"))
-            ]
-            restricted = bool(trusts) and all(
-                trust not in self._UNRESTRICTED_TRUST for trust in trusts
-            )
+            trust = fortios.get_admin_trusted_hosts(scope, username, settings, path)
+            unknown_trusts = tuple(s for s in trust.selectors if s.state != KnowledgeState.KNOWN)
+            broad_trusts = tuple(s for s in trust.selectors if s.state == KnowledgeState.KNOWN and s.broad)
+            restricted = bool(trust.selectors) and not unknown_trusts and not broad_trusts
+            # A family with no selector while the other family is restricted is an omitted
+            # setting: per the 7.4.1 CLI reference (config system admin) it defaults to
+            # 0.0.0.0 0.0.0.0 / ::/0, which matters only where an interface admits
+            # administration in that family. Older or unknown releases stay unknown.
+            omitted_exposed, omitted_unknown = [], []
+            if restricted:
+                admin_vdoms = {item.casefold() for item in self._values(settings, "vdom")}
+                release = self._release(fortios)
+                for family in sorted({"ipv4", "ipv6"} - {s.family for s in trust.selectors}):
+                    listeners = [item for item in fortios.get_admin_access_interfaces(family)
+                                 if profile == "super_admin" or not admin_vdoms
+                                 or item.owner.casefold() in admin_vdoms]
+                    if not listeners:
+                        continue
+                    if release is not None and release >= (7, 4, 1):
+                        omitted_exposed.append((family, listeners))
+                    else:
+                        omitted_unknown.append(family)
+            unsafe_trust = trust.origin == "omitted" or bool(broad_trusts) or bool(omitted_exposed)
             if privileged:
-                record_control(
-                    parser, "fortinet.fortios.admin-trusted-hosts",
-                    CO.NO_FINDING if restricted else CO.FINDING,
-                    "Privileged administrator has restrictive trusted hosts." if restricted
-                    else "Privileged administrator has no effective trusted-host restriction.",
-                    instance=admin_instance,
-                )
-            if privileged and not restricted:
+                for selector in unknown_trusts:
+                    record_control(parser, "fortinet.fortios.admin-trusted-hosts", CO.UNKNOWN,
+                                   selector.reason, instance=admin_instance)
+                families = ", ".join(sorted({s.family.replace("ipv", "IPv") for s in trust.selectors}))
+                if unsafe_trust:
+                    outcome = CO.FINDING
+                    reason = ("Privileged administrator has no configured trusted-host restriction." if trust.origin == "omitted"
+                              else "A supplied valid trusted-host selector explicitly admits every source in its family." if broad_trusts
+                              else "Trusted hosts are omitted for "
+                              + ", ".join(f.replace("ipv", "IPv") for f, _ in omitted_exposed)
+                              + "; the documented 7.4.1+ default admits every source and an interface allows administration in that family.")
+                elif not restricted:
+                    outcome, reason = CO.UNKNOWN, "Supplied trusted-host restriction is malformed or unsupported."
+                elif omitted_unknown:
+                    outcome = CO.UNKNOWN
+                    reason = ("Trusted hosts are omitted for " + ", ".join(f.replace("ipv", "IPv") for f in omitted_unknown)
+                              + " and an interface allows administration in that family; the default is qualified only from 7.4.1.")
+                else:
+                    outcome = CO.NO_FINDING
+                    reason = (f"Privileged administrator has valid restrictive {families} trusted hosts; no interface allows "
+                              "administration in an omitted family.")
+                record_control(parser, "fortinet.fortios.admin-trusted-hosts", outcome, reason, instance=admin_instance)
+            if privileged and unsafe_trust and not trust.origin == "omitted" and not broad_trusts:
+                exposed = "; ".join(
+                    f"{family.replace('ipv', 'IPv')} on " + ", ".join(
+                        f"{item.name} ({'/'.join(item.services).upper()})" for item in listeners[:3])
+                    for family, listeners in omitted_exposed)
                 self.add_issue(
                     self._finding(
                         parser,
                         "fortinet.fortios.admin.trusted_hosts",
                         "Privileged administrator is not source restricted",
-                        f"Enabled {role_description} '{username}' in scope '{scope}' has no effective trusted-host restriction.",
+                        (f"Enabled {role_description} '{username}' in scope '{scope}' restricts {families} sources, but no "
+                         + " or ".join("trusthost" if f == "ipv4" else "ip6-trusthost" for f, _ in omitted_exposed)
+                         + " is configured. On FortiOS 7.4.1 and later the omitted setting defaults to "
+                         + " / ".join("0.0.0.0 0.0.0.0" if f == "ipv4" else "::/0" for f, _ in omitted_exposed)
+                         + f", which admits every source, and administrative access is allowed: {exposed}."),
                         "Unrestricted administrator source addresses broaden the management-plane attack surface.",
-                        "Configure restrictive trusthost and ip6-trusthost entries for the administrator.",
+                        "Configure trusted hosts for every address family in which the administrator can log in, "
+                        "or remove administrative access from that family on the listed interfaces.",
+                        Severity.HIGH,
+                        self._evidence(fortios, path, f"system admin {username}") + tuple(
+                            item for _, listeners in omitted_exposed for listener in listeners[:3]
+                            for item in listener.evidence),
+                        (FORTINET_ADMIN_GUIDE, FORTINET_ADMIN_REFERENCE_74),
+                        basis=FindingBasis.DOCUMENTED_DEFAULT,
+                    )
+                )
+            elif privileged and unsafe_trust:
+                self.add_issue(
+                    self._finding(
+                        parser,
+                        "fortinet.fortios.admin.trusted_hosts",
+                        "Privileged administrator is not source restricted",
+                        (f"Enabled {role_description} '{username}' in scope '{scope}' has no configured trusted-host restriction."
+                         if trust.origin == "omitted" else
+                         f"Enabled {role_description} '{username}' in scope '{scope}' explicitly admits every source through "
+                         + ", ".join(s.family.replace("ipv", "IPv") for s in broad_trusts) + " trusted-host selectors."),
+                        "Unrestricted administrator source addresses broaden the management-plane attack surface.",
+                        "Configure trusted-host restrictions for the administrator's applicable source families.",
                         Severity.HIGH,
                         self._evidence(fortios, path, f"system admin {username}"),
                         (FORTINET_ADMIN_GUIDE, FORTINET_ADMIN_REFERENCE),
-                        basis=FindingBasis.EXPLICIT_VALUE if trusts else FindingBasis.REQUIRED_SETTING_MISSING,
+                        basis=FindingBasis.REQUIRED_SETTING_MISSING if trust.origin == "omitted" else FindingBasis.EXPLICIT_VALUE,
                     )
                 )
 

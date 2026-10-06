@@ -89,6 +89,8 @@ Keep in mind:
 
 List the exports in a JSON manifest and audit them in one run. Each device gets its own JSON report (add `--html` for HTML too), plus a `batch-index.json` with input hashes, assessment-policy hashes and an analyzer fingerprint. A failing device doesn't stop the others, and existing reports are never overwritten unless you pass `--overwrite`.
 
+Before creating outputs, batch checks every report/index destination against all supplied artifacts, export-directory subtrees and filesystem aliases. Unsafe collisions fail without changing inputs or outputs; `--overwrite` only permits replacing safe report files. Noncolliding reports may share a flat configuration file's directory.
+
 ```powershell
 python -m src.batch run --manifest batch.json --output-dir reports\2026-10
 python -m src.batch compare --old reports\2026-09\batch-index.json --new reports\2026-10\batch-index.json --output comparison.json
@@ -100,7 +102,7 @@ python -m src.batch compare --old reports\2026-09\batch-index.json --new reports
               "assessment-policy": "policy.json", "export-scope": "full running configuration"}]}
 ```
 
-`compare` lists each finding as new, unchanged, resolved, no longer assessable or not comparable. A finding counts as resolved only when the same device was audited successfully with the same analyzer and assessment policy; a missing export, a parse failure, an exclusion or a rule change is never reported as a fix.
+`compare` lists findings as new, unchanged, resolved, no longer assessable or not comparable. Resolution requires a matching canonical device family, known matching analyzer fingerprints and matching qualified policy provenance. Missing/failed exports, exclusions, templates and scoped control uncertainty are not fixes. Manifest IDs are auditor-declared identities, not verified physical devices. Finding keys remain evidence-based; without subject bindings, uncertainty conservatively blocks resolution for the affected control. Old aggregate-only reports remain readable with an explicit limitation note. See [comparison and cache contracts](docs/EXPORT_EVIDENCE.md#batch-safety-and-comparison).
 
 ## Known CVEs and end of support (opt-in)
 

@@ -204,6 +204,36 @@ class FortiPathPredicate:
 
 
 @dataclass(frozen=True)
+class FortiTrustedHostSelector:
+    field: str
+    family: str
+    state: KnowledgeState
+    broad: bool
+    origin: str
+    reason: str
+    evidence: Tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class FortiAdminAccessInterface:
+    """An interface not configured down that allows password-capable administrative access in one family."""
+
+    name: str
+    owner: str
+    family: str
+    services: Tuple[str, ...]
+    evidence: Tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
+class FortiAdminTrustedHosts:
+    scope: str
+    administrator: str
+    origin: str
+    selectors: Tuple[FortiTrustedHostSelector, ...]
+
+
+@dataclass(frozen=True)
 class FortiManagementListener:
     name: str
     scope: str
@@ -1993,21 +2023,76 @@ class FortiOSParser(BaseDeviceParser):
                 if isinstance(settings, dict):
                     yield scope, position, str(name), settings, path + (str(name),)
 
+    def _admin_trust_selectors(self, settings: FortiDict, path: Tuple[str, ...]) -> Tuple[FortiTrustedHostSelector, ...]:
+        """Validate every supplied selector without inferring omitted-family exposure."""
+        result = []
+        for field, value in settings.items():
+            key = str(field).casefold()
+            if not key.startswith(("trusthost", "ip6-trusthost")):
+                continue
+            version = 6 if key.startswith("ip6-trusthost") else 4
+            prefix = "ip6-trusthost" if version == 6 else "trusthost"
+            evidence = self._field_evidence(path + (str(field),))
+            parts = self._as_list(value)
+            valid_mask = True
+            mask = parts[1] if len(parts) == 2 else parts[0].split("/", 1)[1] if len(parts) == 1 and "/" in parts[0] else ""
+            if version == 4 and "." in mask:
+                try:
+                    inverse = int(ipaddress.IPv4Address(mask)) ^ 0xffffffff
+                    valid_mask = inverse & (inverse + 1) == 0
+                except ValueError:
+                    valid_mask = False
+            if not re.fullmatch(prefix + r"(?:[1-9]|10)", key):
+                state, broad, origin = KnowledgeState.UNKNOWN, False, "unsupported"
+                reason = f"Unsupported or malformed {prefix} index (IPv{version})."
+            elif not valid_mask or (network := self._address_interval(value, version)) is None:
+                state, broad, origin = KnowledgeState.UNKNOWN, False, "malformed"
+                reason = f"Malformed or wrong-family {prefix} selector (IPv{version}); restriction is unknown."
+            else:
+                state, origin = KnowledgeState.KNOWN, "explicit"
+                broad = network.first == 0 and network.last == (1 << (32 if version == 4 else 128)) - 1
+                reason = (f"Explicit valid IPv{version} selector admits every source." if broad else
+                          f"Explicit valid IPv{version} selector restricts sources; other families are not inferred.")
+            result.append(FortiTrustedHostSelector(str(field), f"ipv{version}", state, broad, origin, reason, evidence))
+        return tuple(result)
+
+    def get_admin_trusted_hosts(self, scope: str, administrator: str, settings: FortiDict,
+                               path: Tuple[str, ...]) -> FortiAdminTrustedHosts:
+        selectors = self._admin_trust_selectors(settings, path)
+        return FortiAdminTrustedHosts(scope, administrator, "explicit" if selectors else "omitted", selectors)
+
+    def get_admin_access_interfaces(self, family: str) -> Tuple[FortiAdminAccessInterface, ...]:
+        """Interfaces whose ``allowaccess`` (IPv4) or ``config ipv6`` ``ip6-allowaccess`` (IPv6)
+        admits HTTPS, HTTP, SSH or Telnet administration; interfaces set ``status down`` are skipped."""
+        result = []
+        field = "allowaccess" if family == "ipv4" else "ip6-allowaccess"
+        for if_scope, name, settings, path in self.iter_interfaces():
+            if str(settings.get("status", "")).casefold() == "down":
+                continue
+            source = settings if family == "ipv4" else settings.get("ipv6", {})
+            if not isinstance(source, dict):
+                continue
+            services = tuple(sorted({str(item).casefold() for item in self._as_list(source.get(field))}
+                                    & {"https", "http", "ssh", "telnet"}))
+            if not services:
+                continue
+            owner = str(settings.get("vdom", "root" if if_scope == "global" else if_scope))
+            ev_path = path if family == "ipv4" else path + ("ipv6",)
+            result.append(FortiAdminAccessInterface(name, owner, family, services,
+                                                    tuple(self._field_evidence(ev_path + (field,)))))
+        return tuple(result)
+
     def get_admin_trust_predicate(self, settings: FortiDict, path: Tuple[str, ...], family: str,
                                  defaults_known: bool) -> FortiPathPredicate:
         version = 4 if family == "ipv4" else 6
         prefix = "trusthost" if version == 4 else "ip6-trusthost"
-        fields = [(str(k), v) for k, v in settings.items() if re.fullmatch(prefix + r"(?:[1-9]|10)", str(k), re.I)]
-        if any(str(k).casefold().startswith(prefix) and not re.fullmatch(prefix + r"(?:[1-9]|10)", str(k), re.I)
-               for k in settings):
-            return FortiPathPredicate(KnowledgeState.UNKNOWN, False, f"Unsupported or malformed {prefix} index.")
-        evidence = tuple(ev for field, _ in fields for ev in self._field_evidence(path + (field,)))
-        networks = [self._address_interval(value, version) for _, value in fields]
-        if any(n is None for n in networks):
+        selectors = tuple(s for s in self._admin_trust_selectors(settings, path) if s.family == family)
+        evidence = tuple(ev for selector in selectors for ev in selector.evidence)
+        if unknown := next((s for s in selectors if s.state != KnowledgeState.KNOWN), None):
             return FortiPathPredicate(KnowledgeState.UNKNOWN, False,
-                                      f"Malformed or wrong-family {prefix} setting; source restriction is unknown.", evidence)
-        if fields:
-            broad = any(n.first == 0 and n.last == (1 << (32 if version == 4 else 128)) - 1 for n in networks)
+                                      unknown.reason, evidence)
+        if selectors:
+            broad = any(s.broad for s in selectors)
             return FortiPathPredicate(KnowledgeState.KNOWN, broad,
                                       f"Explicit {prefix} admits every IPv{version} source." if broad else
                                       f"Explicit valid {prefix} restricts IPv{version} sources.", evidence)

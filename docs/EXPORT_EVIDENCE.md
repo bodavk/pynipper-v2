@@ -44,8 +44,9 @@ of authentication, policy, logging, certificates or unrelated sections.
 and valid. It does **not** certify a whole section or device export. PAN-OS
 password-complexity knowledge covers its enabled flag and five explicit minimum
 fields, not password profiles or roles. Management SSH knowledge covers the
-applied profile and exported algorithm lists. Missing, duplicate, malformed,
-unsupported and inherited fields remain unknown.
+applied profile and exported algorithm lists. Omitted fields within exported
+objects follow the maintainer rule above; duplicate, malformed, unsupported,
+inherited or absent-domain evidence remains unknown.
 
 An explicit unsafe setting can still produce a finding in a partial export;
 unknown fields must remain visible. Release-qualified defaults are a separate
@@ -176,6 +177,65 @@ not proof of an assigned address or public reachability.
 
 `dual-stack-mode` concerns tunnel addressing, not an inferred IPv6 listener switch
 ([vendor SSL-VPN settings](https://docs.fortinet.com/document/fortigate/7.4.6/cli-reference/114404382/config-vpn-ssl-settings)).
-The three active patterns and seven gated expansion patterns are retained.
+The five active patterns and five gated expansion patterns are retained.
 Research links are maintenance references only: audits never retrieve them,
 query devices/DNS, check revocation or contact update servers.
+
+## Baseline trusted-host syntax
+
+`FortiAdminTrustedHosts` contains scoped, secret-free `FortiTrustedHostSelector`
+records (native field, family, explicit/malformed/unsupported origin, knowledge,
+broadness, reason and located evidence). Baseline and path predicates share the
+validator, not eligibility. Every supplied selector must validate its address,
+netmask/prefix, family and supported index; IPv4 wildcard masks are not netmasks.
+Unknown selectors cannot establish a restriction. Known broad selectors remain
+findings alongside scoped unknown reasons. A wholly omitted required restriction
+inside an exported administrator remains a not-configured finding. Valid
+IPv4-only/IPv6-only baseline restrictions do not imply protection of the omitted
+family. Account privileges, remote/MFA behavior and path listener/role/local-in/
+VDOM/release gates are unchanged; a baseline finding never completes a path.
+
+## Batch safety and comparison
+
+`src.batch` checks the complete output set before creating even the output
+directory. It protects manifest, every input, policies, local advisory bundle and
+directory-export subtrees. Resolved names detect case/symlink/junction aliases;
+existing device/inode identities also detect hard links and duplicate outputs.
+Failure to inspect a suspect identity fails closed. Safe report overwrite and
+noncolliding output beside a flat configuration remain allowed. This preflight
+does not promise atomic safety against another process changing paths concurrently.
+
+Comparison keeps schema 1 and evidence-based finding keys. It consumes aggregate
+and scoped SC-049 outcomes, unassessed lists and counts. Until parser-owned subject
+bindings exist, scoped uncertainty blocks resolution of disappeared findings for
+the affected control, without altering unchanged findings or unrelated controls.
+Legacy aggregate-only reports use their prior fallback with a limitation note;
+unmigrated checks are not blanket-marked unknown.
+
+Remediation conclusions require matching canonical registry families and valid,
+nonempty matching analyzer SHA-256 fingerprints. True aliases resolve normally;
+PIX/ASA, FW1/Gaia and IOS-XE/IOS remain distinct. Missing and `None` default-policy
+representations are equivalent; an explicitly declared policy needs a valid
+digest. Unknown/mismatched provenance or family is not comparable. Exclusion,
+template and unsuccessful-audit handling is preserved. The manifest ID is an
+auditor's declared identity, not a verified physical identity. Current findings
+remain visible in both JSON and escaped HTML comparison views. Stable scoped
+subject metadata is separately planned under SC-050, not implemented here.
+
+## PAN-OS snapshot cache boundary
+
+Profiling the unchanged 200-rule workload found 5,362 address inventory rebuilds
+and about 72% of profiled analysis time spent collecting those objects. The
+conditional SC-066 gate justified parser-local caches of immutable address/service
+inventory, whole top-level selector results and typed NAT inventory. A combined
+512-entry LRU and maximum 4,096 retained items per result bound retention. Selector
+keys include device/vsys scope, ordered selectors and expansion limit. Empty,
+unresolved and cyclic final results are preserved; ancestor-dependent intermediate
+recursion is never cached. Proof budgets and eligibility are unchanged.
+
+Reinitialization and root replacement invalidate cached snapshots. Handing out
+mutable native XML clears and disables caches for that parser instance, so later
+changes through a retained native reference cannot reuse stale results. Direct
+internal XML mutation must call `invalidate_policy_cache()`; there is no hidden
+file reload, process-wide cache or audit-network dependency. Cached/uncached
+equivalence, scope/parser isolation, cycles, limits and native mutation are tested.

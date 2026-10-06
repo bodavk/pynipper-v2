@@ -3,6 +3,7 @@
 import re
 
 from src.analyze.common.base_plugin import BasePlugin
+from src.analyze.common.controls import ControlOutcome as CO, record_control
 from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.analyze.common.risky_services import CISCO_PORT_NAMES, risky_labels
 from src.devices.common.base_parser import BaseDeviceParser
@@ -86,6 +87,7 @@ class PluginF5BIGIPChecks(BasePlugin):
     def analyze(self, parser: BaseDeviceParser) -> None:
         if not isinstance(parser, F5BIGIPParser):
             raise TypeError("PluginF5BIGIPChecks requires an F5BIGIPParser")
+        self._lockdown_names: set[str] = set()  # self IPs that received a port-lockdown finding
         setting = parser.get_setting
         ssh_login = setting("sys sshd", "login")
         ssh_active = ssh_login is not None and ssh_login.value == "enabled"
@@ -321,6 +323,136 @@ class PluginF5BIGIPChecks(BasePlugin):
                 references=(VIRTUAL, CLIENT_SSL),
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
+        self._record_controls(parser)
+
+    def _record_controls(self, parser: F5BIGIPParser) -> None:
+        """SC-049 fifth batch: one outcome per control (per self IP) after the checks ran."""
+        fired = {issue.rule_id for issue in self.issues}
+        setting = parser.get_setting
+        release = parser.get_release()
+
+        control = "f5.bigip.self-ip-port-lockdown"
+        self_ips = parser.get_self_ips()
+        if not self_ips:
+            record_control(parser, control, CO.NOT_APPLICABLE, "No self IP is configured.")
+        lockdown = getattr(self, "_lockdown_names", set())
+        for self_ip in self_ips:
+            if self_ip.name in lockdown:
+                record_control(parser, control, CO.FINDING, "Port lockdown allows SSH or HTTPS management.",
+                               instance=self_ip.name)
+            elif self_ip.allow_service:
+                record_control(parser, control, CO.NO_FINDING,
+                               "Port lockdown does not allow SSH or HTTPS management.", instance=self_ip.name)
+            elif release is not None and release >= (11, 5, 3):
+                record_control(parser, control, CO.NO_FINDING,
+                               "allow-service is omitted; the documented default for this release is none.",
+                               instance=self_ip.name)
+            else:
+                record_control(parser, control, CO.UNKNOWN,
+                               "allow-service is omitted and the default is not verified for this release.",
+                               instance=self_ip.name)
+
+        control = "f5.bigip.root-login"
+        root = parser.get_db("systemauth.disablerootlogin")
+        login = setting("sys sshd", "login")
+        if "f5.bigip.auth.root_login_enabled" in fired:
+            record_control(parser, control, CO.FINDING, "Direct root login is allowed.")
+        elif root is not None:
+            record_control(parser, control,
+                           CO.NO_FINDING if root[0].strip('"').casefold() == "true" else CO.UNKNOWN,
+                           "systemauth.disablerootlogin is true." if root[0].strip('"').casefold() == "true"
+                           else "systemauth.disablerootlogin has an unrecognized value.")
+        elif not parser.has_db_entries():
+            record_control(parser, control, CO.UNKNOWN, "No sys db settings are exported; the root login state is not evaluated.")
+        elif release is None or release < (11, 6, 0) or not parser.has_object("sys sshd") or (
+                login is not None and login.value is None):
+            record_control(parser, control, CO.UNKNOWN,
+                           "The root login default is not verified for this release or the SSH service block is missing or malformed.")
+        else:
+            record_control(parser, control, CO.NOT_APPLICABLE,
+                           "systemauth.disablerootlogin is at its default and SSH login is disabled.")
+
+        control = "f5.bigip.ssh-source-restriction"
+        allow = setting("sys sshd", "allow")
+        if "f5.bigip.ssh.unrestricted_sources" in fired:
+            record_control(parser, control, CO.FINDING, "SSH accepts any source address.")
+        elif not parser.has_object("sys sshd") or (login is not None and login.value is None):
+            record_control(parser, control, CO.UNKNOWN, "The sys sshd block is not exported or its login value is malformed.")
+        elif login is not None and login.value == "disabled":
+            record_control(parser, control, CO.NOT_APPLICABLE, "SSH login is disabled.")
+        elif allow is not None and allow.value == "restricted":
+            record_control(parser, control, CO.NO_FINDING, "SSH is limited to listed source addresses.")
+        elif allow is not None and allow.value == "unrestricted":
+            record_control(parser, control, CO.UNKNOWN,
+                           "SSH allow is unrestricted but the login state is omitted; the check grades it only when login is explicitly enabled.")
+        else:
+            record_control(parser, control, CO.UNKNOWN,
+                           "The SSH allow value is malformed or its default is not verified for this release.")
+
+        control = "f5.bigip.httpd-source-restriction"
+        http_allow = setting("sys httpd", "allow")
+        if "f5.bigip.http.unrestricted_sources" in fired:
+            record_control(parser, control, CO.FINDING, "The configuration utility accepts any source address.")
+        elif http_allow is not None and http_allow.value == "none":
+            record_control(parser, control, CO.NOT_APPLICABLE, "The configuration utility allows no source (allow none).")
+        elif http_allow is not None and http_allow.value == "restricted":
+            record_control(parser, control, CO.NO_FINDING, "The configuration utility is limited to listed source addresses.")
+        elif not parser.has_object("sys httpd"):
+            record_control(parser, control, CO.UNKNOWN, "No sys httpd block is exported.")
+        else:
+            record_control(parser, control, CO.UNKNOWN,
+                           "The httpd allow value is malformed or its default is not verified for this release.")
+
+        control = "f5.bigip.password-policy-enforcement"
+        enforcement = setting("auth password-policy", "policy-enforcement")
+        if "f5.bigip.password_policy.enforcement_disabled" in fired:
+            record_control(parser, control, CO.FINDING, "Password policy enforcement is disabled.")
+        elif enforcement is not None:
+            record_control(parser, control, CO.NO_FINDING if enforcement.value == "enabled" else CO.UNKNOWN,
+                           "Password policy enforcement is enabled." if enforcement.value == "enabled"
+                           else "The policy-enforcement value is malformed.")
+        elif not parser.has_object("auth password-policy"):
+            record_control(parser, control, CO.UNKNOWN, "No auth password-policy block is exported.")
+        elif release is not None and release >= (14, 0, 0):
+            record_control(parser, control, CO.NO_FINDING,
+                           "policy-enforcement is omitted; from 14.0.0 the documented default is enabled.")
+        else:
+            record_control(parser, control, CO.UNKNOWN, "The policy-enforcement default is not verified for this release.")
+
+        control = "f5.bigip.snmp-community"
+        agent = parser.get_snmp_agent()
+        communities = parser.get_snmp_communities()
+        if fired & {"f5.bigip.snmp.community_access", "f5.bigip.snmp.default_community", "f5.bigip.snmp.write_community"}:
+            record_control(parser, control, CO.FINDING, "A default, writable or unrestricted SNMP community is reachable.")
+        elif not parser.has_object("sys snmp"):
+            record_control(parser, control, CO.UNKNOWN, "No sys snmp block is exported.")
+        elif agent is None or agent.client_scope in {"none", "loopback-only"}:
+            record_control(parser, control, CO.NOT_APPLICABLE,
+                           "SNMP clients are limited to the local host (allowed-addresses omitted, none or loopback).")
+        elif agent.client_scope == "unknown":
+            record_control(parser, control, CO.UNKNOWN, "The SNMP allowed-addresses value is malformed.")
+        elif any(item.default_name is None for item in communities):
+            record_control(parser, control, CO.UNKNOWN, "A community name is not in the export, so a default name cannot be excluded.")
+        else:
+            record_control(parser, control, CO.NO_FINDING,
+                           "No reachable SNMP community is default, writable or open to any source."
+                           if communities else "No SNMP community is configured.")
+
+        control = "f5.bigip.remote-user-defaults"
+        role = setting("auth remote-user", "default-role")
+        console = setting("auth remote-user", "remote-console-access")
+        source = setting("auth source", "type")
+        if fired & {"f5.bigip.auth.remote_default_admin", "f5.bigip.auth.remote_console_access"}:
+            record_control(parser, control, CO.FINDING, "Remote users get the admin role or terminal access by default.")
+        elif any(item is not None and item.value is None for item in (role, console)):
+            record_control(parser, control, CO.UNKNOWN, "The auth remote-user values are malformed.")
+        elif parser.has_object("auth remote-user"):
+            record_control(parser, control, CO.NO_FINDING,
+                           "Remote-user defaults give no admin role and no terminal access (omitted values: no-access, disabled).")
+        elif source is not None and source.value == "local":
+            record_control(parser, control, CO.NOT_APPLICABLE, "Authentication source is local.")
+        else:
+            record_control(parser, control, CO.UNKNOWN, "No auth remote-user block is exported.")
 
     def _default(self, parser: F5BIGIPParser, rule_id: str, title: str, observation: str, impact: str,
                  recommendation: str, severity: Severity, evidence: tuple, references: tuple) -> None:
@@ -345,6 +477,7 @@ class PluginF5BIGIPChecks(BasePlugin):
             for self_ip in parser.get_self_ips():
                 if self_ip.allow_service:
                     continue
+                self._lockdown_names.add(self_ip.name)
                 self._default(parser, "f5.bigip.management.self_ip_port_lockdown", "Self IP allows management services",
                               f"Self IP {self_ip.name} (VLAN {self_ip.vlan or 'unknown'}) sets no allow-service; on BIG-IP {label} "
                               "the default port lockdown is Allow Default, which includes SSH (TCP 22) and HTTPS (TCP 443).",
@@ -720,6 +853,7 @@ class PluginF5BIGIPChecks(BasePlugin):
                 severity = Severity.MEDIUM
             else:
                 continue
+            self._lockdown_names.add(self_ip.name)
             self.add_issue(Finding(
                 rule_id="f5.bigip.management.self_ip_port_lockdown",
                 device=parser.device_type,

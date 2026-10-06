@@ -411,6 +411,7 @@ class F5BIGIPParser(BaseDeviceParser):
                 self._read_settings(scope, tokens[body_start:cursor - 1])
             elif scope == "sys snmp":
                 recognized = True
+                self._scopes_seen.add(scope)
                 self._read_snmp(header_line, tokens[body_start:cursor - 1])
             elif len(header) == 4 and header[:3] == ["ltm", "profile", "client-ssl"]:
                 recognized = True

@@ -28,7 +28,9 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import re
+import stat
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -136,23 +138,88 @@ def _resolve_device(entry: BatchEntry) -> str:
     return get_device_definition(entry.device).canonical_id
 
 
+def _preflight_outputs(entries: list[BatchEntry], bundle: Path | None, manifest: Path,
+                       out: Path, targets: list[Path], overwrite: bool) -> None:
+    """Protect supplied artifacts and all output identities before creating anything.
+
+    Resolved names catch case/junction/symlink aliases; device/inode identities
+    additionally catch existing hard links, including directory-export members.
+    This is a preflight, not a guarantee against concurrent filesystem mutation.
+    """
+    identities = {}
+
+    def identity(path):
+        path = path.resolve()
+        if path not in identities:
+            try:
+                info = path.stat()
+            except FileNotFoundError:
+                identities[path] = None
+            else:
+                identities[path] = (info.st_dev, info.st_ino, stat.S_ISDIR(info.st_mode))
+        return identities[path]
+
+    def same(first, second):
+        if first.resolve() == second.resolve():
+            return True
+        a, b = identity(first), identity(second)
+        return a is not None and b is not None and a[:2] == b[:2]
+
+    try:
+        protected = [manifest, *(e.input_path for e in entries),
+                     *(e.assessment_policy for e in entries if e.assessment_policy)]
+        if bundle:
+            protected.append(bundle)
+        roots = []
+
+        def walk_error(error):
+            raise error
+
+        for path in tuple(protected):
+            info = identity(path)
+            if info is not None and info[2]:
+                roots.append(path.resolve())
+                for directory, dirs, files in os.walk(path, followlinks=False, onerror=walk_error):
+                    protected.extend(Path(directory) / name for name in (*dirs, *files))
+        # An exported directory may contain a junction/symlink to another tree.
+        # Protect that resolved subtree too, without following recursive links.
+        roots.extend(p.resolve() for p in protected if identity(p) is not None and identity(p)[2])
+        for destination in (out, *targets):
+            resolved = destination.resolve()
+            if any(same(destination, artifact) for artifact in protected):
+                raise BatchError("Output destinations must not replace or alias supplied artifacts")
+            if any(root == resolved or root in resolved.parents for root in roots):
+                raise BatchError("Output directory must not contain reports inside a supplied export subtree")
+        for position, target in enumerate(targets):
+            if any(same(target, earlier) for earlier in targets[:position]):
+                raise BatchError("Duplicate output destinations or filesystem aliases")
+            info = identity(target)
+            if info is not None and info[2]:
+                raise BatchError("A report destination is an existing directory")
+        if identity(out) is not None and not identity(out)[2]:
+            raise BatchError("Output directory is an existing file")
+        existing = [t.name for t in targets if identity(t) is not None or t.is_symlink()]
+        if existing and not overwrite:
+            raise BatchError("Output files already exist (use --overwrite): " + ", ".join(sorted(existing)[:5]))
+    except (OSError, RuntimeError):
+        raise BatchError("Output safety could not be established from filesystem paths and identities") from None
+
+
 def run_batch(manifest: str, output_dir: str, *, html: bool = False, overwrite: bool = False) -> dict:
     from src.analyze.analyze_device import analyze_device
     from src.advisories.service import AdvisoryRequest
     from src.common.assessment import AssessmentContext
 
     entries, bundle = load_manifest(manifest)
-    out = Path(output_dir).resolve()
-    for entry in entries:
-        if entry.input_path == out or entry.input_path in out.parents:
-            raise BatchError(f"Output directory must not contain the input of {entry.device_id}")
-    out.mkdir(parents=True, exist_ok=True)
+    try:
+        out = Path(output_dir).resolve()
+    except (OSError, RuntimeError):
+        raise BatchError("Output safety could not be established from filesystem paths") from None
     targets = [out / "batch-index.json"] + [out / f"{e.device_id}.json" for e in entries]
     if html:
         targets += [out / f"{e.device_id}.html" for e in entries]
-    existing = [t.name for t in targets if t.exists()]
-    if existing and not overwrite:
-        raise BatchError("Output files already exist (use --overwrite): " + ", ".join(sorted(existing)[:5]))
+    _preflight_outputs(entries, bundle, Path(manifest).resolve(), out, targets, overwrite)
+    out.mkdir(parents=True, exist_ok=True)
     default_conf = str(_SOURCE_ROOT / "common" / "default.conf")
     index = {
         "schema-version": BATCH_SCHEMA_VERSION,
@@ -222,9 +289,48 @@ def _excluded(report: dict) -> set[str]:
 def _unassessable_rules(report: dict) -> set[str]:
     rules = set()
     for control in ((report.get("coverage") or {}).get("controls") or {}).get("results") or ():
-        if control.get("outcome") in {"unknown", "unsupported", "excluded", "not-recorded"}:
+        if control.get("outcome") in _UNCERTAIN_OUTCOMES or _scoped_uncertainty(control):
             rules.update(control.get("rule-ids") or ())
     return rules
+
+
+_UNCERTAIN_OUTCOMES = {"unknown", "unsupported", "excluded", "not-recorded"}
+
+
+def _scoped_uncertainty(control: dict) -> bool:
+    return bool(control.get("unassessed-instances") or control.get("unassessed-instance-count")
+                or any(i.get("outcome") in _UNCERTAIN_OUTCOMES for i in control.get("instances") or ()))
+
+
+def _digest(value) -> str | None:
+    return value.casefold() if isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{64}", value) else None
+
+
+def _comparison_family(record: dict, report: dict) -> str | None:
+    from src.devices.registry import get_device_definition
+    try:
+        family = get_device_definition(record.get("device")).canonical_id
+        # Optional old-report metadata is not required; when supplied it must
+        # agree with the declared family. A manifest ID is not physical identity.
+        for value in ((report.get("data") or {}).get("device-type"),
+                      (report.get("coverage") or {}).get("device-type")):
+            if value is not None and get_device_definition(value).canonical_id != family:
+                return None
+        return family
+    except ValueError:
+        return None
+
+
+def _comparison_policy(record: dict, report: dict) -> tuple[bool, str | None]:
+    declared = record.get("assessment-policy")
+    if declared is not None:
+        digest = _digest(declared.get("sha256")) if isinstance(declared, dict) else None
+        return digest is not None, digest
+    metadata = (report.get("data") or {}).get("assessment-policy") or {}
+    if (metadata.get("policy-version") not in {None, "pynipper-v2/default-v1"}
+            or metadata.get("provenance") not in {None, "built-in default"}):
+        return False, None
+    return True, None  # absent/None default-policy representations are equivalent
 
 
 def compare_batches(old_index: str, new_index: str) -> dict:
@@ -233,7 +339,8 @@ def compare_batches(old_index: str, new_index: str) -> dict:
     for item in (old, new):
         if item.get("schema-version") != BATCH_SCHEMA_VERSION:
             raise BatchError("Both inputs must be batch-index.json files with schema-version 1")
-    same_rules = old.get("analyzer-fingerprint") == new.get("analyzer-fingerprint")
+    old_fingerprint, new_fingerprint = (_digest(index.get("analyzer-fingerprint")) for index in (old, new))
+    same_rules = old_fingerprint is not None and old_fingerprint == new_fingerprint
     old_devices = {d["id"]: d for d in old.get("devices", ())}
     new_devices = {d["id"]: d for d in new.get("devices", ())}
     devices, totals = [], {"new": 0, "unchanged": 0, "resolved": 0, "no-longer-assessable": 0, "not-comparable": 0}
@@ -257,11 +364,26 @@ def compare_batches(old_index: str, new_index: str) -> dict:
             entry["notes"].append("No successful audit in the old set; every current finding is listed as new.")
             entry["new"] = list(new_keys.values())
         else:
-            policy_changed = (before.get("assessment-policy") or {}).get("sha256") != (after.get("assessment-policy") or {}).get("sha256")
+            old_family, new_family = _comparison_family(before, old_report), _comparison_family(after, new_report)
+            same_family = old_family is not None and old_family == new_family
+            old_policy_known, old_policy = _comparison_policy(before, old_report)
+            new_policy_known, new_policy = _comparison_policy(after, new_report)
+            policy_unknown = not old_policy_known or not new_policy_known
+            policy_changed = old_policy != new_policy
+            if not same_family:
+                entry["notes"].append("Device family is different, unknown or inconsistent with the report; disappeared findings are not comparable.")
+            if policy_unknown:
+                entry["notes"].append("A declared assessment policy has no valid digest; comparison provenance is unknown.")
             if policy_changed:
                 entry["notes"].append("The assessment policy changed; disappeared findings are not counted as resolved.")
             if not same_rules:
-                entry["notes"].append("The analyzer code changed between the sets; disappeared findings are not counted as resolved.")
+                entry["notes"].append("The analyzer fingerprint changed or is missing/invalid; disappeared findings are not comparable.")
+            controls = ((new_report.get("coverage") or {}).get("controls") or {}).get("results") or ()
+            if any(_scoped_uncertainty(c) for c in controls):
+                entry["notes"].append("Scoped instance uncertainty prevents resolution of disappeared findings for the affected control: evidence-only keys have no trusted finding-to-instance binding.")
+            if not controls or any(not all(k in c for k in ("instances", "unassessed-instances", "unassessed-instance-count")) for c in controls):
+                entry["notes"].append("Legacy aggregate-only coverage fallback is in use for some controls; per-instance uncertainty cannot be recovered from those records.")
+            entry["notes"].append("The manifest ID is auditor-declared identity, not verified physical-device identity; finding keys remain evidence-based.")
             if (new_report.get("coverage") or {}).get("input-completeness") == "unrendered-template":
                 entry["notes"].append("The new input is an unrendered template; absence-based checks were withheld.")
             excluded, unassessable = _excluded(new_report), _unassessable_rules(new_report)
@@ -269,9 +391,11 @@ def compare_batches(old_index: str, new_index: str) -> dict:
             for key, finding in old_keys.items():
                 if key in new_keys:
                     entry["unchanged"].append(finding)
+                elif not same_family or not same_rules or policy_unknown:
+                    entry["not-comparable"].append(finding)
                 elif (set(key[0].split(".")) & excluded) or key[0] in unassessable or template:
                     entry["no-longer-assessable"].append(finding)
-                elif policy_changed or not same_rules:
+                elif policy_changed:
                     entry["not-comparable"].append(finding)
                 else:
                     entry["resolved"].append(finding)

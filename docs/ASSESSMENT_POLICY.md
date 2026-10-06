@@ -70,7 +70,8 @@ The policy file is validated before the scan. Unknown fields, unsupported roles,
 
 Assessment roles express auditor-supplied boundary context, not proven Internet
 reachability or complete exports. FortiOS logging/inspection additionally requires
-uniquely resolved same-VDOM interfaces with explicit `status up`, static selectors
+uniquely resolved same-VDOM interfaces that are up (explicit `status up`, or the
+cited release-qualified omitted default), static selectors
 and a proven nonempty first-match permission. Duplicate interface names across
 VDOMs, unresolved attachments or uncertain overlap remain unassessed. Family
 instances are independent. No new policy field declares a fragment complete or
