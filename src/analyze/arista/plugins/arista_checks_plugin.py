@@ -114,6 +114,7 @@ class PluginAristaChecks(BasePlugin):
                         severity=Severity.HIGH,
                         evidence=evidence,
                         references=(ARISTA_SESSION_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
             if not endpoint.https:
@@ -129,6 +130,7 @@ class PluginAristaChecks(BasePlugin):
                         severity=Severity.HIGH,
                         evidence=evidence,
                         references=(ARISTA_SESSION_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
             if not endpoint.ipv4_acl and not endpoint.ipv6_acl:
@@ -144,6 +146,7 @@ class PluginAristaChecks(BasePlugin):
                         severity=Severity.MEDIUM,
                         evidence=evidence,
                         references=(ARISTA_ACL_GUIDE,),
+                        basis=FindingBasis.REQUIRED_SETTING_MISSING,
                     )
                 )
             for family, name in (("ip", endpoint.ipv4_acl), ("ipv6", endpoint.ipv6_acl)):
@@ -189,6 +192,7 @@ class PluginAristaChecks(BasePlugin):
                 severity=Severity.MEDIUM,
                 evidence=("active eAPI without parsed centralized AAA",),
                 references=(ARISTA_SECURITY_GUIDE,),
+                basis=FindingBasis.REQUIRED_SETTING_MISSING,
             )
         )
 
@@ -215,6 +219,7 @@ class PluginAristaChecks(BasePlugin):
                 severity=Severity.HIGH,
                 evidence=tuple(item for item in administrator.evidence),
                 references=(ARISTA_USER_SECURITY_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
         for policy in eos.get_aaa_policies():
@@ -241,6 +246,7 @@ class PluginAristaChecks(BasePlugin):
                 severity=Severity.CRITICAL,
                 evidence=tuple(item for item in policy.evidence),
                 references=(ARISTA_USER_SECURITY_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
         remote_auth = eos.get_remote_authentication()
@@ -268,6 +274,7 @@ class PluginAristaChecks(BasePlugin):
                     severity=Severity.HIGH,
                     evidence=("centralized login authentication without all-command authorization",),
                     references=(ARISTA_USER_SECURITY_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
 
             accounting = eos.get_accounting_policies()
@@ -294,6 +301,7 @@ class PluginAristaChecks(BasePlugin):
                         evidence for item in accounting for evidence in item.evidence
                     ) or ("default EXEC/all-command accounting incomplete",),
                     references=(ARISTA_USER_SECURITY_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
 
         lockout = eos.get_lockout_policy()
@@ -334,6 +342,7 @@ class PluginAristaChecks(BasePlugin):
                     severity=Severity.MEDIUM,
                     evidence=tuple(item for item in lockout.evidence),
                     references=(ARISTA_USER_SECURITY_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
 
         local_admin_path = bool(eos.get_administrators()) and remote_active and any(
@@ -366,6 +375,7 @@ class PluginAristaChecks(BasePlugin):
                 severity=Severity.MEDIUM,
                 evidence=tuple(item for item in password_minimum.evidence),
                 references=(ARISTA_SESSION_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
         for session in interactive:
@@ -390,6 +400,11 @@ class PluginAristaChecks(BasePlugin):
                 severity=Severity.MEDIUM,
                 evidence=tuple(item for item in session.evidence),
                 references=(ARISTA_SESSION_GUIDE,),
+                basis=(
+                    FindingBasis.EXPLICIT_VALUE
+                    if session.resolution_state in {"explicit", "explicit-reset"}
+                    else FindingBasis.DOCUMENTED_DEFAULT
+                ),
             ))
 
         banner = eos.get_banner_policy()
@@ -407,6 +422,7 @@ class PluginAristaChecks(BasePlugin):
                     "banner login absent from identified EOS configuration",
                 ),
                 references=(ARISTA_DISPLAY_GUIDE,),
+                basis=FindingBasis.REQUIRED_SETTING_MISSING,
             ))
 
         profiles = eos.get_ssl_profiles()
@@ -426,6 +442,7 @@ class PluginAristaChecks(BasePlugin):
                     severity=Severity.MEDIUM,
                     evidence=evidence,
                     references=(ARISTA_TLS_GUIDE, ARISTA_SESSION_GUIDE),
+                    basis=FindingBasis.MISSING_EXPLICIT_SETTING,
                 ))
                 continue
             profile = profiles.get(endpoint.ssl_profile.casefold())
@@ -441,6 +458,7 @@ class PluginAristaChecks(BasePlugin):
                     severity=Severity.HIGH,
                     evidence=evidence,
                     references=(ARISTA_TLS_GUIDE, ARISTA_SESSION_GUIDE),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
                 continue
             profile_evidence = evidence + tuple(item for item in profile.evidence)
@@ -456,6 +474,7 @@ class PluginAristaChecks(BasePlugin):
                     severity=Severity.HIGH,
                     evidence=profile_evidence,
                     references=(ARISTA_TLS_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
             if profile.tls_versions is not None and set(profile.tls_versions) & {"1.0", "1.1"}:
                 self.add_issue(Finding(
@@ -469,11 +488,18 @@ class PluginAristaChecks(BasePlugin):
                     severity=Severity.HIGH,
                     evidence=profile_evidence,
                     references=(ARISTA_TLS_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
 
     def check_ssh_and_authorization(self, parser: BaseDeviceParser) -> None:
         eos = self._eos(parser)
         ssh = eos.get_ssh_settings()
+        ssh_control = "arista.eos.ssh-source-restriction"
+        if not ssh.configured:
+            record_control(parser, ssh_control, CO.UNKNOWN,
+                           "No management ssh block is exported; the default SSH service policy is not evaluated.")
+        elif not ssh.active:
+            record_control(parser, ssh_control, CO.NOT_APPLICABLE, "Management SSH is shut down.")
         if ssh.configured and ssh.active:
             evidence = tuple(item for item in ssh.evidence)
             if ssh.empty_passwords == "permit":
@@ -489,6 +515,7 @@ class PluginAristaChecks(BasePlugin):
                         severity=Severity.CRITICAL,
                         evidence=evidence,
                         references=(ARISTA_SESSION_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
             weak = {
@@ -511,8 +538,11 @@ class PluginAristaChecks(BasePlugin):
                         severity=Severity.HIGH,
                         evidence=evidence,
                         references=(ARISTA_SESSION_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
+            if not ssh.ipv4_acls and not ssh.ipv6_acls:
+                record_control(parser, ssh_control, CO.FINDING, "Active SSH service has no access group.")
             if not ssh.ipv4_acls and not ssh.ipv6_acls:
                 self.add_issue(
                     Finding(
@@ -526,10 +556,21 @@ class PluginAristaChecks(BasePlugin):
                         severity=Severity.MEDIUM,
                         evidence=evidence,
                         references=(ARISTA_ACL_GUIDE, ARISTA_SESSION_GUIDE),
+                        basis=FindingBasis.REQUIRED_SETTING_MISSING,
                     )
                 )
             for family, vrf, name in ssh.acl_bindings:
                 assessment = eos.assess_service_acl(family, name)
+                binding = f"{family}/{vrf}"
+                if assessment.state == "undefined":
+                    record_control(parser, ssh_control, CO.UNKNOWN,
+                                   "Attached SSH service ACL is not defined in the export.", instance=binding)
+                elif assessment.state == "permit-all":
+                    record_control(parser, ssh_control, CO.FINDING,
+                                   "Attached SSH service ACL permits every source.", instance=binding)
+                else:
+                    record_control(parser, ssh_control, CO.NO_FINDING,
+                                   "Attached SSH service ACL does not start with a universal permit.", instance=binding)
                 if assessment.state != "permit-all":
                     continue
                 self.add_issue(Finding(
@@ -560,6 +601,7 @@ class PluginAristaChecks(BasePlugin):
                     severity=Severity.MEDIUM,
                     evidence=("centralized login authentication without aaa authorization exec",),
                     references=(ARISTA_SECURITY_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
 
@@ -598,6 +640,7 @@ class PluginAristaChecks(BasePlugin):
                     severity=Severity.MEDIUM,
                     evidence=tuple(item for _, item in communities),
                     references=(ARISTA_SNMP_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
 
@@ -620,6 +663,7 @@ class PluginAristaChecks(BasePlugin):
                         severity=Severity.MEDIUM,
                         evidence=evidence,
                         references=(ARISTA_SNMP_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
                 continue
@@ -694,6 +738,11 @@ class PluginAristaChecks(BasePlugin):
                         severity=Severity.HIGH if group and group.write_view else Severity.MEDIUM,
                         evidence=evidence,
                         references=(ARISTA_SNMP_GUIDE,),
+                        basis=(
+                            FindingBasis.EXPLICIT_VALUE
+                            if (group and group.write_view) or (user.read_view and broad_view)
+                            else FindingBasis.REQUIRED_SETTING_MISSING
+                        ),
                     )
                 )
 
@@ -725,6 +774,7 @@ class PluginAristaChecks(BasePlugin):
                     ),
                     evidence=tuple(item for item in credential.evidence),
                     references=(ARISTA_SECURITY_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 )
             )
 
@@ -749,12 +799,16 @@ class PluginAristaChecks(BasePlugin):
                 severity=Severity.HIGH,
                 evidence=tuple(item for item in credential.evidence),
                 references=(ARISTA_USER_SECURITY_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
     def check_operations(self, parser: BaseDeviceParser) -> None:
         eos = self._eos(parser)
         destinations = eos.get_logging_destinations()
         logging = eos.get_logging_severity_policy()
+        record_control(parser, "arista.eos.remote-logging", CO.NO_FINDING if destinations else CO.FINDING,
+                       "An active remote syslog destination is configured." if destinations
+                       else "No active remote syslog destination is effective.")
         if not destinations:
             self.add_issue(
                 Finding(
@@ -768,6 +822,10 @@ class PluginAristaChecks(BasePlugin):
                     severity=Severity.MEDIUM,
                     evidence=("remote logging destination absent",),
                     references=(ARISTA_SECURITY_GUIDE,),
+                    basis=(
+                        FindingBasis.EXPLICIT_VALUE if logging.logging_on is False
+                        else FindingBasis.REQUIRED_SETTING_MISSING
+                    ),
                 )
             )
         if (destinations and logging.logging_on is not False
@@ -789,6 +847,7 @@ class PluginAristaChecks(BasePlugin):
                 evidence=tuple(item for item in logging.trap_evidence)
                 + tuple(item for destination in destinations for item in destination.evidence),
                 references=(ARISTA_LOGGING_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
         if (logging.logging_on is not False
                 and logging.buffer_state == "explicit" and logging.buffer_level is not None
@@ -807,6 +866,7 @@ class PluginAristaChecks(BasePlugin):
                 severity=Severity.LOW,
                 evidence=tuple(item for item in logging.buffer_evidence),
                 references=(ARISTA_LOGGING_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
         associations = eos.get_ntp_associations()
         if not associations:
@@ -840,6 +900,7 @@ class PluginAristaChecks(BasePlugin):
                             severity=Severity.MEDIUM,
                             evidence=tuple(item for item in association.evidence),
                             references=(ARISTA_TIME_GUIDE,),
+                            basis=FindingBasis.REQUIRED_SETTING_MISSING,
                         )
                     )
                 elif association.authentication_state == "unresolved":
@@ -856,6 +917,7 @@ class PluginAristaChecks(BasePlugin):
                             severity=Severity.MEDIUM,
                             evidence=tuple(item for item in association.evidence),
                             references=(ARISTA_TIME_GUIDE,),
+                            basis=FindingBasis.EXPLICIT_VALUE,
                         )
                     )
                 if (
@@ -875,6 +937,7 @@ class PluginAristaChecks(BasePlugin):
                             severity=Severity.MEDIUM,
                             evidence=tuple(item for item in association.evidence),
                             references=(ARISTA_TIME_GUIDE,),
+                            basis=FindingBasis.EXPLICIT_VALUE,
                         )
                     )
 
@@ -894,6 +957,7 @@ class PluginAristaChecks(BasePlugin):
                     severity=Severity.HIGH,
                     evidence=evidence,
                     references=(ARISTA_CONTROL_PLANE_ACL_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             elif acl.protection_state == "empty":
                 self.add_issue(Finding(
@@ -907,6 +971,7 @@ class PluginAristaChecks(BasePlugin):
                     severity=Severity.HIGH,
                     evidence=evidence,
                     references=(ARISTA_CONTROL_PLANE_ACL_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             elif acl.protection_state == "no-enforcement":
                 self.add_issue(Finding(
@@ -920,6 +985,7 @@ class PluginAristaChecks(BasePlugin):
                     severity=Severity.MEDIUM,
                     evidence=evidence,
                     references=(ARISTA_CONTROL_PLANE_ACL_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
 
         policy = eos.get_copp_policy()
@@ -937,6 +1003,7 @@ class PluginAristaChecks(BasePlugin):
                     severity=Severity.HIGH,
                     evidence=evidence,
                     references=(ARISTA_CONTROL_PLANE_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             elif policy_class.selector_state in {"empty-class", "empty-selector", "undefined-selector"}:
                 self.add_issue(Finding(
@@ -950,6 +1017,7 @@ class PluginAristaChecks(BasePlugin):
                     severity=Severity.HIGH,
                     evidence=evidence,
                     references=(ARISTA_CONTROL_PLANE_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             elif policy_class.selector_state == "resolved" and policy_class.enforcement_state == "no-enforcement":
                 self.add_issue(Finding(
@@ -963,6 +1031,7 @@ class PluginAristaChecks(BasePlugin):
                     severity=Severity.MEDIUM,
                     evidence=evidence,
                     references=(ARISTA_CONTROL_PLANE_GUIDE,),
+                    basis=FindingBasis.MISSING_EXPLICIT_SETTING,
                 ))
     def check_bpdu_guard(self, parser: BaseDeviceParser) -> None:
         """Explicitly ineffective BPDU guard on assessed EOS access-edge ports."""
@@ -989,6 +1058,7 @@ class PluginAristaChecks(BasePlugin):
                     severity=Severity.MEDIUM,
                     evidence=evidence,
                     references=(ARISTA_STP_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             elif port.guard_enabled is True and port.filter_enabled is True:
                 self.add_issue(Finding(
@@ -1002,6 +1072,7 @@ class PluginAristaChecks(BasePlugin):
                     severity=Severity.MEDIUM,
                     evidence=evidence,
                     references=(ARISTA_STP_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
 
     def check_access_admission(self, parser: BaseDeviceParser) -> None:

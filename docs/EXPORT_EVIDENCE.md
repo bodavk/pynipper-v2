@@ -4,6 +4,34 @@ This is the maintenance contract for incomplete exports, not a claim that every
 legacy check has been migrated. The execution register is
 [SC-064–SC-067](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-064).
 
+## Omitted settings versus missing evidence (maintainer rule, 2026-10-06)
+
+This rule takes precedence over everything below; see [AGENTS.md](../AGENTS.md).
+A setting omitted **inside an object or section that is in the export** is known
+configuration state, not missing evidence. Apply a cited, release-gated vendor
+default (`DOCUMENTED_DEFAULT`), or report a feature that is simply not configured
+(`REQUIRED_SETTING_MISSING`; `MISSING_EXPLICIT_SETTING` when the default matters but
+is unverified). The observation states that the setting is omitted / not
+configured, and the report's basis note says that nothing is set to a wrong value
+and that the setting may be applied elsewhere. Unknown is reserved for: a whole
+containing section absent from the export, malformed or unsupported values,
+references to objects outside the export (unresolved, Panorama/template/controller
+inheritance), and defaults not verified for the release. Exports omit defaults, so
+never require them to be restated (FortiOS backups omit `set status up`).
+
+The 2026-10-06 correction restored these findings after the first SC-064 pass had
+turned them into unknowns: PAN-OS `policy.security_profiles` (allow rule without
+profiles), `updates.threat_content` (no threat schedule while the management
+configuration is exported), `admin.ssh_profile_missing` and omitted algorithm lists,
+`management.tls_profile_missing`, an omitted TLS minimum (`MISSING_EXPLICIT_SETTING`),
+`credentials.password_complexity` for an omitted section or `<enabled>`; ASA
+`aaa.management_authentication`/`management_accounting` for an exported management
+grant without a binding; FortiOS omitted interface `status` (default `up`) and
+omitted policy `utm-status` (default `disable`) on 7.x. PAN-OS treats the management
+configuration as exported when `mgt-config` administrator entries and a
+`deviceconfig/system` section are present (`PaloAltoPANOSParser.management_exported`);
+a hostname-only fragment stays unknown.
+
 ## Scoped knowledge
 
 Parsers expose `ExportScopeKnowledge(domain, scope, state, reason)` through
@@ -57,12 +85,12 @@ section claims. Low/Medium absence hygiene is not claimed migrated here.
 
 | Family / rule groups | Verified cleanup or remaining evidence gate |
 |---|---|
-| PAN-OS `credentials.password_complexity` | Migrated: missing/malformed fields unknown; explicit disablement and weak minima remain findings. |
-| PAN-OS `admin.ssh_profile_missing`, `ssh_profile_unresolved`, `ssh_profile_algorithms`; `management.tls_profile_missing`, `tls_minimum_version` | Migrated: missing attachments/lists/minimum unknown; explicit weak algorithms/legacy minimum still findings. Certificate assessment is separate. |
+| PAN-OS `credentials.password_complexity` | Fragment without exported management configuration: unknown. Omitted section or `<enabled>` in an exported management configuration: not configured (finding). Malformed values: unknown. Explicit disablement and weak minima: findings. |
+| PAN-OS `admin.ssh_profile_missing`, `ssh_profile_unresolved`, `ssh_profile_algorithms`; `management.tls_profile_missing`, `tls_minimum_version` | Enabled service without a profile, or an applied profile with omitted lists/minimum: not configured (finding). Unresolved/inherited references: unknown. Explicit weak algorithms/legacy minimum: findings. Certificate assessment is separate. |
 | PAN-OS `admin.role_assignment`, `authentication_profile_unresolved` | Migrated: absent/ambiguous/unexported roles/authentication objects unknown per identity/binding; local authentication inferred from omission is not an explicit-binding pass. |
-| PAN-OS `policy.security_profiles`, `security_profile_unresolved`, `security_profile_ineffective`, `updates.threat_content` | Migrated: absent attachments, unexported group members/content and missing schedules unknown. Explicit nonblocking actions/download-only schedules remain findings. Full threat coverage and content freshness are unassessed. |
-| ASA `aaa.management_authentication`, `management_accounting` | Migrated: absent bindings or unexported groups unknown per protocol; supplied binding resolution assessed narrowly. Removal does not certify the rest of a fragment complete. |
-| FortiOS `policy.security_profiles`, `security_profile_unresolved`, `security_profile_ineffective` and Medium `policy.logging` | Migrated for native IPv4 `policy` and IPv6 `policy6`: qualify permission, VDOM/family and boundary; explicit UTM/logging disablement/nonblocking content remain findings; omitted/unresolved attachments/content unknown. |
+| PAN-OS `policy.security_profiles`, `security_profile_unresolved`, `security_profile_ineffective`, `updates.threat_content` | Exported allow rule without profiles: not configured (finding). No threat schedule while the management configuration is exported: not configured (finding); fragment: unknown. Unexported group members/content: unknown. Explicit nonblocking actions/download-only schedules: findings. Full threat coverage and content freshness are unassessed. |
+| ASA `aaa.management_authentication`, `management_accounting` | Exported management grant without a binding (or with the binding removed): not configured (finding). Binding to a server group that is not in the export: unknown per protocol. |
+| FortiOS `policy.security_profiles`, `security_profile_unresolved`, `security_profile_ineffective` and Medium `policy.logging` | Native IPv4 `policy` and IPv6 `policy6`: qualify permission, VDOM/family and boundary roles. Omitted interface `status` is the documented default `up` and omitted `utm-status` the documented default `disable` on 7.x (finding with `DOCUMENTED_DEFAULT`). Explicit UTM/logging disablement and nonblocking content: findings. Omitted `logtraffic` is not "disabled". Unresolved attachments/content: unknown. |
 | IOS/XE AAA/login, VTY authentication/authorization/group usability, console/auxiliary authentication, `aaa.tacacs_key_missing` | Open: qualify per-line/method/group completeness and fallback applicability, not an IOS header. Explicit bypasses are distinct. |
 | IOS/XE control-plane policy/class references and empty policy; `routing.bgp.authentication` | Open: separate unexported definitions from explicit no enforcement or effective unauthenticated sessions. |
 | ASA `failover.authentication`, `aaa.tacacs_key_missing`, routing-authentication and bound crypto-reference branches | Open: qualify domain/attachment completeness and unexported authentication/crypto objects. Explicit legacy crypto and client-certificate policy violations are separate. |
@@ -99,8 +127,9 @@ and path conclusions are withheld with an explicit reason. Independent explicit
 configuration-value hygiene remains available.
 
 FortiOS logging/inspection consumes this same API. Boundary claims require
-explicit assessment roles, uniquely resolved same-VDOM interfaces and explicit
-`status up`, not names such as `wan1`. Routing, Internet reachability and runtime
+explicit assessment roles and uniquely resolved same-VDOM interfaces that are up
+(explicit `status up`, or an omitted status on 7.x, whose documented default is
+`up`), not names such as `wan1`. Routing, Internet reachability and runtime
 traffic remain unproved. Unsupported schedules, negation, ISDB, identities,
 selectors or interface overlap stay unknown. Modern unified IPv6 `firewall policy`
 selectors (`ip-version`/`srcaddr6`/`dstaddr6`) are not silently treated as legacy

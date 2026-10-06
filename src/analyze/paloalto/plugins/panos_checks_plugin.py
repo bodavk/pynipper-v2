@@ -15,6 +15,7 @@ from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.paloalto.panos import PaloAltoPANOSParser, PanosSecurityRule
 
 
+PANOS_DNS_SINKHOLE_GUIDE = "https://docs.paloaltonetworks.com/advanced-threat-prevention/administration/configure-threat-prevention/use-dns-queries-to-identify-infected-hosts-on-the-network/configure-dns-sinkholing"
 PANOS_MANAGEMENT_GUIDE = (
     "https://docs.paloaltonetworks.com/ngfw/networking/configure-interfaces/"
     "use-interface-management-profiles-to-restrict-access"
@@ -129,6 +130,7 @@ class PluginPANOSChecks(BasePlugin):
                         severity=Severity.HIGH,
                         evidence=self._evidence(service.evidence),
                         references=(PANOS_MANAGEMENT_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
 
@@ -163,6 +165,7 @@ class PluginPANOSChecks(BasePlugin):
                     severity=Severity.HIGH,
                     evidence=evidence,
                     references=(PANOS_MANAGEMENT_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
 
@@ -199,6 +202,7 @@ class PluginPANOSChecks(BasePlugin):
                         evidence for user in users for evidence in user.evidence
                     ),
                     references=(PANOS_ADMIN_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
 
@@ -242,6 +246,7 @@ class PluginPANOSChecks(BasePlugin):
                             severity=Severity.MEDIUM,
                             evidence=evidence,
                             references=(PANOS_PASSWORD_GUIDE,),
+                            basis=FindingBasis.REQUIRED_SETTING_MISSING,
                         )
                     )
                 elif settings.acknowledge_login_banner is not True:
@@ -257,6 +262,7 @@ class PluginPANOSChecks(BasePlugin):
                             severity=Severity.LOW,
                             evidence=evidence,
                             references=(PANOS_PASSWORD_GUIDE,),
+                            basis=FindingBasis.EXPLICIT_VALUE if settings.acknowledge_login_banner is False else FindingBasis.MISSING_EXPLICIT_SETTING,
                         )
                     )
                 if (
@@ -276,6 +282,7 @@ class PluginPANOSChecks(BasePlugin):
                             severity=Severity.MEDIUM,
                             evidence=evidence,
                             references=(PANOS_PASSWORD_GUIDE,),
+                            basis=FindingBasis.EXPLICIT_VALUE,
                         )
                     )
                 if (
@@ -295,6 +302,7 @@ class PluginPANOSChecks(BasePlugin):
                             severity=Severity.MEDIUM,
                             evidence=evidence,
                             references=(PANOS_PASSWORD_GUIDE,),
+                            basis=FindingBasis.EXPLICIT_VALUE,
                         )
                     )
                 if (
@@ -317,6 +325,7 @@ class PluginPANOSChecks(BasePlugin):
                             severity=Severity.MEDIUM,
                             evidence=evidence,
                             references=(PANOS_PASSWORD_GUIDE,),
+                            basis=FindingBasis.EXPLICIT_VALUE,
                         )
                     )
                 if (
@@ -335,6 +344,7 @@ class PluginPANOSChecks(BasePlugin):
                             severity=Severity.MEDIUM,
                             evidence=evidence,
                             references=(PANOS_PASSWORD_GUIDE,),
+                            basis=FindingBasis.EXPLICIT_VALUE,
                         )
                     )
 
@@ -353,13 +363,35 @@ class PluginPANOSChecks(BasePlugin):
                                instance=policy.device_scope)
                 continue
             evidence = self._evidence(policy.evidence)
+            if policy.resolution_state == "missing":
+                record_control(parser, control, ControlOutcome.FINDING,
+                               "SSH management is enabled and no management SSH server profile is configured.",
+                               instance=policy.device_scope)
+                self.add_issue(
+                    Finding(
+                        rule_id="paloalto.panos.admin.ssh_profile_missing",
+                        device=parser.device_type,
+                        title="Management SSH service profile is not configured",
+                        observation=(f"SSH management is enabled in device scope '{policy.device_scope}', but no management SSH "
+                                     "server profile is applied. The setting is omitted from the configuration, not set to a weak value."),
+                        impact="The management SSH server offers the platform's full default algorithm set instead of an explicitly restricted policy.",
+                        exploitability="A reachable SSH client can negotiate any algorithm that remains available in the default server set.",
+                        recommendation="Create, apply, and activate a management SSH service profile containing only approved algorithms.",
+                        severity=Severity.HIGH,
+                        evidence=evidence,
+                        references=(PANOS_SSH_PROFILE_GUIDE,),
+                        basis=FindingBasis.REQUIRED_SETTING_MISSING,
+                    )
+                )
+                continue
             if policy.resolution_state != "known":
                 record_control(parser, control, ControlOutcome.UNKNOWN,
-                               "Management SSH attachment or profile is absent, unresolved or inherited; export completeness is unqualified.",
+                               "Management SSH profile reference is unresolved or inherited; the referenced definition is not in the export.",
                                instance=policy.device_scope)
                 continue
             weaknesses = []
-            if not all((policy.ciphers, policy.key_exchanges, policy.macs)):
+            omitted = [f"{label} list is not configured (all default algorithms are offered)" for label in policy.omitted_fields]
+            if not all((policy.ciphers, policy.key_exchanges, policy.macs)) and not omitted:
                 record_control(parser, control, ControlOutcome.UNKNOWN,
                                policy.knowledge.reason, instance=policy.device_scope + "/incomplete-fields")
             if weak := sorted(set(policy.ciphers).intersection(weak_ciphers)):
@@ -368,8 +400,11 @@ class PluginPANOSChecks(BasePlugin):
                 weaknesses.append("legacy key exchange: " + ", ".join(weak))
             if weak := sorted(set(policy.macs).intersection(weak_macs)):
                 weaknesses.append("legacy MAC: " + ", ".join(weak))
+            explicit_weak = bool(weaknesses)
+            weaknesses += omitted
             if weaknesses:
-                record_control(parser, control, ControlOutcome.FINDING, "Explicit weak applied management SSH algorithms.", instance=policy.device_scope)
+                record_control(parser, control, ControlOutcome.FINDING,
+                               "Weak or unrestricted applied management SSH algorithms.", instance=policy.device_scope)
                 self.add_issue(
                     Finding(
                         rule_id="paloalto.panos.admin.ssh_profile_algorithms",
@@ -382,7 +417,7 @@ class PluginPANOSChecks(BasePlugin):
                         severity=Severity.HIGH,
                         evidence=evidence,
                         references=(PANOS_SSH_PROFILE_GUIDE,),
-                        basis=FindingBasis.EXPLICIT_VALUE,
+                        basis=FindingBasis.EXPLICIT_VALUE if explicit_weak else FindingBasis.REQUIRED_SETTING_MISSING,
                     )
                 )
             elif all((policy.ciphers, policy.key_exchanges, policy.macs)):
@@ -433,6 +468,7 @@ class PluginPANOSChecks(BasePlugin):
                             severity=Severity.MEDIUM,
                             evidence=self._evidence(association.evidence),
                             references=(PANOS_NTP_GUIDE,),
+                            basis=FindingBasis.REQUIRED_SETTING_MISSING,
                         )
                     )
                 weak = association.authentication == "autokey" or (
@@ -453,6 +489,7 @@ class PluginPANOSChecks(BasePlugin):
                             severity=Severity.MEDIUM,
                             evidence=self._evidence(association.evidence),
                             references=(PANOS_NTP_GUIDE,),
+                            basis=FindingBasis.EXPLICIT_VALUE,
                         )
                     )
         if not panos.get_dns_servers():
@@ -468,6 +505,7 @@ class PluginPANOSChecks(BasePlugin):
                     severity=Severity.LOW,
                     evidence=("deviceconfig system dns-setting servers absent",),
                     references=(PANOS_CLI_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
         snmp_enabled = any(
@@ -487,6 +525,7 @@ class PluginPANOSChecks(BasePlugin):
                     severity=Severity.MEDIUM,
                     evidence=("attached SNMP management without secure SNMPv3 user",),
                     references=(PANOS_HIERARCHY_GUIDE, PANOS_MANAGEMENT_GUIDE),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
         if snmp_enabled:
@@ -511,6 +550,7 @@ class PluginPANOSChecks(BasePlugin):
                             severity=Severity.HIGH,
                             evidence=evidence,
                             references=(PANOS_HIERARCHY_GUIDE, PANOS_MANAGEMENT_GUIDE),
+                            basis=FindingBasis.EXPLICIT_VALUE,
                         )
                     )
                 weak = []
@@ -535,6 +575,7 @@ class PluginPANOSChecks(BasePlugin):
                             severity=Severity.MEDIUM,
                             evidence=evidence,
                             references=(PANOS_HIERARCHY_GUIDE,),
+                            basis=FindingBasis.EXPLICIT_VALUE,
                         )
                     )
 
@@ -587,12 +628,29 @@ class PluginPANOSChecks(BasePlugin):
                             severity=Severity.MEDIUM,
                             evidence=evidence,
                             references=(PANOS_TLS_GUIDE,),
+                            basis=FindingBasis.REQUIRED_SETTING_MISSING,
                         )
                     )
                 continue
             if not setting.profile:
-                record_control(parser, "paloalto.panos.management-tls", ControlOutcome.UNKNOWN,
-                               "Management TLS profile attachment is absent; export completeness is unqualified.", instance=setting.device_scope)
+                record_control(parser, "paloalto.panos.management-tls", ControlOutcome.FINDING,
+                               "HTTPS management is enabled and no SSL/TLS service profile is configured.", instance=setting.device_scope)
+                self.add_issue(
+                    Finding(
+                        rule_id="paloalto.panos.management.tls_profile_missing",
+                        device=parser.device_type,
+                        title="Management HTTPS SSL/TLS service profile is not configured",
+                        observation=(f"HTTPS management is enabled in '{setting.device_scope}' without an attached SSL/TLS service profile. "
+                                     "The setting is omitted from the configuration, not set to a weak value."),
+                        impact="The management web service uses platform-default certificate and protocol settings rather than an approved policy.",
+                        exploitability="A reachable attacker may target legacy protocol support or exploit administrators accepting an untrusted default certificate.",
+                        recommendation="Attach an SSL/TLS service profile with a signed certificate and TLS 1.2 or later.",
+                        severity=Severity.HIGH,
+                        evidence=evidence,
+                        references=(PANOS_TLS_GUIDE,),
+                        basis=FindingBasis.REQUIRED_SETTING_MISSING,
+                    )
+                )
                 continue
             profile = profiles.get((setting.device_scope, setting.profile)) or profiles.get(
                 ("shared", setting.profile)
@@ -612,6 +670,7 @@ class PluginPANOSChecks(BasePlugin):
                         severity=Severity.MEDIUM,
                         evidence=evidence,
                         references=(PANOS_TLS_GUIDE,),
+                        basis=FindingBasis.REQUIRED_SETTING_MISSING,
                     )
                 )
                 continue
@@ -629,6 +688,7 @@ class PluginPANOSChecks(BasePlugin):
                         severity=Severity.MEDIUM,
                         evidence=profile_evidence,
                         references=(PANOS_TLS_GUIDE,),
+                        basis=FindingBasis.REQUIRED_SETTING_MISSING,
                     )
                 )
             if profile.minimum_version in {"tls1-0", "tls1-1", "tlsv1.0", "tlsv1.1"}:
@@ -652,9 +712,28 @@ class PluginPANOSChecks(BasePlugin):
             elif profile.minimum_version in {"tls1-2", "tls1-3", "tlsv1.2", "tlsv1.3"}:
                 record_control(parser, "paloalto.panos.management-tls", ControlOutcome.NO_FINDING,
                                "Applied profile has an explicit modern TLS minimum; certificate and runtime state are separate.", instance=setting.device_scope)
+            elif not profile.minimum_version:
+                record_control(parser, "paloalto.panos.management-tls", ControlOutcome.FINDING,
+                               "Applied profile does not set a TLS minimum version.", instance=setting.device_scope)
+                self.add_issue(
+                    Finding(
+                        rule_id="paloalto.panos.management.tls_minimum_version",
+                        device=parser.device_type,
+                        title="Management TLS minimum version is not configured",
+                        observation=(f"Applied SSL/TLS service profile '{profile.name}' in '{profile.scope}' does not set a minimum TLS version. "
+                                     "The setting is omitted, so the platform default applies; that default was not assessed."),
+                        impact="Depending on the release default, the management web service may accept TLS versions older than 1.2.",
+                        exploitability="A management-path attacker may negotiate a legacy protocol version if the default allows it.",
+                        recommendation="Set the profile's minimum version to TLSv1.2 or later.",
+                        severity=Severity.MEDIUM,
+                        evidence=self._evidence(profile.evidence),
+                        references=(PANOS_TLS_GUIDE,),
+                        basis=FindingBasis.MISSING_EXPLICIT_SETTING,
+                    )
+                )
             else:
                 record_control(parser, "paloalto.panos.management-tls", ControlOutcome.UNKNOWN,
-                               "TLS minimum is absent, malformed or unsupported; no release default is inferred.", instance=setting.device_scope)
+                               "TLS minimum is malformed or unsupported; no value is inferred.", instance=setting.device_scope)
 
         for binding in panos.get_management_certificate_bindings():
             evidence = self._evidence(binding.evidence)
@@ -671,6 +750,7 @@ class PluginPANOSChecks(BasePlugin):
                         severity=Severity.MEDIUM,
                         evidence=evidence,
                         references=(PANOS_TLS_GUIDE,),
+                        basis=FindingBasis.REQUIRED_SETTING_MISSING,
                     )
                 )
             elif binding.public_material_state == "malformed":
@@ -686,6 +766,7 @@ class PluginPANOSChecks(BasePlugin):
                         severity=Severity.MEDIUM,
                         evidence=evidence,
                         references=(PANOS_TLS_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
             if binding.assessment is None:
@@ -705,6 +786,7 @@ class PluginPANOSChecks(BasePlugin):
                         severity=Severity.HIGH,
                         evidence=evidence,
                         references=(PANOS_TLS_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
             if assessment.identity_state == "mismatch":
@@ -720,6 +802,7 @@ class PluginPANOSChecks(BasePlugin):
                         severity=Severity.HIGH,
                         evidence=evidence,
                         references=(PANOS_TLS_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
             if assessment.algorithm_state == "weak":
@@ -735,6 +818,7 @@ class PluginPANOSChecks(BasePlugin):
                         severity=Severity.HIGH,
                         evidence=evidence,
                         references=(PANOS_TLS_GUIDE, NIST_CRYPTO_TRANSITIONS),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
             if (
@@ -754,6 +838,7 @@ class PluginPANOSChecks(BasePlugin):
                         severity=Severity.HIGH,
                         evidence=evidence,
                         references=(PANOS_TLS_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
 
@@ -767,9 +852,26 @@ class PluginPANOSChecks(BasePlugin):
             if schedule.content_type == "threats"
         ]
         control = "paloalto.panos.threat-updates"
-        if not threat_schedules:
+        if not threat_schedules and panos.management_exported():
+            record_control(parser, control, ControlOutcome.FINDING,
+                           "No Applications and Threats update schedule is configured in the exported system configuration.")
+            self.add_issue(Finding(
+                rule_id="paloalto.panos.updates.threat_content",
+                device=parser.device_type,
+                title="Threat content updates are not scheduled",
+                observation=("The exported system configuration has no Applications and Threats update schedule. "
+                             "The setting is omitted, not misconfigured: no automatic download or installation is configured."),
+                impact="Threat signatures and decoders remain stale unless an administrator installs updates manually.",
+                exploitability="Attackers may use techniques covered by signatures that have not yet been installed.",
+                recommendation="Configure a recurring Applications and Threats update schedule using download-and-install with an approved rollout threshold.",
+                severity=Severity.HIGH,
+                evidence=("deviceconfig system update-schedule threats: not configured",),
+                references=(PANOS_UPDATE_GUIDE,),
+                basis=FindingBasis.REQUIRED_SETTING_MISSING,
+            ))
+        elif not threat_schedules:
             record_control(parser, control, ControlOutcome.UNKNOWN,
-                           "Threat update schedule is unexported; completeness is unqualified.")
+                           "The device system configuration is not in the export, so the update schedule cannot be assessed.")
         for schedule in threat_schedules:
             instance = schedule.device_scope + "/threats"
             if schedule.knowledge.state != KnowledgeState.KNOWN:
@@ -824,6 +926,7 @@ class PluginPANOSChecks(BasePlugin):
                     severity=Severity.MEDIUM,
                     evidence=("deviceconfig system log-settings system syslog destination absent",),
                     references=(PANOS_SYSTEM_LOG_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
 
@@ -860,6 +963,7 @@ class PluginPANOSChecks(BasePlugin):
                 severity=Severity.HIGH,
                 evidence=self._evidence(rule.evidence),
                 references=(PANOS_DEFAULT_RULE_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
     def check_security_rules(self, parser: BaseDeviceParser) -> None:
@@ -892,6 +996,7 @@ class PluginPANOSChecks(BasePlugin):
                             severity=Severity.LOW,
                             evidence=evidence,
                             references=(PANOS_POLICY_GUIDE,),
+                            basis=FindingBasis.EXPLICIT_VALUE,
                         )
                     )
                 continue
@@ -910,6 +1015,7 @@ class PluginPANOSChecks(BasePlugin):
                         severity=Severity.CRITICAL,
                         evidence=evidence,
                         references=(PANOS_POLICY_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
             elif self._all_any(rule.applications) and self._all_any(rule.services):
@@ -925,6 +1031,7 @@ class PluginPANOSChecks(BasePlugin):
                         severity=Severity.MEDIUM,
                         evidence=evidence,
                         references=(PANOS_POLICY_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
 
@@ -942,6 +1049,7 @@ class PluginPANOSChecks(BasePlugin):
                         severity=Severity.MEDIUM,
                         evidence=evidence,
                         references=(PANOS_LOG_FORWARDING_GUIDE,),
+                        basis=FindingBasis.REQUIRED_SETTING_MISSING,
                     )
 
                 )
@@ -959,14 +1067,31 @@ class PluginPANOSChecks(BasePlugin):
                         severity=Severity.MEDIUM,
                         evidence=evidence,
                         references=(PANOS_POLICY_GUIDE,),
+                        basis=FindingBasis.MISSING_EXPLICIT_SETTING,
                     )
                 )
 
             control = "paloalto.panos.policy-inspection"
             instance = f"{rule.device_scope}/{rule.scope}/{rule.rulebase}/rule:{rule.name}"
             if not rule.profile_setting:
-                record_control(parser, control, ControlOutcome.UNKNOWN,
-                               "Inspection attachment is absent; policy-section completeness is unqualified.", instance=instance)
+                record_control(parser, control, ControlOutcome.FINDING,
+                               "Allow rule has no security profile or profile group configured.", instance=instance)
+                self.add_issue(
+                    Finding(
+                        rule_id="paloalto.panos.policy.security_profiles",
+                        device=parser.device_type,
+                        title="Allow rule has no security profiles configured",
+                        observation=(f"Enabled allow rule '{rule.name}' in '{rule.scope}' has no profile group or individual security profiles. "
+                                     "The rule omits the attachment; no inspection is configured for its traffic."),
+                        impact="Permitted traffic may bypass threat, malware, URL, file, and data inspection controls.",
+                        exploitability="An attacker can deliver malicious content through traffic permitted by the uninspected rule.",
+                        recommendation="Attach the organization's approved Security Profile Group or explicit profiles to the allow rule.",
+                        severity=Severity.HIGH,
+                        evidence=evidence,
+                        references=(PANOS_POLICY_GUIDE,),
+                        basis=FindingBasis.REQUIRED_SETTING_MISSING,
+                    )
+                )
                 continue
             inspection = inspections.get((rule.scope, rule.position, rule.name))
             if inspection is None or inspection.resolution_state != "resolved":
@@ -1171,6 +1296,11 @@ class PluginPANOSChecks(BasePlugin):
         if policy.knowledge.state != KnowledgeState.KNOWN:
             record_control(parser, control, ControlOutcome.UNKNOWN, policy.knowledge.reason, instance="management:incomplete-fields")
         weaknesses = []
+        omitted = policy.omission is not None
+        if policy.omission == "section":
+            weaknesses.append("password complexity is not configured (the section is omitted, so complexity is not enforced)")
+        elif policy.omission == "enabled":
+            weaknesses.append("password complexity is not enabled (the 'enabled' setting is omitted)")
         if policy.enabled is False:
             weaknesses.append("complexity is explicitly disabled")
         # NEEDS_HUMAN_REVIEW: 12 is the project baseline; PAN-OS documents a
@@ -1189,20 +1319,22 @@ class PluginPANOSChecks(BasePlugin):
             if policy.knowledge.state == KnowledgeState.KNOWN:
                 record_control(parser, control, ControlOutcome.NO_FINDING, "Every explicit password-complexity field meets the existing baseline.", instance="management")
             return
-        record_control(parser, control, ControlOutcome.FINDING, "Explicit weak password-complexity setting.", instance="management")
+        explicit = len(weaknesses) > (1 if omitted else 0)
+        record_control(parser, control, ControlOutcome.FINDING,
+                       "Weak or unconfigured password-complexity setting.", instance="management")
         self.add_issue(
             Finding(
                 rule_id="paloalto.panos.credentials.password_complexity",
                 device=parser.device_type,
                 title="Management password complexity is insufficient",
-                observation="The local administrator password policy is unsafe: " + "; ".join(weaknesses) + ".",
+                observation="The local administrator password policy is weak or not configured: " + "; ".join(weaknesses) + ".",
                 impact="Weak local administrator passwords are more susceptible to guessing and credential attacks.",
                 exploitability="An attacker with management reachability can target accounts protected by the weak local policy.",
                 recommendation="Enable password complexity and require at least 12 characters with uppercase, lowercase, numeric, and special-character minima, or apply the approved organizational benchmark.",
                 severity=Severity.HIGH,
-                evidence=self._evidence(policy.evidence) or ("password-complexity absent",),
+                evidence=self._evidence(policy.evidence) or ("mgt-config password-complexity: not configured",),
                 references=(PANOS_PASSWORD_GUIDE,),
-                basis=FindingBasis.EXPLICIT_VALUE,
+                basis=FindingBasis.EXPLICIT_VALUE if explicit else FindingBasis.REQUIRED_SETTING_MISSING,
             )
         )
 
@@ -1227,6 +1359,7 @@ class PluginPANOSChecks(BasePlugin):
                     severity=Severity.MEDIUM,
                     evidence=evidence,
                     references=(PANOS_PASSWORD_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 )
             )
         if policy.blocks_username is False:
@@ -1242,6 +1375,7 @@ class PluginPANOSChecks(BasePlugin):
                     severity=Severity.MEDIUM,
                     evidence=evidence,
                     references=(PANOS_PASSWORD_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 )
             )
 
@@ -1295,6 +1429,7 @@ class PluginPANOSChecks(BasePlugin):
                     severity=Severity.MEDIUM,
                     evidence=self._evidence(zone.evidence),
                     references=(PANOS_RECONNAISSANCE_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             if zone.dos_alternative_possible:
                 continue
@@ -1318,6 +1453,7 @@ class PluginPANOSChecks(BasePlugin):
                     severity=Severity.MEDIUM,
                     evidence=self._evidence(zone.evidence),
                     references=(PANOS_ZONE_PROTECTION_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             if zone.disabled_other_floods:
                 self.add_issue(Finding(
@@ -1340,6 +1476,7 @@ class PluginPANOSChecks(BasePlugin):
                     severity=Severity.MEDIUM,
                     evidence=self._evidence(zone.evidence),
                     references=(PANOS_ZONE_PROTECTION_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
 
     def check_cis_follow_ups(self, parser: BaseDeviceParser) -> None:
@@ -1390,6 +1527,36 @@ class PluginPANOSChecks(BasePlugin):
                 basis=FindingBasis.REQUIRED_SETTING_MISSING,
             ))
 
+    def check_dns_sinkhole(self, parser: BaseDeviceParser) -> None:
+        """CIS Palo Alto 6.4: anti-spyware profiles in use should sinkhole malicious DNS queries."""
+        panos = self._panos(parser)
+        reported: set[tuple[str, str]] = set()
+        for inspection in panos.get_security_inspection():
+            for profile in inspection.profiles:
+                key = (profile.definition_scope, profile.name)
+                if (profile.profile_type != "spyware" or profile.resolution_state != "resolved"
+                        or profile.dns_sinkhole not in {"absent", "not-sinkhole"} or key in reported):
+                    continue
+                reported.add(key)
+                explicit = profile.dns_sinkhole == "not-sinkhole"
+                self.add_issue(Finding(
+                    rule_id="paloalto.panos.profile.dns_sinkhole",
+                    device=parser.device_type,
+                    title="Anti-spyware profile does not sinkhole malicious DNS queries",
+                    observation=(f"Anti-spyware profile '{profile.name}' in '{profile.definition_scope}' is used by allow rule "
+                                 f"'{inspection.rule_name}' and "
+                                 + ("sets an action other than sinkhole for its DNS signature list."
+                                    if explicit else
+                                    "has no DNS signature list action configured (setting omitted; the default action was not assessed).")),
+                    impact="Infected hosts that resolve command-and-control domains are not redirected to a sinkhole, so they are harder to identify.",
+                    exploitability="Malware on an internal host can keep resolving its command-and-control infrastructure.",
+                    recommendation="Set the DNS signature list (for example default-paloalto-dns) action to sinkhole and configure a sinkhole address.",
+                    severity=Severity.MEDIUM,
+                    evidence=self._evidence(profile.evidence),
+                    references=(PANOS_DNS_SINKHOLE_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE if explicit else FindingBasis.MISSING_EXPLICIT_SETTING,
+                ))
+
     def analyze(self, parser: BaseDeviceParser) -> None:
         self.check_management(parser)
         self.check_zone_protection(parser)
@@ -1404,4 +1571,5 @@ class PluginPANOSChecks(BasePlugin):
         self.check_management_tls(parser)
         self.check_updates_and_system_logging(parser)
         self.check_cis_follow_ups(parser)
+        self.check_dns_sinkhole(parser)
         self.check_panorama_scope(parser)

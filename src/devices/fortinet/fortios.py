@@ -1182,7 +1182,7 @@ class FortiOSParser(BaseDeviceParser):
                 if self.assessment_context.role_for_interface(name) != "external":
                     continue
                 interface = interfaces.get((scope.casefold(), name.casefold()))
-                if interface is None or str(interface[0].get("status", "")).casefold() != "up":
+                if interface is None or not self.interface_up(interface[0]):
                     continue
                 exposures.append(FortiNTPServerExposure(
                     scope=scope,
@@ -1228,6 +1228,20 @@ class FortiOSParser(BaseDeviceParser):
                                for item in self._field_evidence(path + (field,))),
             ))
         return tuple(result)
+
+    def interface_up(self, settings: FortiDict) -> bool:
+        """Explicit ``status up``, or an omitted status on a 7.x release.
+
+        FortiOS backups omit default values; the 7.4.1 CLI reference
+        (config system interface) documents ``status`` default ``up``. An
+        omitted status is therefore the documented default, not missing
+        evidence. Only an explicit ``down`` or an unqualified release blocks it.
+        """
+        status = str(settings.get("status", "")).casefold()
+        if status:
+            return status == "up"
+        parts = re.findall(r"\d+", self.get_version())[:2]
+        return len(parts) == 2 and int(parts[0]) >= 7
 
     def _documented_default_release(self, *, private_data: bool = False) -> bool:
         """Only release trains with Fortinet CLI tables for the relevant defaults."""
@@ -1306,7 +1320,7 @@ class FortiOSParser(BaseDeviceParser):
         result = []
         for scope, name, settings, path in self.iter_interfaces():
             if (str(settings.get("pptp-client", "")).casefold() != "enable"
-                    or str(settings.get("status", "")).casefold() != "up"):
+                    or not self.interface_up(settings)):
                 continue
             server = str(settings.get("pptp-server-ip", ""))
             try:
@@ -1353,7 +1367,7 @@ class FortiOSParser(BaseDeviceParser):
                 if self.assessment_context.role_for_interface(interface) != "external":
                     continue
                 interface_entry = interfaces.get((scope.casefold(), interface.casefold()))
-                if not interface_entry or str(interface_entry[0].get("status", "")).casefold() != "up":
+                if not interface_entry or not self.interface_up(interface_entry[0]):
                     continue
                 _, interface_path = interface_entry
                 first = None
@@ -2600,7 +2614,7 @@ class FortiOSParser(BaseDeviceParser):
                         break
                     scope, settings, path = matches[0]
                     if (scope.casefold() != policy.scope.casefold()
-                            or str(settings.get("status", "")).casefold() != "up"):
+                            or not self.interface_up(settings)):
                         qualified = False
                         break
                     evidence.extend(self._field_evidence(path + ("status",)))
@@ -2995,6 +3009,36 @@ class FortiOSParser(BaseDeviceParser):
             if found_scope.casefold() == scope.casefold() and isinstance(settings, dict):
                 return found_scope, settings, path + (object_name,)
         return None
+
+    def get_dnsfilter_profiles_in_use(self) -> Tuple[Tuple[str, str, FortiDict, Tuple[str, ...]], ...]:
+        """Resolved DNS filter profiles attached (directly or by group) to active UTM accept policies.
+
+        Returns unique (definition scope, name, settings, path). Built-in, unresolved and
+        inherited references are omitted; their content is not in the export.
+        """
+        seen: dict[tuple[str, str], Tuple[str, str, FortiDict, Tuple[str, ...]]] = {}
+        for inspection in self.get_security_inspection():
+            for profile in inspection.profiles:
+                if profile.profile_type != "dnsfilter-profile" or profile.resolution_state != "resolved":
+                    continue
+                resolved = self._resolve_scoped_object("dnsfilter profile", profile.name, inspection.scope)
+                if resolved is not None:
+                    scope, settings, path = resolved
+                    seen.setdefault((scope, profile.name), (scope, profile.name, settings, path))
+        return tuple(seen[key] for key in sorted(seen))
+
+    def has_isdb_deny_policy(self, names: Tuple[str, ...]) -> bool:
+        """An enabled deny policy whose ISDB source or destination names include one of ``names``."""
+        wanted = {name.casefold() for name in names}
+        for _, _, _, _, settings, _ in self.iter_transit_policies():
+            if str(settings.get("status", "enable")).casefold() == "disable":
+                continue
+            if str(settings.get("action", "deny")).casefold() != "deny":
+                continue
+            for field in ("internet-service-name", "internet-service-src-name"):
+                if {value.casefold() for value in self._as_list(settings.get(field))} & wanted:
+                    return True
+        return False
 
     def _resolve_inspection_profile(
         self, profile_type: str, name: str, policy_scope: str

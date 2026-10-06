@@ -128,4 +128,5 @@ def test_absent_required_controls_use_the_required_setting_basis(tmp_path):
     for rule in ("cisco.ios.ntp.servers", "cisco.ios.logging.remote_destination", "cisco.ios.banner.login"):
         assert findings[rule].basis is FindingBasis.REQUIRED_SETTING_MISSING
     label, note = BASIS_TEXT[FindingBasis.REQUIRED_SETTING_MISSING]
-    assert label == "Required setting not configured" and "not provide it by default" in note
+    assert label == "Not configured (setting omitted)"
+    assert "Nothing is set to a wrong value" in note and "confirm it there" in note

@@ -38,6 +38,8 @@ Extend `BasePlugin`, accept `BaseDeviceParser`, narrow to the required parser ty
 
 Declare the finding `basis` (`FindingBasis`) where the rule creates the finding: `EXPLICIT_VALUE` when the configuration sets the insecure value, `DOCUMENTED_DEFAULT` when nothing is set and a vendor source documents the insecure default for the identified release, `MISSING_EXPLICIT_SETTING` when a recommended hardening setting is absent and the default was not assessed, and `REQUIRED_SETTING_MISSING` when a required control is absent and the device does not provide it by default (no NTP server, no remote log destination). A rule with several branches sets the basis per branch. Never infer it from the finding text. A finding without a declared basis shows no note.
 
+**Omitted settings (maintainer rule, see [AGENTS.md](../AGENTS.md)).** A setting omitted inside an object or section that is present in the export is known state: apply a cited, release-gated vendor default (`DOCUMENTED_DEFAULT`) or report the unconfigured feature (`REQUIRED_SETTING_MISSING`), and word the observation as "not configured / omitted", not as a wrong value. Return unknown only when the whole containing section is absent from the export, the value is malformed or unsupported, the reference points outside the export (unresolved or inherited), or the needed default is not verified for the release. Do not require the export to restate defaults, and do not withhold a not-configured finding because whole-file completeness cannot be proven.
+
 ```python
 from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.issue import Finding, Severity

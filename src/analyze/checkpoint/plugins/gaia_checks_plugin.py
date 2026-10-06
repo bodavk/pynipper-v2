@@ -29,6 +29,14 @@ SYSLOG_R8120 = (
     "Topics-GAG/System-Logging-Gaia-Clish.htm"
 )
 ALLOWED_CLIENTS = _GUIDE + "Allowed-Clients-Gaia-Clish.htm"
+PASSWORD_POLICY_R8120 = (
+    "https://sc1.checkpoint.com/documents/R81.20/WebAdminGuides/EN/CP_R81.20_Gaia_AdminGuide/Content/"
+    "Topics-GAG/Password-Policy-Gaia-Portal.htm"
+)
+WEB_SERVER_R82 = (
+    "https://sc1.checkpoint.com/documents/R82/WebAdminGuides/EN/CP_R82_Gaia_AdminGuide/Content/"
+    "Topics-GAG/Advanced-Gaia-Configuration-Gaia-Portal-Web-Server.htm"
+)
 DEFAULT_COMMUNITIES = {"public", "private"}
 
 
@@ -190,7 +198,50 @@ class PluginCheckPointGaiaChecks(BasePlugin):
                        "Set a minimum length of at least 8, preferably 14 or more.",
                        Severity.MEDIUM, (length.evidence,), (PASSWORD_POLICY, NIST_PASSWORDS), FindingBasis.EXPLICIT_VALUE)
 
+    def _check_lockout_limits(self, parser: CheckPointGaiaParser) -> None:
+        """CIS Check Point 1.12/1.13: limits that apply once deny-on-fail is enabled.
+
+        Gaia Administration Guide (password policy): failures-allowed default 10
+        (range 2-1000); allow-after default 1200 seconds (range 60-604800).
+        """
+        lockout = parser.get_password_control("deny-on-fail enable")
+        if lockout is None or lockout.value != "on":
+            return  # lockout disabled is reported by password_policy.lockout_disabled
+        failures = parser.get_password_control("deny-on-fail failures-allowed")
+        allow_after = parser.get_password_control("deny-on-fail allow-after")
+        problems, evidence, explicit = [], [lockout.evidence], False
+        if failures is None:
+            problems.append("failures-allowed is not set, so the documented default of 10 failed attempts applies")
+        elif failures.value.isdigit() and int(failures.value) > 5:
+            problems.append(f"failures-allowed is {failures.value}")
+            evidence.append(failures.evidence)
+            explicit = True
+        if allow_after is not None and allow_after.value.isdigit() and int(allow_after.value) < 300:
+            problems.append(f"allow-after is {allow_after.value} seconds")
+            evidence.append(allow_after.evidence)
+            explicit = True
+        if problems:
+            self._emit(parser, "password_policy.lockout_threshold", "Failed-login lockout allows many attempts",
+                       "Failed-login lockout is enabled, but " + "; ".join(problems) + ".",
+                       "More password guesses are possible before an account is locked, or the lock ends sooner.",
+                       "Set 'deny-on-fail failures-allowed' to 5 or fewer and 'allow-after' to at least 300 seconds.",
+                       Severity.LOW, tuple(evidence), (PASSWORD_POLICY_R8120,),
+                       FindingBasis.EXPLICIT_VALUE if explicit else FindingBasis.DOCUMENTED_DEFAULT)
+
     def _check_session(self, parser: CheckPointGaiaParser) -> None:
+        self._check_lockout_limits(parser)
+        web = parser.get_web_session_timeout()
+        if web is None or (web.value.isdigit() and int(web.value) > 10):
+            minutes = web.value if web is not None else "15"
+            self._emit(parser, "web.session_timeout_excessive", "Gaia Portal session timeout is longer than ten minutes",
+                       (f"'set web session-timeout {web.value}' keeps Gaia Portal sessions open for {web.value} minutes."
+                        if web is not None else
+                        "'web session-timeout' is not set, so the documented default of 15 minutes applies."),
+                       "An unattended web administration session stays usable longer.",
+                       "Run 'set web session-timeout 10' or less.",
+                       Severity.LOW, (web.evidence,) if web is not None else ("set web session-timeout: not configured (default 15)",),
+                       (WEB_SERVER_R82,),
+                       FindingBasis.EXPLICIT_VALUE if web is not None else FindingBasis.DOCUMENTED_DEFAULT)
         timeout = parser.get_inactivity_timeout()
         if timeout and timeout.value.isdigit() and int(timeout.value) > 10:
             self._emit(parser, "cli.idle_timeout_excessive", "Clish idle timeout is longer than ten minutes",

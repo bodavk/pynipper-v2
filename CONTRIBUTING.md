@@ -4,6 +4,7 @@ Contributions should preserve the project's central promise: findings must descr
 
 ## Before making a change
 
+- Read [AGENTS.md](AGENTS.md) for maintainer rules, especially how omitted settings are reported.
 - Read [Architecture](docs/ARCHITECTURE.md).
 - Follow [Extending pynipper-v2](docs/EXTENDING.md) for parser, plugin, registry, and test requirements.
 - Check [Supported devices](docs/SUPPORTED_DEVICES.md) and [Assessment policy](docs/ASSESSMENT_POLICY.md) before changing maturity or applicability claims.

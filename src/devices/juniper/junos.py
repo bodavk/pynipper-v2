@@ -239,6 +239,23 @@ class JunosRIPAuthentication:
 
 
 @dataclass(frozen=True)
+class JunosSignallingAuthentication:
+    """LDP, RSVP or MSDP sessions/interfaces that carry no MD5 authentication key.
+
+    Juniper CLI reference: LDP ``authentication-key`` is configured per ``session`` or
+    ``session-group``; RSVP per ``interface`` or for the protocol; MSDP per ``peer``,
+    ``group`` or for the protocol ("If you do not include this statement, the routing
+    device accepts any valid MSDP messages from the peer address"). No key means no
+    authentication: the feature is simply not configured.
+    """
+
+    protocol: str
+    routing_instance: str
+    unauthenticated: tuple[str, ...]
+    evidence: tuple[ConfigEvidence, ...]
+
+
+@dataclass(frozen=True)
 class JunosOSPFv3Interface:
     """OSPFv3 interface and whether an IPsec SA is bound (RFC 5340 relies on IPsec)."""
 
@@ -259,6 +276,9 @@ class JunosAccessEdgePort:
     bpdu_protection: str  # port | all | edge | none | unknown
     supplicant_mode: str | None  # single | single-secure | multiple | None (not an authenticator port)
     evidence: tuple[ConfigEvidence, ...]
+    # SC-048: "router-advertisement-guard interface <name> mark-interface trusted" forwards
+    # every RA without validation (Junos "Configuring Stateless IPv6 Router Advertisement Guard").
+    ra_guard_trusted: tuple[ConfigEvidence, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -3171,6 +3191,92 @@ class JunOSParser(BaseDeviceParser):
             ))
         return records
 
+    def get_signalling_authentication(self) -> list[JunosSignallingAuthentication]:
+        """Unauthenticated LDP sessions, RSVP interfaces and MSDP peers per routing instance."""
+        data: dict[tuple[str, str], dict] = {}
+        for statement in self.statements:
+            if not statement.active:
+                continue
+            for protocol in ("ldp", "rsvp", "msdp"):
+                scoped = self._routing_scope(statement.path, protocol)
+                if scoped is None:
+                    continue
+                instance, index = scoped
+                tail = statement.path[index + 2:]
+                item = data.setdefault((protocol, instance), {
+                    "global_key": False, "keyed": set(), "entities": {}, "disabled": set(), "evidence": []})
+                keyed = "authentication-key" in tail
+                if protocol == "ldp":
+                    if tail[:1] in {("session",), ("session-group",)} and len(tail) > 1:
+                        name = f"session {tail[1]}"
+                        item["entities"].setdefault(name, statement.evidence)
+                        if keyed:
+                            item["keyed"].add(name)
+                    elif tail[:1] == ("interface",) and len(tail) > 1:
+                        item["entities"].setdefault(f"interface {tail[1]}", statement.evidence)
+                        if "disable" in tail[2:]:
+                            item["disabled"].add(f"interface {tail[1]}")
+                elif protocol == "rsvp":
+                    if tail[:1] == ("authentication-key",):
+                        item["global_key"] = True
+                    elif tail[:1] == ("interface",) and len(tail) > 1:
+                        name = f"interface {tail[1]}"
+                        item["entities"].setdefault(name, statement.evidence)
+                        if keyed:
+                            item["keyed"].add(name)
+                        if "disable" in tail[2:]:
+                            item["disabled"].add(name)
+                else:
+                    if tail[:1] == ("authentication-key",):
+                        item["global_key"] = True
+                    elif tail[:1] == ("group",) and len(tail) > 1:
+                        group = f"group {tail[1]}"
+                        if "peer" in tail[2:]:
+                            position = tail.index("peer", 2)
+                            if position + 1 < len(tail):
+                                name = f"peer {tail[position + 1]}"
+                                item["entities"].setdefault(name, statement.evidence)
+                                item.setdefault("group_of", {})[name] = group
+                                if keyed:
+                                    item["keyed"].add(name)
+                        elif keyed:
+                            item["keyed"].add(group)
+                    elif tail[:1] == ("peer",) and len(tail) > 1:
+                        name = f"peer {tail[1]}"
+                        item["entities"].setdefault(name, statement.evidence)
+                        if keyed:
+                            item["keyed"].add(name)
+                    if "disable" in tail and tail[:1] in {("peer",), ("group",)} and len(tail) > 1:
+                        item["disabled"].add(f"{tail[0]} {tail[1]}")
+                if len(item["evidence"]) < 6:
+                    item["evidence"].append(statement.evidence)
+        records = []
+        for (protocol, instance), item in sorted(data.items()):
+            if item["global_key"]:
+                continue
+            entities = {name: evidence for name, evidence in item["entities"].items() if name not in item["disabled"]}
+            if protocol == "ldp":
+                # Keys exist only on sessions; interface-discovered sessions are unkeyed
+                # unless a matching session statement carries a key.
+                sessions = [name for name in entities if name.startswith("session ")]
+                interfaces = [name for name in entities if name.startswith("interface ") and name != "interface lo0.0"]
+                missing = [name for name in sessions if name not in item["keyed"]]
+                if not item["keyed"] and interfaces:
+                    missing += interfaces
+            elif protocol == "msdp":
+                group_of = item.get("group_of", {})
+                missing = [name for name in entities
+                           if name not in item["keyed"] and group_of.get(name) not in item["keyed"]
+                           and group_of.get(name) not in item["disabled"]]
+            else:
+                missing = [name for name in entities if name not in item["keyed"] and name != "interface lo0.0"]
+            if missing:
+                records.append(JunosSignallingAuthentication(
+                    protocol, instance, tuple(sorted(missing)),
+                    tuple(dict.fromkeys([entities[name] for name in sorted(missing)][:4] + item["evidence"][:2])),
+                ))
+        return records
+
     def get_bfd_sessions(self) -> list[tuple[str, str, tuple[ConfigEvidence, ...]]]:
         """``bfd-liveness-detection`` blocks and their authentication state.
 
@@ -3340,6 +3446,8 @@ class JunOSParser(BaseDeviceParser):
                 if "interface" in path and path[-1] == "edge":
                     stp_edge.setdefault(protocol, []).append(statement)
         dot1x = self.get_active_statements(("protocols", "dot1x", "authenticator", "interface"))
+        ra_guard = self.get_active_statements(
+            ("forwarding-options", "access-security", "router-advertisement-guard", "interface"))
         records = []
         for interface, role in self.assessment_context.interface_roles:
             if role != "access-edge":
@@ -3390,10 +3498,15 @@ class JunOSParser(BaseDeviceParser):
                 if target != "all" or supplicant is None:
                     supplicant = mode
                     evidence.append(statement.evidence)
+            ra_trusted = tuple(
+                statement.evidence for statement in ra_guard
+                if len(statement.path) > 4 and statement.path[4] in {name, interface, f"{name}.0"}
+                and statement.path[5:7] == ("mark-interface", "trusted")
+            )
             records.append(JunosAccessEdgePort(
                 interface=interface, role=role, active=active, access_mode=access_mode,
                 bpdu_protection=protection, supplicant_mode=supplicant,
-                evidence=tuple(dict.fromkeys(evidence)),
+                evidence=tuple(dict.fromkeys(evidence)), ra_guard_trusted=ra_trusted,
             ))
         return records
 

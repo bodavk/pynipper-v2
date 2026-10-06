@@ -64,8 +64,22 @@ def test_forti_uncertain_boundary_never_claims_effective_inspection(tmp_path, ex
     assert controls["fortinet.fortios.policy-inspection"]["outcome"] == "unknown"
 
 
-def test_forti_absent_logging_is_not_disabled(tmp_path):
+def test_forti_absent_logging_is_not_disabled_but_absent_utm_is_default_disable(tmp_path):
+    # Omitted logtraffic is not "disabled" (the default is utm). Omitted utm-status
+    # is the documented default disable on 7.x, so no profiles apply: a finding with
+    # the documented-default basis, not an unknown.
     parser, findings = forti(tmp_path, INTERFACES + "config firewall policy\n" + fpolicy(1).replace("set logtraffic disable", "unset logtraffic").replace("set utm-status disable", "unset utm-status") + "end\n")
+    rules = {f.rule_id: f for f in findings}
+    assert "fortinet.fortios.policy.logging" not in rules
+    assert rules["fortinet.fortios.policy.security_profiles"].basis == FindingBasis.DOCUMENTED_DEFAULT
+
+
+def test_forti_omitted_interface_status_is_documented_default_up(tmp_path):
+    interfaces = 'config system interface\n edit "lan"\n next\n edit "wan1"\n next\nend\n'
+    _, findings = forti(tmp_path, interfaces + "config firewall policy\n" + fpolicy(1) + "end\n")
+    assert {"fortinet.fortios.policy.logging", "fortinet.fortios.policy.security_profiles"} <= {f.rule_id for f in findings}
+    down = interfaces.replace('edit "wan1"\n', 'edit "wan1"\n set status down\n')
+    _, findings = forti(tmp_path, down + "config firewall policy\n" + fpolicy(1) + "end\n")
     assert not {f.rule_id for f in findings} & {"fortinet.fortios.policy.logging", "fortinet.fortios.policy.security_profiles"}
 
 
@@ -212,7 +226,6 @@ def password_outcome(parser):
 @pytest.mark.parametrize("body", [
     '<devices><entry name="localhost.localdomain"><deviceconfig><system><hostname>fragment</hostname></system></deviceconfig></entry></devices>',
     '<mgt-config><password-complexity><enabled>maybe</enabled><minimum-length>not-a-number</minimum-length></password-complexity></mgt-config>',
-    '<mgt-config><password-complexity/></mgt-config>',
 ])
 def test_unqualified_password_absence_is_unknown(tmp_path, body):
     parser, findings = panos(tmp_path, body)
@@ -220,6 +233,31 @@ def test_unqualified_password_absence_is_unknown(tmp_path, body):
     result = password_outcome(parser)
     assert result["outcome"] == "unknown"
     assert parser.get_export_scope_knowledge("logging", "management").state.value == "unknown"
+
+
+FULL_MGMT = ('<mgt-config><users><entry name="admin"><permissions><role-based><superuser>yes</superuser>'
+             '</role-based></permissions></entry></users>{pc}</mgt-config><devices><entry name="localhost.localdomain">'
+             '<deviceconfig><system><hostname>fw</hostname></system></deviceconfig></entry></devices>')
+
+
+@pytest.mark.parametrize("pc", ["", "<password-complexity/>"])
+def test_omitted_password_complexity_in_exported_management_is_not_configured(tmp_path, pc):
+    # The management configuration is exported, so the omitted section/<enabled> is a
+    # feature that is simply not configured, not an unknown.
+    parser, findings = panos(tmp_path, FULL_MGMT.format(pc=pc))
+    finding = next(f for f in findings if f.rule_id == "paloalto.panos.credentials.password_complexity")
+    assert finding.basis == FindingBasis.REQUIRED_SETTING_MISSING
+    assert "not configured" in finding.observation or "not enabled" in finding.observation
+    assert password_outcome(parser)["outcome"] == "finding"
+
+
+def test_threat_schedule_omission_depends_on_exported_management(tmp_path):
+    parser, findings = panos(tmp_path, FULL_MGMT.format(pc=""))
+    threat = next(f for f in findings if f.rule_id == "paloalto.panos.updates.threat_content")
+    assert threat.basis == FindingBasis.REQUIRED_SETTING_MISSING
+    parser, findings = panos(tmp_path, '<devices><entry name="fw"><deviceconfig><system><hostname>x</hostname></system></deviceconfig></entry></devices>')
+    assert not any(f.rule_id == "paloalto.panos.updates.threat_content" for f in findings)
+    assert result_for(parser, "paloalto.panos.threat-updates")["outcome"] == "unknown"
 
 
 @pytest.mark.parametrize("enabled,length,outcome", [("no", 8, "finding"), ("yes", 12, "evaluated-no-finding")])
@@ -430,20 +468,23 @@ def test_explicit_update_actions_and_malformed_schedule_knowledge(tmp_path, recu
     assert any(f.rule_id == "paloalto.panos.updates.threat_content" for f in findings) == (outcome == "finding")
 
 
-def test_unexported_pan_role_and_inspection_are_not_high_findings(tmp_path):
+def test_unexported_pan_role_is_unknown_but_omitted_rule_profiles_are_not_configured(tmp_path):
     body = '<mgt-config><users><entry name="operator"><authentication-profile>UNEXPORTED</authentication-profile><phash>HiddenPasswordHash</phash></entry></users></mgt-config>'
     body += '<devices><entry name="fw-a"><vsys><entry name="vsys1"><rulebase><security><rules>'
     body += prule("allow", "any", "allow") + '</rules></security></rulebase></entry></vsys></entry></devices>'
     parser, findings = panos(tmp_path, body)
     assert not {f.rule_id for f in findings} & {"paloalto.panos.admin.role_assignment",
-        "paloalto.panos.admin.authentication_profile_unresolved", "paloalto.panos.policy.security_profiles"}
-    for control in ("paloalto.panos.administrator-policy", "paloalto.panos.policy-inspection"):
-        assert result_for(parser, control)["outcome"] == "unknown"
+        "paloalto.panos.admin.authentication_profile_unresolved"}
+    assert result_for(parser, "paloalto.panos.administrator-policy")["outcome"] == "unknown"
+    # The exported allow rule omits its profile attachment: not configured, a finding.
+    profiles = next(f for f in findings if f.rule_id == "paloalto.panos.policy.security_profiles")
+    assert profiles.basis == FindingBasis.REQUIRED_SETTING_MISSING
+    assert result_for(parser, "paloalto.panos.policy-inspection")["outcome"] == "finding"
     assert "HiddenPasswordHash" not in json.dumps(build_report_context(parser))
     assert "HiddenPasswordHash" not in json.dumps([f.to_dict() for f in findings])
 
 
-def test_asa_removed_or_unexported_aaa_stays_scoped_unknown(tmp_path):
+def test_asa_removed_aaa_is_not_configured_and_unexported_group_is_unknown(tmp_path):
     from src.analyze.cisco.asa.core.process_asa_conf import process_asa_conf
     path = tmp_path / "aaa.conf"
     path.write_text('ASA Version 9.22\nhostname partial\nssh 0.0.0.0 0.0.0.0 outside\n'
@@ -451,10 +492,14 @@ def test_asa_removed_or_unexported_aaa_stays_scoped_unknown(tmp_path):
                     'aaa accounting ssh console MISSING\n', encoding="utf-8")
     parser = get_parser("ASA", str(path))
     findings = list(process_asa_conf(parser).values())
-    assert not any(f.rule_id in {"cisco.asa.aaa.management_authentication", "cisco.asa.aaa.management_accounting"} for f in findings)
-    for control in ("cisco.asa.management-authentication", "cisco.asa.management-accounting"):
-        assert result_for(parser, control)["outcome"] == "unknown"
-        assert result_for(parser, control)["unassessed-instances"][0]["instance-key"] == "ssh"
+    # The SSH grant is exported and its authentication binding was removed: not configured.
+    authentication = [f for f in findings if f.rule_id == "cisco.asa.aaa.management_authentication"]
+    assert len(authentication) == 1 and authentication[0].basis == FindingBasis.REQUIRED_SETTING_MISSING
+    assert result_for(parser, "cisco.asa.management-authentication")["outcome"] == "finding"
+    # Accounting references a server group that is not in the export: unknown, not a finding.
+    assert not any(f.rule_id == "cisco.asa.aaa.management_accounting" for f in findings)
+    result = result_for(parser, "cisco.asa.management-accounting")
+    assert result["outcome"] == "unknown" and result["unassessed-instances"][0]["instance-key"] == "ssh"
 
 
 @pytest.mark.parametrize("format", ["JSON", "HTML"])

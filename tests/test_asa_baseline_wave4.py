@@ -1,6 +1,7 @@
 from src.analyze.cisco.asa.core.process_asa_conf import process_asa_conf
 from src.analyze.cisco.asa.plugins.baseline_plugin import PluginASABaseline
 from src.devices.cisco.asa import CiscoASAParser
+from src.analyze.common.issue import FindingBasis
 
 
 def _analyze(tmp_path, config):
@@ -91,6 +92,8 @@ def test_asa_baseline_vulnerable_rule_snapshot_and_redaction(tmp_path):
     assert rule_ids == {
         "cisco.asa.platform.password_recovery",
         "cisco.asa.hardening.cis_hygiene",
+        "cisco.asa.aaa.management_authentication",
+        "cisco.asa.aaa.management_accounting",
         "cisco.asa.credentials.local_user_storage",
         "cisco.asa.management.unrestricted_http",
         "cisco.asa.management.certificate",
@@ -272,11 +275,12 @@ console timeout 15
     plugin = PluginASABaseline()
     plugin.check_aaa(parser)
     findings = plugin.get_issues()
-    assert findings == []  # HTTP AAA was not supplied; omission in a fragment is not an unsafe value.
-    from src.analyze.common.controls import control_coverage
-    result = next(c for c in control_coverage(parser)["results"] if c["control-id"] == "cisco.asa.management-authentication")
-    assert result["outcome"] == "unknown"
-    assert any(i["instance-key"] == "http" for i in result["unassessed-instances"])
+    # The HTTP management grant is in the export, so its omitted AAA binding is
+    # "not configured" (REQUIRED_SETTING_MISSING), not unknown.
+    assert len(findings) == 1
+    assert findings[0].rule_id == "cisco.asa.aaa.management_authentication"
+    assert "HTTP" in findings[0].observation and "omitted" in findings[0].observation
+    assert findings[0].basis is FindingBasis.REQUIRED_SETTING_MISSING
 
 
 def test_asa_aaa_undefined_group_and_negation_do_not_pass(tmp_path):

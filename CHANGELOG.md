@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Batch audits (SC-050): `python -m src.batch run` audits a manifest of exports into per-device reports and a hashed index; `python -m src.batch compare` classifies findings as new, unchanged, resolved, no longer assessable or not comparable, never counting a missing export, exclusion or rule change as a fix.
+
+- Finding basis everywhere (PT-009): every finding now declares whether it comes from a configured value, a documented default, an omitted required setting or an omitted hardening setting.
+
+- Control outcomes (SC-049, second batch): 16 more management-plane controls record explicit finding / no-finding / unknown / not-applicable outcomes for IOS, ASA, FortiOS, Junos and EOS.
+
+- CIS follow-ups: Junos LDP/RSVP/MSDP authentication and new hygiene items (IPv6 redirects, SNMP client lists and interface restriction, password options); Check Point Gaia lockout limits and Gaia Portal session timeout; FortiOS DNS filter botnet blocking plus DNS logging and Tor ISDB hygiene; PAN-OS DNS sinkhole on anti-spyware profiles in use.
+
+- IPv6 RA guard (SC-048, Junos EX): access-edge ports marked `mark-interface trusted` are reported.
+
+- Omitted-settings correction (maintainer rule, see `AGENTS.md`): settings omitted inside exported objects are again reported as not configured (`REQUIRED_SETTING_MISSING`) or by their documented default instead of unknown. Restored PAN-OS `policy.security_profiles`, `updates.threat_content`, `admin.ssh_profile_missing`, `management.tls_profile_missing`, omitted TLS minimum and password complexity; ASA management AAA authentication/accounting; FortiOS omitted interface `status` (default up) and policy `utm-status` (default disable) on 7.x. Hostname-only fragments, malformed values and references outside the export stay unknown. The basis note now reads "Not configured (setting omitted)" and states that nothing is set to a wrong value. New `AGENTS.md` records the maintainer rules for coding agents.
+
 - Offline accuracy cleanup (SC-064–SC-067): partial PAN-OS password, management,
   role/authentication, inspection and update exports, plus absent ASA management
   AAA bindings, retain unknown evidence instead of unsupported absence findings.

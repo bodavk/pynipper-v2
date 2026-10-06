@@ -99,6 +99,10 @@ set system syslog file interactive-commands interactive-commands any
 set system no-multicast-echo
 set system no-ping-record-route
 set system no-ping-time-stamp
+set system login password minimum-length 12
+set system login password change-type character-sets
+set system login password minimum-character-changes 4
+set system login password minimum-changes 4
 set system authentication-order [ tacplus password ]
 set system tacplus-server 192.0.2.5 secret "$9$redacted"
 set system accounting events [ login change-log interactive-commands ]

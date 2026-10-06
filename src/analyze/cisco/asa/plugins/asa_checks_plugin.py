@@ -78,6 +78,7 @@ class PluginASAChecks(BasePlugin):
                     recommendation="Remove the Telnet grant and use restricted SSH management access.",
                     evidence=(grant.raw_line,),
                     references=(CISCO_ASA_MANAGEMENT_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 )
             )
 
@@ -108,6 +109,7 @@ class PluginASAChecks(BasePlugin):
                 recommendation="Replace the credential with a unique secret stored using a supported strong hash format.",
                 evidence=(credential.raw_line_redacted,),
                 references=(CISCO_ASA_PASSWORD_REFERENCE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
             )
         )
 
@@ -165,6 +167,12 @@ class PluginASAChecks(BasePlugin):
 
     def check_snmp(self, parser: BaseDeviceParser) -> None:
         communities, hosts, users = self._asa(parser).get_snmp_configuration()
+        if any(community.is_default or community.access == "rw" for community in communities):
+            record_control(parser, "cisco.asa.snmp-community", ControlOutcome.FINDING,
+                           "A default or writable SNMP community is configured.")
+        else:
+            record_control(parser, "cisco.asa.snmp-community", ControlOutcome.NO_FINDING,
+                           "No default or writable SNMP community is configured.")
         for community in communities:
             if community.is_default:
                 self.add_issue(
@@ -213,6 +221,7 @@ class PluginASAChecks(BasePlugin):
                     recommendation="Use SNMPv3 with both authentication and privacy.",
                     evidence=tuple(host.raw_line_redacted for host in legacy_hosts),
                     references=(CISCO_ASA_SNMP_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 )
             )
 
@@ -234,6 +243,7 @@ class PluginASAChecks(BasePlugin):
                         recommendation="Create the intended v3 group or bind the user to an existing v3 priv group.",
                         evidence=evidence,
                         references=(CISCO_ASA_SNMP_GUIDE,),
+                        basis=FindingBasis.REQUIRED_SETTING_MISSING,
                     )
                 )
                 continue
@@ -310,6 +320,7 @@ class PluginASAChecks(BasePlugin):
                     recommendation="Restrict the grant to dedicated administration networks or move it to an isolated management interface.",
                     evidence=(grant.raw_line,),
                     references=(CISCO_ASA_MANAGEMENT_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 )
             )
 
@@ -318,6 +329,8 @@ class PluginASAChecks(BasePlugin):
         hosts = asa.get_logging_hosts()
         if not asa.get_logging_enabled() or not hosts:
             reason = "logging is disabled" if not asa.get_logging_enabled() else "no active remote logging host is configured"
+            record_control(parser, "cisco.asa.remote-logging", ControlOutcome.FINDING,
+                           f"Remote logging is not operational: {reason}.")
             self.add_issue(
                 Finding(
                     rule_id="cisco.asa.logging.missing",
@@ -330,9 +343,12 @@ class PluginASAChecks(BasePlugin):
                     recommendation="Enable logging and configure at least one reachable remote 'logging host'.",
                     evidence=tuple(hosts) or ("No active logging host",),
                     references=(CISCO_ASA_LOGGING_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
             return
+        record_control(parser, "cisco.asa.remote-logging", ControlOutcome.NO_FINDING,
+                       f"Logging is enabled with {len(hosts)} remote host(s).")
 
         cleartext = [host for host in hosts if not re.search(r"\bsecure\b", host, re.IGNORECASE)]
         if cleartext:
@@ -375,6 +391,7 @@ class PluginASAChecks(BasePlugin):
                     recommendation="Set 'logging trap informational' unless a documented local policy requires otherwise.",
                     evidence=(f"logging trap {level}",) if level else tuple(hosts),
                     references=(CISCO_ASA_LOGGING_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE if level else FindingBasis.MISSING_EXPLICIT_SETTING,
                 )
             )
 
@@ -536,6 +553,7 @@ class PluginASAChecks(BasePlugin):
                     recommendation="Set 'ssl server-version tlsv1.2' or a newer version supported by the platform.",
                     evidence=tuple(item for item in policy.evidence if item.text.startswith(("ssl server-version", "enable "))),
                     references=(CISCO_ASA_TLS_REFERENCE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 )
             )
         if policy.weak_cipher_commands:
@@ -552,6 +570,7 @@ class PluginASAChecks(BasePlugin):
                     f"webvpn enable {interface}" for interface in policy.active_interfaces
                 ),
                 references=(CISCO_ASA_TLS_REFERENCE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
     def check_wide_open_acls(self, parser: BaseDeviceParser) -> None:
@@ -575,6 +594,7 @@ class PluginASAChecks(BasePlugin):
                         recommendation="Replace the ACE with explicit source, destination, and service constraints.",
                         evidence=(entry.raw_line, f"access-group {entry.acl_name} in interface {binding['interface']}"),
                         references=(CISCO_ASA_ACCESS_RULES_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
 
@@ -640,6 +660,7 @@ class PluginASAChecks(BasePlugin):
                             severity=Severity.LOW,
                             evidence=evidence,
                             references=(CISCO_ASA_ACCESS_RULES_GUIDE,),
+                            basis=FindingBasis.EXPLICIT_VALUE,
                         ))
                     continue
                 if entry.action == "permit" and entry.protocol.casefold() in {"ip", "any"} and not entry.is_broad_permit:
@@ -654,6 +675,7 @@ class PluginASAChecks(BasePlugin):
                         severity=Severity.MEDIUM,
                         evidence=evidence,
                         references=(CISCO_ASA_ACCESS_RULES_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     ))
                 risky = self._risky_entry_services(entry)
                 # ASA ACLs stop at the first match. A preceding static deny that
@@ -700,6 +722,7 @@ class PluginASAChecks(BasePlugin):
                         severity=Severity.MEDIUM,
                         evidence=evidence,
                         references=(CISCO_ASA_ACCESS_RULES_GUIDE,),
+                        basis=FindingBasis.MISSING_EXPLICIT_SETTING,
                     ))
 
                 if order_unknown or entry.time_range or entry.unsupported_predicates:

@@ -154,8 +154,22 @@ class PluginASABaseline(BasePlugin):
             authentication = bindings.get(("authentication", protocol))
             control = "cisco.asa.management-authentication"
             if authentication is None:
-                knowledge = asa.get_export_scope_knowledge("management-aaa", protocol)
-                record_control(parser, control, ControlOutcome.UNKNOWN, knowledge.reason, instance=protocol)
+                # The management grant for this protocol is in the export, so the
+                # absent AAA binding is a feature that is simply not configured.
+                record_control(parser, control, ControlOutcome.FINDING,
+                               "Active management protocol has no AAA authentication binding configured.", instance=protocol)
+                self.add_issue(self._finding(
+                    parser, "cisco.asa.aaa.management_authentication",
+                    "Management authentication is not configured",
+                    (f"Active {protocol.upper()} management has no 'aaa authentication {protocol} console' binding. "
+                     "The setting is omitted from the configuration, not set to a wrong value."),
+                    "Management access does not use a defined local or central AAA authentication path.",
+                    "Bind the protocol to LOCAL with a defined local user, or to a defined resilient AAA server group with an appropriate LOCAL fallback.",
+                    Severity.HIGH,
+                    (f"active {protocol} management grant; aaa authentication {protocol} console: not configured",),
+                    CISCO_ASA_AAA_REFERENCE,
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
+                ))
             elif not authentication.resolved:
                 record_control(parser, control, ControlOutcome.UNKNOWN, "Referenced AAA group is not supplied or cannot be resolved.", instance=protocol)
             else:
@@ -165,9 +179,24 @@ class PluginASABaseline(BasePlugin):
                 continue
             accounting = bindings.get(("accounting", protocol))
             control = "cisco.asa.management-accounting"
-            if accounting is None or not accounting.resolved:
+            if accounting is None:
+                record_control(parser, control, ControlOutcome.FINDING,
+                               "Active management protocol has no session-accounting binding configured.", instance=protocol)
+                self.add_issue(self._finding(
+                    parser, "cisco.asa.aaa.management_accounting",
+                    "Management session accounting is not configured",
+                    (f"Active {protocol.upper()} management has no 'aaa accounting {protocol} console' binding. "
+                     "The setting is omitted from the configuration, not set to a wrong value."),
+                    "Administrative sessions may not be attributable in a central audit trail.",
+                    "Configure administrative-session accounting to a defined RADIUS or TACACS+ server group for each supported protocol.",
+                    Severity.MEDIUM,
+                    (f"active {protocol} management grant; aaa accounting {protocol} console: not configured",),
+                    CISCO_ASA_AAA_REFERENCE,
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
+                ))
+            elif not accounting.resolved:
                 record_control(parser, control, ControlOutcome.UNKNOWN,
-                               "Session-accounting binding or referenced group is unexported/unresolved.", instance=protocol)
+                               "Referenced accounting server group is not in the export or cannot be resolved.", instance=protocol)
             else:
                 record_control(parser, control, ControlOutcome.NO_FINDING,
                                "Explicit session-accounting binding resolves to a supplied group.", instance=protocol)
@@ -191,6 +220,7 @@ class PluginASABaseline(BasePlugin):
                 Severity.MEDIUM,
                 evidence,
                 CISCO_ASA_MANAGEMENT_REFERENCE,
+                basis=FindingBasis.EXPLICIT_VALUE if console_timeout.raw_line else FindingBasis.DOCUMENTED_DEFAULT,
             ))
 
         if not asa.get_management_grants("ssh"):
@@ -204,6 +234,7 @@ class PluginASABaseline(BasePlugin):
                 "An abandoned SSH session remains usable longer than intended.",
                 "Set 'ssh timeout' to ten minutes or less after validating the operational requirement.",
                 Severity.MEDIUM, (ssh_timeout.raw_line,), CISCO_ASA_MANAGEMENT_REFERENCE,
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
         policy = asa.get_ssh_policy()
         if policy.version is not None and policy.version != "2":
@@ -276,6 +307,7 @@ class PluginASABaseline(BasePlugin):
                 Severity.HIGH,
                 tuple(item for item in policy.evidence),
                 CISCO_ASA_SSH_REFERENCE,
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
     def check_local_users(self, parser: BaseDeviceParser) -> None:
@@ -297,6 +329,7 @@ class PluginASABaseline(BasePlugin):
                 "Configuration disclosure can expose or accelerate compromise of a local administrative credential.",
                 "Use supported PBKDF2 storage with unique credentials and prefer centralized AAA.",
                 Severity.HIGH, tuple(item for item in credential.evidence),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
     def check_http_management(self, parser: BaseDeviceParser) -> None:
@@ -319,6 +352,7 @@ class PluginASABaseline(BasePlugin):
                 "Management reachability is uncertain and may rely on unintended configuration.",
                 "Add narrow 'http <network> <mask> <interface>' grants or disable the HTTP server.",
                 Severity.MEDIUM, ("http server enable",),
+                basis=FindingBasis.REQUIRED_SETTING_MISSING,
             ))
         if grants:
             idle = asa.get_asdm_idle_policy()
@@ -331,6 +365,7 @@ class PluginASABaseline(BasePlugin):
                     "Set the effective HTTP/ASDM idle timeout to ten minutes or less.",
                     Severity.MEDIUM, tuple(item for item in idle.evidence),
                     CISCO_ASA_HTTP_TIMEOUT_REFERENCE,
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
         for grant in grants:
             if grant.is_any_source:
@@ -341,6 +376,7 @@ class PluginASABaseline(BasePlugin):
                     "The administrative web service is exposed to broad authentication and exploitation attempts.",
                     "Restrict HTTP management to dedicated administration networks.",
                     Severity.HIGH, (grant.raw_line,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
         certificate_bindings = asa.get_management_certificate_bindings()
         if not certificate_bindings:
@@ -365,6 +401,7 @@ class PluginASABaseline(BasePlugin):
                     "Define and enroll the referenced trustpoint, or supply the complete effective configuration containing it.",
                     Severity.MEDIUM, evidence,
                     CISCO_ASA_CERTIFICATE_REFERENCE,
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
             elif binding.certificate_chain_present and not binding.identity_certificate_present:
                 self.add_issue(self._finding(
@@ -375,6 +412,7 @@ class PluginASABaseline(BasePlugin):
                     "Enroll or import the intended identity certificate into the assigned trustpoint and retain its issuing chain.",
                     Severity.MEDIUM, evidence,
                     CISCO_ASA_CERTIFICATE_REFERENCE,
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
             elif binding.public_material_state == "malformed":
                 self.add_issue(self._finding(
@@ -385,6 +423,7 @@ class PluginASABaseline(BasePlugin):
                     "Re-enroll or import the intended identity certificate and verify the complete trustpoint chain.",
                     Severity.MEDIUM, evidence,
                     CISCO_ASA_CERTIFICATE_REFERENCE,
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             if binding.assessment is None:
                 continue
@@ -399,6 +438,7 @@ class PluginASABaseline(BasePlugin):
                     "Renew or replace the assigned identity certificate before its activation or expiration boundary.",
                     Severity.HIGH, evidence,
                     CISCO_ASA_CERTIFICATE_REFERENCE,
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             if assessment.identity_state == "mismatch":
                 self.add_issue(self._finding(
@@ -409,6 +449,7 @@ class PluginASABaseline(BasePlugin):
                     "Enroll and assign a certificate whose subjectAltName contains the declared management DNS name or IP address.",
                     Severity.HIGH, evidence,
                     CISCO_ASA_CERTIFICATE_REFERENCE,
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             if assessment.algorithm_state == "weak":
                 self.add_issue(self._finding(
@@ -419,6 +460,7 @@ class PluginASABaseline(BasePlugin):
                     "Replace the identity certificate with an organization-approved key and SHA-2-or-stronger signature supported by the ASA release.",
                     Severity.HIGH, evidence,
                     CISCO_ASA_CERTIFICATE_REFERENCE + (NIST_CRYPTO_TRANSITIONS,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             if (
                 assessment.trust_state == "verification-failed"
@@ -433,6 +475,7 @@ class PluginASABaseline(BasePlugin):
                     "Install the correct issuing chain and approve only the intended root fingerprint after independent verification.",
                     Severity.HIGH, evidence,
                     CISCO_ASA_CERTIFICATE_REFERENCE,
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
 
     def check_ntp(self, parser: BaseDeviceParser) -> None:
@@ -448,10 +491,20 @@ class PluginASABaseline(BasePlugin):
                 CISCO_ASA_NTP_REFERENCE,
                 basis=FindingBasis.REQUIRED_SETTING_MISSING,
             ))
+            record_control(parser, "cisco.asa.ntp-authentication", ControlOutcome.NOT_APPLICABLE,
+                           "No NTP server is configured.")
             return
         release = asa._release_tuple(asa.get_version())
         for association in associations:
             evidence = tuple(item for item in association.evidence)
+            record_control(
+                parser, "cisco.asa.ntp-authentication",
+                ControlOutcome.NO_FINDING if association.authentication_state == "authenticated" else ControlOutcome.FINDING,
+                "NTP server is bound to a trusted authentication key."
+                if association.authentication_state == "authenticated"
+                else "NTP server lacks an effective trusted key binding.",
+                instance=f"server {association.address}",
+            )
             if association.authentication_state != "authenticated":
                 detail = (
                     "is not configured for authenticated NTP"
@@ -465,6 +518,7 @@ class PluginASABaseline(BasePlugin):
                     "Enable NTP authentication and configure, trust, and bind a key for every server.",
                     Severity.MEDIUM, evidence,
                     CISCO_ASA_NTP_REFERENCE,
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
             elif release is not None and release >= (9, 13) and association.algorithm in {"md5", "sha1"}:
                 self.add_issue(self._finding(
@@ -474,6 +528,7 @@ class PluginASABaseline(BasePlugin):
                     "Use SHA-256, SHA-512, or AES-CMAC according to the approved interoperability policy.",
                     Severity.MEDIUM, evidence,
                     CISCO_ASA_NTP_REFERENCE,
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
 
     def check_threat_detection(self, parser: BaseDeviceParser) -> None:
@@ -486,6 +541,7 @@ class PluginASABaseline(BasePlugin):
                 "Scanning, rate anomalies, and attack indicators may receive reduced local visibility.",
                 "Enable and tune basic threat detection for the platform and traffic profile.",
                 Severity.MEDIUM, ("threat-detection basic-threat absent or negated",),
+                basis=FindingBasis.EXPLICIT_VALUE if "no threat-detection basic-threat" in lines else FindingBasis.MISSING_EXPLICIT_SETTING,
             ))
 
     def check_connection_limits(self, parser: BaseDeviceParser) -> None:
@@ -508,6 +564,7 @@ class PluginASABaseline(BasePlugin):
                     Severity.HIGH,
                     evidence,
                     CISCO_ASA_FIREWALL_REFERENCE,
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             if unlimited:
                 self.add_issue(self._finding(
@@ -520,6 +577,7 @@ class PluginASABaseline(BasePlugin):
                     Severity.HIGH if any("embryonic" in item for item in unlimited) else Severity.MEDIUM,
                     evidence,
                     CISCO_ASA_FIREWALL_REFERENCE,
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
 
     def check_reverse_path(self, parser: BaseDeviceParser) -> None:
@@ -538,6 +596,7 @@ class PluginASABaseline(BasePlugin):
                     "Spoofed source addresses may cross the firewall boundary without an interface-level routing check.",
                     "Configure 'ip verify reverse-path interface <nameif>' after validating asymmetric routing requirements.",
                     Severity.MEDIUM, (f"interface {name}",),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
 
     def check_vpn_crypto(self, parser: BaseDeviceParser) -> None:
@@ -581,6 +640,7 @@ class PluginASABaseline(BasePlugin):
                     "Weak VPN algorithms reduce confidentiality, integrity, or key-exchange strength.",
                     "Use AES-GCM/AES-256, SHA-256 or stronger, and approved modern DH groups.",
                     Severity.HIGH, (block.text.strip(), *weak),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
 
         approved_groups = parser.assessment_context.approved_asa_ike_dh_groups
@@ -598,6 +658,7 @@ class PluginASABaseline(BasePlugin):
                     Severity.MEDIUM,
                     tuple(item for item in alternative.evidence),
                     (CISCO_ASA_IKE_POLICY_REFERENCE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
         for binding in self._asa(parser).get_active_ipsec_transform_bindings():
             if binding.declaration is None:
@@ -607,6 +668,7 @@ class PluginASABaseline(BasePlugin):
                     "The effective IPsec algorithms cannot be assessed from this configuration export.",
                     "Include the referenced transform-set definition in the export and validate the active crypto-map chain.",
                     Severity.MEDIUM, (binding.map_binding, binding.map_attachment),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
                 continue
             if any(token in binding.declaration.lower().split() for token in ("esp-des", "esp-3des", "esp-md5-hmac", "esp-sha-hmac")):
@@ -616,6 +678,7 @@ class PluginASABaseline(BasePlugin):
                     "Legacy transforms weaken protected VPN traffic.",
                     "Replace legacy transforms with AES and SHA-256 or authenticated encryption.",
                     Severity.HIGH, (binding.declaration, binding.map_binding, binding.map_attachment),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
 
         for pfs in self._asa(parser).get_active_pfs_bindings():
@@ -627,6 +690,7 @@ class PluginASABaseline(BasePlugin):
                 "New IPsec keys are derived with a weak key exchange, reducing forward secrecy for protected traffic.",
                 "Set PFS to an approved modern group such as 19, 20 or 21, supported by the peer.",
                 Severity.HIGH, tuple(pfs.evidence), (CISCO_ASA_CRYPTO_MAP_REFERENCE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
     def check_release_defaults(self, parser: BaseDeviceParser) -> None:
@@ -694,6 +758,7 @@ class PluginASABaseline(BasePlugin):
                 tuple(item for item in profile.evidence)
                 + ("assessment policy: ASA remote access client certificate required",),
                 (CISCO_ASA_WEBVPN_AUTH_REFERENCE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
     def check_failover(self, parser: BaseDeviceParser) -> None:
@@ -708,6 +773,7 @@ class PluginASABaseline(BasePlugin):
                 "Unauthenticated failover communication can weaken the integrity of high-availability state exchange.",
                 "Configure a strong failover key and protect the failover network.",
                 Severity.HIGH, ("failover",),
+                basis=FindingBasis.REQUIRED_SETTING_MISSING,
             ))
 
     def check_local_administrator_policy(self, parser: BaseDeviceParser) -> None:
@@ -741,6 +807,7 @@ class PluginASABaseline(BasePlugin):
                 "Repeated guesses against a local administrative account are not limited by this configured control.",
                 "Configure 'aaa local authentication attempts max-fail' to an approved value while retaining a tested emergency access path.",
                 Severity.HIGH, (lockout.raw_line,), CISCO_ASA_AAA_REFERENCE,
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
         minimum = asa.get_local_password_minimum()
         if (
@@ -754,6 +821,7 @@ class PluginASABaseline(BasePlugin):
                 "New or changed local administrative passwords may be easier to guess; existing passwords are not retroactively changed by this setting.",
                 "Set 'password-policy minimum-length' to at least eight or an approved stronger organizational value.",
                 Severity.MEDIUM, (minimum.raw_line,), CISCO_ASA_PASSWORD_POLICY_REFERENCE,
+                basis=FindingBasis.EXPLICIT_VALUE if minimum.configured else FindingBasis.DOCUMENTED_DEFAULT,
             ))
 
     def check_aaa_transport(self, parser: BaseDeviceParser) -> None:

@@ -38,16 +38,19 @@ BASIS_TEXT = {
         "default for this platform or release.",
     ),
     FindingBasis.MISSING_EXPLICIT_SETTING: (
-        "Setting not explicitly configured",
-        "The recommended hardening setting is not in the configuration. The default was "
-        "not assessed, so on some software releases the effective value may already be "
-        "safe. Setting it explicitly, as the fix describes, removes the doubt and keeps "
-        "the device safe across upgrades.",
+        "Setting omitted (default not assessed)",
+        "The recommended hardening setting is not in the configuration; nothing is set to a "
+        "wrong value. The default was not assessed, so on some software releases the "
+        "effective value may already be safe. Setting it explicitly, as the fix describes, "
+        "removes the doubt and keeps the device safe across upgrades.",
     ),
     FindingBasis.REQUIRED_SETTING_MISSING: (
-        "Required setting not configured",
-        "A control this baseline requires is not configured, and the device does not "
-        "provide it by default, so the protection is absent until it is added.",
+        "Not configured (setting omitted)",
+        "This setting is absent from the configuration, so the protection it provides is "
+        "not in place. Nothing is set to a wrong value: the feature is simply not "
+        "configured. If it is applied from elsewhere (for example Panorama, a template, "
+        "or a section that was left out of this export), confirm it there and treat the "
+        "finding as resolved.",
     ),
 }
 

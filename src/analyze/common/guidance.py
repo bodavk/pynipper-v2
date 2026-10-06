@@ -608,7 +608,7 @@ _CATALOGUE = (
         "Untrusted interfaces should expose as few device services as possible and rely on explicit policy rather than trust levels.",
         "Confirm the interface roles in the assessment policy and remove the service or setting from untrusted interfaces.",
     )),
-    (r"^(policy\.(intrazone_allow|antivirus_detection_weakened)|updates\.schedule_disabled)$", _G(
+    (r"^(policy\.(intrazone_allow|antivirus_detection_weakened)|updates\.schedule_disabled|dnsfilter\.botnet_blocking_disabled|profile\.dns_sinkhole)$", _G(
         "inspection-weakened", "threat-inspection",
         "A setting explicitly weakens inspection or lets traffic bypass policy.",
         "Malware or lateral movement passes through because signatures are stale, a detection engine is off, or traffic inside a zone is never inspected.",

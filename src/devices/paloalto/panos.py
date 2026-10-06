@@ -178,6 +178,11 @@ class PanosInspectionProfile:
     actions: tuple[str, ...]
     evidence: tuple[ConfigEvidence, ...]
     threat_selectors: tuple[PanosThreatSelector, ...] = ()
+    # Anti-spyware DNS signature lists (botnet-domains/lists/entry/action), per the
+    # Palo Alto iron-skillet reference configuration: "sinkhole" when every list
+    # sinkholes, "not-sinkhole" for an explicit other action, "default" for the
+    # vendor default action, "absent" when no list is configured, "" otherwise.
+    dns_sinkhole: str = ""
 
 
 @dataclass(frozen=True)
@@ -229,6 +234,10 @@ class PanosPasswordPolicy:
     blocks_username: bool | None
     evidence: tuple[ConfigEvidence, ...]
     knowledge: ExportScopeKnowledge | None = None
+    # "section": password-complexity is absent although the management configuration
+    # (mgt-config users) is exported; "enabled": the section exists without <enabled>.
+    # PAN-OS enforces complexity only when enabled, so both mean "not configured".
+    omission: str | None = None
 
 
 @dataclass(frozen=True)
@@ -278,6 +287,8 @@ class PanosSSHManagementPolicy:
     macs: tuple[str, ...]
     evidence: tuple[ConfigEvidence, ...]
     knowledge: ExportScopeKnowledge | None = None
+    # Algorithm lists not present in the applied profile (omitted, so not restricted).
+    omitted_fields: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1535,6 +1546,21 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                 content_state = "nonblocking"
             else:
                 content_state = "configured"
+            sinkhole = ""
+            if profile_type == "spyware":
+                list_actions = []
+                for item in entry.findall("./botnet-domains/lists/entry"):
+                    action = item.find("action")
+                    children = [child.tag for child in list(action)] if action is not None else []
+                    list_actions.append(children[0] if len(children) == 1 else "malformed")
+                if not list_actions:
+                    sinkhole = "absent"
+                elif all(action == "sinkhole" for action in list_actions):
+                    sinkhole = "sinkhole"
+                elif any(action not in {"sinkhole", "default", "malformed"} for action in list_actions):
+                    sinkhole = "not-sinkhole"
+                elif "default" in list_actions:
+                    sinkhole = "default"
             definitions.append(
                 PanosInspectionProfile(
                     profile_type=profile_type,
@@ -1545,6 +1571,7 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                     actions=actions,
                     evidence=(self._evidence(f"{scope}: {profile_type} profile {name}", entry),),
                     threat_selectors=selectors,
+                    dns_sinkhole=sinkhole,
                 )
             )
 
@@ -1711,6 +1738,17 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                     )
         return profiles
 
+    def management_exported(self) -> bool:
+        """Whether the export contains the device management configuration.
+
+        A running-config or saved-config export always contains ``mgt-config``
+        administrator entries and a ``deviceconfig/system`` section. A fragment
+        holding only a hostname does not, so omitted management settings in it
+        stay unknown instead of becoming "not configured" findings.
+        """
+        return (self.root.find("./mgt-config/users/entry") is not None
+                and self.root.find(".//deviceconfig/system") is not None)
+
     def get_password_policy(self) -> PanosPasswordPolicy:
         # Exported firewall configurations place local administrator policy
         # below mgt-config; older focused fixtures use deviceconfig/system.
@@ -1718,9 +1756,13 @@ class PaloAltoPANOSParser(BaseDeviceParser):
         if node is None:
             node = self.root.find(".//deviceconfig/system/password-complexity")
         if node is None:
+            exported = self.management_exported() and not self.panorama_inheritance_unknown
             return PanosPasswordPolicy(None, None, None, None, None, None, None, None, (),
-                ExportScopeKnowledge("password-complexity", "management", KnowledgeState.UNKNOWN,
-                                     "Password-complexity section not supplied; management-policy completeness is unqualified."))
+                ExportScopeKnowledge("password-complexity", "management",
+                                     KnowledgeState.KNOWN if exported else KnowledgeState.UNKNOWN,
+                                     "Password-complexity is not configured in the exported management configuration." if exported else
+                                     "Password-complexity section not supplied and the management configuration is not exported."),
+                omission="section" if exported else None)
 
         def number(name: str) -> int | None:
             if len(node.findall(name)) != 1:
@@ -1740,6 +1782,7 @@ class PaloAltoPANOSParser(BaseDeviceParser):
         history_count = number("password-history-count")
         if history_count is not None and not 0 <= history_count <= 50:
             history_count = None
+        enabled_omitted = not node.findall("enabled") and not self.panorama_inheritance_unknown
         return PanosPasswordPolicy(
             enabled=yes_no("enabled"),
             minimum_length=number("minimum-length"),
@@ -1757,6 +1800,7 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                         "minimum-numeric-letters", "minimum-special-characters")))
                 and not self.panorama_inheritance_unknown else KnowledgeState.UNKNOWN,
                 "Only explicit valid password-complexity fields are assessed; omitted, malformed or inherited fields remain unknown."),
+            omission="enabled" if enabled_omitted else None,
         )
 
     def get_export_scope_knowledge(self, domain: str, scope: str) -> ExportScopeKnowledge:
@@ -1917,6 +1961,8 @@ class PaloAltoPANOSParser(BaseDeviceParser):
             algorithms = tuple(self._element_values(profile.find(field))
                                if profile is not None and len(profile.findall(field)) == 1 else ()
                                for field in ("ciphers", "kex", "mac"))
+            omitted = tuple(label for field, label in (("ciphers", "cipher"), ("kex", "key-exchange"), ("mac", "MAC"))
+                            if profile is not None and not profile.findall(field))
             knowledge = ExportScopeKnowledge("management-ssh", scope,
                 KnowledgeState.KNOWN if resolution == "known" and all(algorithms) else KnowledgeState.UNKNOWN,
                 "Explicit applied management SSH algorithm lists are supplied." if resolution == "known" and all(algorithms) else
@@ -1934,6 +1980,7 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                     macs=algorithms[2],
                     evidence=tuple(evidence),
                     knowledge=knowledge,
+                    omitted_fields=omitted,
                 )
             )
         return tuple(policies)

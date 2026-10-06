@@ -5,7 +5,7 @@ import re
 
 from src.analyze.common.risky_services import RISKY_SERVICE_NAMES, is_risky_port
 from src.analyze.common.base_plugin import BasePlugin
-from src.analyze.common.issue import Finding, Severity
+from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.devices.common.policy_semantics import (
     ProofState,
     network_covers,
@@ -229,6 +229,10 @@ class PluginCheckPointBaseline(BasePlugin):
                         Severity.HIGH,
                         self._evidence(last),
                         (CHECKPOINT_ACCESS_BEST_PRACTICES, CHECKPOINT_LAYERS_GUIDE),
+                        basis=(
+                            FindingBasis.REQUIRED_SETTING_MISSING if not explicit_cleanup
+                            else FindingBasis.EXPLICIT_VALUE
+                        ),
                     )
                 )
                 continue
@@ -244,6 +248,7 @@ class PluginCheckPointBaseline(BasePlugin):
                         Severity.MEDIUM,
                         self._evidence(last),
                         (CHECKPOINT_BASIC_POLICY, CHECKPOINT_TRACKING_GUIDE),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
 
@@ -286,6 +291,7 @@ class PluginCheckPointBaseline(BasePlugin):
                         Severity.HIGH,
                         self._evidence(layer.rules[0]),
                         (CHECKPOINT_ACCESS_BEST_PRACTICES, CHECKPOINT_BASIC_POLICY),
+                        basis=FindingBasis.REQUIRED_SETTING_MISSING,
                     )
                 )
 
@@ -304,6 +310,7 @@ class PluginCheckPointBaseline(BasePlugin):
                         Severity.LOW,
                         self._evidence(rule),
                         (CHECKPOINT_ACCESS_BEST_PRACTICES,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
             if not rule.enabled:
@@ -321,6 +328,7 @@ class PluginCheckPointBaseline(BasePlugin):
                         Severity.MEDIUM,
                         self._evidence(rule),
                         (CHECKPOINT_RULE_COLUMNS, CHECKPOINT_MANAGEMENT_GUIDE),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
 
@@ -380,6 +388,7 @@ class PluginCheckPointBaseline(BasePlugin):
                         Severity.HIGH,
                         self._evidence(rule),
                         (CHECKPOINT_ACCESS_BEST_PRACTICES, CHECKPOINT_RULE_COLUMNS),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
             if risky and (self._all_any(rule.sources) or rule.source_negated):
@@ -394,6 +403,7 @@ class PluginCheckPointBaseline(BasePlugin):
                         Severity.HIGH,
                         self._evidence(rule),
                         (CHECKPOINT_ACCESS_BEST_PRACTICES, CHECKPOINT_RULE_COLUMNS),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
             if negated:
@@ -408,6 +418,7 @@ class PluginCheckPointBaseline(BasePlugin):
                         Severity.HIGH,
                         self._evidence(rule),
                         (CHECKPOINT_NEGATION_REFERENCE, CHECKPOINT_RULE_COLUMNS),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
             if any(value.casefold() == "any" for value in rule.install_on):
@@ -422,6 +433,7 @@ class PluginCheckPointBaseline(BasePlugin):
                         Severity.MEDIUM,
                         self._evidence(rule),
                         (CHECKPOINT_RULE_COLUMNS, CHECKPOINT_MANAGEMENT_GUIDE),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
             if (fully_broad or partially_broad or risky or negated) and not self._tracked(rule):
@@ -436,6 +448,7 @@ class PluginCheckPointBaseline(BasePlugin):
                         Severity.MEDIUM,
                         self._evidence(rule),
                         (CHECKPOINT_TRACKING_GUIDE, CHECKPOINT_RULE_COLUMNS),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
 
@@ -522,6 +535,7 @@ class PluginCheckPointBaseline(BasePlugin):
                             Severity.LOW if same_action else Severity.HIGH,
                             self._evidence(rule) + self._evidence(earlier),
                             (CHECKPOINT_LAYERS_GUIDE, CHECKPOINT_MANAGEMENT_GUIDE),
+                            basis=FindingBasis.EXPLICIT_VALUE,
                         )
                     )
                     break
@@ -573,6 +587,7 @@ class PluginCheckPointBaseline(BasePlugin):
                         Severity.MEDIUM,
                         self._evidence(rule),
                         (CHECKPOINT_RULE_COLUMNS, CHECKPOINT_MANAGEMENT_GUIDE),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
 
@@ -600,6 +615,7 @@ class PluginCheckPointBaseline(BasePlugin):
                         Severity.MEDIUM,
                         tuple(item for item in record.evidence),
                         (CHECKPOINT_RULE_COLUMNS, CHECKPOINT_MANAGEMENT_GUIDE),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
 

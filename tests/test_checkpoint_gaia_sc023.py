@@ -12,7 +12,9 @@ from src.report.secret_evidence import collect_secret_evidence
 HEADER = "#\n# Configuration of gw1\n# Language version: 15.0v1\n#\nset hostname gw1\n"
 SAFE_LOCKOUT = ("set password-controls deny-on-fail enable on\n"
                 "set password-controls deny-on-nonuse enable on\n"  # SC-044 CP-03
-                "set password-controls min-password-length 14\n")  # SC-044 CP-05
+                "set password-controls min-password-length 14\n"  # SC-044 CP-05
+                "set password-controls deny-on-fail failures-allowed 5\n"  # CIS 1.12 (default 10)
+                "set web session-timeout 10\n")  # CIS 2.5.2 (default 15)
 
 
 def _parser(tmp_path, body):

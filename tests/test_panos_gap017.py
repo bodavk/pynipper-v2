@@ -140,9 +140,8 @@ def test_management_ssh_profile_attachment_and_algorithm_resolution(tmp_path):
     assert {
         item.rule_id for item in _administrative_findings(missing)
         if ".ssh_" in item.rule_id
-    } == set()
-    from src.analyze.common.controls import control_coverage
-    assert next(r for r in control_coverage(missing)["results"] if r["control-id"] == "paloalto.panos.management-ssh")["outcome"] == "unknown"
+    } == {"paloalto.panos.admin.ssh_profile_missing"}
+    assert next(r for r in control_coverage(missing)["results"] if r["control-id"] == "paloalto.panos.management-ssh")["outcome"] == "finding"
 
     unresolved_xml = "<ssh><mgmt><server-profile>GHOST</server-profile></mgmt></ssh>"
     unresolved = _parse(tmp_path, xml(unresolved_xml), "unresolved.xml")
@@ -187,6 +186,7 @@ def test_new_panos_findings_reach_public_processor_with_references(tmp_path):
         "paloalto.panos.admin.idle_timeout",
         "paloalto.panos.admin.login_attempts",
         "paloalto.panos.admin.concurrent_sessions",
+        "paloalto.panos.admin.ssh_profile_missing",
     }.issubset({item.rule_id for item in administrative})
     assert all(item.references for item in administrative)
     identities = [(item.rule_id, item.evidence) for item in findings]

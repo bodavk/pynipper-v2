@@ -102,6 +102,7 @@ class PluginScreenOSBaseline(BasePlugin):
                 Severity.CRITICAL,
                 (f"ScreenOS version {screenos.get_version()}",),
                 (SCREENOS_DOCUMENTATION,),
+                basis=FindingBasis.EXPLICIT_VALUE,
             )
         )
 
@@ -125,6 +126,7 @@ class PluginScreenOSBaseline(BasePlugin):
                     Severity.HIGH,
                     ("admin/interface manager-IP restrictions absent",),
                     (SCREENOS_DOCUMENTATION, ORIGINAL_ADMIN_REFERENCE),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
 
@@ -150,6 +152,7 @@ class PluginScreenOSBaseline(BasePlugin):
                         Severity.MEDIUM,
                         evidence or ("ScreenOS 6.3 console timeout state",),
                         (SCREENOS_DOCUMENTATION, SCREENOS_IPV4_CLI),
+                        basis=FindingBasis.DOCUMENTED_DEFAULT if control.value_source == "documented-default" else FindingBasis.EXPLICIT_VALUE,
                     )
                 )
             elif control.scope == "web-management":
@@ -168,6 +171,7 @@ class PluginScreenOSBaseline(BasePlugin):
                             SCREENOS_IPV4_CLI,
                             SCREENOS_R27_RELEASE_NOTES,
                         ),
+                        basis=FindingBasis.DOCUMENTED_DEFAULT if control.value_source == "documented-default" else FindingBasis.EXPLICIT_VALUE,
                     )
                 )
             elif control.scope == "authentication-server":
@@ -193,6 +197,7 @@ class PluginScreenOSBaseline(BasePlugin):
                         Severity.MEDIUM,
                         evidence or (f"bound auth-server {control.name}",),
                         (SCREENOS_DOCUMENTATION, SCREENOS_IPV4_CLI),
+                        basis=FindingBasis.DOCUMENTED_DEFAULT if control.value_source == "documented-default" else FindingBasis.EXPLICIT_VALUE,
                     )
                 )
 
@@ -214,6 +219,7 @@ class PluginScreenOSBaseline(BasePlugin):
                         tuple(item for item in control.evidence)
                         or (f"unresolved auth-server {control.name}",),
                         (SCREENOS_DOCUMENTATION, SCREENOS_IPV4_CLI),
+                        basis=FindingBasis.REQUIRED_SETTING_MISSING,
                     )
                 )
 
@@ -232,6 +238,7 @@ class PluginScreenOSBaseline(BasePlugin):
                         Severity.MEDIUM,
                         self._evidence(attempts[-1:]),
                         (SCREENOS_DOCUMENTATION,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
 
@@ -250,6 +257,7 @@ class PluginScreenOSBaseline(BasePlugin):
                         Severity.HIGH,
                         self._evidence(versions) or ("set ssh version v2 absent",),
                         (SCREENOS_DOCUMENTATION, ORIGINAL_ADMIN_REFERENCE),
+                        basis=FindingBasis.EXPLICIT_VALUE if versions else FindingBasis.DOCUMENTED_DEFAULT,
                     )
                 )
 
@@ -270,6 +278,7 @@ class PluginScreenOSBaseline(BasePlugin):
                     Severity.MEDIUM,
                     tuple(f"interface {name} manage ssl" for name in ssl_interfaces),
                     (SCREENOS_DOCUMENTATION, ORIGINAL_ADMIN_REFERENCE),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
 
@@ -293,6 +302,7 @@ class PluginScreenOSBaseline(BasePlugin):
                         Severity.HIGH,
                         (command.evidence,),
                         (SCREENOS_DOCUMENTATION, ORIGINAL_ADMIN_REFERENCE),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
 
@@ -322,6 +332,7 @@ class PluginScreenOSBaseline(BasePlugin):
                         Severity.CRITICAL,
                         tuple(item for item in credential.evidence),
                         (SCREENOS_DOCUMENTATION,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
 
@@ -338,6 +349,7 @@ class PluginScreenOSBaseline(BasePlugin):
                     Severity.LOW,
                     ("admin auth banner absent",),
                     (SCREENOS_DOCUMENTATION, ORIGINAL_ADMIN_REFERENCE),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
 
@@ -360,6 +372,7 @@ class PluginScreenOSBaseline(BasePlugin):
                 Severity.MEDIUM,
                 evidence,
                 (SCREENOS_DOCUMENTATION,),
+                basis=FindingBasis.REQUIRED_SETTING_MISSING,
             )
         )
 
@@ -407,6 +420,7 @@ class PluginScreenOSBaseline(BasePlugin):
                     severity,
                     (community.evidence,),
                     (SCREENOS_DOCUMENTATION, ORIGINAL_SNMP_REFERENCE),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 )
             )
 
@@ -453,6 +467,7 @@ class PluginScreenOSBaseline(BasePlugin):
                     Severity.MEDIUM,
                     tuple(item for item in policy.evidence),
                     (SCREENOS_DOCUMENTATION,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
 
@@ -471,6 +486,7 @@ class PluginScreenOSBaseline(BasePlugin):
                 Severity.CRITICAL,
                 tuple(item for item in state.evidence),
                 (SCREENOS_DOCUMENTATION, SCREENOS_IPV4_CLI),
+                basis=FindingBasis.EXPLICIT_VALUE,
             )
         )
 
@@ -527,6 +543,7 @@ class PluginScreenOSBaseline(BasePlugin):
                     Severity.HIGH,
                     (proposal.evidence,),
                     (SCREENOS_DOCUMENTATION, JUNIPER_IPSEC_GUIDE),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 )
             )
 

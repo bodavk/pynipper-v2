@@ -1,5 +1,5 @@
 from src.analyze.common.base_plugin import BasePlugin
-from src.analyze.common.issue import Finding, Severity
+from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.policy_semantics import ProofState, network_covers, service_covers
 from src.devices.juniper.screenos import JuniperScreenOSParser
@@ -47,6 +47,7 @@ class PluginScreenOSChecks(BasePlugin):
             recommendation=f"Remove {protocol} management from the interface and use SSH or HTTPS with manager-IP restrictions.",
             evidence=evidence or (f"effective {protocol} management",),
             references=(JUNIPER_SCREENOS_DOCUMENTATION,),
+            basis=FindingBasis.EXPLICIT_VALUE,
         )
 
     def check_insecure_services(self, parser: BaseDeviceParser) -> None:
@@ -104,6 +105,7 @@ class PluginScreenOSChecks(BasePlugin):
                     recommendation="Replace Any source, destination, and service values with explicit objects and enable session logging.",
                     evidence=tuple(item for item in policy.evidence),
                     references=(JUNIPER_SCREENOS_DOCUMENTATION,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 )
             )
 
@@ -133,6 +135,7 @@ class PluginScreenOSChecks(BasePlugin):
                         recommendation="Remove the obsolete policy or narrow and document it before reactivation.",
                         evidence=evidence,
                         references=(JUNIPER_SCREENOS_DOCUMENTATION,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     ))
                 continue
 
@@ -152,6 +155,7 @@ class PluginScreenOSChecks(BasePlugin):
                     recommendation="Replace Any with the smallest required services or reviewed service group.",
                     evidence=evidence,
                     references=(JUNIPER_SCREENOS_DOCUMENTATION,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
 
             if (
@@ -193,6 +197,7 @@ class PluginScreenOSChecks(BasePlugin):
                     recommendation="Remove or reorder the policy after validating address/service objects, logging and operational intent.",
                     evidence=evidence + tuple(item for item in earlier.evidence),
                     references=(JUNIPER_SCREENOS_DOCUMENTATION,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
                 break
             earlier_policies.append(policy)

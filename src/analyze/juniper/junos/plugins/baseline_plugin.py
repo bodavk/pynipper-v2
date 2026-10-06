@@ -95,6 +95,14 @@ JUNIPER_BGP_SECURITY_GUIDE = (
     "https://www.juniper.net/documentation/us/en/software/junos/"
     "bgp/topics/topic-map/bgp_security.html"
 )
+JUNIPER_SIGNALLING_AUTH_REFERENCES = {
+    protocol: "https://www.juniper.net/documentation/us/en/software/junos/cli-reference/topics/ref/statement/"
+              f"authentication-key-edit-protocols-{protocol}.html"
+    for protocol in ("ldp", "rsvp", "msdp")
+}
+JUNIPER_RA_GUARD_GUIDE = (
+    "https://www.juniper.net/documentation/us/en/software/junos/security-services/topics/task/port-security-ra-guard.html"
+)
 JUNIPER_RIP_AUTH_GUIDE = (
     "https://www.juniper.net/documentation/us/en/software/junos/rip/topics/topic-map/rip-authentication.html"
 )
@@ -247,6 +255,7 @@ class PluginJunOSBaseline(BasePlugin):
             Severity.HIGH,
             tuple(item for item in state.evidence),
             (JUNIPER_DEFAULT_POLICY_REFERENCE,),
+            basis=FindingBasis.EXPLICIT_VALUE,
         ))
 
     def check_authentication(self, parser: BaseDeviceParser) -> None:
@@ -264,6 +273,7 @@ class PluginJunOSBaseline(BasePlugin):
                 Severity.MEDIUM,
                 self._texts(authentication_order) or ("system authentication-order absent",),
                 (JUNIPER_AUTH_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE if authentication_order else FindingBasis.REQUIRED_SETTING_MISSING,
             ))
 
         retries = self._statements(
@@ -279,6 +289,7 @@ class PluginJunOSBaseline(BasePlugin):
                     "Additional guesses increase exposure to online password attacks.",
                     "Set system login retry-options tries-before-disconnect to 3 or fewer.",
                     Severity.MEDIUM, self._texts(retries[-1:]), (JUNIPER_LOGIN_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
 
         lockout = self._statements(
@@ -293,6 +304,7 @@ class PluginJunOSBaseline(BasePlugin):
                 "Configure a policy-approved lockout-period and test the recovery procedure.",
                 Severity.MEDIUM, ("system login retry-options lockout-period absent",),
                 (JUNIPER_LOGIN_GUIDE,),
+                basis=FindingBasis.REQUIRED_SETTING_MISSING,
             ))
 
         for user in self._junos(parser).get_users():
@@ -305,6 +317,7 @@ class PluginJunOSBaseline(BasePlugin):
                     "Configure an approved SSH key or strong encrypted password, or remove the account.",
                     Severity.HIGH, tuple(item for item in user["evidence"]),
                     (JUNIPER_AUTH_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
 
         credential_policy = credential_policy_from_context(parser.assessment_context)
@@ -319,6 +332,7 @@ class PluginJunOSBaseline(BasePlugin):
                     "Replace the credential with a supported strong hash or SSH public key.",
                     Severity.HIGH, tuple(item for item in credential.evidence),
                     (JUNIPER_AUTH_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
 
     def check_administrative_policy(self, parser: BaseDeviceParser) -> None:
@@ -333,6 +347,7 @@ class PluginJunOSBaseline(BasePlugin):
                 "Configure an organization-approved system login message and retain announcements only for post-login information.",
                 Severity.MEDIUM, tuple(item for item in notice.evidence) or ("system login message absent",),
                 (JUNIPER_LOGIN_GUIDE,),
+                basis=FindingBasis.REQUIRED_SETTING_MISSING,
             ))
 
         inheritance_unknown = junos.has_unexpanded_inheritance()
@@ -346,6 +361,7 @@ class PluginJunOSBaseline(BasePlugin):
                     "Assign the user to a defined least-privilege login class or provide the complete inherited configuration.",
                     Severity.HIGH, tuple(item for item in user["evidence"]),
                     (JUNIPER_LOGIN_CLASS_REFERENCE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
 
         for policy in junos.get_login_class_policies():
@@ -360,6 +376,7 @@ class PluginJunOSBaseline(BasePlugin):
                     "The export does not establish the authorization privileges applied to these identities.",
                     "Define and review the referenced least-privilege class or correct the user bindings.",
                     Severity.HIGH, evidence, (JUNIPER_LOGIN_CLASS_REFERENCE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
                 continue
             if (
@@ -381,6 +398,7 @@ class PluginJunOSBaseline(BasePlugin):
                 "Apply a policy-approved nonzero idle-timeout through the user-defined class or supported global login setting.",
                 Severity.MEDIUM, evidence or (f"login class {policy.name} timeout absent",),
                 (JUNIPER_LOGIN_GUIDE, JUNIPER_LOGIN_CLASS_REFERENCE),
+                basis=FindingBasis.DOCUMENTED_DEFAULT if policy.idle_timeout_minutes is None else FindingBasis.EXPLICIT_VALUE,
             ))
 
         authentication_order = self._statements(parser, ("system", "authentication-order"))
@@ -403,6 +421,7 @@ class PluginJunOSBaseline(BasePlugin):
                     "Configure system accounting events for login, change-log, and interactive-commands.",
                     Severity.MEDIUM, evidence or ("system accounting events absent",),
                     (JUNIPER_TACACS_GUIDE, JUNIPER_RADIUS_GUIDE),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
 
             unresolved = sorted(
@@ -424,6 +443,7 @@ class PluginJunOSBaseline(BasePlugin):
                     "Configure and verify a RADIUS or TACACS+ accounting destination with a resolved server.",
                     Severity.HIGH, evidence or ("system accounting destination absent",),
                     (JUNIPER_TACACS_GUIDE, JUNIPER_RADIUS_GUIDE),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
 
         web = junos.get_web_management_policy()
@@ -442,6 +462,7 @@ class PluginJunOSBaseline(BasePlugin):
                 "An abandoned authenticated browser session remains usable for an excessive period.",
                 "Set the J-Web session idle-timeout to 30 minutes or less, or the stricter approved organizational value.",
                 Severity.MEDIUM, evidence, (JUNIPER_JWEB_SESSION_REFERENCE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
         if web.session_limit_resolution == "known" and web.session_limit is None:
             self.add_issue(self._finding(
@@ -451,6 +472,7 @@ class PluginJunOSBaseline(BasePlugin):
                 "Unbounded authenticated sessions can increase management-plane resource pressure and account-sharing exposure.",
                 "Configure a finite J-Web session-limit based on the number of authorized administrators.",
                 Severity.MEDIUM, evidence, (JUNIPER_JWEB_SESSION_REFERENCE,),
+                basis=FindingBasis.DOCUMENTED_DEFAULT,
             ))
 
     def check_aaa_transport(self, parser: BaseDeviceParser) -> None:
@@ -473,6 +495,7 @@ class PluginJunOSBaseline(BasePlugin):
                         Severity.HIGH,
                         evidence,
                         (JUNIPER_RADIUS_GUIDE,),
+                        basis=FindingBasis.REQUIRED_SETTING_MISSING,
                     ))
                 if (
                     profile.mutual_authentication
@@ -489,6 +512,7 @@ class PluginJunOSBaseline(BasePlugin):
                         Severity.HIGH,
                         evidence,
                         (JUNIPER_RADIUS_GUIDE,),
+                        basis=FindingBasis.REQUIRED_SETTING_MISSING,
                     ))
                 continue
 
@@ -507,6 +531,7 @@ class PluginJunOSBaseline(BasePlugin):
                     Severity.HIGH,
                     evidence,
                     (JUNIPER_RADIUS_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
 
     def check_ssh_algorithms(self, parser: BaseDeviceParser) -> None:
@@ -535,6 +560,7 @@ class PluginJunOSBaseline(BasePlugin):
                     Severity.HIGH,
                     self._texts(statements),
                     (JUNIPER_SSH_REFERENCE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 )
             )
 
@@ -561,6 +587,7 @@ class PluginJunOSBaseline(BasePlugin):
                     Severity.HIGH,
                     self._texts(statements),
                     (JUNIPER_ACCESS_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 )
             )
 
@@ -653,6 +680,15 @@ class PluginJunOSBaseline(BasePlugin):
         for statement in self._statements(parser, ("snmp", "community")):
             if len(statement.path) > 2:
                 communities[statement.path[2]].append(statement)
+        if communities:
+            record_control(parser, "juniper.junos.snmp-community", CO.FINDING,
+                           "An SNMPv1/v2c community is configured.")
+        elif self._junos(parser).has_unexpanded_inheritance():
+            record_control(parser, "juniper.junos.snmp-community", CO.UNKNOWN,
+                           "No community is configured directly, but apply-groups inheritance is not expanded.")
+        else:
+            record_control(parser, "juniper.junos.snmp-community", CO.NO_FINDING,
+                           "No SNMPv1/v2c community is configured.")
         for community, statements in communities.items():
             tokens = {token.casefold() for item in statements for token in item.path[3:]}
             severe = community.casefold() in {"public", "private"} or "read-write" in tokens
@@ -677,6 +713,7 @@ class PluginJunOSBaseline(BasePlugin):
                         for item in statements
                     ),
                     (JUNIPER_SNMP_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 )
             )
 
@@ -721,6 +758,7 @@ class PluginJunOSBaseline(BasePlugin):
                     Severity.HIGH,
                     tuple(item.evidence for item in statements),
                     (JUNIPER_SNMP_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE if weak else FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
 
@@ -747,6 +785,7 @@ class PluginJunOSBaseline(BasePlugin):
                 Severity.MEDIUM,
                 evidence or ("configuration change audit destination absent",),
                 (JUNIPER_ACCOUNTING_REFERENCE, JUNIPER_SYSLOG_GUIDE),
+                basis=FindingBasis.REQUIRED_SETTING_MISSING,
             ))
 
         archive_configured = bool(state.sites) or state.schedule_state != "missing" or bool(
@@ -769,6 +808,7 @@ class PluginJunOSBaseline(BasePlugin):
                 Severity.MEDIUM,
                 evidence,
                 (JUNIPER_CONFIGURATION_ARCHIVE_GUIDE,),
+                basis=FindingBasis.REQUIRED_SETTING_MISSING,
             ))
         elif (
             parser.assessment_context.configuration_backup_scope == "on-device-required"
@@ -785,6 +825,7 @@ class PluginJunOSBaseline(BasePlugin):
                 Severity.MEDIUM,
                 evidence or ("assessment policy: on-device configuration backup required",),
                 (JUNIPER_CONFIGURATION_ARCHIVE_GUIDE,),
+                basis=FindingBasis.REQUIRED_SETTING_MISSING,
             ))
         for site in state.sites:
             if site.transport_security != "insecure":
@@ -799,10 +840,15 @@ class PluginJunOSBaseline(BasePlugin):
                 Severity.HIGH,
                 tuple(item for item in site.evidence),
                 (JUNIPER_CONFIGURATION_ARCHIVE_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
     def check_logging(self, parser: BaseDeviceParser) -> None:
         destinations = self._junos(parser).get_syslog_destinations()
+        record_control(parser, "juniper.junos.remote-logging",
+                       CO.NO_FINDING if destinations else CO.FINDING,
+                       "A remote syslog host is configured." if destinations
+                       else "No effective syslog host destination is present.")
         if not destinations:
             self.add_issue(
                 self._finding(
@@ -815,6 +861,7 @@ class PluginJunOSBaseline(BasePlugin):
                     Severity.MEDIUM,
                     ("system syslog host absent",),
                     (JUNIPER_SYSLOG_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
             return
@@ -845,6 +892,7 @@ class PluginJunOSBaseline(BasePlugin):
                     Severity.MEDIUM,
                     tuple(item for item in destination.evidence),
                     (JUNIPER_SYSLOG_GUIDE, JUNIPER_SYSLOG_HOST_REFERENCE),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
 
@@ -890,6 +938,7 @@ class PluginJunOSBaseline(BasePlugin):
                         Severity.MEDIUM,
                         evidence,
                         (JUNIPER_NTP_GUIDE,),
+                        basis=FindingBasis.REQUIRED_SETTING_MISSING,
                     )
                 )
             elif model != "?" and not legacy_only and association.algorithm in {"md5", "sha1"}:
@@ -904,6 +953,7 @@ class PluginJunOSBaseline(BasePlugin):
                         Severity.MEDIUM,
                         evidence,
                         (JUNIPER_NTP_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
 
@@ -929,6 +979,7 @@ class PluginJunOSBaseline(BasePlugin):
                 Severity.HIGH,
                 ("interfaces lo0 family filter input absent",),
                 (JUNIPER_FILTER_GUIDE,),
+                basis=FindingBasis.REQUIRED_SETTING_MISSING,
             ))
             return
 
@@ -948,6 +999,7 @@ class PluginJunOSBaseline(BasePlugin):
                     Severity.HIGH,
                     evidence,
                     (JUNIPER_FILTER_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
                 continue
             if protection.protection_state == "empty-filter":
@@ -961,6 +1013,7 @@ class PluginJunOSBaseline(BasePlugin):
                     Severity.HIGH,
                     evidence,
                     (JUNIPER_FILTER_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
                 continue
 
@@ -977,6 +1030,7 @@ class PluginJunOSBaseline(BasePlugin):
                     Severity.HIGH,
                     tuple(item for item in term.evidence) or evidence,
                     (JUNIPER_POLICER_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
 
             if protection.protection_state == "no-enforcement":
@@ -990,6 +1044,7 @@ class PluginJunOSBaseline(BasePlugin):
                     Severity.HIGH,
                     evidence,
                     (JUNIPER_FILTER_GUIDE, JUNIPER_POLICER_GUIDE),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
 
     def check_redirects(self, parser: BaseDeviceParser) -> None:
@@ -1006,6 +1061,7 @@ class PluginJunOSBaseline(BasePlugin):
                 Severity.LOW,
                 ("system no-redirects absent",),
                 (JUNIPER_REDIRECT_REFERENCE,),
+                basis=FindingBasis.MISSING_EXPLICIT_SETTING,
             )
         )
 
@@ -1031,6 +1087,7 @@ class PluginJunOSBaseline(BasePlugin):
                     Severity.HIGH,
                     evidence,
                     (JUNIPER_BGP_SECURITY_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
             if peer.peer_role != "external":
                 continue
@@ -1047,6 +1104,7 @@ class PluginJunOSBaseline(BasePlugin):
                     Severity.HIGH,
                     evidence,
                     (JUNIPER_BGP_SECURITY_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
             if not peer.prefix_limit:
                 self.add_issue(self._finding(
@@ -1059,6 +1117,7 @@ class PluginJunOSBaseline(BasePlugin):
                     Severity.MEDIUM,
                     evidence,
                     (JUNIPER_BGP_SECURITY_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
 
         for interface in junos.get_ospf_interfaces():
@@ -1081,6 +1140,7 @@ class PluginJunOSBaseline(BasePlugin):
                 parser, rule_id, title, observation,
                 "An unprotected routing adjacency can accept forged protocol packets from a reachable attacker.",
                 recommendation, severity, evidence, (JUNIPER_OSPF_AUTH_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE if interface.authentication_state == "weak" else FindingBasis.REQUIRED_SETTING_MISSING,
             ))
 
         isis_records = [record for record in junos.get_isis_authentication() if record.interfaces]
@@ -1109,6 +1169,7 @@ class PluginJunOSBaseline(BasePlugin):
                     "A device on an IS-IS link can inject unauthenticated adjacencies and link-state information.",
                     "Remove no-authentication-check once all neighbors share the configured keys.",
                     Severity.HIGH, evidence, (JUNIPER_ISIS_AUTH_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             if record.cleartext_levels:
                 self.add_issue(self._finding(
@@ -1118,6 +1179,7 @@ class PluginJunOSBaseline(BasePlugin):
                     "An observer on the routing link can read the password and forge authenticated IS-IS packets.",
                     "Use authentication-type md5 or a key chain with an HMAC-SHA algorithm on all neighbors.",
                     Severity.MEDIUM, evidence, (JUNIPER_ISIS_AUTH_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             if record.authenticated and (record.suppressed or record.loose_check):
                 parts = list(record.suppressed) + (["loose-authentication-check"] if record.loose_check else [])
@@ -1211,6 +1273,36 @@ class PluginJunOSBaseline(BasePlugin):
                     Severity.LOW, tuple(item for s in loose[:4] for item in s[2])[:8], (JUNIPER_BFD_AUTH_GUIDE,),
                     basis=FindingBasis.EXPLICIT_VALUE,
                 ))
+        if not junos.has_unexpanded_inheritance():
+            labels = {
+                "ldp": ("LDP sessions are not authenticated", Severity.MEDIUM,
+                        "Configure 'authentication-key' (TCP MD5) on every LDP session or session-group, matching the neighbor.",
+                        "A device that can reach the LDP TCP session can inject or tear down label bindings, redirecting or dropping MPLS traffic."),
+                "rsvp": ("RSVP interfaces are not authenticated", Severity.MEDIUM,
+                         "Configure 'authentication-key' on each RSVP interface (or under protocols rsvp), matching the neighbors.",
+                         "Forged RSVP messages can tear down or reroute traffic-engineered LSPs."),
+                "msdp": ("MSDP peers are not authenticated", Severity.MEDIUM,
+                         "Configure 'authentication-key' for each MSDP peer, its group, or under protocols msdp.",
+                         "A spoofed MSDP peer can inject source-active messages and steer interdomain multicast."),
+            }
+            for record in junos.get_signalling_authentication():
+                title, severity, recommendation, impact = labels[record.protocol]
+                self.add_issue(Finding(
+                    rule_id=f"juniper.junos.routing.{record.protocol}.authentication",
+                    device=parser.device_type,
+                    title=title,
+                    observation=(f"{record.protocol.upper()} in routing-instance {record.routing_instance} has no authentication-key for "
+                                 f"{', '.join(record.unauthenticated[:6])}{' and more' if len(record.unauthenticated) > 6 else ''}. "
+                                 "The setting is omitted, so these sessions are not authenticated; nothing is set to a wrong value."),
+                    impact=impact,
+                    exploitability="Requires the ability to send packets to the routing session or link.",
+                    recommendation=recommendation,
+                    severity=severity,
+                    evidence=record.evidence,
+                    references=(JUNIPER_SIGNALLING_AUTH_REFERENCES[record.protocol],),
+                    basis=(FindingBasis.DOCUMENTED_DEFAULT if record.protocol == "msdp"
+                           else FindingBasis.REQUIRED_SETTING_MISSING),
+                ))
         unprotected = [r for r in junos.get_ospf3_interfaces() if not r.ipsec_sa]
         if unprotected and not junos.has_unexpanded_inheritance():
             self.add_issue(Finding(
@@ -1263,6 +1355,16 @@ class PluginJunOSBaseline(BasePlugin):
         https_web = has("system", "services", "web-management", "https")
         radius = has("system", "radius-server")
         aaa_servers = radius or has("system", "tacplus-server")
+        communities = sorted({p[2] for p in paths if p[:2] == ("snmp", "community") and len(p) > 2})
+        # Community names are secrets: only a count is reported.
+        unrestricted_communities = sum(
+            1 for name in communities
+            if not any(p[:3] == ("snmp", "community", name) and len(p) > 3 and p[3] in {"clients", "client-list-name"}
+                       for p in paths)
+        )
+        local_users = has("system", "login", "user")
+        minimum_length = next((int(p[4]) for p in paths if p[:4] == ("system", "login", "password", "minimum-length")
+                               and len(p) > 4 and p[4].isdigit()), None)
         items = [
             ("6.4.1", "diag-port-authentication", not has("system", "diag-port-authentication")),
             ("6.5.1", "internet-options icmpv4-rate-limit", not has("system", "internet-options", "icmpv4-rate-limit")),
@@ -1290,6 +1392,19 @@ class PluginJunOSBaseline(BasePlugin):
             ("6.12.5", "syslog file for interactive-commands", not any(
                 p[:3] == ("system", "syslog", "file") and "interactive-commands" in p for p in paths)),
             ("6.15", "no-multicast-echo", not has("system", "no-multicast-echo")),
+            ("6.22", "no-redirects-ipv6 (IPv6 is configured)", any(
+                p[:1] == ("interfaces",) and "inet6" in p for p in paths) and not has("system", "no-redirects-ipv6")),
+            ("5.3", f"client list on {unrestricted_communities} SNMP communit{'y' if unrestricted_communities == 1 else 'ies'}",
+             bool(unrestricted_communities)),
+            ("5.8", "SNMP interface restriction", has("snmp", "community") and not has("snmp", "interface")),
+            ("6.6.9", "login password change-type character-sets with minimum-character-changes or minimum-*",
+             local_users and not (has("system", "login", "password", "change-type")
+                                  or any(p[:3] == ("system", "login", "password") and len(p) > 3
+                                         and p[3].startswith("minimum-") and p[3] not in {"minimum-length", "minimum-changes"}
+                                         for p in paths))),
+            ("6.6.10", "login password minimum-changes", local_users and not has("system", "login", "password", "minimum-changes")),
+            ("6.6.11", "login password minimum-length 10 or more", local_users and not (
+                minimum_length is not None and minimum_length >= 10)),
             ("6.16", "no-ping-record-route", not has("system", "no-ping-record-route")),
             ("6.17", "no-ping-time-stamp", not has("system", "no-ping-time-stamp")),
         ]
@@ -1329,6 +1444,7 @@ class PluginJunOSBaseline(BasePlugin):
                 Severity.MEDIUM,
                 evidence,
                 (JUNIPER_LLDP_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
     def check_host_inbound(self, parser: BaseDeviceParser) -> None:
@@ -1494,6 +1610,7 @@ class PluginJunOSBaseline(BasePlugin):
                     Severity.HIGH,
                     evidence,
                     (reference,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             if binding.alarm_without_drop:
                 for option, state, reference in (
@@ -1513,6 +1630,7 @@ class PluginJunOSBaseline(BasePlugin):
                         Severity.HIGH,
                         evidence,
                         (JUNIPER_SCREEN_OPTION_REFERENCE, reference),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     ))
 
     def check_idp_actions(self, parser: BaseDeviceParser) -> None:
@@ -1548,6 +1666,7 @@ class PluginJunOSBaseline(BasePlugin):
                 Severity.MEDIUM,
                 evidence,
                 (JUNIPER_IDP_ACTION_REFERENCE, JUNIPER_IDP_RULEBASE_REFERENCE),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
     def check_access_edge(self, parser: BaseDeviceParser) -> None:
@@ -1571,6 +1690,21 @@ class PluginJunOSBaseline(BasePlugin):
                     evidence,
                     (JUNIPER_BPDU_BLOCK_REFERENCE, JUNIPER_BPDU_ON_EDGE_REFERENCE),
                     basis=FindingBasis.DOCUMENTED_DEFAULT,
+                ))
+            if port.ra_guard_trusted:
+                self.add_issue(self._finding(
+                    parser,
+                    "juniper.junos.layer2.access_edge.ipv6_ra_trusted",
+                    "Access-edge port is trusted to send IPv6 router advertisements",
+                    f"Interface {port.interface} is an assessed access edge, but RA guard marks it 'mark-interface trusted', "
+                    "so every router advertisement from this port is forwarded without validation.",
+                    "A connected endpoint can announce itself as the IPv6 default router or change prefixes and DNS options, "
+                    "redirecting or intercepting traffic of other hosts on the VLAN.",
+                    "Remove 'mark-interface trusted' from endpoint ports; reserve it for router-facing uplinks.",
+                    Severity.HIGH,
+                    port.ra_guard_trusted + (f"assessment policy: {port.interface} role access-edge",),
+                    (JUNIPER_RA_GUARD_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             if port.supplicant_mode == "single":
                 self.add_issue(self._finding(

@@ -74,6 +74,11 @@ class PluginSonicOSChecks(BasePlugin):
             raise TypeError("PluginSonicOSChecks requires a SonicOSParser")
         return parser
 
+    @staticmethod
+    def _evidence_has(evidence, phrase: str) -> bool:
+        """Whether any evidence line contains ``phrase`` (finds an explicit setting for PT-009 basis)."""
+        return any(phrase in getattr(item, "text", str(item)).casefold() for item in evidence)
+
     def check_management(self, parser: BaseDeviceParser) -> None:
         for interface in self._sonic(parser).get_interfaces():
             if not interface.enabled:
@@ -92,6 +97,7 @@ class PluginSonicOSChecks(BasePlugin):
                         severity=Severity.HIGH,
                         evidence=evidence,
                         references=(SONICOS_MANAGEMENT_GUIDE, SONICOS_SYSTEM_GUIDE),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
             exposed = sorted(set(interface.management) & {"https", "ssh", "snmp"})
@@ -108,6 +114,7 @@ class PluginSonicOSChecks(BasePlugin):
                         severity=Severity.HIGH,
                         evidence=evidence,
                         references=(SONICOS_SYSTEM_GUIDE, SONICOS_POLICY_GUIDE),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
 
@@ -131,6 +138,7 @@ class PluginSonicOSChecks(BasePlugin):
                     severity=Severity.HIGH if administrator.effective_role == "full-admin" else Severity.MEDIUM,
                     evidence=tuple(item for item in administrator.evidence),
                     references=(SONICOS_ADMIN_ROLES_GUIDE, SONICOS_CLI_GUIDE),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             if administrator.otp_enabled is False and administrator.effective_role in {"full-admin", "limited-admin"}:
                 self.add_issue(Finding(
@@ -146,6 +154,10 @@ class PluginSonicOSChecks(BasePlugin):
                         "SonicOS 7.0-7.2 documented default: built-in administrator TOTP disabled",
                     ),
                     references=(SONICOS_CLI_GUIDE,),
+                    basis=(
+                        FindingBasis.EXPLICIT_VALUE if self._evidence_has(administrator.evidence, "one-time-p")
+                        else FindingBasis.DOCUMENTED_DEFAULT
+                    ),
                 ))
 
         password = sonic.get_password_policy()
@@ -162,6 +174,10 @@ class PluginSonicOSChecks(BasePlugin):
                 severity=Severity.MEDIUM,
                 evidence=password_evidence or ("SonicOS 7.0-7.2 documented minimum-length default: 8",),
                 references=(SONICOS_PASSWORD_GUIDE, SONICOS_CLI_GUIDE),
+                basis=(
+                    FindingBasis.EXPLICIT_VALUE if self._evidence_has(password_evidence, "password minimum-length")
+                    else FindingBasis.DOCUMENTED_DEFAULT
+                ),
             ))
         if password.complexity is not None and password.complexity not in {
             "alpha-and-numeric-and-symbols", "alphanumeric-and-symbols"
@@ -177,6 +193,10 @@ class PluginSonicOSChecks(BasePlugin):
                 severity=Severity.MEDIUM,
                 evidence=password_evidence or ("SonicOS 7.0-7.2 documented password-complexity default: none",),
                 references=(SONICOS_PASSWORD_GUIDE, SONICOS_CLI_GUIDE),
+                basis=(
+                    FindingBasis.EXPLICIT_VALUE if self._evidence_has(password_evidence, "password complexity")
+                    else FindingBasis.DOCUMENTED_DEFAULT
+                ),
             ))
         required_scopes = {"admin", "full-admin", "limited-admin"}
         if password.scopes is not None and not required_scopes.issubset(password.scopes):
@@ -192,6 +212,7 @@ class PluginSonicOSChecks(BasePlugin):
                 severity=Severity.HIGH,
                 evidence=password_evidence,
                 references=(SONICOS_PASSWORD_GUIDE, SONICOS_CLI_GUIDE),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
         session = sonic.get_admin_session_policy()
@@ -209,6 +230,10 @@ class PluginSonicOSChecks(BasePlugin):
                 severity=Severity.HIGH,
                 evidence=session_evidence or ("SonicOS 7.0-7.2 documented user-lockout default: disabled",),
                 references=(SONICOS_LOGIN_CONSTRAINTS_GUIDE, SONICOS_CLI_GUIDE),
+                basis=(
+                    FindingBasis.EXPLICIT_VALUE if self._evidence_has(session_evidence, "user-lockout")
+                    else FindingBasis.DOCUMENTED_DEFAULT
+                ),
             ))
         if management_active and session.lockout_enabled is True:
             weaknesses = []
@@ -228,6 +253,7 @@ class PluginSonicOSChecks(BasePlugin):
                     severity=Severity.MEDIUM,
                     evidence=session_evidence,
                     references=(SONICOS_LOGIN_CONSTRAINTS_GUIDE, SONICOS_CLI_GUIDE),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
         if management_active and session.idle_logout_minutes is not None and session.idle_logout_minutes > 5:
             self.add_issue(Finding(
@@ -241,6 +267,7 @@ class PluginSonicOSChecks(BasePlugin):
                 severity=Severity.MEDIUM,
                 evidence=session_evidence,
                 references=(SONICOS_LOGIN_CONSTRAINTS_GUIDE, SONICOS_CLI_GUIDE),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
         if services["ssh"] and session.max_cli_attempts is not None and session.max_cli_attempts > 5:
             self.add_issue(Finding(
@@ -254,6 +281,7 @@ class PluginSonicOSChecks(BasePlugin):
                 severity=Severity.MEDIUM,
                 evidence=session_evidence,
                 references=(SONICOS_LOGIN_CONSTRAINTS_GUIDE, SONICOS_CLI_GUIDE),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
         if management_active and session.log_without_lockout is True:
             self.add_issue(Finding(
@@ -267,6 +295,7 @@ class PluginSonicOSChecks(BasePlugin):
                 severity=Severity.HIGH,
                 evidence=session_evidence,
                 references=(SONICOS_LOGIN_CONSTRAINTS_GUIDE, SONICOS_CLI_GUIDE),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
         banner = sonic.get_banner_policy()
@@ -284,6 +313,7 @@ class PluginSonicOSChecks(BasePlugin):
                     "SonicOS 7.0-7.2 documented CLI connection banner default: absent",
                 ),
                 references=(SONICOS_LOGIN_BANNER_GUIDE, SONICOS_CLI_GUIDE),
+                basis=FindingBasis.REQUIRED_SETTING_MISSING,
             ))
 
         tls = sonic.get_management_tls_policy()
@@ -300,6 +330,7 @@ class PluginSonicOSChecks(BasePlugin):
                 severity=Severity.HIGH,
                 evidence=tls_evidence,
                 references=(SONICOS_TLS_GUIDE, SONICOS_CLI_GUIDE),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
         if tls.applicable and tls.certificate_type == "self-signed":
             self.add_issue(Finding(
@@ -313,6 +344,10 @@ class PluginSonicOSChecks(BasePlugin):
                 severity=Severity.MEDIUM,
                 evidence=tls_evidence or ("SonicOS 7.0-7.2 documented certificate-selection default: self-signed",),
                 references=(SONICOS_CERTIFICATE_GUIDE, SONICOS_CLI_GUIDE),
+                basis=(
+                    FindingBasis.EXPLICIT_VALUE if self._evidence_has(tls_evidence, "web-management certificate")
+                    else FindingBasis.DOCUMENTED_DEFAULT
+                ),
             ))
     @staticmethod
     def _is_any(value: str) -> bool:
@@ -345,6 +380,7 @@ class PluginSonicOSChecks(BasePlugin):
                         severity=Severity.CRITICAL,
                         evidence=evidence,
                         references=(SONICOS_POLICY_GUIDE, SONICOS_CLI_GUIDE),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
             if not rule.logging:
@@ -360,6 +396,10 @@ class PluginSonicOSChecks(BasePlugin):
                         severity=Severity.MEDIUM,
                         evidence=evidence,
                         references=(SONICOS_POLICY_GUIDE, SONICOS_CLI_GUIDE),
+                        basis=(
+                            FindingBasis.EXPLICIT_VALUE if self._evidence_has(evidence, "no logging")
+                            else FindingBasis.MISSING_EXPLICIT_SETTING
+                        ),
                     )
                 )
 
@@ -392,6 +432,7 @@ class PluginSonicOSChecks(BasePlugin):
                         severity=Severity.LOW,
                         evidence=evidence,
                         references=(SONICOS_POLICY_GUIDE, SONICOS_CLI_GUIDE),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     ))
                 continue
 
@@ -407,6 +448,7 @@ class PluginSonicOSChecks(BasePlugin):
                     severity=Severity.MEDIUM,
                     evidence=evidence,
                     references=(SONICOS_POLICY_GUIDE, SONICOS_CLI_GUIDE),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
 
             if not rule.proof_eligible:
@@ -449,6 +491,7 @@ class PluginSonicOSChecks(BasePlugin):
                     severity=Severity.LOW if same_action else Severity.HIGH,
                     evidence=evidence + tuple(item for item in earlier.evidence),
                     references=(SONICOS_POLICY_GUIDE, SONICOS_CLI_GUIDE),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
                 break
             earlier_rules.append(rule)
@@ -481,6 +524,7 @@ class PluginSonicOSChecks(BasePlugin):
                     severity=Severity.HIGH,
                     evidence=tuple(item for item in policy.evidence),
                     references=(SONICOS_VPN_GUIDE, SONICOS_CLI_GUIDE),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 )
             )
 
@@ -500,6 +544,7 @@ class PluginSonicOSChecks(BasePlugin):
                     severity=Severity.MEDIUM,
                     evidence=("SNMP interface management enabled without secure SNMPv3 user",),
                     references=(SONICOS_SYSTEM_GUIDE, SONICOS_CLI_GUIDE),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
         if snmp_enabled:
@@ -523,6 +568,7 @@ class PluginSonicOSChecks(BasePlugin):
                             severity=Severity.HIGH,
                             evidence=evidence,
                             references=(SONICOS_SYSTEM_GUIDE, SONICOS_CLI_GUIDE),
+                            basis=FindingBasis.EXPLICIT_VALUE,
                         )
                     )
                 weak = []
@@ -543,6 +589,7 @@ class PluginSonicOSChecks(BasePlugin):
                             severity=Severity.MEDIUM,
                             evidence=evidence,
                             references=(SONICOS_SYSTEM_GUIDE, SONICOS_CLI_GUIDE),
+                            basis=FindingBasis.EXPLICIT_VALUE,
                         )
                     )
         if not sonic.get_syslog_destinations():
@@ -558,6 +605,7 @@ class PluginSonicOSChecks(BasePlugin):
                     severity=Severity.MEDIUM,
                     evidence=("enabled syslog destination absent",),
                     references=(SONICOS_CLI_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
         ntp_servers = sonic.get_ntp_server_records()
@@ -574,6 +622,7 @@ class PluginSonicOSChecks(BasePlugin):
                     severity=Severity.LOW,
                     evidence=("custom NTP server absent",),
                     references=(SONICOS_CLI_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
         else:
@@ -592,6 +641,7 @@ class PluginSonicOSChecks(BasePlugin):
                         severity=Severity.MEDIUM,
                         evidence=tuple(item for item in server.evidence),
                         references=(SONICOS_CLI_GUIDE,),
+                        basis=FindingBasis.REQUIRED_SETTING_MISSING,
                     )
                 )
         services = sonic.get_security_services()
@@ -609,6 +659,7 @@ class PluginSonicOSChecks(BasePlugin):
                     severity=Severity.HIGH,
                     evidence=tuple(f"no {name} enable" for name in disabled),
                     references=(SONICOS_SYSTEM_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 )
             )
         labels = {"intrusion-prevention": "intrusion prevention", "gateway-anti-virus": "gateway anti-virus",
@@ -654,6 +705,7 @@ class PluginSonicOSChecks(BasePlugin):
                     severity=Severity.HIGH,
                     evidence=tuple(["capture-atp enable", *(f"no {name} enable" for name in unavailable)]),
                     references=(SONICOS_CAPTURE_ATP_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 )
             )
 

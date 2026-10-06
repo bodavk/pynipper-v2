@@ -19,6 +19,8 @@ from src.devices.fortinet.fortios import FortiDict, FortiOSParser
 from .fortios_attack_paths import DenyShadow, produce_attack_paths
 
 
+FORTINET_DNSFILTER_REFERENCE = "https://docs.fortinet.com/document/fortigate/7.4.1/cli-reference/490620/config-dnsfilter-profile"
+FORTINET_POLICY_REFERENCE = "https://docs.fortinet.com/document/fortigate/7.4.0/cli-reference/292620/config-firewall-policy"
 FORTINET_HARDENING = (
     "https://docs.fortinet.com/document/fortigate/7.2.0/best-practices/"
     "555436/hardening"
@@ -397,12 +399,26 @@ class PluginFortiOSBaseline(BasePlugin):
             (role.scope, role.administrator): role
             for role in fortios.get_administrator_roles()
         }
+        admin_controls = ("fortinet.fortios.admin-trusted-hosts", "fortinet.fortios.admin-mfa")
+        evaluated_admin = False
         for scope, username, settings, path in fortios.iter_administrators():
             if not self._enabled(settings):
                 continue
             profile = self._text(settings.get("accprofile"), "super_admin").lower()
             role = roles.get((scope, username))
             privileged = role is not None and role.privileged_state == "privileged"
+            admin_instance = f"{scope}/{username}"
+            evaluated_admin = True
+            if not privileged:
+                read_only = role is not None and role.privileged_state == "read-only"
+                for control in admin_controls:
+                    record_control(
+                        parser, control,
+                        CO.NOT_APPLICABLE if read_only else CO.UNKNOWN,
+                        "Administrator is not privileged." if read_only
+                        else "Administrator privilege could not be resolved from its profile.",
+                        instance=admin_instance,
+                    )
             role_description = (
                 "super_admin account" if profile == "super_admin"
                 else f"privileged account using profile '{profile}'"
@@ -415,6 +431,14 @@ class PluginFortiOSBaseline(BasePlugin):
             restricted = bool(trusts) and all(
                 trust not in self._UNRESTRICTED_TRUST for trust in trusts
             )
+            if privileged:
+                record_control(
+                    parser, "fortinet.fortios.admin-trusted-hosts",
+                    CO.NO_FINDING if restricted else CO.FINDING,
+                    "Privileged administrator has restrictive trusted hosts." if restricted
+                    else "Privileged administrator has no effective trusted-host restriction.",
+                    instance=admin_instance,
+                )
             if privileged and not restricted:
                 self.add_issue(
                     self._finding(
@@ -427,6 +451,7 @@ class PluginFortiOSBaseline(BasePlugin):
                         Severity.HIGH,
                         self._evidence(fortios, path, f"system admin {username}"),
                         (FORTINET_ADMIN_GUIDE, FORTINET_ADMIN_REFERENCE),
+                        basis=FindingBasis.EXPLICIT_VALUE if trusts else FindingBasis.REQUIRED_SETTING_MISSING,
                     )
                 )
 
@@ -444,11 +469,23 @@ class PluginFortiOSBaseline(BasePlugin):
                         Severity.HIGH,
                         self._evidence(fortios, path, f"system admin {username}"),
                         (FORTINET_ADMIN_REFERENCE,),
+                        basis=FindingBasis.REQUIRED_SETTING_MISSING,
                     )
                 )
+            if privileged and (remote or peer):
+                record_control(parser, "fortinet.fortios.admin-mfa", CO.NOT_APPLICABLE,
+                               "Administrator authenticates remotely or by peer certificate, not locally.",
+                               instance=admin_instance)
             if privileged and not remote and not peer:
                 privileged_local.append((scope, username, path))
                 mfa = self._text(settings.get("two-factor"), "disable").lower()
+                record_control(
+                    parser, "fortinet.fortios.admin-mfa",
+                    CO.NO_FINDING if mfa in self._MFA_METHODS else CO.FINDING,
+                    "Privileged local administrator has a two-factor method." if mfa in self._MFA_METHODS
+                    else "Privileged local administrator has no enabled two-factor method.",
+                    instance=admin_instance,
+                )
                 if mfa not in self._MFA_METHODS:
                     self.add_issue(
                         self._finding(
@@ -461,9 +498,18 @@ class PluginFortiOSBaseline(BasePlugin):
                             Severity.HIGH,
                             self._evidence(fortios, path, f"system admin {username}"),
                             (FORTINET_ADMIN_GUIDE, FORTINET_ADMIN_REFERENCE),
+                            basis=FindingBasis.EXPLICIT_VALUE if settings.get("two-factor") is not None else FindingBasis.REQUIRED_SETTING_MISSING,
                         )
                     )
 
+        if not evaluated_admin:
+            exported = any(True for _ in fortios.iter_administrators())
+            for control in admin_controls:
+                record_control(
+                    parser, control, CO.NOT_APPLICABLE if exported else CO.UNKNOWN,
+                    "All exported administrator accounts are disabled." if exported
+                    else "No administrator accounts are exported; the default account cannot be judged.",
+                )
         if self._supports_default_inference(fortios) and privileged_local:
             remote_privileged = any(
                 self._enabled(settings)
@@ -496,6 +542,7 @@ class PluginFortiOSBaseline(BasePlugin):
                             for text in self._evidence(fortios, path, f"system admin {username}")
                         ),
                         (FORTINET_HARDENING, FORTINET_ADMIN_REFERENCE),
+                        basis=FindingBasis.REQUIRED_SETTING_MISSING,
                     )
                 )
 
@@ -570,6 +617,7 @@ class PluginFortiOSBaseline(BasePlugin):
                         Severity.MEDIUM,
                         self._evidence(fortios, path, "system password-policy"),
                         (FORTINET_PASSWORD_REFERENCE,),
+                        basis=(FindingBasis.EXPLICIT_VALUE if reuse == "enable" or any("not configured" not in item for item in weak if item != "password reuse is permitted") else FindingBasis.DOCUMENTED_DEFAULT),
                     )
                 )
 
@@ -593,6 +641,7 @@ class PluginFortiOSBaseline(BasePlugin):
                         Severity.MEDIUM,
                         self._evidence(fortios, path, "system global lockout settings"),
                         (FORTINET_GLOBAL_REFERENCE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
             timeout = self._text(settings.get("admintimeout"))
@@ -608,6 +657,7 @@ class PluginFortiOSBaseline(BasePlugin):
                         Severity.MEDIUM,
                         self._evidence(fortios, path + ("admintimeout",), f"set admintimeout {timeout}"),
                         (FORTINET_GLOBAL_REFERENCE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
 
@@ -642,6 +692,7 @@ class PluginFortiOSBaseline(BasePlugin):
                         Severity.HIGH,
                         self._evidence(fortios, path + (field,), f"set {field} {weak_value}"),
                         (FORTINET_HARDENING, FORTINET_CRYPTO_GUIDE),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
             dh_params = self._text(settings.get("dh-params"))
@@ -657,6 +708,7 @@ class PluginFortiOSBaseline(BasePlugin):
                         Severity.HIGH,
                         self._evidence(fortios, path + ("dh-params",), f"set dh-params {dh_params}"),
                         (FORTINET_HARDENING,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
             for field, weak_values in self._WEAK_SSH.items():
@@ -674,6 +726,7 @@ class PluginFortiOSBaseline(BasePlugin):
                             Severity.HIGH,
                             self._evidence(fortios, path + (field,), f"set {field} {' '.join(weak)}"),
                             (FORTINET_CRYPTO_GUIDE,),
+                            basis=FindingBasis.EXPLICIT_VALUE,
                         )
                     )
 
@@ -695,6 +748,7 @@ class PluginFortiOSBaseline(BasePlugin):
                         Severity.MEDIUM,
                         tuple(certificates) or ("admin-server-cert absent",),
                         (FORTINET_GLOBAL_REFERENCE, FORTINET_HARDENING),
+                        basis=FindingBasis.EXPLICIT_VALUE if certificates else FindingBasis.DOCUMENTED_DEFAULT,
                     )
                 )
 
@@ -728,6 +782,7 @@ class PluginFortiOSBaseline(BasePlugin):
                     Severity.MEDIUM,
                     evidence,
                     references,
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
                 continue
             if binding.public_material_state == "malformed":
@@ -741,6 +796,7 @@ class PluginFortiOSBaseline(BasePlugin):
                     Severity.HIGH,
                     evidence,
                     references,
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
                 continue
             if binding.assessment is None or binding.metadata is None:
@@ -759,6 +815,7 @@ class PluginFortiOSBaseline(BasePlugin):
                     Severity.HIGH,
                     evidence,
                     references,
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             if assessment.identity_state == "mismatch":
                 self.add_issue(self._finding(
@@ -771,6 +828,7 @@ class PluginFortiOSBaseline(BasePlugin):
                     Severity.HIGH,
                     evidence,
                     references,
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             if assessment.algorithm_state == "weak":
                 self.add_issue(self._finding(
@@ -783,6 +841,7 @@ class PluginFortiOSBaseline(BasePlugin):
                     Severity.HIGH,
                     evidence,
                     references + (NIST_CRYPTO_TRANSITIONS,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             if assessment.trust_state == "verification-failed":
                 self.add_issue(self._finding(
@@ -795,6 +854,7 @@ class PluginFortiOSBaseline(BasePlugin):
                     Severity.HIGH,
                     evidence,
                     references,
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
 
     def check_snmp_trap_targets(self, parser: BaseDeviceParser) -> None:
@@ -918,6 +978,7 @@ class PluginFortiOSBaseline(BasePlugin):
                             Severity.HIGH,
                             community_evidence,
                             (FORTINET_SNMP_REFERENCE, FORTINET_HARDENING),
+                            basis=FindingBasis.EXPLICIT_VALUE,
                         )
                     )
 
@@ -954,6 +1015,7 @@ class PluginFortiOSBaseline(BasePlugin):
                         Severity.HIGH,
                         self._evidence(fortios, path + (str(username),), f"system snmp user {username}"),
                         (FORTINET_SNMP_REFERENCE,),
+                        basis=(FindingBasis.EXPLICIT_VALUE if (settings.get("security-level") is not None and security != "auth-priv") or auth == "md5" or privacy == "des" else FindingBasis.REQUIRED_SETTING_MISSING),
                     )
                 )
 
@@ -973,6 +1035,7 @@ class PluginFortiOSBaseline(BasePlugin):
                         Severity.HIGH,
                         self._evidence(fortios, path + ("allowaccess",), f"{interface}: allowaccess snmp"),
                         (FORTINET_SNMP_REFERENCE, FORTINET_HARDENING),
+                        basis=FindingBasis.REQUIRED_SETTING_MISSING,
                     )
                 )
 
@@ -991,6 +1054,7 @@ class PluginFortiOSBaseline(BasePlugin):
                     Severity.MEDIUM,
                     ("system ntp absent",),
                     (FORTINET_NTP_GUIDE,),
+                    basis=FindingBasis.DOCUMENTED_DEFAULT,
                 )
             )
         for scope, settings, path in sections:
@@ -1006,6 +1070,7 @@ class PluginFortiOSBaseline(BasePlugin):
                         Severity.MEDIUM,
                         self._evidence(fortios, path + ("ntpsync",), "set ntpsync disable"),
                         (FORTINET_NTP_GUIDE,),
+                        basis=(FindingBasis.EXPLICIT_VALUE if settings.get("ntpsync") is not None else FindingBasis.DOCUMENTED_DEFAULT if self._supports_default_inference(fortios) else FindingBasis.MISSING_EXPLICIT_SETTING),
                     )
                 )
                 continue
@@ -1031,6 +1096,7 @@ class PluginFortiOSBaseline(BasePlugin):
                         Severity.MEDIUM,
                         self._evidence(fortios, path, "system ntp"),
                         (FORTINET_NTP_GUIDE,),
+                        basis=FindingBasis.REQUIRED_SETTING_MISSING,
                     )
                 )
             for name, server in enabled_servers:
@@ -1056,6 +1122,7 @@ class PluginFortiOSBaseline(BasePlugin):
                             Severity.MEDIUM,
                             self._evidence(fortios, path + ("ntpserver", name), f"ntpserver {name}"),
                             (FORTINET_NTP_GUIDE, FORTINET_NTP_AUTH_GUIDE),
+                            basis=FindingBasis.EXPLICIT_VALUE if server.get("authentication") is not None and authentication != "enable" else FindingBasis.REQUIRED_SETTING_MISSING,
                         )
                     )
                 if authentication == "enable" and has_key and key_type in {"md5", "sha1"}:
@@ -1070,6 +1137,7 @@ class PluginFortiOSBaseline(BasePlugin):
                             Severity.MEDIUM,
                             self._evidence(fortios, path + ("ntpserver", name), f"ntpserver {name}"),
                             (FORTINET_NTP_GUIDE, FORTINET_NTP_AUTH_GUIDE),
+                            basis=(FindingBasis.EXPLICIT_VALUE if self._text(server.get("key-type")) or self._text(settings.get("key-type")) else FindingBasis.DOCUMENTED_DEFAULT),
                         )
                     )
 
@@ -1133,20 +1201,29 @@ class PluginFortiOSBaseline(BasePlugin):
                 record_control(parser, controls[0], CO.NO_FINDING, "Explicit policy logging configuration; runtime delivery unassessed.", instance=instance)
             else:
                 record_control(parser, controls[0], CO.UNKNOWN, "Logging setting is missing/malformed or UTM-only logging has no qualified inspection attachment.", instance=instance)
-            if state.utm == "disable":
-                record_control(parser, controls[1], CO.FINDING, "Explicit UTM disablement on a proven nonempty boundary permission.", instance=instance)
+            # 7.4.0 CLI reference (config firewall policy): utm-status default disable.
+            # FortiOS backups omit defaults, so an absent utm-status on 7.x means no
+            # security profiles are applied (documented default, not missing evidence).
+            utm_default = state.utm == "unknown" and self._supports_default_inference(fortios)
+            if state.utm == "disable" or utm_default:
+                record_control(parser, controls[1], CO.FINDING,
+                               "UTM disabled (explicitly or by the documented default) on a proven nonempty boundary permission.",
+                               instance=instance)
+                how = ("does not set utm-status, so the documented default 'disable' applies and no security profiles are used"
+                       if utm_default else "explicitly disables UTM")
                 self.add_issue(
                     self._finding(
                         parser,
                         "fortinet.fortios.policy.security_profiles",
-                        "Assessed boundary policy explicitly disables security inspection",
-                        f"Enabled {family} accept policy '{name}' in scope '{scope}' has a proven nonempty permission on an assessed internal-to-external boundary and explicitly disables UTM. {proof.witness}. Actual traffic and runtime inspection are not established.",
+                        "Assessed boundary policy has no security inspection",
+                        f"Enabled {family} accept policy '{name}' in scope '{scope}' has a proven nonempty permission on an assessed internal-to-external boundary and {how}. {proof.witness}. Actual traffic and runtime inspection are not established.",
                         "Uninspected allowed traffic can carry malware, exploits, or prohibited applications.",
                         "Enable the required inspection mode and attach appropriate IPS, antivirus, web, application, DNS, and SSL/SSH profiles.",
                         Severity.HIGH,
-                        self._evidence(fortios, path, f"firewall policy {name}"),
-                        (FORTINET_INSPECTION_GUIDE, FORTINET_HARDENING),
-                        basis=FindingBasis.EXPLICIT_VALUE,
+                        self._evidence(fortios, path, f"firewall policy {name}")
+                        + (("utm-status absent: documented default disable",) if utm_default else ()),
+                        (FORTINET_INSPECTION_GUIDE, FORTINET_HARDENING, FORTINET_POLICY_REFERENCE),
+                        basis=FindingBasis.DOCUMENTED_DEFAULT if utm_default else FindingBasis.EXPLICIT_VALUE,
                     )
                 )
                 continue
@@ -1231,6 +1308,7 @@ class PluginFortiOSBaseline(BasePlugin):
                             Severity.MEDIUM,
                             self._evidence(fortios, path, filter_name),
                             (FORTINET_HARDENING,),
+                            basis=FindingBasis.EXPLICIT_VALUE,
                         )
                     )
 
@@ -1267,6 +1345,7 @@ class PluginFortiOSBaseline(BasePlugin):
                     Severity.MEDIUM,
                     tuple(item for item in sink.evidence),
                     (FORTINET_SYSLOG_TRANSPORT_REFERENCE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             elif sink.transport_state == "explicit-weak-tls":
                 self.add_issue(self._finding(
@@ -1281,6 +1360,7 @@ class PluginFortiOSBaseline(BasePlugin):
                     Severity.MEDIUM,
                     tuple(item for item in sink.evidence),
                     (FORTINET_SYSLOG_TRANSPORT_REFERENCE, NIST_CRYPTO_TRANSITIONS),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
 
     def check_syslog_severity(self, parser: BaseDeviceParser) -> None:
@@ -1355,6 +1435,7 @@ class PluginFortiOSBaseline(BasePlugin):
                         tuple(item for item in inspection.evidence + profile.evidence)
                         + tuple(dict.fromkeys(evidence)),
                         (FORTINET_IPS_REFERENCE, FORTINET_IPS_ORDER_REFERENCE),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     ))
                 if exempted:
                     self.add_issue(self._finding(
@@ -1370,6 +1451,7 @@ class PluginFortiOSBaseline(BasePlugin):
                         tuple(item for item in inspection.evidence + profile.evidence)
                         + tuple(dict.fromkeys(exemption_evidence)),
                         (FORTINET_IPS_REFERENCE, FORTINET_IPS_ORDER_REFERENCE),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     ))
 
     def check_policy_effectiveness(self, parser: BaseDeviceParser) -> None:
@@ -1421,6 +1503,7 @@ class PluginFortiOSBaseline(BasePlugin):
                         Severity.LOW,
                         evidence,
                         references,
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     ))
                 continue
 
@@ -1439,6 +1522,7 @@ class PluginFortiOSBaseline(BasePlugin):
                     Severity.MEDIUM,
                     evidence,
                     references,
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
 
             if (
@@ -1723,6 +1807,7 @@ class PluginFortiOSBaseline(BasePlugin):
                 Severity.MEDIUM,
                 tuple(item for item in backup.evidence),
                 (FORTINET_CONFIGURATION_BACKUP_GUIDE, FORTINET_AUTO_SCRIPT_REFERENCE),
+                basis=FindingBasis.REQUIRED_SETTING_MISSING,
             ))
 
         if (
@@ -1741,6 +1826,7 @@ class PluginFortiOSBaseline(BasePlugin):
                 Severity.MEDIUM,
                 ("assessment policy: on-device configuration backup required",),
                 (FORTINET_CONFIGURATION_BACKUP_GUIDE, FORTINET_AUTO_SCRIPT_REFERENCE),
+                basis=FindingBasis.REQUIRED_SETTING_MISSING,
             ))
 
         for backup in backups:
@@ -1756,6 +1842,7 @@ class PluginFortiOSBaseline(BasePlugin):
                 Severity.HIGH,
                 tuple(item for item in backup.evidence),
                 (FORTINET_CONFIGURATION_BACKUP_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
     def check_updates_and_unused_services(self, parser: BaseDeviceParser) -> None:
@@ -1775,6 +1862,7 @@ class PluginFortiOSBaseline(BasePlugin):
                         Severity.HIGH,
                         self._evidence(fortios, path, "system autoupdate schedule"),
                         (FORTINET_AUTOUPDATE_GUIDE, FORTINET_HARDENING),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
 
@@ -1796,6 +1884,7 @@ class PluginFortiOSBaseline(BasePlugin):
                             Severity.MEDIUM,
                             self._evidence(fortios, path + ("auto-firmware-upgrade",), "set auto-firmware-upgrade disable"),
                             (FORTINET_FIRMWARE_GUIDE, FORTINET_HARDENING),
+                            basis=FindingBasis.EXPLICIT_VALUE,
                         )
                     )
 
@@ -1828,6 +1917,7 @@ class PluginFortiOSBaseline(BasePlugin):
                         Severity.MEDIUM,
                         self._evidence(fortios, path + ("allowaccess",), f"{name}: allowaccess"),
                         (FORTINET_HARDENING,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
             if self._text(settings.get("status")).lower() != "up":
@@ -1853,6 +1943,7 @@ class PluginFortiOSBaseline(BasePlugin):
                         Severity.LOW,
                         self._evidence(fortios, path + ("status",), f"{name}: set status up"),
                         (FORTINET_HARDENING,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
 
@@ -1894,6 +1985,7 @@ class PluginFortiOSBaseline(BasePlugin):
                         Severity.MEDIUM,
                         evidence,
                         (FORTINET_DOS_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE if monitor_only else FindingBasis.REQUIRED_SETTING_MISSING,
                     )
                 )
             unlogged = [anomaly.name for anomaly in active if not anomaly.logging]
@@ -1909,6 +2001,7 @@ class PluginFortiOSBaseline(BasePlugin):
                         Severity.MEDIUM,
                         evidence,
                         (FORTINET_DOS_GUIDE,),
+                        basis=FindingBasis.REQUIRED_SETTING_MISSING,
                     )
                 )
             invalid_thresholds = [anomaly.name for anomaly in active if anomaly.threshold_state == "invalid"]
@@ -1924,6 +2017,7 @@ class PluginFortiOSBaseline(BasePlugin):
                         Severity.HIGH,
                         evidence,
                         (FORTINET_DOS_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
 
@@ -1943,6 +2037,7 @@ class PluginFortiOSBaseline(BasePlugin):
                             Severity.MEDIUM,
                             evidence,
                             (FORTINET_DOS_GUIDE, FORTINET_HARDENING),
+                            basis=FindingBasis.REQUIRED_SETTING_MISSING,
                         )
                     )
 
@@ -1979,6 +2074,7 @@ class PluginFortiOSBaseline(BasePlugin):
                             Severity.HIGH,
                             evidence,
                             (FORTINET_RADSEC_GUIDE,),
+                            basis=FindingBasis.EXPLICIT_VALUE if profile.server_identity_check == "disable" else FindingBasis.REQUIRED_SETTING_MISSING,
                         )
                     )
 
@@ -1995,6 +2091,7 @@ class PluginFortiOSBaseline(BasePlugin):
                             Severity.HIGH,
                             evidence,
                             (FORTINET_RADSEC_GUIDE,),
+                            basis=FindingBasis.EXPLICIT_VALUE,
                         )
                     )
                 continue
@@ -2015,6 +2112,7 @@ class PluginFortiOSBaseline(BasePlugin):
                         Severity.HIGH,
                         evidence,
                         (FORTINET_RADIUS_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
 
@@ -2060,6 +2158,7 @@ class PluginFortiOSBaseline(BasePlugin):
                     Severity.HIGH,
                     evidence,
                     (FORTINET_HARDENING, FORTINET_LOCAL_IN_REFERENCE),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 )
             )
 
@@ -2092,6 +2191,7 @@ class PluginFortiOSBaseline(BasePlugin):
                         Severity.HIGH,
                         evidence,
                         (FORTINET_PHASE1_REFERENCE, FORTINET_PHASE2_REFERENCE),
+                        basis=FindingBasis.REQUIRED_SETTING_MISSING,
                     )
                 )
                 continue
@@ -2133,6 +2233,7 @@ class PluginFortiOSBaseline(BasePlugin):
                         FORTINET_PHASE2_REFERENCE,
                         IETF_IKEV2_ALGORITHM_GUIDANCE,
                     ),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 )
             )
 
@@ -2197,6 +2298,7 @@ class PluginFortiOSBaseline(BasePlugin):
         self.check_cli_audit_log(parser)
         self.check_cis_management_hygiene(parser)
         self.check_cis_security_depth(parser)
+        self.check_dnsfilter_botnet(parser)
         # SC-063: correlate after every finding exists so path steps can link to them.
         produce_attack_paths(self, self._fortios(parser), self._release(self._fortios(parser)),
                              getattr(self, "_deny_shadows", ()))
@@ -2501,6 +2603,11 @@ class PluginFortiOSBaseline(BasePlugin):
             ("4.5.2", "enforce-default-app-port on application profiles", bool(apps) and not any(self._text(e.get("enforce-default-app-port")).lower() == "enable" for e in apps)),
             ("5.1.1", "compromised-host quarantine automation", not any(self._text(e.get("action-type")).lower().startswith("quarantine") for e in actions)),
             ("v1.1 3.3", "unique firewall policy names", len(names) != len(set(names))),
+            ("3.3", "deny policy for Tor exit/relay nodes (ISDB)", bool(names) and not fortios.has_isdb_deny_policy(
+                ("Tor-Exit.Node", "Tor-Relay.Node"))),
+            ("4.3.2", "DNS filter log-all-domain", any(
+                self._text(settings.get("log-all-domain")).lower() != "enable"
+                for _, _, settings, _ in fortios.get_dnsfilter_profiles_in_use())),
         ]
         missing = [f"CIS {ref}: {label}" for ref, label, gap in items if gap]
         if missing and release is not None and release >= (6, 4, 14):
@@ -2512,6 +2619,34 @@ class PluginFortiOSBaseline(BasePlugin):
                 "Review the listed items against the organization's baseline and configure those that apply.",
                 Severity.INFORMATIONAL, (f"{len(missing)} CIS hygiene item(s) absent; see observation",),
                 (FORTINET_HARDENING,), basis=FindingBasis.REQUIRED_SETTING_MISSING,
+            ))
+
+    def check_dnsfilter_botnet(self, parser: BaseDeviceParser) -> None:
+        """CIS FortiGate 4.3.1: DNS filter profiles in use should block botnet C&C lookups.
+
+        7.4.1 CLI reference (config dnsfilter profile): block-botnet default disable.
+        """
+        fortios = self._fortios(parser)
+        for scope, name, settings, path in fortios.get_dnsfilter_profiles_in_use():
+            value = self._text(settings.get("block-botnet")).lower()
+            if value == "enable":
+                continue
+            if not value and not self._supports_default_inference(fortios):
+                continue
+            explicit = value == "disable"
+            self.add_issue(self._finding(
+                parser, "fortinet.fortios.dnsfilter.botnet_blocking_disabled",
+                "DNS filter does not block botnet C&C domains",
+                (f"DNS filter profile '{name}' in scope '{scope}' is attached to an active policy and "
+                 + ("explicitly sets block-botnet disable." if explicit else
+                    "does not set block-botnet, so the documented default 'disable' applies.")),
+                "Infected hosts can resolve command-and-control domains through the inspected traffic.",
+                "Set 'block-botnet enable' in the DNS filter profile.",
+                Severity.MEDIUM,
+                self._evidence(fortios, path + ("block-botnet",), f"dnsfilter profile {name}")
+                + (() if explicit else ("block-botnet absent: documented default disable",)),
+                (FORTINET_DNSFILTER_REFERENCE,),
+                basis=FindingBasis.EXPLICIT_VALUE if explicit else FindingBasis.DOCUMENTED_DEFAULT,
             ))
 
     def check_cis_management_hygiene(self, parser: BaseDeviceParser) -> None:

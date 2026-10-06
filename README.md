@@ -82,8 +82,25 @@ Keep in mind:
 
 - **This is a static review of a saved file, not a live test.** It can't see whether a policy is installed, what certificate is actually served, or whether a backup succeeded.
 - **No findings doesn't mean secure.** Missing data, inherited settings and runtime behavior may be unknown. Check the coverage section.
-- **Missing evidence is not a verdict.** Migrated checks show scoped unknown reasons; some legacy checks remain findings-only. See [export evidence and limitations](docs/EXPORT_EVIDENCE.md). Release-qualified defaults are assessed separately.
+- **"Not configured" is not "misconfigured".** A finding marked *Not configured (setting omitted)* means the export doesn't contain that protection; nothing is set to a wrong value. If the setting is applied elsewhere (Panorama, a template, a section left out of the export), confirm it there. Only a section missing from the export entirely, a malformed value, or a reference to something outside the export is shown as unknown. See [export evidence and limitations](docs/EXPORT_EVIDENCE.md).
 - If a report shows a `parse_error`, the export couldn't be read. PAN-OS and FortiOS templates with unfilled placeholders are marked `unrendered-template`; use a real device export instead.
+
+## Many devices at once
+
+List the exports in a JSON manifest and audit them in one run. Each device gets its own JSON report (add `--html` for HTML too), plus a `batch-index.json` with input hashes, assessment-policy hashes and an analyzer fingerprint. A failing device doesn't stop the others, and existing reports are never overwritten unless you pass `--overwrite`.
+
+```powershell
+python -m src.batch run --manifest batch.json --output-dir reports\2026-10
+python -m src.batch compare --old reports\2026-09\batch-index.json --new reports\2026-10\batch-index.json --output comparison.json
+```
+
+```json
+{"schema-version": 1,
+ "devices": [{"id": "edge-fw-1", "input": "exports/fw1.conf", "device": "auto",
+              "assessment-policy": "policy.json", "export-scope": "full running configuration"}]}
+```
+
+`compare` lists each finding as new, unchanged, resolved, no longer assessable or not comparable. A finding counts as resolved only when the same device was audited successfully with the same analyzer and assessment policy; a missing export, a parse failure, an exclusion or a rule change is never reported as a fix.
 
 ## Known CVEs and end of support (opt-in)
 

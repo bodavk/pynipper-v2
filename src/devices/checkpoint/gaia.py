@@ -206,6 +206,10 @@ class CheckPointGaiaParser(BaseDeviceParser):
         """`set inactivity-timeout <minutes>` (Clish; default 10)."""
         return self._setting("set", "inactivity-timeout")
 
+    def get_web_session_timeout(self) -> Optional[GaiaSetting]:
+        """`set web session-timeout <minutes>` (Gaia Portal; documented default 15)."""
+        return self._setting("set", "web", "session-timeout")
+
     def get_banner(self) -> Optional[GaiaSetting]:
         return self._setting("set", "message", "banner")
 

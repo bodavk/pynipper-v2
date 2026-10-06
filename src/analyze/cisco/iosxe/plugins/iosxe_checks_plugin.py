@@ -1,7 +1,7 @@
 import re
 
 from src.analyze.common.base_plugin import BasePlugin
-from src.analyze.common.issue import Finding, Severity
+from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.devices.common.base_parser import BaseDeviceParser
 
 
@@ -141,6 +141,13 @@ class PluginIOSXEChecks(BasePlugin):
                     recommendation="Attach a valid MKA policy and MACsec key chain, select an approved cipher suite, and activate MACsec.",
                     evidence=(interface.text.strip(), *children),
                     references=(CISCO_IOSXE_MACSEC_GUIDE,),
+                    # An explicitly configured non-approved cipher suite is an explicit
+                    # value; otherwise MACsec components are simply not configured.
+                    basis=(
+                        FindingBasis.EXPLICIT_VALUE
+                        if policy and not cipher_valid
+                        else FindingBasis.REQUIRED_SETTING_MISSING
+                    ),
                 )
             )
 
@@ -178,6 +185,7 @@ class PluginIOSXEChecks(BasePlugin):
         family: str,
         block,
         weaknesses: list[str],
+        basis=None,
     ) -> None:
         self.add_issue(
             Finding(
@@ -191,6 +199,7 @@ class PluginIOSXEChecks(BasePlugin):
                 recommendation="Use AES-GCM or AES-256, SHA-256 or stronger where required, a strong PRF, and DH group 19 or stronger.",
                 evidence=(block.text.strip(), *self._children(block)),
                 references=(CISCO_IOSXE_IPSEC_GUIDE,),
+                basis=basis,
             )
         )
 
@@ -207,12 +216,26 @@ class PluginIOSXEChecks(BasePlugin):
                 continue
             weaknesses = self._ikev2_weaknesses(proposal)
             if weaknesses:
+                children = self._children(proposal)
+                encryption = self._tokens_after(children, "encryption")
+                explicit_weak = bool(
+                    encryption & self._WEAK_ENCRYPTION
+                    or (not any("gcm" in value for value in encryption)
+                        and self._tokens_after(children, "integrity") & self._WEAK_INTEGRITY)
+                    or self._tokens_after(children, "prf") & self._WEAK_INTEGRITY
+                    or self._tokens_after(children, "group") & self._WEAK_DH_GROUPS
+                )
                 self._add_crypto_finding(
                     parser,
                     "cisco.iosxe.crypto.legacy_ikev2",
                     "IKEv2",
                     proposal,
                     weaknesses,
+                    basis=(
+                        FindingBasis.EXPLICIT_VALUE
+                        if explicit_weak
+                        else FindingBasis.REQUIRED_SETTING_MISSING
+                    ),
                 )
 
         for policy in conf_parse.find_objects(r"^crypto (?:isakmp|ikev1) policy\s+"):
@@ -234,6 +257,13 @@ class PluginIOSXEChecks(BasePlugin):
                     "IKEv1",
                     policy,
                     weaknesses,
+                    basis=(
+                        FindingBasis.EXPLICIT_VALUE
+                        if encryption & self._WEAK_ENCRYPTION
+                        or integrity & self._WEAK_INTEGRITY
+                        or groups & self._WEAK_DH_GROUPS
+                        else FindingBasis.MISSING_EXPLICIT_SETTING
+                    ),
                 )
 
         transform_sets = self._named_blocks(conf_parse, "crypto ipsec transform-set")
@@ -257,6 +287,7 @@ class PluginIOSXEChecks(BasePlugin):
                     "IPsec transform-set",
                     transform,
                     [f"weak algorithms: {', '.join(weak)}"],
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 )
 
     def analyze(self, parser: BaseDeviceParser) -> None:

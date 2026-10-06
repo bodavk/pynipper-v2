@@ -1,6 +1,7 @@
 from collections import defaultdict
 
 from src.analyze.common.base_plugin import BasePlugin
+from src.analyze.common.controls import ControlOutcome, record_control
 from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.policy_semantics import ProofState, network_covers, service_covers
@@ -122,6 +123,7 @@ class PluginJunOSChecks(BasePlugin):
                             recommendation="Add explicit source, destination, and protocol matches before accepting traffic.",
                             evidence=tuple(item for item in term.evidence),
                             references=(JUNIPER_FILTER_GUIDE,),
+                            basis=FindingBasis.EXPLICIT_VALUE,
                         )
                     )
                 if catch_all and action in {"accept", "discard", "reject"}:
@@ -138,6 +140,18 @@ class PluginJunOSChecks(BasePlugin):
             keys = sorted({path[2] for path in paths
                            if path[:2] == ("system", "root-authentication") and len(path) > 2
                            and path[2].startswith("ssh-")})
+            control = "juniper.junos.ssh-root-login"
+            if junos.get_services().get("ssh") and keys:
+                record_control(parser, control, ControlOutcome.FINDING,
+                               "Default deny-password still admits root with its configured SSH key.")
+            elif junos.has_unexpanded_inheritance():
+                record_control(parser, control, ControlOutcome.UNKNOWN,
+                               "root-login is absent and apply-groups inheritance is not expanded.")
+            elif not junos.get_services().get("ssh"):
+                record_control(parser, control, ControlOutcome.NOT_APPLICABLE, "SSH service is not configured.")
+            else:
+                record_control(parser, control, ControlOutcome.NO_FINDING,
+                               "Default deny-password applies and root has no SSH key configured.")
             if junos.get_services().get("ssh") and keys:
                 self.add_issue(Finding(
                     rule_id="juniper.junos.ssh.root_login",
@@ -156,7 +170,12 @@ class PluginJunOSChecks(BasePlugin):
                 ))
             return
         if value == "deny":
+            record_control(parser, "juniper.junos.ssh-root-login", ControlOutcome.NO_FINDING,
+                           "root-login deny is configured.")
             return
+        record_control(parser, "juniper.junos.ssh-root-login", ControlOutcome.FINDING,
+                       f"root-login {value} permits direct root access." if value in {"allow", "deny-password"}
+                       else "root-login uses an unrecognized value.")
         detail = (
             "permits root authentication by all configured SSH methods"
             if value == "allow"
@@ -209,6 +228,7 @@ class PluginJunOSChecks(BasePlugin):
                     recommendation="Replace wildcard address and application matches with explicitly required objects and applications, preserving an ordered terminal deny policy.",
                     evidence=tuple(item for item in policy.evidence),
                     references=(JUNIPER_SECURITY_POLICY_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 )
             )
 
@@ -246,6 +266,7 @@ class PluginJunOSChecks(BasePlugin):
                     recommendation="Replace application any with the smallest required custom or predefined applications.",
                     evidence=evidence,
                     references=references,
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
 
             if (
@@ -288,6 +309,7 @@ class PluginJunOSChecks(BasePlugin):
                     recommendation="Remove or reorder the policy after validating address-book, application, logging, tunnel and operational intent.",
                     evidence=evidence + tuple(item for item in earlier.evidence),
                     references=references,
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
                 break
             prior_by_zone_pair[key].append(policy)
@@ -319,6 +341,7 @@ class PluginJunOSChecks(BasePlugin):
                         recommendation="Resolve every VPN, gateway, IKE policy/proposal and IPsec policy/proposal reference, then verify peer identity and selectors.",
                         evidence=evidence,
                         references=(JUNIPER_IPSEC_GUIDE,),
+                        basis=FindingBasis.REQUIRED_SETTING_MISSING,
                     )
                 )
                 continue
@@ -355,6 +378,7 @@ class PluginJunOSChecks(BasePlugin):
                     recommendation="Use AES or an approved AEAD mode, SHA-256 or stronger integrity, and DH group 14 or an approved stronger group on both peers.",
                     evidence=evidence,
                     references=(JUNIPER_IPSEC_GUIDE, IETF_IKEV2_ALGORITHM_GUIDANCE),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 )
             )
 

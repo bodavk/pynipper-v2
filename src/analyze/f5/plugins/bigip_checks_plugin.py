@@ -74,13 +74,13 @@ _ANY_SOURCE = re.compile(r"^(0\.0\.0\.0(%\d+)?/0|::(%\d+)?/0|any)$")
 class PluginF5BIGIPChecks(BasePlugin):
     def _emit(self, parser: F5BIGIPParser, setting: F5Setting, *, rule_id: str,
               title: str, observation: str, impact: str, recommendation: str,
-              severity: Severity, reference: str) -> None:
+              severity: Severity, reference: str, basis: FindingBasis | None = None) -> None:
         self.add_issue(Finding(
             rule_id=rule_id, device=parser.device_type, title=title,
             observation=observation, impact=impact,
             exploitability="An attacker who can reach the management service or obtain administrative access may exploit this setting.",
             recommendation=recommendation, severity=severity,
-            evidence=(setting.evidence,), references=(reference,),
+            evidence=(setting.evidence,), references=(reference,), basis=basis,
         ))
 
     def analyze(self, parser: BaseDeviceParser) -> None:
@@ -96,7 +96,8 @@ class PluginF5BIGIPChecks(BasePlugin):
                        observation="The explicitly enabled SSH service has an unrestricted source allow setting.",
                        impact="More hosts can attempt administrative SSH authentication.",
                        recommendation="Restrict SSH to authorized management addresses.",
-                       severity=Severity.HIGH, reference=SSHD)
+                       severity=Severity.HIGH, reference=SSHD,
+                       basis=FindingBasis.EXPLICIT_VALUE)
         ssh_timeout = setting("sys sshd", "inactivity-timeout")
         if ssh_active and ssh_timeout and ssh_timeout.value == 0:
             self._emit(parser, ssh_timeout, rule_id="f5.bigip.ssh.idle_timeout_disabled",
@@ -104,7 +105,8 @@ class PluginF5BIGIPChecks(BasePlugin):
                        observation="The enabled SSH service has an explicit inactivity timeout of zero seconds.",
                        impact="An unattended administrative session can remain open.",
                        recommendation="Set a finite SSH inactivity timeout appropriate for the management policy.",
-                       severity=Severity.MEDIUM, reference=SSHD)
+                       severity=Severity.MEDIUM, reference=SSHD,
+                       basis=FindingBasis.EXPLICIT_VALUE)
         http_allow = setting("sys httpd", "allow")
         if http_allow and http_allow.value == "unrestricted":
             self._emit(parser, http_allow, rule_id="f5.bigip.http.unrestricted_sources",
@@ -112,7 +114,8 @@ class PluginF5BIGIPChecks(BasePlugin):
                        observation="The HTTP configuration utility allow setting explicitly permits all source addresses.",
                        impact="More hosts can attempt access to the management interface when it is running.",
                        recommendation="Restrict the configuration utility to authorized management addresses.",
-                       severity=Severity.HIGH, reference=HTTPD)
+                       severity=Severity.HIGH, reference=HTTPD,
+                       basis=FindingBasis.EXPLICIT_VALUE)
         redirect = setting("sys httpd", "redirect-http-to-https")
         if redirect and redirect.value == "disabled" and not (http_allow and http_allow.value == "none"):
             self._emit(parser, redirect, rule_id="f5.bigip.http.redirect_disabled",
@@ -120,7 +123,8 @@ class PluginF5BIGIPChecks(BasePlugin):
                        observation="The configuration utility explicitly does not redirect HTTP requests to HTTPS.",
                        impact="HTTP requests to the configuration utility are not automatically upgraded to HTTPS where its HTTP path is reachable.",
                        recommendation="Enable HTTP-to-HTTPS redirection and restrict management access.",
-                       severity=Severity.MEDIUM, reference=HTTPD)
+                       severity=Severity.MEDIUM, reference=HTTPD,
+                       basis=FindingBasis.EXPLICIT_VALUE)
         if not (http_allow and http_allow.value == "none"):
             self._check_management_tls(parser)
         self._check_snmp(parser)
@@ -139,7 +143,8 @@ class PluginF5BIGIPChecks(BasePlugin):
                        observation="The explicit console inactivity timeout is zero seconds.",
                        impact="An unattended console session can remain open.",
                        recommendation="Set a finite console inactivity timeout.",
-                       severity=Severity.MEDIUM, reference=CONSOLE)
+                       severity=Severity.MEDIUM, reference=CONSOLE,
+                       basis=FindingBasis.EXPLICIT_VALUE)
         cli_timeout = setting("cli global-settings", "idle-timeout")
         if cli_timeout and cli_timeout.value == "disabled":
             self._emit(parser, cli_timeout, rule_id="f5.bigip.cli.idle_timeout_disabled",
@@ -147,7 +152,8 @@ class PluginF5BIGIPChecks(BasePlugin):
                        observation="The tmsh interactive session has an explicitly disabled idle timeout.",
                        impact="An unattended administrative shell can remain available.",
                        recommendation="Set a finite tmsh idle timeout.",
-                       severity=Severity.MEDIUM, reference=CLI)
+                       severity=Severity.MEDIUM, reference=CLI,
+                       basis=FindingBasis.EXPLICIT_VALUE)
         audit = setting("cli global-settings", "audit")
         if audit and audit.value == "disabled":
             self._emit(parser, audit, rule_id="f5.bigip.cli.audit_disabled",
@@ -155,7 +161,8 @@ class PluginF5BIGIPChecks(BasePlugin):
                        observation="The CLI audit setting is explicitly disabled.",
                        impact="Administrative command activity may be missing from the audit log.",
                        recommendation="Enable tmsh command auditing and forward relevant logs.",
-                       severity=Severity.HIGH, reference=CLI)
+                       severity=Severity.HIGH, reference=CLI,
+                       basis=FindingBasis.EXPLICIT_VALUE)
         password = setting("auth password-policy", "policy-enforcement")
         if password and password.value == "disabled":
             self._emit(parser, password, rule_id="f5.bigip.password_policy.enforcement_disabled",
@@ -163,7 +170,8 @@ class PluginF5BIGIPChecks(BasePlugin):
                        observation="The exported password policy explicitly disables enforcement.",
                        impact="Locally managed passwords need not satisfy the configured policy constraints.",
                        recommendation="Enable password policy enforcement and set organization-approved constraints.",
-                       severity=Severity.HIGH, reference=PASSWORD)
+                       severity=Severity.HIGH, reference=PASSWORD,
+                       basis=FindingBasis.EXPLICIT_VALUE)
         failures = setting("auth password-policy", "max-login-failures")
         if failures and failures.value == 0:
             self._emit(parser, failures, rule_id="f5.bigip.password_policy.login_lockout_disabled",
@@ -171,7 +179,8 @@ class PluginF5BIGIPChecks(BasePlugin):
                        observation="The explicit maximum-login-failures value is zero, disabling local user lockout.",
                        impact="Repeated local password guesses are not stopped by this account-lockout setting.",
                        recommendation="Set a finite maximum-login-failures value under the approved administrative policy.",
-                       severity=Severity.MEDIUM, reference=PASSWORD)
+                       severity=Severity.MEDIUM, reference=PASSWORD,
+                       basis=FindingBasis.EXPLICIT_VALUE)
         minimum = setting("auth password-policy", "minimum-length")
         if password and password.value == "enabled" and minimum and minimum.value == 0:
             self._emit(parser, minimum, rule_id="f5.bigip.password_policy.minimum_length_disabled",
@@ -179,7 +188,8 @@ class PluginF5BIGIPChecks(BasePlugin):
                        observation="Password-policy enforcement is enabled but its explicit minimum-length value is zero.",
                        impact="The configured local password policy does not require any minimum password length.",
                        recommendation="Set a positive minimum length appropriate to the approved password policy.",
-                       severity=Severity.MEDIUM, reference=PASSWORD)
+                       severity=Severity.MEDIUM, reference=PASSWORD,
+                       basis=FindingBasis.EXPLICIT_VALUE)
         for credential in parser.get_local_user_credentials():
             if credential.known_default:
                 self.add_issue(Finding(
@@ -209,6 +219,7 @@ class PluginF5BIGIPChecks(BasePlugin):
                 severity=Severity.HIGH,
                 evidence=(credential.evidence,),
                 references=(USER,),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
         active_auth = setting("auth source", "type")
         if active_auth and active_auth.value in {"radius", "ldap", "tacacs", "cert-ldap"}:
@@ -233,6 +244,7 @@ class PluginF5BIGIPChecks(BasePlugin):
                         profile.evidence for profile in profiles
                     ),
                     references=(AUTH_SOURCE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
             if (active_auth.value in {"ldap", "cert-ldap"} and profiles
                     and all(profile.servers_state == "configured"
@@ -256,6 +268,7 @@ class PluginF5BIGIPChecks(BasePlugin):
                         profile.evidence for profile in profiles
                     ),
                     references=(AUTH_SOURCE, AUTH_CERT_LDAP if active_auth.value == "cert-ldap" else AUTH_LDAP),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             if (active_auth.value in {"ldap", "cert-ldap"} and profiles
                     and all(profile.servers_state == "configured"
@@ -282,6 +295,7 @@ class PluginF5BIGIPChecks(BasePlugin):
                         profile.evidence for profile in profiles
                     ),
                     references=(AUTH_SOURCE, AUTH_CERT_LDAP if active_auth.value == "cert-ldap" else AUTH_LDAP),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
         remote = setting("sys syslog", "remote-servers")
         if remote and remote.value == "none":
@@ -290,7 +304,8 @@ class PluginF5BIGIPChecks(BasePlugin):
                        observation="The system syslog remote-servers setting is explicitly none; other logging paths are not assessed by this check.",
                        impact="Standard system logs may lack an external copy if no other forwarding path is configured.",
                        recommendation="Configure an appropriate remote syslog destination and verify delivery.",
-                       severity=Severity.MEDIUM, reference=SYSLOG)
+                       severity=Severity.MEDIUM, reference=SYSLOG,
+                       basis=FindingBasis.REQUIRED_SETTING_MISSING)
         for virtual, profile in parser.get_bound_cleartext_client_ssl():
             self.add_issue(Finding(
                 rule_id="f5.bigip.ltm.clientssl_cleartext_enabled",
@@ -304,6 +319,7 @@ class PluginF5BIGIPChecks(BasePlugin):
                 severity=Severity.HIGH,
                 evidence=(virtual.evidence, profile.evidence),
                 references=(VIRTUAL, CLIENT_SSL),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
     def _default(self, parser: F5BIGIPParser, rule_id: str, title: str, observation: str, impact: str,
@@ -477,6 +493,7 @@ class PluginF5BIGIPChecks(BasePlugin):
                 severity=Severity.HIGH,
                 evidence=(protocol.evidence,),
                 references=(HTTPD, HTTPD_TLS_DEFAULT, RFC_8996),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
         suites = parser.get_setting("sys httpd", "ssl-ciphersuite")
         weak = weak_literal_cipher_suites(str(suites.value)) if suites and suites.value else None
@@ -495,6 +512,7 @@ class PluginF5BIGIPChecks(BasePlugin):
                 severity=Severity.MEDIUM,
                 evidence=(suites.evidence,),
                 references=(HTTPD, NIST_TLS),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
     def _check_snmp(self, parser: F5BIGIPParser) -> None:
@@ -515,6 +533,7 @@ class PluginF5BIGIPChecks(BasePlugin):
                 severity=Severity.HIGH,
                 evidence=(agent.evidence,) + tuple(item.evidence for item in communities),
                 references=(SNMP,),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
         for community in communities:
             if community.default_name:
@@ -577,6 +596,7 @@ class PluginF5BIGIPChecks(BasePlugin):
                     severity=Severity.MEDIUM,
                     evidence=(agent.evidence, user.evidence),
                     references=(SNMP, RFC_3414),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             elif user.auth_protocol == "md5" or user.privacy_protocol == "des":
                 self.add_issue(Finding(

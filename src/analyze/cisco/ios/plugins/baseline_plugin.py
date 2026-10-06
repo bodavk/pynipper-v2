@@ -292,6 +292,7 @@ class PluginIOSBaseline(BasePlugin):
                     "Enable AAA new-model and define a tested local fallback before applying it to management lines.",
                     Severity.HIGH,
                     ("aaa new-model not present or negated",),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
             return
@@ -306,6 +307,7 @@ class PluginIOSBaseline(BasePlugin):
                     "Configure an 'aaa authentication login' method list with an appropriate local fallback.",
                     Severity.HIGH,
                     ("aaa new-model",),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
         if not any(re.fullmatch(r"aaa accounting (?:exec|commands)\s+.+", line) for line in lines):
@@ -319,6 +321,7 @@ class PluginIOSBaseline(BasePlugin):
                     "Configure start-stop EXEC and command accounting to a resilient AAA service.",
                     Severity.MEDIUM,
                     ("aaa new-model",),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
 
@@ -379,6 +382,7 @@ class PluginIOSBaseline(BasePlugin):
                     "Configure a finite 'exec-timeout' of ten minutes or less.",
                     Severity.MEDIUM,
                     evidence,
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             elif total_seconds > 600:
                 self.add_issue(self._finding(
@@ -390,17 +394,24 @@ class PluginIOSBaseline(BasePlugin):
                     "Set 'exec-timeout' to ten minutes or less after validating the operational requirement.",
                     Severity.MEDIUM,
                     evidence,
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
 
         # SC-044 IOS-03: Terminal Services CR, 'transport input all' was the default
         # before 15.4(3)M4, so trains up to 15.3 accept Telnet when the line is absent.
         train = ios.get_train()
         legacy_vty_default = bool(train and train < (15, 4) and not ios.is_iosxe())
-        for line in ios.get_management_lines("vty"):
+        vty_lines = ios.get_management_lines("vty")
+        if not vty_lines:
+            record_control(parser, "cisco.ios.vty-transport", CO.UNKNOWN,
+                           "No VTY line configuration was supplied; inbound transport cannot be judged.")
+        for line in vty_lines:
             evidence = tuple(item for item in line.evidence)
             if line.transports is None or any(
                 token in line.transports for token in ("telnet", "all")
             ):
+                record_control(parser, "cisco.ios.vty-transport", CO.FINDING,
+                               "VTY line does not restrict inbound transport to SSH.", instance=line.line)
                 self.add_issue(
                     self._finding(
                         parser,
@@ -427,6 +438,9 @@ class PluginIOSBaseline(BasePlugin):
                         ),
                     )
                 )
+            else:
+                record_control(parser, "cisco.ios.vty-transport", CO.NO_FINDING,
+                               "VTY line restricts inbound transport to encrypted protocols.", instance=line.line)
             if line.output_transports and any(
                 item in {"telnet", "rlogin", "all"} for item in line.output_transports
             ):
@@ -459,6 +473,7 @@ class PluginIOSBaseline(BasePlugin):
                         "Bind the console to a tested AAA login method with an appropriate local recovery path.",
                         Severity.HIGH,
                         evidence or (console.line,),
+                        basis=FindingBasis.REQUIRED_SETTING_MISSING,
                     )
                 )
 
@@ -481,6 +496,7 @@ class PluginIOSBaseline(BasePlugin):
                     "Disable the AUX line using the complete Cisco hardening sequence unless it has an approved operational use.",
                     Severity.HIGH,
                     evidence or (auxiliary.line,),
+                    basis=FindingBasis.MISSING_EXPLICIT_SETTING,
                 )
             )
             if auxiliary.exec_enabled is not False and not authentication_resolves(auxiliary):
@@ -494,6 +510,7 @@ class PluginIOSBaseline(BasePlugin):
                         "Disable the line or bind it to a tested AAA login method.",
                         Severity.HIGH,
                         evidence or (auxiliary.line,),
+                        basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
 
@@ -561,6 +578,7 @@ class PluginIOSBaseline(BasePlugin):
                     "The line may use an unintended password-only or default authentication path.",
                     "Bind each VTY range to a named AAA login method or explicit local authentication.",
                     Severity.HIGH, evidence or (line.line,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
 
             if not aaa_enabled:
@@ -582,6 +600,7 @@ class PluginIOSBaseline(BasePlugin):
                     "Authenticated administrators may receive unintended EXEC access or execute commands without centralized authorization.",
                     "Define and bind resolved AAA EXEC and privilege-15 command authorization method lists.",
                     Severity.HIGH, evidence or (line.line,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
 
             bypass = [
@@ -600,6 +619,7 @@ class PluginIOSBaseline(BasePlugin):
                     Severity.HIGH,
                     evidence + tuple(item.evidence for item in (exec_method, command_method) if item is not None),
                     (CISCO_IOS_AUTHORIZATION_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
 
             selected_accounting = []
@@ -633,6 +653,7 @@ class PluginIOSBaseline(BasePlugin):
                     Severity.MEDIUM,
                     evidence + tuple(item.evidence for item in selected_accounting),
                     (CISCO_IOS_ACCOUNTING_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
             if disabled_accounting:
                 self.add_issue(self._finding(
@@ -644,6 +665,7 @@ class PluginIOSBaseline(BasePlugin):
                     Severity.MEDIUM,
                     evidence + tuple(item.evidence for item in disabled_accounting),
                     (CISCO_IOS_ACCOUNTING_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
 
             bound_lists = tuple(
@@ -666,6 +688,7 @@ class PluginIOSBaseline(BasePlugin):
                     evidence + tuple(record.evidence for name in unusable
                                      for record in groups.get(name, ())),
                     (CISCO_IOS_AAA_GROUP_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
 
     def check_ssh_policy(self, parser: BaseDeviceParser) -> None:
@@ -699,6 +722,7 @@ class PluginIOSBaseline(BasePlugin):
                     Severity.HIGH,
                     tuple(evidence),
                     (CISCO_IOS_SSH_ALGORITHM_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 )
             )
         # SC-044 IOS-17: Catalyst 9200 17.12 SSH guide, 'Starting from Cisco IOS XE
@@ -740,6 +764,7 @@ class PluginIOSBaseline(BasePlugin):
                     Severity.HIGH,
                     (key.raw_line,),
                     (CISCO_IOS_SSH_ALGORITHM_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 )
             )
 
@@ -779,6 +804,7 @@ class PluginIOSBaseline(BasePlugin):
                     Severity.LOW if same_action else Severity.HIGH,
                     tuple(item for item in rule.evidence + earlier.evidence),
                     (CISCO_IOS_HARDENING_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
                 break
             earlier_rules.append(rule)
@@ -797,6 +823,7 @@ class PluginIOSBaseline(BasePlugin):
                     "Replace it with a unique strong value and prefer centralized AAA.",
                     Severity.HIGH,
                     tuple(item for item in credential.evidence),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             if not result.unsafe_storage:
                 continue
@@ -817,6 +844,7 @@ class PluginIOSBaseline(BasePlugin):
                         "Use a supported strong secret algorithm and migrate administrative authentication to AAA.",
                         Severity.HIGH,
                         tuple(item for item in credential.evidence),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
             elif credential.context == "enable":
@@ -835,6 +863,7 @@ class PluginIOSBaseline(BasePlugin):
                         "Replace it with a strong 'enable secret' algorithm and remove the enable password.",
                         Severity.HIGH,
                         tuple(item for item in credential.evidence),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
             elif credential.context in {"radius_key", "line_password", *_TYPE6_KEY_CONTEXTS}:
@@ -856,11 +885,18 @@ class PluginIOSBaseline(BasePlugin):
                         if credential.context in _TYPE6_KEY_CONTEXTS
                         else (CISCO_IOS_HARDENING_GUIDE,)
                     ),
-                    basis=FindingBasis.EXPLICIT_VALUE if credential.context in _TYPE6_KEY_CONTEXTS else None,
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
 
     def check_snmp(self, parser: BaseDeviceParser) -> None:
-        for community, access, evidence in self._ios(parser).get_snmp_community_metadata():
+        communities = self._ios(parser).get_snmp_community_metadata()
+        if communities:
+            record_control(parser, "cisco.ios.snmp-community", CO.FINDING,
+                           f"{len(communities)} SNMPv1/v2c community(ies) configured.")
+        else:
+            record_control(parser, "cisco.ios.snmp-community", CO.NO_FINDING,
+                           "No effective SNMPv1/v2c community is configured.")
+        for community, access, evidence in communities:
             problems = ["community-based SNMP"]
             if community.casefold() in {"public", "private"}:
                 problems.append("an exact default community")
@@ -887,6 +923,7 @@ class PluginIOSBaseline(BasePlugin):
                     "Migrate to SNMPv3 authPriv, restrict managers, and remove v1/v2c communities.",
                     Severity.HIGH if access == "rw" else Severity.MEDIUM,
                     (evidence,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 )
             )
 
@@ -912,6 +949,7 @@ class PluginIOSBaseline(BasePlugin):
                         Severity.MEDIUM,
                         evidence,
                         (CISCO_IOS_SNMPV3_GUIDE,),
+                        basis=FindingBasis.REQUIRED_SETTING_MISSING,
                     )
                 )
                 continue
@@ -988,6 +1026,7 @@ class PluginIOSBaseline(BasePlugin):
                         Severity.HIGH if group and group.write_view else Severity.MEDIUM,
                         evidence,
                         (CISCO_IOS_SNMPV3_GUIDE,),
+                        basis=FindingBasis.EXPLICIT_VALUE if group and group.write_view else FindingBasis.REQUIRED_SETTING_MISSING,
                     )
                 )
 
@@ -1001,6 +1040,8 @@ class PluginIOSBaseline(BasePlugin):
             or re.fullmatch(r"logging\s+\d+(?:\.\d+){3}", line)
         ]
         if not hosts:
+            record_control(parser, "cisco.ios.remote-logging", CO.FINDING,
+                           "No active remote syslog destination is configured.")
             self.add_issue(
                 self._finding(
                     parser,
@@ -1015,6 +1056,8 @@ class PluginIOSBaseline(BasePlugin):
                 )
             )
             return
+        record_control(parser, "cisco.ios.remote-logging", CO.NO_FINDING,
+                       f"{len(hosts)} remote syslog destination(s) configured.")
         # SC-032: ESM command reference, 'transport (Optional) Method of transport to be
         # used. UDP is the default.' Only BEEP with TLS (or 'transport tls') protects it.
         cleartext = [line for line in hosts if not re.search(r"\btransport\s+(?:beep\b.*\btls\b|tls\b)", line)]
@@ -1053,6 +1096,7 @@ class PluginIOSBaseline(BasePlugin):
                     "Configure 'logging trap informational' unless policy explicitly requires a different threshold.",
                     Severity.LOW,
                     tuple(hosts) + ((trap,) if trap else ()),
+                    basis=FindingBasis.EXPLICIT_VALUE if trap else FindingBasis.MISSING_EXPLICIT_SETTING,
                 )
             )
 
@@ -1070,6 +1114,7 @@ class PluginIOSBaseline(BasePlugin):
                 Severity.MEDIUM,
                 evidence or ("archive log config logging enable absent",),
                 (CISCO_IOS_CHANGE_LOG_GUIDE,),
+                basis=FindingBasis.REQUIRED_SETTING_MISSING,
             ))
         else:
             if not state.hide_keys:
@@ -1083,6 +1128,7 @@ class PluginIOSBaseline(BasePlugin):
                     Severity.HIGH,
                     evidence,
                     (CISCO_IOS_CHANGE_LOG_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
             if not state.notify_syslog:
                 self.add_issue(self._finding(
@@ -1095,6 +1141,7 @@ class PluginIOSBaseline(BasePlugin):
                     Severity.MEDIUM,
                     evidence,
                     (CISCO_IOS_CHANGE_LOG_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
 
         archive_complete = bool(state.destination) and state.schedule_state == "effective"
@@ -1114,6 +1161,7 @@ class PluginIOSBaseline(BasePlugin):
                 Severity.MEDIUM,
                 evidence,
                 (CISCO_IOS_ARCHIVE_GUIDE,),
+                basis=FindingBasis.REQUIRED_SETTING_MISSING,
             ))
         elif (
             parser.assessment_context.configuration_backup_scope == "on-device-required"
@@ -1129,6 +1177,7 @@ class PluginIOSBaseline(BasePlugin):
                 Severity.MEDIUM,
                 evidence or ("assessment policy: on-device configuration backup required",),
                 (CISCO_IOS_ARCHIVE_GUIDE,),
+                basis=FindingBasis.REQUIRED_SETTING_MISSING,
             ))
         if state.destination and state.transport_security == "insecure":
             self.add_issue(self._finding(
@@ -1141,6 +1190,7 @@ class PluginIOSBaseline(BasePlugin):
                 Severity.HIGH,
                 evidence,
                 (CISCO_IOS_ARCHIVE_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
     def check_ntp(self, parser: BaseDeviceParser) -> None:
@@ -1159,10 +1209,17 @@ class PluginIOSBaseline(BasePlugin):
                     basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
+            record_control(parser, "cisco.ios.ntp-authentication", CO.NOT_APPLICABLE,
+                           "No NTP server or peer is configured.")
             return
         for association in associations:
+            ntp_instance = f"{association.role} {association.address} vrf {association.vrf}"
             if association.authentication_state == "authenticated":
+                record_control(parser, "cisco.ios.ntp-authentication", CO.NO_FINDING,
+                               "NTP association is bound to a trusted authentication key.", instance=ntp_instance)
                 continue
+            record_control(parser, "cisco.ios.ntp-authentication", CO.FINDING,
+                           "NTP association lacks an effective trusted key binding.", instance=ntp_instance)
             detail = (
                 "has no effective authenticated key binding"
                 if association.authentication_state == "unauthenticated"
@@ -1178,6 +1235,7 @@ class PluginIOSBaseline(BasePlugin):
                     "Enable NTP authentication and configure, trust, and bind a key for this association.",
                     Severity.MEDIUM,
                     tuple(item for item in association.evidence),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
 
@@ -1213,6 +1271,7 @@ class PluginIOSBaseline(BasePlugin):
                     "Disable every service that is not operationally required using its 'no' form.",
                     Severity.MEDIUM,
                     tuple(evidence for _, evidence in services),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 )
             )
         defaults = ios.get_legacy_default_services()
@@ -1570,6 +1629,7 @@ class PluginIOSBaseline(BasePlugin):
                 "Clients validating the management endpoint may reject an expired or not-yet-valid certificate.",
                 "Renew or replace the selected HTTPS identity certificate.",
                 Severity.HIGH, evidence, (CISCO_IOS_HTTPS_TRUSTPOINT_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
         if result.identity_state == "mismatch":
             self.add_issue(self._finding(
@@ -1579,6 +1639,7 @@ class PluginIOSBaseline(BasePlugin):
                 "Clients validating the intended hostname or address will reject this endpoint identity.",
                 "Select a certificate with the approved management DNS name or IP address in subjectAltName.",
                 Severity.HIGH, evidence, (CISCO_IOS_HTTPS_TRUSTPOINT_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
         if result.algorithm_state == "weak":
             self.add_issue(self._finding(
@@ -1588,6 +1649,7 @@ class PluginIOSBaseline(BasePlugin):
                 "Legacy public-key sizes or signatures reduce certificate assurance.",
                 "Replace the selected certificate with an approved key and signature algorithm supported by this release.",
                 Severity.HIGH, evidence, (CISCO_IOS_HTTPS_TRUSTPOINT_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
         if (result.trust_state == "verification-failed"
                 and result.identity_state == "match"
@@ -1599,6 +1661,7 @@ class PluginIOSBaseline(BasePlugin):
                 "The supplied chain does not establish trust under the selected assessment policy.",
                 "Install the intended issuing chain and independently approve its root fingerprint.",
                 Severity.HIGH, evidence, (CISCO_IOS_HTTPS_TRUSTPOINT_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
     def check_boot_config_retrieval(self, parser: BaseDeviceParser) -> None:
@@ -1618,6 +1681,7 @@ class PluginIOSBaseline(BasePlugin):
                 tuple(item for item in retrieval.evidence)
                 + ("assessment policy: device lifecycle commissioned",),
                 (CISCO_IOS_BOOT_CONFIG_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
         for retrieval in self._ios(parser).get_cns_config_retrievals():
             if retrieval.protocol != "http":
@@ -1633,6 +1697,7 @@ class PluginIOSBaseline(BasePlugin):
                 tuple(item for item in retrieval.evidence)
                 + ("assessment policy: device lifecycle commissioned",),
                 (CISCO_IOS_CNS_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
     def check_interface_protections(self, parser: BaseDeviceParser) -> None:
@@ -1702,6 +1767,7 @@ class PluginIOSBaseline(BasePlugin):
                     Severity.MEDIUM,
                     ("No control-plane service-policy input",),
                     (CISCO_IOS_COPP_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
             return
@@ -1725,6 +1791,7 @@ class PluginIOSBaseline(BasePlugin):
                     Severity.HIGH,
                     evidence,
                     (CISCO_IOS_COPP_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
                 continue
             if policy.protection_state == "empty-policy":
@@ -1738,6 +1805,7 @@ class PluginIOSBaseline(BasePlugin):
                     Severity.HIGH,
                     evidence,
                     (CISCO_IOS_COPP_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
                 continue
 
@@ -1754,6 +1822,7 @@ class PluginIOSBaseline(BasePlugin):
                     Severity.HIGH,
                     tuple(item for item in policy_class.evidence) or evidence,
                     (CISCO_IOS_COPP_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
 
             resolved_classes = [
@@ -1771,6 +1840,7 @@ class PluginIOSBaseline(BasePlugin):
                     Severity.HIGH,
                     evidence,
                     (CISCO_IOS_COPP_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
 
     def check_tacacs_keys(self, parser: BaseDeviceParser) -> None:
@@ -2055,6 +2125,7 @@ class PluginIOSBaseline(BasePlugin):
                         "Use AES-256 or AES-GCM, SHA-256 or stronger, and an approved modern DH group.",
                         Severity.HIGH,
                         (policy.text.strip(), *weak),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
         for transform in native.find_objects(r"^crypto ipsec transform-set\s+"):
@@ -2070,6 +2141,7 @@ class PluginIOSBaseline(BasePlugin):
                         "Replace the transform-set with AES and SHA-256 or an authenticated-encryption suite.",
                         Severity.HIGH,
                         (transform.text.strip(),),
+                        basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
 
@@ -2261,6 +2333,7 @@ class PluginIOSBaseline(BasePlugin):
                 evidence + tuple(item for item in lifetime[1])
                 + (f"assessment policy time: {parser.assessment_context.assessment_time}",),
                 (CISCO_IOS_KEY_LIFETIME_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
         for peer in ios.get_bgp_neighbors():
             if not peer.active or peer.inheritance_unknown:
@@ -2279,6 +2352,7 @@ class PluginIOSBaseline(BasePlugin):
                     Severity.HIGH,
                     evidence,
                     (CISCO_IOS_ROUTING_HARDENING_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
             if peer.peer_role != "external":
                 continue
@@ -2317,6 +2391,7 @@ class PluginIOSBaseline(BasePlugin):
                                 Severity.MEDIUM,
                                 evidence,
                                 (reference,),
+                                basis=FindingBasis.REQUIRED_SETTING_MISSING,
                             ))
                         elif effect[0] == "permit-all" and len(bindings) == 1:
                             self.add_issue(self._finding(
@@ -2333,6 +2408,7 @@ class PluginIOSBaseline(BasePlugin):
                                 Severity.HIGH,
                                 evidence + tuple(item for item in effect[1]),
                                 (reference,),
+                                basis=FindingBasis.EXPLICIT_VALUE,
                             ))
             for direction, present in (("inbound", peer.inbound_policy), ("outbound", peer.outbound_policy)):
                 if present:
@@ -2347,6 +2423,7 @@ class PluginIOSBaseline(BasePlugin):
                     Severity.HIGH,
                     evidence,
                     (CISCO_IOS_ROUTING_HARDENING_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
             if not peer.prefix_limit:
                 self.add_issue(self._finding(
@@ -2359,6 +2436,7 @@ class PluginIOSBaseline(BasePlugin):
                     Severity.MEDIUM,
                     evidence,
                     (CISCO_IOS_ROUTING_HARDENING_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
 
         for interface in ios.get_ospf_interfaces():
@@ -2386,6 +2464,7 @@ class PluginIOSBaseline(BasePlugin):
                 "An unprotected routing adjacency can accept forged protocol packets from a reachable attacker.",
                 recommendation, Severity.HIGH if interface.authentication_state != "weak" else Severity.MEDIUM,
                 evidence, (CISCO_IOS_OSPF_AUTH_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE if interface.authentication_state == "weak" else FindingBasis.REQUIRED_SETTING_MISSING,
             ))
 
         for interface in ios.get_rip_interfaces():
@@ -2447,7 +2526,8 @@ class PluginIOSBaseline(BasePlugin):
                 recommendation, severity,
                 tuple(item for item in interface.evidence),
                 (CISCO_IOS_RIP_GUIDE,),
-                basis=FindingBasis.EXPLICIT_VALUE if state == "version1-accepted" else None,
+                basis=(FindingBasis.REQUIRED_SETTING_MISSING if state in {"unauthenticated", "unresolved"}
+                       else FindingBasis.EXPLICIT_VALUE),
             ))
 
         for admission in ios.get_isis_authentication():
@@ -2536,6 +2616,7 @@ class PluginIOSBaseline(BasePlugin):
                 recommendation, severity,
                 tuple(item for item in interface.evidence),
                 (CISCO_IOS_EIGRP_GUIDE,),
+                basis=FindingBasis.REQUIRED_SETTING_MISSING,
             ))
 
     def check_discovery(self, parser: BaseDeviceParser) -> None:
@@ -2565,6 +2646,16 @@ class PluginIOSBaseline(BasePlugin):
                 Severity.MEDIUM,
                 evidence,
                 (CISCO_IOS_DISCOVERY_GUIDE,),
+                # CDP is on unless disabled; without an explicit 'cdp run'/'cdp enable'
+                # the release default was not assessed. LLDP needs an explicit 'lldp run'.
+                basis=(
+                    FindingBasis.EXPLICIT_VALUE
+                    if interface.protocol == "lldp" or any(
+                        getattr(item, "text", item).strip() in {"cdp run", "cdp enable"}
+                        for item in interface.evidence
+                    )
+                    else FindingBasis.MISSING_EXPLICIT_SETTING
+                ),
             ))
 
     def check_switch_edge(self, parser: BaseDeviceParser) -> None:
@@ -2585,6 +2676,7 @@ class PluginIOSBaseline(BasePlugin):
                     "An unintended trunk can expose multiple VLANs to an endpoint and enable VLAN-hopping or segmentation bypass.",
                     "Configure a static access VLAN, or reclassify the interface as an approved uplink with documented trunk scope.",
                     Severity.HIGH, evidence, (CISCO_IOS_ROUTING_HARDENING_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
                 continue
             if interface.mode not in {"access", "switchport"}:
@@ -2603,6 +2695,7 @@ class PluginIOSBaseline(BasePlugin):
                     "Trust bypasses validation intended to block rogue DHCP or forged ARP messages from endpoint-facing ports.",
                     "Remove trust from this access edge; reserve trust for explicitly classified DHCP-server or uplink ports.",
                     Severity.HIGH, evidence, (CISCO_IOS_ROUTING_HARDENING_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             mechanisms = (
                 ("dhcp_snooping", interface.dhcp_snooping, "DHCP snooping for its access VLAN", interface.access_vlan is not None),
@@ -2621,6 +2714,7 @@ class PluginIOSBaseline(BasePlugin):
                     "A connected endpoint may spoof addressing or identities, introduce a rogue service, or exceed the intended endpoint count.",
                     f"Enable and validate {label} for this access edge where supported by the exact switch model and attachment design.",
                     Severity.MEDIUM, evidence, (CISCO_IOS_ROUTING_HARDENING_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
 
     def check_ipv6_first_hop(self, parser: BaseDeviceParser) -> None:
@@ -2687,6 +2781,7 @@ class PluginIOSBaseline(BasePlugin):
                     "An endpoint can obtain link access without the intended port-based authentication; other independent restrictions are not assessed by this finding.",
                     "Use an enforced port-control mode for this assessed access edge, or explicitly document and restrict an approved exception.",
                     Severity.HIGH, evidence, (CISCO_IOS_DOT1X_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             elif port.port_control == "auto" and port.global_dot1x is False:
                 self.add_issue(self._finding(
@@ -2696,6 +2791,7 @@ class PluginIOSBaseline(BasePlugin):
                     "The configured port authenticator cannot enforce the intended admission exchange while global system authentication is disabled.",
                     "Enable global 802.1X system authentication and verify the port's AAA binding before relying on admission control.",
                     Severity.HIGH, evidence, (CISCO_IOS_DOT1X_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             elif (port.port_control == "auto" and port.global_dot1x is True
                     and port.open_access is True):
@@ -2706,6 +2802,7 @@ class PluginIOSBaseline(BasePlugin):
                     "Pre-authentication traffic is subject only to other independent port restrictions, which this static check does not establish.",
                     "Disable open authentication on this assessed access edge unless a documented pre-authentication exception has suitable independent restrictions.",
                     Severity.MEDIUM, evidence, (CISCO_IOS_OPEN_AUTH_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
 
     def check_bpdu_guard(self, parser: BaseDeviceParser) -> None:
@@ -2730,6 +2827,7 @@ class PluginIOSBaseline(BasePlugin):
                     "A connected device can send BPDUs without this edge protection shutting down the port, potentially affecting spanning-tree topology.",
                     "Enable effective BPDU guard on this access port; if relying on the global default, ensure the port is PortFast/edge-enabled and has no local guard disable.",
                     Severity.MEDIUM, evidence, (CISCO_IOS_BPDU_GUARD_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             elif port.guard_enabled is True and port.filter_enabled is True:
                 self.add_issue(self._finding(
@@ -2739,6 +2837,7 @@ class PluginIOSBaseline(BasePlugin):
                     "A local BPDU filter can prevent the guard from seeing the very BPDU that should trigger edge-port shutdown.",
                     "Remove local BPDU filtering on the assessed access edge and retain effective BPDU guard.",
                     Severity.MEDIUM, evidence, (CISCO_IOS_BPDU_GUARD_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
     def analyze(self, parser: BaseDeviceParser) -> None:
         if not self._applicable(parser):

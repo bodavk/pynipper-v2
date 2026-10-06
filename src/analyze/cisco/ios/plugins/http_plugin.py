@@ -56,6 +56,7 @@ class PluginHTTP(BasePlugin):
             severity=Severity.HIGH,
             evidence=("ip http server",),
             references=(CISCO_IOS_HTTP_GUIDE,),
+            basis=FindingBasis.EXPLICIT_VALUE,
         )
 
     def get_cisco_ios_http_access_list(self, parser: BaseDeviceParser):
@@ -76,6 +77,7 @@ class PluginHTTP(BasePlugin):
             severity=Severity.HIGH,
             evidence=("ip http server",),
             references=(CISCO_IOS_HTTP_GUIDE,),
+            basis=FindingBasis.REQUIRED_SETTING_MISSING,
         )
 
     def get_cisco_ios_http_auth(self, parser: BaseDeviceParser):

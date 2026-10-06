@@ -100,6 +100,10 @@ class PluginHPChecks(BasePlugin):
                     severity=Severity.HIGH,
                     evidence=self._evidence(feature),
                     references=(AOS_SWITCH_SECURITY_GUIDE,),
+                    basis=(
+                        FindingBasis.DOCUMENTED_DEFAULT if "default" in feature.detail
+                        else FindingBasis.EXPLICIT_VALUE
+                    ),
                 )
             )
 
@@ -125,6 +129,7 @@ class PluginHPChecks(BasePlugin):
                         for evidence in states[name].evidence
                     ),
                     references=(AOS_SWITCH_SECURITY_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
 
@@ -162,6 +167,10 @@ class PluginHPChecks(BasePlugin):
                         severity=Severity.HIGH if community.access == "manager" else Severity.MEDIUM,
                         evidence=evidence,
                         references=(AOS_SWITCH_SECURITY_GUIDE,),
+                        basis=(
+                            FindingBasis.EXPLICIT_VALUE if community.access == "manager"
+                            else FindingBasis.MISSING_EXPLICIT_SETTING
+                        ),
                     )
                 )
 
@@ -185,6 +194,7 @@ class PluginHPChecks(BasePlugin):
                         severity=Severity.MEDIUM,
                         evidence=tuple(item for community in communities for item in community.evidence),
                         references=(AOS_SWITCH_SECURITY_GUIDE,),
+                        basis=FindingBasis.REQUIRED_SETTING_MISSING,
                     )
                 )
 
@@ -247,6 +257,7 @@ class PluginHPChecks(BasePlugin):
                         severity=Severity.MEDIUM,
                         evidence=evidence,
                         references=(AOS_SWITCH_SNMPV3_GUIDE,),
+                        basis=FindingBasis.REQUIRED_SETTING_MISSING,
                     )
                 )
 
@@ -281,6 +292,16 @@ class PluginHPChecks(BasePlugin):
                 severity=Severity.MEDIUM,
                 evidence=tuple(dict.fromkeys(evidence)),
                 references=(AOS_SWITCH_SECURITY_GUIDE,),
+                basis=(
+                    FindingBasis.EXPLICIT_VALUE
+                    if any(
+                        value in item.text.casefold()
+                        for kind, values in weak.items()
+                        for value in values
+                        for item in algorithms[f"{kind}_state"].evidence
+                    )
+                    else FindingBasis.DOCUMENTED_DEFAULT
+                ),
             )
         )
 
@@ -307,6 +328,7 @@ class PluginHPChecks(BasePlugin):
                         for evidence in feature.evidence
                     ),
                     references=(AOS_SWITCH_SECURITY_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
 
@@ -344,6 +366,11 @@ class PluginHPChecks(BasePlugin):
                     for item in policy.evidence
                 ),
                 references=(AOS_SWITCH_PASSWORD_GUIDE,),
+                basis=(
+                    FindingBasis.REQUIRED_SETTING_MISSING
+                    if any(item.text.startswith("include-credentials") for item in manager.evidence)
+                    else FindingBasis.EXPLICIT_VALUE
+                ),
             ))
 
         for policy in policies:
@@ -363,6 +390,7 @@ class PluginHPChecks(BasePlugin):
                 severity=Severity.CRITICAL if policy.access_level == "enable" else Severity.HIGH,
                 evidence=tuple(item for item in policy.evidence),
                 references=(AOS_SWITCH_AUTHENTICATION_GUIDE,),
+                basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
         banner = hp.get_login_banner_policy()
@@ -378,6 +406,7 @@ class PluginHPChecks(BasePlugin):
                 severity=Severity.LOW,
                 evidence=tuple(item for item in banner.evidence) or ("banner motd absent from supported AOS-S export",),
                 references=(AOS_SWITCH_BASIC_OPERATION_GUIDE,),
+                basis=FindingBasis.REQUIRED_SETTING_MISSING,
             ))
 
         for session in hp.get_administrative_session_policies():
@@ -418,6 +447,11 @@ class PluginHPChecks(BasePlugin):
                 severity=Severity.MEDIUM,
                 evidence=tuple(item for item in session.evidence),
                 references=(AOS_SWITCH_BASIC_OPERATION_GUIDE,),
+                basis=(
+                    FindingBasis.DOCUMENTED_DEFAULT
+                    if session.resolution_state.startswith("documented-default")
+                    else FindingBasis.EXPLICIT_VALUE
+                ),
             ))
 
     def check_advanced_baseline(self, parser: BaseDeviceParser) -> None:
@@ -436,6 +470,7 @@ class PluginHPChecks(BasePlugin):
                     severity=Severity.MEDIUM,
                     evidence=("centralized management authentication without aaa accounting",),
                     references=(AOS_SWITCH_SECURITY_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
 
@@ -453,6 +488,10 @@ class PluginHPChecks(BasePlugin):
                     severity=Severity.HIGH,
                     evidence=self._evidence(password_control),
                     references=(AOS_SWITCH_SECURITY_GUIDE,),
+                    basis=(
+                        FindingBasis.DOCUMENTED_DEFAULT if "default" in password_control.detail
+                        else FindingBasis.EXPLICIT_VALUE
+                    ),
                 )
             )
 
@@ -475,6 +514,7 @@ class PluginHPChecks(BasePlugin):
                         severity=Severity.MEDIUM,
                         evidence=tuple(f"vlan {vlan} without dhcp-snooping" for vlan in missing),
                         references=(AOS_SWITCH_SECURITY_GUIDE,),
+                        basis=FindingBasis.REQUIRED_SETTING_MISSING,
                     )
                 )
 
@@ -501,6 +541,7 @@ class PluginHPChecks(BasePlugin):
                     severity=Severity.HIGH,
                     evidence=evidence,
                     references=(AOS_SWITCH_LAYER2_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
                 continue
             trusted = [
@@ -521,6 +562,7 @@ class PluginHPChecks(BasePlugin):
                     severity=Severity.HIGH,
                     evidence=evidence,
                     references=(AOS_SWITCH_LAYER2_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             if port.dot1x_control == "authorized":
                 self.add_issue(Finding(
@@ -534,6 +576,7 @@ class PluginHPChecks(BasePlugin):
                     severity=Severity.HIGH,
                     evidence=evidence,
                     references=(AOS_SWITCH_PORT_ACCESS_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             if port.bpdu_protection is False:
                 self.add_issue(Finding(
@@ -547,6 +590,7 @@ class PluginHPChecks(BasePlugin):
                     severity=Severity.MEDIUM,
                     evidence=evidence,
                     references=(AOS_SWITCH_BPDU_PROTECTION_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             elif port.bpdu_protection is True and port.bpdu_filter is True:
                 self.add_issue(Finding(
@@ -560,6 +604,7 @@ class PluginHPChecks(BasePlugin):
                     severity=Severity.MEDIUM,
                     evidence=evidence,
                     references=(AOS_SWITCH_BPDU_PROTECTION_GUIDE, AOS_SWITCH_BPDU_FILTER_GUIDE),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             for suffix, present, label in (
                 ("arp_protection", port.arp_protected, "Dynamic ARP protection on its VLAN"),
@@ -579,6 +624,7 @@ class PluginHPChecks(BasePlugin):
                     severity=Severity.MEDIUM,
                     evidence=evidence,
                     references=(AOS_SWITCH_LAYER2_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
     def _check_observability(self, parser: BaseDeviceParser) -> None:
         hp = self._hp(parser)
@@ -607,6 +653,11 @@ class PluginHPChecks(BasePlugin):
                               if logging.destinations and logging.destination_enabled is False
                               else ("remote logging destination absent",)),
                     references=(AOS_SWITCH_SECURITY_GUIDE,),
+                    basis=(
+                        FindingBasis.EXPLICIT_VALUE
+                        if logging.destinations and logging.destination_enabled is False
+                        else FindingBasis.REQUIRED_SETTING_MISSING
+                    ),
                 )
             )
         if destinations and hp.has_supported_administrative_release():
@@ -623,6 +674,7 @@ class PluginHPChecks(BasePlugin):
                     evidence=tuple(item for item in logging.event_evidence)
                     + tuple(item for destination in destinations for item in destination.evidence),
                     references=(AOS_SWITCH_DEBUG_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             elif logging.severity_state == "explicit" and logging.severity == "major":
                 self.add_issue(Finding(
@@ -637,6 +689,7 @@ class PluginHPChecks(BasePlugin):
                     evidence=tuple(item for item in logging.severity_evidence)
                     + tuple(item for destination in destinations for item in destination.evidence),
                     references=(AOS_SWITCH_LOGGING_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 ))
         associations = hp.get_sntp_associations()
         if not associations:
@@ -652,6 +705,7 @@ class PluginHPChecks(BasePlugin):
                     severity=Severity.LOW,
                     evidence=("SNTP server absent",),
                     references=(AOS_SWITCH_SNTP_GUIDE,),
+                    basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
         elif hp.has_supported_sntp_release():
@@ -669,6 +723,7 @@ class PluginHPChecks(BasePlugin):
                             severity=Severity.MEDIUM,
                             evidence=tuple(item for item in association.evidence),
                             references=(AOS_SWITCH_SNTP_GUIDE,),
+                            basis=FindingBasis.REQUIRED_SETTING_MISSING,
                         )
                     )
                 elif association.authentication_state == "unresolved":
@@ -684,6 +739,7 @@ class PluginHPChecks(BasePlugin):
                             severity=Severity.MEDIUM,
                             evidence=tuple(item for item in association.evidence),
                             references=(AOS_SWITCH_SNTP_GUIDE,),
+                            basis=FindingBasis.EXPLICIT_VALUE,
                         )
                     )
 

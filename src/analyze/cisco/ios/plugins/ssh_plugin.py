@@ -1,4 +1,5 @@
 from src.analyze.common.base_plugin import BasePlugin
+from src.analyze.common.controls import ControlOutcome, record_control
 from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.cisco.ios import CiscoIOSParser, ConfigurationState, NumericSetting
@@ -25,11 +26,17 @@ class PluginSSH(BasePlugin):
     def get_cisco_ios_ssh(self, parser: BaseDeviceParser):
         ios = self._ios_parser(parser)
         if ios.get_ssh_state() != ConfigurationState.ENABLED:
+            record_control(parser, "cisco.ios.ssh-protocol", ControlOutcome.NOT_APPLICABLE,
+                           "The SSH server is not enabled or not reachable through any VTY line.")
             return None
 
         version = ios.get_ssh_version()
         if version == "2":
+            record_control(parser, "cisco.ios.ssh-protocol", ControlOutcome.NO_FINDING,
+                           "SSH is restricted to protocol version 2.")
             return None
+        record_control(parser, "cisco.ios.ssh-protocol", ControlOutcome.FINDING,
+                       "SSH protocol version 2 is not enforced.")
         mode = "compatibility mode (SSHv1 and SSHv2)" if version is None else f"version {version!r}"
         evidence = (f"ip ssh version {version}",) if version else tuple(
             profile.line for profile in ios.get_vty_profiles() if profile.permits_ssh
@@ -133,6 +140,7 @@ class PluginSSH(BasePlugin):
             severity=Severity.MEDIUM,
             evidence=evidence,
             references=(CISCO_IOS_SSH_GUIDE,),
+            basis=FindingBasis.REQUIRED_SETTING_MISSING,
         )
 
     def analyze(self, parser: BaseDeviceParser) -> None:

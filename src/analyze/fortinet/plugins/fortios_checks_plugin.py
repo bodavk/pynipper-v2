@@ -1,4 +1,5 @@
 from src.analyze.common.base_plugin import BasePlugin
+from src.analyze.common.controls import ControlOutcome, record_control
 from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.models import ConfigurationState
@@ -131,6 +132,7 @@ class PluginFortiOSChecks(BasePlugin):
                     recommendation="Constrain source and destination addresses, services, schedule, and interfaces; enable appropriate policy logging.",
                     evidence=policy.evidence or (f"firewall {policy.family} policy {policy.name}",),
                     references=(FORTINET_POLICY_GUIDE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 )
             )
 
@@ -167,6 +169,7 @@ class PluginFortiOSChecks(BasePlugin):
                     recommendation="Permit only tlsv1-2 and tlsv1-3 for administrative HTTPS and related TLS services.",
                     evidence=tuple(evidence) or tuple(weak_values),
                     references=(FORTINET_TLS_REFERENCE,),
+                    basis=FindingBasis.EXPLICIT_VALUE,
                 )
             )
 
@@ -179,7 +182,11 @@ class PluginFortiOSChecks(BasePlugin):
             and (destination.address or destination.destination_type == "forticloud")
         ]
         if usable:
+            record_control(parser, "fortinet.fortios.remote-logging", ControlOutcome.NO_FINDING,
+                           "An enabled remote log destination is configured.")
             return
+        record_control(parser, "fortinet.fortios.remote-logging", ControlOutcome.FINDING,
+                       "No enabled and usable remote log destination was found.")
         configured = [
             f"{destination.scope}:{destination.destination_type}:{destination.state.value}"
             for destination in destinations
@@ -206,6 +213,7 @@ class PluginFortiOSChecks(BasePlugin):
                 recommendation="Enable at least one supported centralized logging target and configure its destination and filters.",
                 evidence=tuple(configured) or ("No supported logging target configured",),
                 references=(FORTINET_LOGGING_GUIDE,),
+                basis=FindingBasis.REQUIRED_SETTING_MISSING,
             )
         )
 
