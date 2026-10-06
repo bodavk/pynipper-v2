@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Attack paths (SC-063): `cleartext-admin-unrestricted` for IOS/IOS-XE VTY Telnet and ASA Telnet grants, and `writable-default-snmp` for IOS/IOS-XE. ASA was removed from the SNMP pattern because the ASA supports SNMP read-only access only. Findings are unchanged.
+
+- Control outcomes (SC-049, fourth batch): 13 more controls (59 in total) for FortiOS, Junos, EOS and PAN-OS banners, idle timeouts, lockout, SNMP, NTP authentication and policy logging.
+
 - Control outcomes (SC-049, third batch): 9 more controls (46 in total) for IOS HTTP server, ASA Telnet and SSH source restriction, FortiOS administrator lockout and password policy, Junos NTP authentication and login lockout, EOS NTP authentication and PAN-OS cleartext management.
 
 - Batch comparison (SC-050): `python -m src.batch compare --output <file>.html` writes an HTML comparison.

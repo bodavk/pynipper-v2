@@ -505,6 +505,24 @@ class IOSManagementACL:
 
 
 @dataclass(frozen=True)
+class IOSSNMPCommunityAdmission:
+    """One effective v1/v2c community, without its value (SC-063).
+
+    ``exact_default`` is the in-parser comparison against the exact default
+    list; the community string never leaves the parser. ``parsed`` is False
+    when trailing tokens could not be classified, so no admission is inferred.
+    """
+
+    exact_default: bool
+    access: str
+    view: str
+    ipv4_acl: str
+    ipv6_acl: str
+    parsed: bool
+    evidence: ConfigEvidence
+
+
+@dataclass(frozen=True)
 class IOSProgrammabilityAPI:
     service: str
     transport: str
@@ -1646,6 +1664,100 @@ class CiscoIOSParser(BaseDeviceParser):
                                    self.config_filepath, line_number),
                 )
         return list(communities.values())
+
+    def get_snmp_community_admissions(self) -> tuple[IOSSNMPCommunityAdmission, ...]:
+        """Effective communities with view, access and attached ACLs (SC-063).
+
+        Command syntax (IOS SNMP command reference): ``snmp-server community
+        <string> [view <name>] [ro|rw] [ipv6 <acl>] [<acl>]``. ``no snmp-server``
+        disables the agent and removes the communities. Evidence text matches
+        :meth:`get_snmp_community_metadata` so findings can be linked.
+        """
+        communities: dict[str, IOSSNMPCommunityAdmission] = {}
+        for line_number, raw in enumerate(self._source_lines, start=1):
+            if raw[:1].isspace():
+                continue
+            try:
+                tokens = shlex.split(raw.strip())
+            except ValueError:
+                continue
+            lowered = [token.casefold() for token in tokens]
+            if lowered == ["no", "snmp-server"]:
+                communities.clear()
+                continue
+            if lowered[:3] in (["no", "snmp-server", "community"], ["default", "snmp-server", "community"]):
+                if len(tokens) > 3:
+                    communities.pop(tokens[3].casefold(), None)
+                else:
+                    communities.clear()
+                continue
+            if lowered[:2] != ["snmp-server", "community"] or len(tokens) < 3:
+                continue
+            rest, index = lowered[3:], 0
+            view = ipv4_acl = ipv6_acl = ""
+            access, parsed = "ro", True
+            if rest[index:index + 1] == ["view"]:
+                if len(rest) < index + 2:
+                    parsed = False
+                else:
+                    view = tokens[3 + index + 1]
+                    index += 2
+            if rest[index:index + 1] in (["ro"], ["rw"]):
+                access = rest[index]
+                index += 1
+            if rest[index:index + 1] == ["ipv6"]:
+                if len(rest) < index + 2:
+                    parsed = False
+                else:
+                    ipv6_acl = tokens[3 + index + 1]
+                    index += 2
+            if index < len(rest):
+                ipv4_acl = tokens[3 + index]
+                index += 1
+            if index != len(rest):
+                parsed = False
+            communities[tokens[2].casefold()] = IOSSNMPCommunityAdmission(
+                exact_default=tokens[2].casefold() in {"public", "private"},
+                access=access, view=view, ipv4_acl=ipv4_acl, ipv6_acl=ipv6_acl, parsed=parsed,
+                evidence=ConfigEvidence(f"snmp-server community <redacted> {access}", self.config_filepath, line_number),
+            )
+        return tuple(communities.values())
+
+    def get_disjoint_vty_lines(self) -> Optional[tuple[IOSManagementLine, ...]]:
+        """VTY blocks when no physical line is configured by more than one block.
+
+        Overlapping or unparseable ranges return None: the effective per-line
+        state would need overlay resolution that callers must not guess.
+        """
+        lines = tuple(self.get_management_lines("vty"))
+        seen: set[int] = set()
+        for line in lines:
+            match = re.fullmatch(r"line vty\s+(\d+)(?:\s+(\d+))?", line.line.strip())
+            if not match:
+                return None
+            first, last = int(match.group(1)), int(match.group(2) or match.group(1))
+            if last < first or last - first > 4096:
+                return None
+            numbers = set(range(first, last + 1))
+            if numbers & seen:
+                return None
+            seen |= numbers
+        return lines
+
+    def get_vty_blocks_with_line_password(self) -> frozenset[str]:
+        """Headers of ``line vty`` blocks whose effective child state sets a line password."""
+        result = set()
+        for parent in self.parser.find_objects(r"^line vty(?:\s|$)"):
+            present = False
+            for child in parent.children:
+                command = child.text.strip()
+                if re.fullmatch(r"password\s+(?:\d\s+)?\S+", command):
+                    present = True
+                elif re.fullmatch(r"(?:no|default) password(?:\s+.*)?", command):
+                    present = False
+            if present:
+                result.add(re.sub(r"\s+", " ", parent.text.strip()))
+        return frozenset(result)
 
     def get_ntp_service_exposure(self) -> tuple[bool, tuple[ConfigEvidence, ...]]:
         """NTP is running (server, peer or master configured) without any ``ntp access-group``.

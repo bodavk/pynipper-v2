@@ -1403,6 +1403,25 @@ class CiscoASAParser(BaseDeviceParser):
                 f"{stripped.split()[0]} <redacted> {match.group(2) or ''}".rstrip(), self.config_filepath, line_number))
         return selected
 
+    def get_telnet_login_authentication(self) -> Optional[tuple[str, ConfigEvidence]]:
+        """Effective ``aaa authentication telnet console <group>`` (server group, evidence).
+
+        Without it, Telnet logins use the ``passwd`` login password (ASA
+        management access guide).
+        """
+        selected: Optional[tuple[str, ConfigEvidence]] = None
+        for line_number, line in enumerate(self._source_lines, start=1):
+            if line[:1].isspace():
+                continue
+            stripped = line.strip()
+            if re.fullmatch(r"no aaa authentication telnet console(?:\s+.*)?", stripped):
+                selected = None
+                continue
+            match = re.fullmatch(r"aaa authentication telnet console (\S+)(?:\s+.*)?", stripped)
+            if match:
+                selected = (match.group(1), ConfigEvidence(stripped, self.config_filepath, line_number))
+        return selected
+
     def get_local_credentials(self) -> list[CredentialMetadata]:
         credentials: dict[str, CredentialMetadata] = {}
         for line_number, raw_line in enumerate(self._source_lines, start=1):

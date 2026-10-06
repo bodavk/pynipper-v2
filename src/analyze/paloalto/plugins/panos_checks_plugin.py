@@ -251,9 +251,19 @@ class PluginPANOSChecks(BasePlugin):
                            "Authentication binding is unexported, ambiguous or inherited; it is not a proven missing control.",
                            instance=instance + "/authentication")
 
+        if panos.panorama_inheritance_unknown:
+            record_control(parser, "paloalto.panos.login-banner", ControlOutcome.UNKNOWN,
+                           "Administrative settings may be inherited from Panorama.")
+        elif not panos.get_administrative_settings():
+            record_control(parser, "paloalto.panos.login-banner", ControlOutcome.UNKNOWN,
+                           "No device configuration is exported.")
         if not panos.panorama_inheritance_unknown:
             for settings in panos.get_administrative_settings():
                 evidence = self._evidence(settings.evidence)
+                record_control(parser, "paloalto.panos.login-banner",
+                               ControlOutcome.NO_FINDING if settings.login_banner_configured else ControlOutcome.FINDING,
+                               "A login banner is configured." if settings.login_banner_configured
+                               else "No login banner is configured.", instance=settings.device_scope)
                 if settings.authentication_resolution in {"unresolved", "ambiguous"}:
                     record_control(parser, "paloalto.panos.administrator-policy", ControlOutcome.UNKNOWN,
                                    "Global authentication profile/sequence is unexported or ambiguous.",
@@ -451,9 +461,13 @@ class PluginPANOSChecks(BasePlugin):
     def check_platform_services(self, parser: BaseDeviceParser) -> None:
         panos = self._panos(parser)
         if panos.panorama_inheritance_unknown:
+            record_control(parser, "paloalto.panos.ntp-authentication", ControlOutcome.UNKNOWN,
+                           "NTP settings may be inherited from Panorama.")
             return
         associations = panos.get_ntp_associations()
         if not associations:
+            record_control(parser, "paloalto.panos.ntp-authentication", ControlOutcome.NOT_APPLICABLE,
+                           "No NTP server is configured.")
             self.add_issue(
                 Finding(
                     rule_id="paloalto.panos.ntp.servers",
@@ -480,6 +494,13 @@ class PluginPANOSChecks(BasePlugin):
                         or association.key_material_state == "missing"
                     )
                 )
+                record_control(parser, "paloalto.panos.ntp-authentication",
+                               ControlOutcome.FINDING if incomplete else
+                               ControlOutcome.UNKNOWN if association.authentication == "unknown" else ControlOutcome.NO_FINDING,
+                               "Association lacks complete authentication." if incomplete else
+                               "Association authentication uses unsupported syntax." if association.authentication == "unknown"
+                               else "Association has a complete authentication configuration.",
+                               instance=f"{association.device_scope}/{association.role}")
                 if incomplete:
                     self.add_issue(
                         Finding(
@@ -997,6 +1018,11 @@ class PluginPANOSChecks(BasePlugin):
         if not rules:
             record_control(parser, "paloalto.panos.policy-inspection", ControlOutcome.UNKNOWN,
                            "Security policy/inspection scope is unexported; completeness is unqualified.")
+            record_control(parser, "paloalto.panos.policy-logging", ControlOutcome.UNKNOWN,
+                           "Security policy is unexported; completeness is unqualified.")
+        elif not any(rule.enabled and rule.action == "allow" for rule in rules):
+            record_control(parser, "paloalto.panos.policy-logging", ControlOutcome.NOT_APPLICABLE,
+                           "No enabled allow rule is configured.")
         profiles = {
             (profile.scope, profile.name): profile
             for profile in panos.get_log_forwarding_profiles()
@@ -1095,6 +1121,17 @@ class PluginPANOSChecks(BasePlugin):
                         basis=FindingBasis.MISSING_EXPLICIT_SETTING,
                     )
                 )
+
+            logging_gaps = []
+            if not forwarding or not forwarding.syslog_servers:
+                logging_gaps.append("no effective syslog log-forwarding profile")
+            if not rule.log_end:
+                logging_gaps.append("log-at-session-end disabled")
+            record_control(parser, "paloalto.panos.policy-logging",
+                           ControlOutcome.FINDING if logging_gaps else ControlOutcome.NO_FINDING,
+                           ("Allow rule has " + " and ".join(logging_gaps) + ".") if logging_gaps
+                           else "Allow rule logs at session end and forwards to syslog.",
+                           instance=f"{rule.device_scope}/{rule.scope}/{rule.rulebase}/rule:{rule.name}")
 
             control = "paloalto.panos.policy-inspection"
             instance = f"{rule.device_scope}/{rule.scope}/{rule.rulebase}/rule:{rule.name}"

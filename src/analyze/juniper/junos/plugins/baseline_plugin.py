@@ -360,6 +360,13 @@ class PluginJunOSBaseline(BasePlugin):
     def check_administrative_policy(self, parser: BaseDeviceParser) -> None:
         junos = self._junos(parser)
         notice = junos.get_login_notice_policy()
+        if notice.message_configured:
+            record_control(parser, "juniper.junos.login-banner", CO.NO_FINDING, "A system login message is configured.")
+        elif notice.inheritance_unknown:
+            record_control(parser, "juniper.junos.login-banner", CO.UNKNOWN,
+                           "No login message is configured directly, but apply-groups inheritance is not expanded.")
+        else:
+            record_control(parser, "juniper.junos.login-banner", CO.FINDING, "No system login message is configured.")
         if not notice.message_configured and not notice.inheritance_unknown:
             self.add_issue(self._finding(
                 parser, "juniper.junos.authentication.login_banner",
@@ -386,9 +393,28 @@ class PluginJunOSBaseline(BasePlugin):
                     basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
 
+        idle_recorded = False
         for policy in junos.get_login_class_policies():
             if not policy.users:
                 continue
+            idle_recorded = True
+            idle_instance = f"class:{policy.name}"
+            if policy.name.casefold() == "unauthorized":
+                record_control(parser, "juniper.junos.idle-timeout", CO.NOT_APPLICABLE,
+                               "The unauthorized class grants no CLI session.", instance=idle_instance)
+            elif not policy.defined and not policy.inheritance_unknown:
+                record_control(parser, "juniper.junos.idle-timeout", CO.UNKNOWN,
+                               "The login class is not defined; its idle timeout cannot be established.",
+                               instance=idle_instance)
+            elif policy.resolution_state != "known":
+                record_control(parser, "juniper.junos.idle-timeout", CO.UNKNOWN,
+                               f"Idle timeout resolution is {policy.resolution_state}.", instance=idle_instance)
+            elif policy.idle_timeout_minutes in {None, 0}:
+                record_control(parser, "juniper.junos.idle-timeout", CO.FINDING,
+                               "No effective nonzero idle timeout applies.", instance=idle_instance)
+            else:
+                record_control(parser, "juniper.junos.idle-timeout", CO.NO_FINDING,
+                               f"Idle timeout is {policy.idle_timeout_minutes} minutes.", instance=idle_instance)
             evidence = tuple(item for item in policy.evidence)
             if not policy.defined and not policy.inheritance_unknown:
                 self.add_issue(self._finding(
@@ -423,6 +449,13 @@ class PluginJunOSBaseline(BasePlugin):
                 basis=FindingBasis.DOCUMENTED_DEFAULT if policy.idle_timeout_minutes is None else FindingBasis.EXPLICIT_VALUE,
             ))
 
+        if not idle_recorded:
+            if inheritance_unknown:
+                record_control(parser, "juniper.junos.idle-timeout", CO.UNKNOWN,
+                               "No class-bound local user is configured directly, but apply-groups inheritance is not expanded.")
+            else:
+                record_control(parser, "juniper.junos.idle-timeout", CO.NOT_APPLICABLE,
+                               "No local user is bound to a login class.")
         authentication_order = self._statements(parser, ("system", "authentication-order"))
         remote_methods = {
             token for statement in authentication_order for token in statement.path[2:]

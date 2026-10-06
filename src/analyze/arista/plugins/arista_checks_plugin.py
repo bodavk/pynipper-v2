@@ -345,6 +345,24 @@ class PluginAristaChecks(BasePlugin):
                     basis=FindingBasis.EXPLICIT_VALUE,
                 ))
 
+        if not remote_active:
+            record_control(parser, "arista.eos.login-lockout",
+                           CO.NOT_APPLICABLE if (sessions or endpoints) else CO.UNKNOWN,
+                           "No remote management service is active." if (sessions or endpoints)
+                           else "No management service block is exported; the default service state is not evaluated.")
+        elif lockout.enabled is None or lockout.resolution_state == "invalid":
+            record_control(parser, "arista.eos.login-lockout", CO.UNKNOWN,
+                           "The lockout policy is malformed or its default is not verified for this release.")
+        elif lockout.enabled is False:
+            record_control(parser, "arista.eos.login-lockout", CO.FINDING, "AAA login lockout is disabled.")
+        elif (lockout.failure_count is not None and lockout.failure_count > 5) or (
+            lockout.duration_seconds is not None and lockout.duration_seconds < 300
+        ):
+            record_control(parser, "arista.eos.login-lockout", CO.FINDING, "AAA login lockout thresholds are weak.")
+        else:
+            record_control(parser, "arista.eos.login-lockout", CO.NO_FINDING,
+                           "AAA login lockout is enabled with at most five failures and at least 300 seconds.")
+
         local_admin_path = bool(eos.get_administrators()) and remote_active and any(
             policy.policy_type == "authentication"
             and policy.service == "login"
@@ -378,11 +396,24 @@ class PluginAristaChecks(BasePlugin):
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
+        if not interactive:
+            for control in ("arista.eos.idle-timeout", "arista.eos.login-banner"):
+                record_control(parser, control, CO.NOT_APPLICABLE if sessions else CO.UNKNOWN,
+                               "Every exported interactive management channel is shut down." if sessions
+                               else "No management console/ssh block is exported; defaults are not evaluated.")
         for session in interactive:
             if session.resolution_state == "invalid" or session.idle_timeout_minutes is None:
+                record_control(parser, "arista.eos.idle-timeout", CO.UNKNOWN,
+                               "The idle timeout is malformed or its default is not verified for this release.",
+                               instance=session.channel)
                 continue
             if 0 < session.idle_timeout_minutes <= 10:
+                record_control(parser, "arista.eos.idle-timeout", CO.NO_FINDING,
+                               f"Idle timeout is {session.idle_timeout_minutes} minutes.", instance=session.channel)
                 continue
+            record_control(parser, "arista.eos.idle-timeout", CO.FINDING,
+                           "Idle timeout is disabled." if session.idle_timeout_minutes == 0
+                           else f"Idle timeout is {session.idle_timeout_minutes} minutes.", instance=session.channel)
             self.add_issue(Finding(
                 rule_id="arista.eos.admin.idle_timeout",
                 device=parser.device_type,
@@ -408,6 +439,13 @@ class PluginAristaChecks(BasePlugin):
             ))
 
         banner = eos.get_banner_policy()
+        if interactive:
+            record_control(parser, "arista.eos.login-banner",
+                           CO.FINDING if banner.login_enabled is False
+                           else CO.NO_FINDING if banner.login_enabled else CO.UNKNOWN,
+                           "No effective login banner is configured." if banner.login_enabled is False
+                           else "A login banner is configured." if banner.login_enabled
+                           else "The banner default is not verified for this release.")
         if interactive and banner.login_enabled is False:
             self.add_issue(Finding(
                 rule_id="arista.eos.admin.login_banner",
@@ -608,8 +646,17 @@ class PluginAristaChecks(BasePlugin):
     def check_snmp(self, parser: BaseDeviceParser) -> None:
         eos = self._eos(parser)
         if not eos.get_snmp_default_vrf_enabled():
+            record_control(parser, "arista.eos.snmp-default-community",
+                           CO.UNKNOWN if eos.get_snmp_communities() else CO.NO_FINDING,
+                           "The default-VRF SNMP agent is disabled; communities served in other VRFs are not evaluated."
+                           if eos.get_snmp_communities() else "No SNMP community is configured.")
             return
         communities = eos.get_snmp_communities()
+        record_control(parser, "arista.eos.snmp-default-community",
+                       CO.FINDING if any(name in {"public", "private"} for name, _ in communities) else CO.NO_FINDING,
+                       "A default SNMP community is active."
+                       if any(name in {"public", "private"} for name, _ in communities)
+                       else "No default SNMP community is configured.")
         for name, evidence in communities:
             if name in {"public", "private"}:
                 self.add_issue(

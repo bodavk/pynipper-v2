@@ -108,7 +108,8 @@ class PathResult:
 
 
 _FORTIOS = frozenset({"FORTIOS"})
-_IOS_ASA = frozenset({"IOS_ROUTER", "IOS_SWITCH", "IOS_CATALYST", "IOS_XE", "ASA"})
+_IOS = frozenset({"IOS_ROUTER", "IOS_SWITCH", "IOS_CATALYST", "IOS_XE"})
+_IOS_ASA = _IOS | {"ASA"}
 
 _NOT_TESTED = (
     "Upstream and Internet reachability of the listener was not tested.",
@@ -159,11 +160,19 @@ PATTERNS: dict[str, PathPattern] = {
             gate="Requires listener, interface, filter and routing-instance admission proof; not in this release.",
         ),
         PathPattern(
+            # ASA is not a producer: the ASA supports SNMP read-only access only
+            # (ASA 8.2 CLI configuration guide, SNMP chapter), so no write path exists.
             "writable-default-snmp", 1, "Writable default SNMP community",
-            Severity.HIGH, frozenset({"ASA"}), (),
-            "A read-write exact-default community bound to a broadly permitted manager source.",
-            _NOT_TESTED, ("Remove the default read-write community.",),
-            gate="Requires in-parser community identity matching without exposing the value; not in this release.",
+            Severity.HIGH, _IOS, ("cisco.ios.snmp.default_community", "cisco.ios.snmp.legacy_community"),
+            ("An SNMPv1/v2c community whose value is an exact default (matched inside the parser and not shown) "
+             "grants read-write access without a MIB view, and no IPv4 access list restricts which managers "
+             "may use it, or the attached standard access list provably permits every IPv4 source."),
+            ("SNMP reachability of the device from untrusted networks was not tested.",
+             "No SNMP request was sent; whether a write would succeed was not tested.",
+             "IPv6 SNMP admission was not assessed for this path."),
+            ("Remove the default read-write community.",
+             "Attach a standard access list that permits only the management stations.",
+             "Replace community-based SNMP with SNMPv3 authPriv users and least-privileged views."),
         ),
         PathPattern(
             "risky-ingress-without-inspection", 1, "Risky inbound service without effective inspection",
@@ -186,10 +195,15 @@ PATTERNS: dict[str, PathPattern] = {
         ),
         PathPattern(
             "cleartext-admin-unrestricted", 1, "Unrestricted clear-text administration",
-            Severity.HIGH, _IOS_ASA, (),
-            "A VTY or ASA management service with broad source admission, Telnet/HTTP and password authentication.",
-            _NOT_TESTED, ("Disable Telnet/HTTP and restrict management sources.",),
-            gate="Requires service-specific ACL and binding proof; not in this release.",
+            Severity.HIGH, _IOS_ASA, ("cisco.ios.vty.telnet", "cisco.asa.management.telnet"),
+            ("A Telnet administrative listener (an IOS VTY range or an ASA Telnet grant) admits every IPv4 source "
+             "and authenticates administrators with a password, which crosses the network in clear text."),
+            ("Credential capture requires an attacker on the network path between an administrator and the device; "
+             "interception was not observed.",
+             "Upstream reachability of the listener was not tested and no login was attempted.",
+             "HTTP management is not part of this release of the pattern."),
+            ("Disable Telnet ('transport input ssh' on IOS VTY lines; remove ASA 'telnet' grants) and use SSH.",
+             "Restrict management sources with an access-class (IOS) or narrow 'telnet' grants (ASA)."),
         ),
         PathPattern(
             "weak-dialup-vpn", 1, "Weak dial-up VPN entry",

@@ -9,7 +9,10 @@ from src.analyze.common.risky_services import CISCO_PORT_NAMES, risky_labels
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.policy_semantics import ProofState, network_covers, service_covers
 from src.devices.cisco.asa import CiscoASAParser
-from src.analyze.common.attack_paths import mark_evaluated, record_deny_defeated, record_path_not_assessed
+from src.analyze.common.attack_paths import (
+    FactState, PathFact, PathResult, evidence_locations, mark_evaluated, record_deny_defeated, record_path,
+    record_path_not_assessed,
+)
 from src.devices.common.models import ConfigurationState
 
 
@@ -801,8 +804,75 @@ class PluginASAChecks(BasePlugin):
         self.check_acl_hygiene_and_effectiveness(parser)
         self.produce_attack_paths(parser)
 
+    def produce_cleartext_admin_paths(self, parser: BaseDeviceParser) -> None:
+        """SC-063: an any-source Telnet grant on an enabled interface with password login.
+
+        The ASA management access guide states that Telnet cannot be used to the
+        lowest security interface except inside a VPN tunnel, so such grants form
+        no clear-text path; a tie for the lowest level is not assessed.
+        """
+        pattern = "cleartext-admin-unrestricted"
+        mark_evaluated(parser, pattern)
+        asa = self._asa(parser)
+        grants = [grant for grant in asa.get_management_grants("telnet") if grant.is_any_source]
+        if not grants:
+            return
+        levels = {item["nameif"].casefold(): item["security_level"] for item in asa.get_interfaces()}
+        states = {interface.zone.casefold(): interface.state
+                  for interface in parser.get_normalized_config().interfaces.items}
+        known_levels = [level for level in levels.values() if level >= 0]
+        lowest = min(known_levels) if known_levels else None
+        aaa = asa.get_telnet_login_authentication()
+        login = asa.get_login_password()
+        findings = [item for item in self.get_issues() if item.rule_id == "cisco.asa.management.telnet"]
+        for grant in grants:
+            key = f"system/telnet:{grant.interface}/{grant.address_family}"
+            name = grant.interface.casefold()
+            if name not in levels or name not in states:
+                record_path_not_assessed(parser, pattern, f"{key}: no interface with nameif '{grant.interface}' was found.")
+                continue
+            if states[name] == ConfigurationState.DISABLED:
+                continue
+            level = levels[name]
+            if level < 0 or lowest is None or any(value < 0 for value in levels.values()):
+                record_path_not_assessed(parser, pattern, f"{key}: interface security levels are incomplete; "
+                                         "the lowest-security Telnet restriction could not be applied.")
+                continue
+            if level == lowest:
+                if sum(1 for value in levels.values() if value == lowest) > 1:
+                    record_path_not_assessed(parser, pattern, f"{key}: several interfaces share the lowest security "
+                                             "level; whether Telnet is refused on this one was not established.")
+                continue
+            if aaa is not None:
+                login_text = (f"Telnet logins authenticate through 'aaa authentication telnet console {aaa[0]}' "
+                              "with a username and password.")
+                login_evidence: tuple = (aaa[1],)
+            elif login is not None:
+                login_text = "Without Telnet AAA, logins use the 'passwd' login password."
+                login_evidence = (login.evidence,)
+            else:
+                record_path_not_assessed(parser, pattern, f"{key}: neither Telnet AAA nor a 'passwd' login password "
+                                         "is exported; the login method was not resolved.")
+                continue
+            link = tuple((item.rule_id, item.title) for item in findings
+                         if grant.raw_line in tuple(getattr(evidence, "text", evidence) for evidence in item.evidence))[:1]
+            family = grant.address_family
+            source = "every IPv4 source (0.0.0.0 0.0.0.0)" if family == "ipv4" else f"every IPv6 source ({grant.source})"
+            steps = (
+                PathFact("telnet-listener", key, "system", family, FactState.KNOWN,
+                         f"Telnet management is granted on enabled interface '{grant.interface}' "
+                         f"(security level {level}, not the lowest).", evidence_locations((grant.raw_line,)), link),
+                PathFact("unrestricted-source", key, "system", family, FactState.KNOWN,
+                         f"The grant admits {source}.", evidence_locations((grant.raw_line,))),
+                PathFact("password-login", key, "system", family, FactState.KNOWN,
+                         login_text + " The password crosses the network in clear text over Telnet.",
+                         evidence_locations(login_evidence)),
+            )
+            record_path(parser, PathResult(pattern, key, "system", family, steps))
+
     def produce_attack_paths(self, parser: BaseDeviceParser) -> None:
         """SC-063: a bound, active ACL deny entry fully covered by an earlier permit in the same ACL."""
+        self.produce_cleartext_admin_paths(parser)
         pattern = "protective-deny-defeated"
         mark_evaluated(parser, pattern)
         states = {

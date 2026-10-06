@@ -1,5 +1,6 @@
 import re
 
+from src.analyze.common.attack_paths import record_path_not_assessed
 from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.credentials import credential_policy_from_context, evaluate_credential
 from src.analyze.common.controls import ControlOutcome as CO, record_control, record_manual_review
@@ -2841,6 +2842,9 @@ class PluginIOSBaseline(BasePlugin):
                 ))
     def analyze(self, parser: BaseDeviceParser) -> None:
         if not self._applicable(parser):
+            for pattern in ("cleartext-admin-unrestricted", "writable-default-snmp"):
+                record_path_not_assessed(parser, pattern, "The software version is unknown; release defaults "
+                                         "and syntax were not qualified.")
             return
         self.check_aaa(parser)
         self.check_management_lines(parser)
@@ -2880,3 +2884,17 @@ class PluginIOSBaseline(BasePlugin):
         self.check_ipv6_first_hop(parser)
         self.check_access_admission(parser)
         self.check_bpdu_guard(parser)
+        self.produce_attack_paths(parser)
+
+    def produce_attack_paths(self, parser: BaseDeviceParser) -> None:
+        """SC-063 producers; run last so that linked findings already exist."""
+        from .ios_attack_paths import produce_cleartext_admin, produce_writable_default_snmp
+        ios = self._ios(parser)
+        train = ios.get_train()
+        produce_cleartext_admin(
+            self, ios,
+            aaa_enabled=self._effective_toggle(self._global_lines(parser), r"aaa new-model", r"no aaa new-model"),
+            # Same documented default as cisco.ios.vty.telnet (SC-044 IOS-03).
+            legacy_vty_default=bool(train and train < (15, 4) and not ios.is_iosxe()),
+        )
+        produce_writable_default_snmp(self, ios)

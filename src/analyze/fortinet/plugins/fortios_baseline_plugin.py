@@ -663,6 +663,10 @@ class PluginFortiOSBaseline(BasePlugin):
                            "No system global section; documented defaults are 3 attempts / 60 seconds."
                            if qualified else "No system global section and the release is unqualified for defaults.",
                            instance="global")
+            record_control(parser, "fortinet.fortios.admin-session-timeout", CO.NO_FINDING if qualified else CO.UNKNOWN,
+                           "No system global section; the documented admintimeout default is 5 minutes."
+                           if qualified else "No system global section and the release is unqualified for defaults.",
+                           instance="global")
         for scope, settings, path in fortios.iter_scoped_sections("system global"):
             threshold = self._text(settings.get("admin-lockout-threshold"))
             duration = self._text(settings.get("admin-lockout-duration"))
@@ -699,6 +703,19 @@ class PluginFortiOSBaseline(BasePlugin):
                     )
                 )
             timeout = self._text(settings.get("admintimeout"))
+            if timeout.isdigit() and (int(timeout) == 0 or int(timeout) > 10):
+                record_control(parser, "fortinet.fortios.admin-session-timeout", CO.FINDING,
+                               f"admintimeout is {timeout} minutes.", instance=scope)
+            elif timeout and not timeout.isdigit():
+                record_control(parser, "fortinet.fortios.admin-session-timeout", CO.UNKNOWN,
+                               "admintimeout is malformed.", instance=scope)
+            elif not timeout and not self._supports_default_inference(fortios):
+                record_control(parser, "fortinet.fortios.admin-session-timeout", CO.UNKNOWN,
+                               "admintimeout relies on a default on an unqualified release.", instance=scope)
+            else:
+                record_control(parser, "fortinet.fortios.admin-session-timeout", CO.NO_FINDING,
+                               f"admintimeout is {timeout} minutes." if timeout
+                               else "admintimeout is omitted; the documented default is 5 minutes.", instance=scope)
             if timeout.isdigit() and (int(timeout) == 0 or int(timeout) > 10):
                 self.add_issue(
                     self._finding(
@@ -1006,12 +1023,16 @@ class PluginFortiOSBaseline(BasePlugin):
             if self._text(settings.get("status"), "disable").lower() == "disable"
         }
         if "global" in agent_disabled_scopes:
+            record_control(parser, "fortinet.fortios.snmp-community", CO.NOT_APPLICABLE, "The SNMP agent is disabled.")
             return
         snmp_interfaces = [
             item for item in snmp_interfaces if item[0] not in agent_disabled_scopes
         ]
         if not snmp_interfaces:
+            record_control(parser, "fortinet.fortios.snmp-community", CO.NOT_APPLICABLE,
+                           "No enabled interface allows SNMP access.")
             return
+        legacy_community = False
         for scope, section, path in fortios.iter_scoped_sections("system snmp community"):
             if scope in agent_disabled_scopes:
                 continue
@@ -1021,6 +1042,9 @@ class PluginFortiOSBaseline(BasePlugin):
                         replace(item, text=item.text.replace(str(name), "<redacted>"))
                         for item in fortios.field_evidence(path + (str(name),))
                     ) or ("system snmp community <redacted>",)
+                    legacy_community = True
+                    record_control(parser, "fortinet.fortios.snmp-community", CO.FINDING,
+                                   "An enabled SNMPv1/v2c community is configured.", instance=scope)
                     self.add_issue(
                         self._finding(
                             parser,
@@ -1036,6 +1060,9 @@ class PluginFortiOSBaseline(BasePlugin):
                         )
                     )
 
+        if not legacy_community:
+            record_control(parser, "fortinet.fortios.snmp-community", CO.NO_FINDING,
+                           "No enabled SNMPv1/v2c community is configured.")
         secure_users: set[str] = set()
         for scope, section, path in fortios.iter_scoped_sections("system snmp user"):
             if scope in agent_disabled_scopes:
@@ -1096,6 +1123,13 @@ class PluginFortiOSBaseline(BasePlugin):
     def check_ntp(self, parser: BaseDeviceParser) -> None:
         fortios = self._fortios(parser)
         sections = list(fortios.iter_scoped_sections("system ntp"))
+        if not sections:
+            if self._supports_default_inference(fortios):
+                record_control(parser, "fortinet.fortios.ntp-authentication", CO.NOT_APPLICABLE,
+                               "NTP synchronization is not configured; no custom server is in use.")
+            else:
+                record_control(parser, "fortinet.fortios.ntp-authentication", CO.UNKNOWN,
+                               "No system ntp section and the release is unqualified for defaults.")
         if self._supports_default_inference(fortios) and not sections:
             self.add_issue(
                 self._finding(
@@ -1127,8 +1161,12 @@ class PluginFortiOSBaseline(BasePlugin):
                         basis=(FindingBasis.EXPLICIT_VALUE if settings.get("ntpsync") is not None else FindingBasis.DOCUMENTED_DEFAULT if self._supports_default_inference(fortios) else FindingBasis.MISSING_EXPLICIT_SETTING),
                     )
                 )
+                record_control(parser, "fortinet.fortios.ntp-authentication", CO.NOT_APPLICABLE,
+                               "NTP synchronization is disabled.", instance=scope)
                 continue
             if self._text(settings.get("type"), "fortiguard").lower() != "custom":
+                record_control(parser, "fortinet.fortios.ntp-authentication", CO.NOT_APPLICABLE,
+                               "FortiGuard NTP is used; custom-server authentication does not apply.", instance=scope)
                 continue
             servers = settings.get("ntpserver")
             enabled_servers = []
@@ -1139,6 +1177,8 @@ class PluginFortiOSBaseline(BasePlugin):
                     if isinstance(server, dict) and self._enabled(server)
                 ]
             if not enabled_servers:
+                record_control(parser, "fortinet.fortios.ntp-authentication", CO.NOT_APPLICABLE,
+                               "Custom NTP mode has no enabled server.", instance=scope)
                 self.add_issue(
                     self._finding(
                         parser,
@@ -1163,6 +1203,12 @@ class PluginFortiOSBaseline(BasePlugin):
                     ),
                 ).lower()
                 has_key = bool(self._text(server.get("key"))) and bool(self._text(server.get("key-id")))
+                record_control(parser, "fortinet.fortios.ntp-authentication",
+                               CO.FINDING if authentication != "enable" or not has_key else CO.NO_FINDING,
+                               "Server authentication is disabled or its key binding is incomplete."
+                               if authentication != "enable" or not has_key
+                               else "Server authentication is enabled with a complete key binding.",
+                               instance=f"{scope}/{name}")
                 if authentication != "enable" or not has_key:
                     detail = "authentication disabled" if authentication != "enable" else "key binding incomplete"
                     self.add_issue(
@@ -2793,12 +2839,23 @@ class PluginFortiOSBaseline(BasePlugin):
         fortios = self._fortios(parser)
         release = self._release(fortios)
         if not release or release < (6, 4, 14):
+            record_control(parser, "fortinet.fortios.login-banner", CO.UNKNOWN,
+                           "The pre-login-banner default is not verified for this release.")
             return
-        for scope, settings, path in fortios.iter_scoped_sections("system global"):
+        global_sections = list(fortios.iter_scoped_sections("system global"))
+        if not global_sections:
+            record_control(parser, "fortinet.fortios.login-banner", CO.UNKNOWN,
+                           "No system global section is exported.")
+        for scope, settings, path in global_sections:
             value = self._text(settings.get("pre-login-banner")).lower()
             if value == "enable":
+                record_control(parser, "fortinet.fortios.login-banner", CO.NO_FINDING,
+                               "pre-login-banner is enabled.", instance=scope)
                 continue
             explicit = value == "disable"
+            record_control(parser, "fortinet.fortios.login-banner", CO.FINDING,
+                           "pre-login-banner is disabled." if explicit
+                           else "pre-login-banner is omitted; the documented default is disable.", instance=scope)
             self.add_issue(self._finding(
                 parser,
                 "fortinet.fortios.banner.login_disabled",
