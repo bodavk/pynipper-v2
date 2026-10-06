@@ -27,8 +27,11 @@ never configured. Treat an omitted setting by where it is missing:
    - the whole containing section or domain is absent from the export (a fragment,
      for example a PAN-OS file with only a hostname and no `mgt-config`);
    - the value is malformed or uses unsupported syntax;
-   - it references an object that is not in the export (unresolved, or inherited
-     from Panorama, a template or a controller);
+   - it references an object managed outside the export (inherited from Panorama,
+     a template, FortiManager, a controller or unexpanded Junos apply-groups). In a
+     self-contained export (IOS, ASA, Junos without apply-groups, FortiOS without
+     FortiManager) a reference to an undefined object is a broken binding and stays
+     a finding;
    - a needed default is not verified for the identified release.
 
 Never require an export to restate a vendor default (FortiOS backups omit
