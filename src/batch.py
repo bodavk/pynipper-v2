@@ -293,6 +293,32 @@ def compare_batches(old_index: str, new_index: str) -> dict:
     }
 
 
+def comparison_html(result: dict) -> str:
+    """Self-contained HTML view of a comparison result (values escaped, no scripts)."""
+    from html import escape
+    labels = ("new", "resolved", "no-longer-assessable", "not-comparable", "unchanged")
+    totals = "".join(f"<li><strong>{escape(k)}</strong>: {result['totals'][k]}</li>" for k in labels)
+    sections = []
+    for device in result["devices"]:
+        rows = "".join(
+            f"<tr><td>{escape(status)}</td><td>{escape(str(f.get('severity')))}</td><td><code>{escape(f['rule-id'])}</code></td>"
+            f"<td>{escape(str(f.get('title') or ''))}</td></tr>"
+            for status in labels if status != "unchanged" for f in device[status]
+        )
+        notes = "".join(f"<li>{escape(note)}</li>" for note in device["notes"])
+        sections.append(
+            f"<section><h2>{escape(device['id'])}</h2>"
+            + (f"<ul>{notes}</ul>" if notes else "")
+            + f"<p>{len(device['unchanged'])} unchanged finding(s).</p>"
+            + (f"<table><thead><tr><th>Status</th><th>Severity</th><th>Rule</th><th>Title</th></tr></thead><tbody>{rows}</tbody></table>"
+               if rows else "<p>No new, resolved or unassessable findings.</p>")
+            + "</section>")
+    return ("<!doctype html><html><head><meta charset=\"utf-8\"><title>pynipper comparison</title>"
+            "<style>body{font-family:sans-serif;margin:2em}table{border-collapse:collapse}td,th{border:1px solid #999;padding:4px 8px;text-align:left}</style>"
+            f"</head><body><h1>Assessment comparison</h1><p>{escape(result['scope-note'])}</p><ul>{totals}</ul>"
+            + "".join(sections) + "</body></html>")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m src.batch", description="Offline batch audits and comparisons.")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -304,7 +330,7 @@ def main(argv: list[str] | None = None) -> int:
     compare = commands.add_parser("compare", help="Compare two batch-index.json files")
     compare.add_argument("--old", required=True)
     compare.add_argument("--new", required=True)
-    compare.add_argument("--output", required=True)
+    compare.add_argument("--output", required=True, help="Comparison file; .html writes an HTML view, otherwise JSON")
     args = parser.parse_args(argv)
     try:
         if args.command == "run":
@@ -316,7 +342,8 @@ def main(argv: list[str] | None = None) -> int:
         if output in {Path(args.old).resolve(), Path(args.new).resolve()} or output.exists():
             raise BatchError("Comparison output must be a new file, different from both indexes")
         result = compare_batches(args.old, args.new)
-        output.write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
+        output.write_text(comparison_html(result) if output.suffix.casefold() in {".html", ".htm"}
+                          else json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
         print(", ".join(f"{key}: {value}" for key, value in result["totals"].items()))
         return 0
     except BatchError as error:

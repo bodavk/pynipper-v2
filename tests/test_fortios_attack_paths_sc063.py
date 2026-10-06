@@ -458,3 +458,35 @@ def test_panos_nat_policy_withholds_proof(tmp_path):
     section = _panos_section(tmp_path, [("ALLOW", "WIDE", "allow"), ("BLOCK", "NARROW", "deny")], nat)
     assert section["results"] == []
     assert _status(section, "protective-deny-defeated")["status"] == "not-assessed"
+
+
+# --- multi-VDOM SSL-VPN joins -------------------------------------------------------------
+
+VDOM_HEADER = "#config-version=FGT60F-7.4.1-FW-build1517-230606:opmode=0:vdom=1:user=admin\n"
+VDOM_USER = ('config user local\n edit "alice"\n set status enable\n set type password\n set passwd "x"\n'
+             ' set two-factor disable\n next\nend\n')
+VDOM_VPN = ('config vpn ssl settings\n set status enable\n set source-interface "wan1"\n set source-address "all"\n'
+            ' set source-address-negate disable\n set login-attempt-limit 0\n set reqclientcert disable\n'
+            ' config authentication-rule\n edit 1\n set auth local\n set users "alice"\n set portal "full-access"\n'
+            ' set client-cert disable\n next\n end\nend\n')
+VDOM_IF = 'config system interface\n edit "wan1"\n set vdom "red"\n set status up\n next\nend\n'
+
+
+def _vdom(tmp_path, red_body, blue_body=""):
+    body = ("config global\n" + VDOM_IF + "end\nconfig vdom\n edit \"red\"\n" + red_body + "next\n"
+            + (" edit \"blue\"\n" + blue_body + "next\n" if blue_body else "") + "end\n")
+    return _scan(tmp_path, body, header=VDOM_HEADER)[2]
+
+
+def test_same_vdom_user_and_listener_form_a_path(tmp_path):
+    section = _vdom(tmp_path, VDOM_USER + VDOM_VPN)
+    paths = _paths(section, "sslvpn-password-guessing")
+    assert [path["scope"] for path in paths] == ["red"]
+    assert paths[0]["instance-key"] == "red/ipv4/sslvpn-user:alice"
+
+
+def test_namesake_user_in_another_vdom_does_not_change_the_join(tmp_path):
+    protected = VDOM_USER.replace("set two-factor disable", "set two-factor fortitoken")
+    # The red user is protected; an unprotected namesake in blue must not complete red's path.
+    section = _vdom(tmp_path, protected + VDOM_VPN, VDOM_USER)
+    assert _paths(section, "sslvpn-password-guessing") == []

@@ -870,6 +870,7 @@ class PluginAristaChecks(BasePlugin):
             ))
         associations = eos.get_ntp_associations()
         if not associations:
+            record_control(parser, "arista.eos.ntp-authentication", CO.NOT_APPLICABLE, "No active NTP server association is configured.")
             self.add_issue(
                 Finding(
                     rule_id="arista.eos.ntp.servers",
@@ -887,6 +888,20 @@ class PluginAristaChecks(BasePlugin):
             )
         else:
             for association in associations:
+                ntp_state = association.authentication_state
+                ntp_instance = f"{association.vrf}/{association.address}"
+                if ntp_state == "unauthenticated":
+                    record_control(parser, "arista.eos.ntp-authentication", CO.FINDING,
+                                   "Association has neither an effective symmetric-key binding nor NTS.",
+                                   instance=ntp_instance)
+                elif ntp_state == "authenticated":
+                    record_control(parser, "arista.eos.ntp-authentication", CO.NO_FINDING,
+                                   "Association is bound to a trusted key or a resolved NTS profile.",
+                                   instance=ntp_instance)
+                else:
+                    record_control(parser, "arista.eos.ntp-authentication", CO.UNKNOWN,
+                                   f"Association authentication is {ntp_state}; effective protection cannot be established.",
+                                   instance=ntp_instance)
                 if association.authentication_state == "unauthenticated":
                     self.add_issue(
                         Finding(

@@ -551,7 +551,14 @@ class PluginFortiOSBaseline(BasePlugin):
         policies = list(fortios.iter_scoped_sections("system password-policy"))
         # SC-044 FOS-12: the 6.4.14 CLI reference also documents status disable.
         release = self._release(fortios)
+        if not policies and not (self._supports_default_inference(fortios) or (release and release >= (6, 4, 14))):
+            record_control(parser, "fortinet.fortios.password-policy", CO.UNKNOWN,
+                           "No system password-policy section and the release is unqualified for the documented default.",
+                           instance="global")
         if (self._supports_default_inference(fortios) or (release and release >= (6, 4, 14))) and not policies:
+            record_control(parser, "fortinet.fortios.password-policy", CO.FINDING,
+                           "No system password-policy section; documented default status is disable.",
+                           instance="global")
             self.add_issue(
                 self._finding(
                     parser,
@@ -567,19 +574,27 @@ class PluginFortiOSBaseline(BasePlugin):
                 )
             )
         for scope, settings, path in policies:
-            if not self._enabled(settings):
+            # An omitted status is the documented default 'disable' (same CLI reference
+            # as the absent-section case above), not an enabled policy.
+            status_default = ("status" not in settings and (
+                self._supports_default_inference(fortios) or (release and release >= (6, 4, 14))))
+            if not self._enabled(settings) or status_default:
+                record_control(parser, "fortinet.fortios.password-policy", CO.FINDING,
+                               "Password policy is disabled (explicitly or by the documented default).", instance=scope)
                 self.add_issue(
                     self._finding(
                         parser,
                         "fortinet.fortios.password_policy.disabled",
                         "Administrator password policy is not enabled",
-                        f"The password policy in scope '{scope}' is explicitly disabled.",
+                        (f"The password policy in scope '{scope}' does not set status, so the documented default 'disable' applies."
+                         if status_default else f"The password policy in scope '{scope}' is explicitly disabled."),
                         "Locally managed credentials may accept weak or repeatedly reused passwords.",
                         "Enable the password policy for admin-password with organization-approved complexity and reuse controls.",
                         Severity.HIGH,
-                        self._evidence(fortios, path + ("status",), "set status disable"),
+                        self._evidence(fortios, path + (() if status_default else ("status",)),
+                                       "password-policy status absent: documented default disable" if status_default else "set status disable"),
                         (FORTINET_PASSWORD_REFERENCE,),
-                        basis=FindingBasis.EXPLICIT_VALUE,
+                        basis=FindingBasis.DOCUMENTED_DEFAULT if status_default else FindingBasis.EXPLICIT_VALUE,
                     )
                 )
                 continue
@@ -605,6 +620,27 @@ class PluginFortiOSBaseline(BasePlugin):
             reuse = self._text(settings.get("reuse-password")).lower()
             if reuse == "enable" or (not reuse and self._supports_default_inference(fortios)):
                 weak.append("password reuse is permitted")
+            unresolved = not self._supports_default_inference(fortios) and (
+                not reuse
+                or any(not self._text(settings.get(field)) for field in numeric_targets)
+            )
+            malformed = any(
+                self._text(settings.get(field)) and not self._text(settings.get(field)).isdigit()
+                for field in numeric_targets
+            )
+            if weak:
+                record_control(parser, "fortinet.fortios.password-policy", CO.FINDING, "Password policy is weak: " + "; ".join(weak) + ".", instance=scope)
+            elif unresolved or malformed:
+                record_control(parser, "fortinet.fortios.password-policy", CO.UNKNOWN,
+                               "Some password-policy settings are absent on an unqualified release or malformed.",
+                               instance=scope)
+            elif not self._text(settings.get("status")):
+                record_control(parser, "fortinet.fortios.password-policy", CO.UNKNOWN,
+                               "Password policy status is not explicitly set.", instance=scope)
+            else:
+                record_control(parser, "fortinet.fortios.password-policy", CO.NO_FINDING,
+                               "Password policy is enabled with the required complexity and reuse settings.",
+                               instance=scope)
             if weak:
                 self.add_issue(
                     self._finding(
@@ -621,6 +657,12 @@ class PluginFortiOSBaseline(BasePlugin):
                     )
                 )
 
+        if not list(fortios.iter_scoped_sections("system global")):
+            qualified = self._supports_default_inference(fortios)
+            record_control(parser, "fortinet.fortios.admin-lockout", CO.NO_FINDING if qualified else CO.UNKNOWN,
+                           "No system global section; documented defaults are 3 attempts / 60 seconds."
+                           if qualified else "No system global section and the release is unqualified for defaults.",
+                           instance="global")
         for scope, settings, path in fortios.iter_scoped_sections("system global"):
             threshold = self._text(settings.get("admin-lockout-threshold"))
             duration = self._text(settings.get("admin-lockout-duration"))
@@ -629,6 +671,18 @@ class PluginFortiOSBaseline(BasePlugin):
                 weak.append(f"threshold {threshold}")
             if duration.isdigit() and int(duration) < 60:
                 weak.append(f"duration {duration} seconds")
+            if weak:
+                record_control(parser, "fortinet.fortios.admin-lockout", CO.FINDING,
+                               "Weak lockout: " + ", ".join(weak) + ".", instance=scope)
+            elif any(value and not value.isdigit() for value in (threshold, duration)):
+                record_control(parser, "fortinet.fortios.admin-lockout", CO.UNKNOWN, "Lockout settings are malformed.", instance=scope)
+            elif (not threshold or not duration) and not self._supports_default_inference(fortios):
+                record_control(parser, "fortinet.fortios.admin-lockout", CO.UNKNOWN,
+                               "Lockout settings rely on defaults on an unqualified release.", instance=scope)
+            else:
+                record_control(parser, "fortinet.fortios.admin-lockout", CO.NO_FINDING,
+                               "Lockout threshold and duration meet the baseline (explicit or documented defaults 3/60s).",
+                               instance=scope)
             if weak:
                 self.add_issue(
                     self._finding(
@@ -2600,6 +2654,14 @@ class PluginFortiOSBaseline(BasePlugin):
             ("2.5.2", "HA monitored interfaces", bool(ha) and not any(self._text(s.get("monitor")) for s in ha)),
             ("2.5.3", "HA reserved management interface", bool(ha) and not any(self._text(s.get("ha-mgmt-status")).lower() == "enable" for s in ha)),
             ("2.5.4", "HA group-id", bool(ha) and not any(self._text(s.get("group-id")) not in {"", "0"} for s in ha)),
+            # 7.4.4 CLI reference (config application list): other-/unknown-application-log
+            # default disable; entries log default enable.
+            ("4.5.3", "application control logging (other/unknown applications and every entry)", bool(apps) and any(
+                self._text(e.get("other-application-log")).lower() != "enable"
+                or self._text(e.get("unknown-application-log")).lower() != "enable"
+                or any(isinstance(entry, dict) and self._text(entry.get("log")).lower() == "disable"
+                       for entry in (e.get("entries") or {}).values() if isinstance(e.get("entries"), dict))
+                for e in apps)),
             ("4.5.2", "enforce-default-app-port on application profiles", bool(apps) and not any(self._text(e.get("enforce-default-app-port")).lower() == "enable" for e in apps)),
             ("5.1.1", "compromised-host quarantine automation", not any(self._text(e.get("action-type")).lower().startswith("quarantine") for e in actions)),
             ("v1.1 3.3", "unique firewall policy names", len(names) != len(set(names))),

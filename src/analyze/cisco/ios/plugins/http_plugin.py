@@ -1,4 +1,5 @@
 from src.analyze.common.base_plugin import BasePlugin
+from src.analyze.common.controls import ControlOutcome, record_control
 from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.cisco.ios import CiscoIOSParser, ConfigurationState
@@ -30,6 +31,8 @@ class PluginHTTP(BasePlugin):
         ios = self._ios_parser(parser)
         platform = ios.get_http_platform_default()
         if ios.get_http_server_state() == ConfigurationState.ABSENT and platform is not None:
+            record_control(parser, "cisco.ios.http-server", ControlOutcome.FINDING,
+                           "'ip http server' is absent and the platform default enables it.", instance="ip http server")
             return Finding(
                 rule_id="cisco.ios.http.cleartext_service",
                 device=parser.device_type,
@@ -44,7 +47,11 @@ class PluginHTTP(BasePlugin):
                 basis=FindingBasis.DOCUMENTED_DEFAULT,
             )
         if ios.get_http_server_state() != ConfigurationState.ENABLED:
+            record_control(parser, "cisco.ios.http-server", ControlOutcome.NO_FINDING,
+                           "The clear-text HTTP server is disabled or not configured.", instance="ip http server")
             return None
+        record_control(parser, "cisco.ios.http-server", ControlOutcome.FINDING,
+                       "'ip http server' is explicitly enabled.", instance="ip http server")
         return Finding(
             rule_id="cisco.ios.http.cleartext_service",
             device=parser.device_type,
@@ -65,7 +72,11 @@ class PluginHTTP(BasePlugin):
             return None
         access_class = ios.get_http_access_class()
         if access_class:
+            record_control(parser, "cisco.ios.http-server", ControlOutcome.NO_FINDING,
+                           "The enabled HTTP server is bound to an 'ip http access-class' ACL.", instance="ip http access-class")
             return None
+        record_control(parser, "cisco.ios.http-server", ControlOutcome.FINDING,
+                       "The enabled HTTP server has no 'ip http access-class' restriction.", instance="ip http access-class")
         return Finding(
             rule_id="cisco.ios.http.access_restriction",
             device=parser.device_type,

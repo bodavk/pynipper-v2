@@ -114,10 +114,35 @@ class PluginPANOSChecks(BasePlugin):
         return bool(values) and all(value.casefold() == "any" for value in values)
 
     def check_management(self, parser: BaseDeviceParser) -> None:
-        services = self._panos(parser).get_normalized_config().management_services.items
+        panos = self._panos(parser)
+        services = panos.get_normalized_config().management_services.items
+        control = "paloalto.panos.cleartext-management"
+        cleartext = [service for service in services if service.protocol.casefold() in {"http", "telnet"}]
+        if not cleartext:
+            profiles = {(item.scope, item.name) for item in panos.get_management_profiles()}
+            unresolved_profile = any(
+                interface.enabled and interface.management_profile
+                and (interface.device_scope, interface.management_profile) not in profiles
+                for interface in panos.get_interfaces()
+            )
+            if panos.panorama_inheritance_unknown:
+                record_control(parser, control, ControlOutcome.UNKNOWN,
+                               "Panorama template inheritance is unresolved; inherited management services are unknown.")
+            elif not panos.management_exported():
+                record_control(parser, control, ControlOutcome.UNKNOWN,
+                               "Device management configuration is not exported.")
+            elif unresolved_profile:
+                record_control(parser, control, ControlOutcome.UNKNOWN,
+                               "An interface references a management profile that is not exported.")
+            else:
+                record_control(parser, control, ControlOutcome.NO_FINDING,
+                               "No attached Interface Management profile or MGT service enables HTTP or Telnet.")
         for service in services:
             protocol = service.protocol.casefold()
             if protocol in {"http", "telnet"}:
+                record_control(parser, control, ControlOutcome.FINDING,
+                               f"{protocol.upper()} management is enabled.",
+                               instance=f"{service.scope}/{service.interface}/{protocol}")
                 self.add_issue(
                     Finding(
                         rule_id=f"paloalto.panos.management.{protocol}",

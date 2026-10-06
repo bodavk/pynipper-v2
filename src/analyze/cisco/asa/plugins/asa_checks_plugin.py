@@ -65,7 +65,14 @@ class PluginASAChecks(BasePlugin):
         return parser
 
     def check_telnet(self, parser: BaseDeviceParser) -> None:
-        for grant in self._asa(parser).get_management_grants("telnet"):
+        grants = self._asa(parser).get_management_grants("telnet")
+        if not grants:
+            record_control(parser, "cisco.asa.management-telnet", ControlOutcome.NO_FINDING,
+                           "No Telnet management grant is configured.")
+        for grant in grants:
+            record_control(parser, "cisco.asa.management-telnet", ControlOutcome.FINDING,
+                           f"A Telnet management grant is active on interface '{grant.interface}'.",
+                           instance=grant.raw_line)
             self.add_issue(
                 Finding(
                     rule_id="cisco.asa.management.telnet",
@@ -302,12 +309,22 @@ class PluginASAChecks(BasePlugin):
     def check_unrestricted_ssh(self, parser: BaseDeviceParser) -> None:
         asa = self._asa(parser)
         levels = {item["nameif"]: item["security_level"] for item in asa.get_interfaces()}
-        for grant in asa.get_management_grants("ssh"):
+        grants = asa.get_management_grants("ssh")
+        if not grants:
+            record_control(parser, "cisco.asa.ssh-source-restriction", ControlOutcome.NOT_APPLICABLE,
+                           "No SSH management grant is configured.")
+        for grant in grants:
             name = grant.interface.casefold()
             is_management_only = "mgmt" in name or "management" in name or "oob" in name
             is_untrusted = levels.get(grant.interface, -1) <= 10 and not is_management_only
             if not grant.is_any_source or not is_untrusted:
+                record_control(parser, "cisco.asa.ssh-source-restriction", ControlOutcome.NO_FINDING,
+                               "The SSH grant is source restricted or on a trusted/management interface.",
+                               instance=grant.raw_line)
                 continue
+            record_control(parser, "cisco.asa.ssh-source-restriction", ControlOutcome.FINDING,
+                           f"SSH permits every source on untrusted interface '{grant.interface}'.",
+                           instance=grant.raw_line)
             self.add_issue(
                 Finding(
                     rule_id="cisco.asa.management.unrestricted_ssh",

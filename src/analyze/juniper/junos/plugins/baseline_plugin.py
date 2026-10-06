@@ -279,8 +279,26 @@ class PluginJunOSBaseline(BasePlugin):
         retries = self._statements(
             parser, ("system", "login", "retry-options", "tries-before-disconnect")
         )
+        if not retries:
+            if self._junos(parser).has_unexpanded_inheritance():
+                record_control(parser, "juniper.junos.login-lockout", CO.UNKNOWN,
+                               "tries-before-disconnect is absent but apply-groups inheritance is not expanded.",
+                               instance="tries-before-disconnect")
+            else:
+                record_control(parser, "juniper.junos.login-lockout", CO.NO_FINDING,
+                               "tries-before-disconnect is absent; the documented Junos default is three attempts.",
+                               instance="tries-before-disconnect")
         if retries:
             value = retries[-1].path[-1]
+            if not value.isdigit():
+                record_control(parser, "juniper.junos.login-lockout", CO.UNKNOWN,
+                               "tries-before-disconnect value is malformed.", instance="tries-before-disconnect")
+            elif int(value) > 3:
+                record_control(parser, "juniper.junos.login-lockout", CO.FINDING,
+                               f"tries-before-disconnect is {value}.", instance="tries-before-disconnect")
+            else:
+                record_control(parser, "juniper.junos.login-lockout", CO.NO_FINDING,
+                               f"tries-before-disconnect is {value}.", instance="tries-before-disconnect")
             if value.isdigit() and int(value) > 3:
                 self.add_issue(self._finding(
                     parser, "juniper.junos.authentication.login_attempts",
@@ -295,6 +313,10 @@ class PluginJunOSBaseline(BasePlugin):
         lockout = self._statements(
             parser, ("system", "login", "retry-options", "lockout-period")
         )
+        record_control(parser, "juniper.junos.login-lockout", CO.NO_FINDING if lockout else CO.FINDING,
+                       "A login retry-options lockout-period is configured." if lockout
+                       else "No effective login retry-options lockout-period is configured.",
+                       instance="lockout-period")
         if not lockout:
             self.add_issue(self._finding(
                 parser, "juniper.junos.authentication.lockout",
@@ -900,6 +922,11 @@ class PluginJunOSBaseline(BasePlugin):
         junos = self._junos(parser)
         associations = junos.get_ntp_associations()
         if not associations:
+            if junos.has_unexpanded_inheritance():
+                record_control(parser, "juniper.junos.ntp-authentication", CO.UNKNOWN,
+                               "No NTP association is configured directly, but apply-groups inheritance is not expanded.")
+            else:
+                record_control(parser, "juniper.junos.ntp-authentication", CO.NOT_APPLICABLE, "No NTP server or peer is configured.")
             self.add_issue(
                 self._finding(
                     parser,
@@ -921,6 +948,11 @@ class PluginJunOSBaseline(BasePlugin):
         )
         for association in associations:
             evidence = tuple(item for item in association.evidence)
+            authenticated = association.authentication_state == "authenticated"
+            record_control(parser, "juniper.junos.ntp-authentication", CO.NO_FINDING if authenticated else CO.FINDING,
+                           "Association is bound to a trusted, resolved key." if authenticated
+                           else f"Association is {association.authentication_state}.",
+                           instance=f"{association.role} {association.address}")
             if association.authentication_state != "authenticated":
                 detail = (
                     "has no key binding"

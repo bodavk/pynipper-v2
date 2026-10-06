@@ -101,8 +101,19 @@ section claims. Low/Medium absence hygiene is not claimed migrated here.
 | ScreenOS manager sources/authentication-server references; HP/AOS-S manager/password/SNMP protection; SonicOS SNMP protection | Open or independently default-qualified: establish dialect/release, domain and same-object field knowledge. SonicOS custom E-CLI does not certify legacy preference formats. |
 | F5 module/default branches | Existing explicit/module/release qualifications retained. Missing NTP configuration is already ungraded. Provisioning a module is not proof of complete AFM/APM/ASM rule content; UCS/F5OS are separate inputs. |
 
-The open rows are a maintenance inventory, not verified migrations or control
-passes. Whole-project absence migration remains open under SC-064/SC-049.
+Review 2026-10-06 (SC-064, after the omitted-setting correction): the remaining
+rows already follow the maintainer rule. Their absence checks report settings
+omitted from exported configuration as not configured or by a cited default, and
+explicit values are judged as such. Dangling references in self-contained exports
+(IOS/XE AAA groups and CoPP classes, ASA crypto and AAA objects, Junos filters and
+policers, EOS ACLs, FortiOS VPN objects) remain findings; references managed
+outside the export (Panorama, FortiManager, Junos apply-groups, controller state)
+stay unknown. A whole-file "fragment" heuristic (for example no `interface` or
+`line` section in an IOS file) was prototyped and rejected: it also suppressed
+findings about objects present in the file whose evidence is redacted or
+summarized, and complete exports always contain those sections anyway. Fragment
+handling therefore stays per domain (PAN-OS `management_exported`). Control
+outcomes for these rules continue under SC-049.
 
 ## Effective permission is not shadowing
 

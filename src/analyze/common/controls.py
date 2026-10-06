@@ -157,6 +157,25 @@ CONTROLS: dict[str, ControlDefinition] = {
                           ("arista.eos.logging.remote_destination",)),
         ControlDefinition("arista.eos.ssh-source-restriction", "SSH management is source restricted", 1, frozenset({"ARISTA_EOS"}),
                           ("arista.eos.ssh.source_restriction",)),
+        # SC-049 third batch (2026-10-06).
+        ControlDefinition("cisco.ios.http-server", "HTTP management is disabled or restricted", 1, _IOS_FAMILY,
+                          ("cisco.ios.http.cleartext_service", "cisco.ios.http.access_restriction")),
+        ControlDefinition("cisco.asa.management-telnet", "Telnet management is not enabled", 1, frozenset({"ASA"}),
+                          ("cisco.asa.management.telnet",)),
+        ControlDefinition("cisco.asa.ssh-source-restriction", "SSH management is source restricted", 1, frozenset({"ASA"}),
+                          ("cisco.asa.management.unrestricted_ssh",)),
+        ControlDefinition("fortinet.fortios.admin-lockout", "Administrator lockout is not weakened", 1, frozenset({"FORTIOS"}),
+                          ("fortinet.fortios.admin.lockout",)),
+        ControlDefinition("fortinet.fortios.password-policy", "Administrator password policy is enabled and strong", 1,
+                          frozenset({"FORTIOS"}), ("fortinet.fortios.password_policy.disabled", "fortinet.fortios.password_policy.weak")),
+        ControlDefinition("juniper.junos.ntp-authentication", "NTP servers are authenticated", 1, frozenset({"JUNOS"}),
+                          ("juniper.junos.ntp.authentication",)),
+        ControlDefinition("juniper.junos.login-lockout", "Login retry and lockout limits are configured", 1, frozenset({"JUNOS"}),
+                          ("juniper.junos.authentication.lockout", "juniper.junos.authentication.login_attempts")),
+        ControlDefinition("arista.eos.ntp-authentication", "NTP servers are authenticated", 1, frozenset({"ARISTA_EOS"}),
+                          ("arista.eos.ntp.authentication",)),
+        ControlDefinition("paloalto.panos.cleartext-management", "HTTP and Telnet management are disabled", 1, frozenset({"PAN_OS"}),
+                          ("paloalto.panos.management.http", "paloalto.panos.management.telnet")),
     )
 }
 

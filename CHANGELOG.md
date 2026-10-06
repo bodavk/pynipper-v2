@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Control outcomes (SC-049, third batch): 9 more controls (46 in total) for IOS HTTP server, ASA Telnet and SSH source restriction, FortiOS administrator lockout and password policy, Junos NTP authentication and login lockout, EOS NTP authentication and PAN-OS cleartext management.
+
+- Batch comparison (SC-050): `python -m src.batch compare --output <file>.html` writes an HTML comparison.
+
+- FortiOS: a `config system password-policy` section with `status` omitted is reported by its documented default (disable); new CIS 4.5.3 hygiene item for application-control logging. Multi-VDOM attack-path tests (SC-063).
+
+- CIS references regenerated: 217 rule IDs now carry benchmark recommendation numbers. SC-064 review of the remaining absence inventory completed with no further changes.
+
 - Batch audits (SC-050): `python -m src.batch run` audits a manifest of exports into per-device reports and a hashed index; `python -m src.batch compare` classifies findings as new, unchanged, resolved, no longer assessable or not comparable, never counting a missing export, exclusion or rule change as a fix.
 
 - Finding basis everywhere (PT-009): every finding now declares whether it comes from a configured value, a documented default, an omitted required setting or an omitted hardening setting.

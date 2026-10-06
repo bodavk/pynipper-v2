@@ -90,3 +90,45 @@ def test_asa_control_outcomes(tmp_path, control, body, outcome, rule):
     outcomes, rules = _asa(tmp_path, body)
     assert outcomes[control] == outcome
     assert (rule in rules) == (outcome == "finding")
+
+
+# SC-049 third batch: IOS HTTP server, ASA Telnet and SSH source restriction.
+ASA_INTERFACES = (
+    "interface GigabitEthernet0/0\n nameif outside\n security-level 0\n ip address 203.0.113.1 255.255.255.0\n"
+    "interface GigabitEthernet0/1\n nameif inside\n security-level 100\n ip address 10.0.0.1 255.255.255.0\n"
+)
+
+
+@pytest.mark.parametrize("body,outcome,rules", [
+    ("ip http server\n", "finding", {"cisco.ios.http.cleartext_service", "cisco.ios.http.access_restriction"}),
+    ("ip http server\nip http access-class 10\naccess-list 10 permit 10.0.0.0 0.0.0.255\n", "finding",
+     {"cisco.ios.http.cleartext_service"}),
+    ("no ip http server\n", "evaluated-no-finding", set()),
+    ("", "evaluated-no-finding", set()),
+])
+def test_ios_http_server_control(tmp_path, body, outcome, rules):
+    outcomes, emitted = _ios(tmp_path, body)
+    assert outcomes["cisco.ios.http-server"] == outcome
+    http_rules = {"cisco.ios.http.cleartext_service", "cisco.ios.http.access_restriction"}
+    assert emitted & http_rules == rules
+
+
+@pytest.mark.parametrize("control,body,outcome,rule", [
+    ("cisco.asa.management-telnet", ASA_INTERFACES + "telnet 10.0.0.0 255.255.255.0 inside\n", "finding",
+     "cisco.asa.management.telnet"),
+    ("cisco.asa.management-telnet", ASA_INTERFACES, "evaluated-no-finding", "cisco.asa.management.telnet"),
+    ("cisco.asa.ssh-source-restriction", ASA_INTERFACES + "ssh 0.0.0.0 0.0.0.0 outside\n", "finding",
+     "cisco.asa.management.unrestricted_ssh"),
+    ("cisco.asa.ssh-source-restriction", ASA_INTERFACES + "ssh 198.51.100.0 255.255.255.0 outside\n",
+     "evaluated-no-finding", "cisco.asa.management.unrestricted_ssh"),
+    ("cisco.asa.ssh-source-restriction", ASA_INTERFACES, "not-applicable", "cisco.asa.management.unrestricted_ssh"),
+])
+def test_asa_management_access_controls(tmp_path, control, body, outcome, rule):
+    outcomes, rules = _asa(tmp_path, body)
+    assert outcomes[control] == outcome
+    assert (rule in rules) == (outcome == "finding")
+
+
+def test_asa_ssh_mixed_grants_is_a_finding(tmp_path):
+    outcomes, _ = _asa(tmp_path, ASA_INTERFACES + "ssh 10.0.0.0 255.255.255.0 inside\nssh 0.0.0.0 0.0.0.0 outside\n")
+    assert outcomes["cisco.asa.ssh-source-restriction"] == "finding"

@@ -56,3 +56,28 @@ def test_unattached_profile_is_not_assessed(tmp_path):
     with contextlib.redirect_stdout(io.StringIO()):
         rules = {f.rule_id for f in process_fortios_conf(FortiOSParser(str(path))).values()}
     assert "fortinet.fortios.dnsfilter.botnet_blocking_disabled" not in rules
+
+
+def test_password_policy_without_status_is_documented_default_disable(tmp_path):
+    path = tmp_path / "p.conf"
+    path.write_text(HEADER + "config system password-policy\n set minimum-length 14\nend\n", encoding="utf-8")
+    with contextlib.redirect_stdout(io.StringIO()):
+        findings = {f.rule_id: f for f in process_fortios_conf(FortiOSParser(str(path))).values()}
+    finding = findings["fortinet.fortios.password_policy.disabled"]
+    assert finding.basis is FindingBasis.DOCUMENTED_DEFAULT and "does not set status" in finding.observation
+
+
+@pytest.mark.parametrize("body,listed", [
+    (' edit "app1"\n set other-application-log enable\n set unknown-application-log enable\n'
+     ' config entries\n edit 1\n set action block\n next\n end\n next\n', False),
+    (' edit "app1"\n set other-application-log enable\n set unknown-application-log enable\n'
+     ' config entries\n edit 1\n set log disable\n next\n end\n next\n', True),
+    (' edit "app1"\n next\n', True),
+])
+def test_application_control_logging_hygiene(tmp_path, body, listed):
+    path = tmp_path / "a.conf"
+    path.write_text(HEADER + "config application list\n" + body + "end\n", encoding="utf-8")
+    with contextlib.redirect_stdout(io.StringIO()):
+        findings = {f.rule_id: f for f in process_fortios_conf(FortiOSParser(str(path))).values()}
+    hygiene = findings.get("fortinet.fortios.hardening.cis_hygiene")
+    assert ("CIS 4.5.3" in (hygiene.observation if hygiene else "")) is listed

@@ -143,3 +143,16 @@ def test_public_cli_run_and_compare(tmp_path, capsys):
     assert json.loads(output.read_text(encoding="utf-8"))["totals"]["resolved"] == 0
     assert main(["compare", "--old", str(tmp_path / "a/batch-index.json"),
                  "--new", str(tmp_path / "b/batch-index.json"), "--output", str(output)]) == 2
+
+
+def test_compare_html_output_escapes_values(tmp_path):
+    result = _two_sets(tmp_path, f"{CORPUS}/cisco_asa/vulnerable.conf", f"{CORPUS}/cisco_asa/secure.conf")
+    from src.batch import comparison_html
+    result["devices"][0]["notes"].append("<script>alert(1)</script>")
+    html = comparison_html(result)
+    assert "<script>" not in html and "&lt;script&gt;" in html
+    assert "resolved" in html and "cisco.asa." in html
+    output = tmp_path / "cmp.html"
+    assert main(["compare", "--old", str(tmp_path / "old/out/batch-index.json"),
+                 "--new", str(tmp_path / "new/out/batch-index.json"), "--output", str(output)]) == 0
+    assert output.read_text(encoding="utf-8").startswith("<!doctype html>")
