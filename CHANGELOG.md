@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Fix certificate-assessment crashes for Ed25519/Ed448 signatures, which have
+  no separate signature hash object. FortiOS audits now handle these certificates
+  both when selected for management HTTPS and elsewhere in exported inventory;
+  offline assessment, secret redaction and existing weak-key checks are preserved.
+
 - Documentation reconciliation (2026-10-07): replace duplicate roadmap bullets
   with a current navigation/open-work index, retire the completed cleanup prompt
   in place, and distinguish historical benchmark/validation evidence from active

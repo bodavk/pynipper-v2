@@ -84,8 +84,11 @@ def certificate_metadata(certificate: x509.Certificate) -> CertificateMetadata:
     else:
         key_algorithm, key_size = certificate.public_key_algorithm_oid.dotted_string, None
     try:
-        signature_hash = certificate.signature_hash_algorithm.name
-    except UnsupportedAlgorithm:  # EdDSA and unknown algorithms have no separate hash object.
+        # Ed25519/Ed448 signatures return None, not UnsupportedAlgorithm:
+        # https://cryptography.io/en/stable/x509/reference/#cryptography.x509.Certificate.signature_hash_algorithm
+        hash_algorithm = certificate.signature_hash_algorithm
+        signature_hash = hash_algorithm.name if hash_algorithm is not None else "intrinsic-or-unknown"
+    except UnsupportedAlgorithm:
         signature_hash = "intrinsic-or-unknown"
 
     return CertificateMetadata(

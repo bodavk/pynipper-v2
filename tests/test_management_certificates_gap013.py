@@ -1,9 +1,13 @@
 import base64
 from datetime import datetime, timezone
+import json
+import socket
+
+import pytest
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric import ed25519, ed448, rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 from src.analyze.cisco.asa.plugins.baseline_plugin import PluginASABaseline
@@ -13,10 +17,11 @@ from src.analyze.fortinet.core.process_fortios_conf import process_fortios_conf
 from src.analyze.paloalto.core.process_panos_conf import process_panos_conf
 from src.analyze.paloalto.plugins.panos_checks_plugin import PluginPANOSChecks
 from src.common.assessment import AssessmentContext
-from src.common.certificates import assess_public_certificate, load_public_certificate
+from src.common.certificates import assess_public_certificate, certificate_metadata, load_public_certificate
 from src.devices.cisco.asa import CiscoASAParser
 from src.devices.fortinet.fortios import FortiOSParser
 from src.devices.paloalto.panos import PaloAltoPANOSParser
+from src.main import main
 
 
 def _write(tmp_path, name, text):
@@ -419,3 +424,86 @@ end''')
     assert "fortinet.fortios.https.certificate_material_malformed" in {
         item.rule_id for item in process_fortios_conf(parser).values()
     }
+
+
+def _eddsa_certificate(key_type, public_key=None):
+    """Synthetic public material only; never use a client certificate or private key."""
+    key = key_type.generate()
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Synthetic EdDSA")])
+    return (
+        x509.CertificateBuilder().subject_name(name).issuer_name(name)
+        .public_key(public_key or key.public_key()).serial_number(x509.random_serial_number())
+        .not_valid_before(datetime(2025, 1, 1, tzinfo=timezone.utc))
+        .not_valid_after(datetime(2030, 1, 1, tzinfo=timezone.utc))
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .sign(key, None)
+    )
+
+
+@pytest.mark.parametrize("key_type", [ed25519.Ed25519PrivateKey, ed448.Ed448PrivateKey])
+@pytest.mark.parametrize("weak_subject_key", [False, True])
+def test_eddsa_signature_without_separate_hash_retains_certificate_assessment(key_type, weak_subject_key):
+    public_key = (
+        rsa.generate_private_key(public_exponent=65537, key_size=1024).public_key()
+        if weak_subject_key else None
+    )
+    certificate = _eddsa_certificate(key_type, public_key)
+    assert certificate.signature_hash_algorithm is None
+    metadata = certificate_metadata(certificate)
+    assert metadata.signature_hash_algorithm == "intrinsic-or-unknown"
+    assert metadata.sha256 == certificate.fingerprint(hashes.SHA256()).hex()
+    result = assess_public_certificate(certificate, (certificate,), (), None, None)
+    assert result.algorithm_state == ("weak" if weak_subject_key else "acceptable")
+    assert result.validity_state == result.identity_state == result.trust_state == "unknown"
+
+
+@pytest.mark.parametrize("key_type", [ed25519.Ed25519PrivateKey, ed448.Ed448PrivateKey])
+@pytest.mark.parametrize("selected_eddsa", [False, True])
+@pytest.mark.parametrize("output_type", ["JSON", "HTML"])
+def test_fortios_eddsa_selected_or_inventory_certificate_reaches_offline_cli(
+    tmp_path, monkeypatch, key_type, selected_eddsa, output_type,
+):
+    ed_certificate = _eddsa_certificate(key_type)
+    ed_material = base64.b64encode(ed_certificate.public_bytes(serialization.Encoding.DER)).decode()
+    # The reported traceback occurred while examining another inventory certificate,
+    # not necessarily the certificate selected for HTTPS management.
+    selected_material = ed_material if selected_eddsa else _certificate_chain()[0]
+    parser = _fortios(tmp_path, f'''config vpn certificate local
+edit CORP-MGMT
+set certificate "{selected_material}"
+set private-key "NEVER-SERIALIZE-THIS"
+next
+edit UNBOUND-EDDSA
+set certificate "{ed_material}"
+next
+end''')
+
+    def prohibit_network(*args, **kwargs):
+        pytest.fail("Certificate assessment must remain offline")
+
+    monkeypatch.setattr(socket, "create_connection", prohibit_network)
+    monkeypatch.setattr(socket, "getaddrinfo", prohibit_network)
+    monkeypatch.setattr(socket.socket, "connect", prohibit_network)
+    binding = parser.get_management_certificate_bindings()[0]
+    assert binding.public_material_state == "parsed"
+    assert binding.assessment.algorithm_state == "acceptable"
+    assert binding.assessment.trust_state == "unknown"
+    assert selected_material not in repr(binding)
+    plugin = PluginFortiOSBaseline()
+    plugin.check_management_certificates(parser)
+    assert plugin.get_issues() == []
+
+    output = tmp_path / f"eddsa-report.{output_type.lower()}"
+    assert main(["-i", parser.config_filepath, "-f", str(output), "-o", output_type]) == 0
+    text = output.read_text(encoding="utf-8")
+    assert "NEVER-SERIALIZE-THIS" not in text
+    assert selected_material not in text
+    assert ed_material not in text
+    if output_type == "JSON":
+        report = json.loads(text)
+        assert not any(
+            "https.certificate_" in item["rule_id"]
+            for item in report["security-audit"].values()
+        )
+    else:
+        assert "<html" in text.lower()
