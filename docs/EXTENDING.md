@@ -17,7 +17,7 @@ Before coding, record:
 
 Choose a stable rule ID using `<vendor>.<os>.<area>.<condition>`. Do not encode severity, a transient benchmark version, or an object name in the ID.
 
-Qualify the control against the actual export and tested release before treating omission as a finding. A current vendor guide does not establish an older release's defaults, and a policy-only export cannot establish device or operating-system posture. Organization-specific thresholds, licensed benchmark/profile mappings, and controls lacking verified source text require separate human approval; do not imply CIS conformance from an unlicensed or unverified mapping. Explicit insecure values may be assessed when authoritative evidence supports them, while missing, inherited, unsupported, or unexpanded state stays unknown.
+Qualify the control against the actual export and tested release before treating omission as a finding. A current vendor guide does not establish an older release's defaults, and a policy-only export cannot establish device or operating-system posture. Organization-specific thresholds, licensed benchmark/profile mappings, and controls lacking verified source text require separate human approval; do not imply CIS conformance from an unlicensed or unverified mapping. Explicit insecure values may be assessed when authoritative evidence supports them, while absent containing domains, external inheritance, malformed/unsupported syntax and needed unverified defaults stay unknown. Omission within an exported object follows the maintainer rule below.
 
 ### 2. Extend parsing when necessary
 
@@ -38,11 +38,11 @@ Extend `BasePlugin`, accept `BaseDeviceParser`, narrow to the required parser ty
 
 Declare the finding `basis` (`FindingBasis`) where the rule creates the finding: `EXPLICIT_VALUE` when the configuration sets the insecure value, `DOCUMENTED_DEFAULT` when nothing is set and a vendor source documents the insecure default for the identified release, `MISSING_EXPLICIT_SETTING` when a recommended hardening setting is absent and the default was not assessed, and `REQUIRED_SETTING_MISSING` when a required control is absent and the device does not provide it by default (no NTP server, no remote log destination). A rule with several branches sets the basis per branch. Never infer it from the finding text. A finding without a declared basis shows no note.
 
-**Omitted settings (maintainer rule, see [AGENTS.md](../AGENTS.md)).** A setting omitted inside an object or section that is present in the export is known state: apply a cited, release-gated vendor default (`DOCUMENTED_DEFAULT`) or report the unconfigured feature (`REQUIRED_SETTING_MISSING`), and word the observation as "not configured / omitted", not as a wrong value. Return unknown only when the whole containing section is absent from the export, the value is malformed or unsupported, the reference points outside the export (unresolved or inherited), or the needed default is not verified for the release. Do not require the export to restate defaults, and do not withhold a not-configured finding because whole-file completeness cannot be proven.
+**Omitted settings (maintainer rule, see [AGENTS.md](../AGENTS.md)).** A setting omitted inside an object or section that is present in the export is known state: apply a cited, release-gated vendor default (`DOCUMENTED_DEFAULT`) or report the unconfigured feature (`REQUIRED_SETTING_MISSING`), and word the observation as "not configured / omitted", not as a wrong value. Return unknown only when the whole containing section is absent from the export, the value is malformed or unsupported, the reference is externally managed/inherited, or the needed default is not verified for the release. Undefined local references in self-contained exports are broken-binding findings, not inherited unknowns. Use `MISSING_EXPLICIT_SETTING` where the maintainer rule calls for it. Do not require the export to restate defaults, and do not withhold a not-configured finding because whole-file completeness cannot be proven.
 
 ```python
 from src.analyze.common.base_plugin import BasePlugin
-from src.analyze.common.issue import Finding, Severity
+from src.analyze.common.issue import Finding, FindingBasis, Severity
 
 
 class PluginExampleChecks(BasePlugin):
@@ -57,6 +57,7 @@ class PluginExampleChecks(BasePlugin):
             impact="Describe the security consequence.",
             recommendation="Describe the exact corrective state.",
             severity=Severity.HIGH,
+            basis=FindingBasis.EXPLICIT_VALUE,
             exploitability="Describe the access or precondition an attacker needs.",
             evidence=("sanitized configuration evidence",),
             references=("https://vendor.example/hardening-guide",),
@@ -187,8 +188,8 @@ For accuracy/refactoring work, follow [Export evidence](EXPORT_EVIDENCE.md):
 
 - Establish parser-owned knowledge for the exact control/domain and tenant; a
   header or known inventory field does not qualify unrelated omissions.
-- Keep explicit unsafe values, release defaults and complete-scope absence as
-  separate finding bases. Missing/malformed evidence in fragments stays unknown.
+- Keep explicit unsafe values, cited release defaults and omitted in-object protections as
+  separate finding bases. Absent containing domains and malformed/unsupported evidence stay unknown; do not require whole-file completeness.
 - Register migrated controls explicitly and record stable instance keys. Retain
   unknown reasons when another instance has a finding; do not infer passes.
 - Use the parser's bounded effective-permission and NAT qualification APIs for

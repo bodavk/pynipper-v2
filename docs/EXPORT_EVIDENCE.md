@@ -15,8 +15,8 @@ is unverified). The observation states that the setting is omitted / not
 configured, and the report's basis note says that nothing is set to a wrong value
 and that the setting may be applied elsewhere. Unknown is reserved for: a whole
 containing section absent from the export, malformed or unsupported values,
-references to objects outside the export (unresolved, Panorama/template/controller
-inheritance), and defaults not verified for the release. Exports omit defaults, so
+externally managed references (Panorama/template/controller
+inheritance), and needed defaults not verified for the release. Undefined local references in self-contained exports remain broken-binding findings. Exports omit defaults, so
 never require them to be restated (FortiOS backups omit `set status up`).
 
 The 2026-10-06 correction restored these findings after the first SC-064 pass had
@@ -52,9 +52,10 @@ An explicit unsafe setting can still produce a finding in a partial export;
 unknown fields must remain visible. Release-qualified defaults are a separate
 evidence basis with independent vendor/release requirements. This cleanup does
 not extend the insecure-defaults register. There is no assessment-policy flag
-that declares an arbitrary file complete. Future completeness provenance must
-qualify an export procedure and its exact device/tenant/domain, not infer it from
-inventory or override unresolved inheritance.
+that declares an arbitrary file complete. Additional companion evidence must
+qualify its exact device/tenant/domain, not infer it from inventory or override
+unresolved inheritance. Presence of the containing object is sufficient evidence
+for its omitted required settings; no export-completeness flag is required.
 
 ## Report contract
 
@@ -77,7 +78,11 @@ daily or weekly recurrence/action records with valid exported timing, and explic
 manual (`none`) selection. Unsupported recurrence dialects remain unknown rather
 than being guessed from a familiar action string.
 
-## High/Critical absence-check inventory
+## High/Critical absence semantics reference
+
+This is the dated SC-064 qualification inventory, not a second open task list.
+The omitted-setting correction below supersedes earlier completeness proposals;
+current remaining implementation lives in the [SC backlog](agent_notes/SECURITY_COVERAGE_TASKS.md).
 
 Registered analyzer negative branches and parser missing/unresolved/default
 states were reviewed. Rows are grouped by semantics: explicit nonblocking actions,
@@ -92,14 +97,14 @@ section claims. Low/Medium absence hygiene is not claimed migrated here.
 | PAN-OS `policy.security_profiles`, `security_profile_unresolved`, `security_profile_ineffective`, `updates.threat_content` | Exported allow rule without profiles: not configured (finding). No threat schedule while the management configuration is exported: not configured (finding); fragment: unknown. Unexported group members/content: unknown. Explicit nonblocking actions/download-only schedules: findings. Full threat coverage and content freshness are unassessed. |
 | ASA `aaa.management_authentication`, `management_accounting` | Exported management grant without a binding (or with the binding removed): not configured (finding). Binding to a server group that is not in the export: unknown per protocol. |
 | FortiOS `policy.security_profiles`, `security_profile_unresolved`, `security_profile_ineffective` and Medium `policy.logging` | Native IPv4 `policy` and IPv6 `policy6`: qualify permission, VDOM/family and boundary roles. Omitted interface `status` is the documented default `up` and omitted `utm-status` the documented default `disable` on 7.x (finding with `DOCUMENTED_DEFAULT`). Explicit UTM/logging disablement and nonblocking content: findings. Omitted `logtraffic` is not "disabled". Unresolved attachments/content: unknown. |
-| IOS/XE AAA/login, VTY authentication/authorization/group usability, console/auxiliary authentication, `aaa.tacacs_key_missing` | Open: qualify per-line/method/group completeness and fallback applicability, not an IOS header. Explicit bypasses are distinct. |
-| IOS/XE control-plane policy/class references and empty policy; `routing.bgp.authentication` | Open: separate unexported definitions from explicit no enforcement or effective unauthenticated sessions. |
-| ASA `failover.authentication`, `aaa.tacacs_key_missing`, routing-authentication and bound crypto-reference branches | Open: qualify domain/attachment completeness and unexported authentication/crypto objects. Explicit legacy crypto and client-certificate policy violations are separate. |
-| FortiOS `admin.remote_group`, `snmp.secure_user_missing`, incomplete `snmp.v3_security`, `vpn.unresolved` | Open: model account/group/profile/credential completeness per VDOM. Admin MFA/trusted-host/password-policy omissions also consume independently maintained release defaults; do not bulk rewrite that database. |
-| Junos super-user authentication/login-class/accounting bindings, lo0/filter/policer references, BGP authentication, RadSec trust/client certificate, unresolved VPN | Open: qualify hierarchy, logical systems, groups and referenced domains. Explicit no-enforcement and documented routing defaults are separate. |
-| EOS role/command-authorization bindings, eAPI TLS profile/certificate, control-plane ACL/CoPP references and empty selectors | Open: qualify role/AAA/TLS/filter/class domains and attachments. Explicit bypasses and documented OSPF defaults are separate. |
-| Check Point FW1 layer cleanup/stealth absence | Open: prove complete ordered layer and gateway/object inventory; policy-only exports do not establish OS administration or absent gateway objects. Gaia is a separate dialect. |
-| ScreenOS manager sources/authentication-server references; HP/AOS-S manager/password/SNMP protection; SonicOS SNMP protection | Open or independently default-qualified: establish dialect/release, domain and same-object field knowledge. SonicOS custom E-CLI does not certify legacy preference formats. |
+| IOS/XE AAA/login, VTY authentication/authorization/group usability, console/auxiliary authentication, `aaa.tacacs_key_missing` | Qualification boundary: retain per-line/method/group completeness and fallback applicability, not an IOS header. Explicit bypasses are distinct. |
+| IOS/XE control-plane policy/class references and empty policy; `routing.bgp.authentication` | Qualification boundary: distinguish unexported definitions from explicit no enforcement or effective unauthenticated sessions. |
+| ASA `failover.authentication`, `aaa.tacacs_key_missing`, routing-authentication and bound crypto-reference branches | Qualification boundary: retain domain/attachment completeness and unexported authentication/crypto objects. Explicit legacy crypto and client-certificate policy violations are separate. |
+| FortiOS `admin.remote_group`, `snmp.secure_user_missing`, incomplete `snmp.v3_security`, `vpn.unresolved` | Qualification boundary: preserve account/group/profile/credential completeness per VDOM. Admin MFA/trusted-host/password-policy omissions also consume independently maintained release defaults; do not bulk rewrite that database. |
+| Junos super-user authentication/login-class/accounting bindings, lo0/filter/policer references, BGP authentication, RadSec trust/client certificate, unresolved VPN | Qualification boundary: retain hierarchy, logical systems, groups and referenced domains. Explicit no-enforcement and documented routing defaults are separate. |
+| EOS role/command-authorization bindings, eAPI TLS profile/certificate, control-plane ACL/CoPP references and empty selectors | Qualification boundary: retain role/AAA/TLS/filter/class domains and attachments. Explicit bypasses and documented OSPF defaults are separate. |
+| Check Point FW1 layer cleanup/stealth absence | Qualification boundary: prove complete ordered layer and gateway/object inventory; policy-only exports do not establish OS administration or absent gateway objects. Gaia is a separate dialect. |
+| ScreenOS manager sources/authentication-server references; HP/AOS-S manager/password/SNMP protection; SonicOS SNMP protection | Qualification boundary: establish dialect/release, domain and same-object field knowledge. SonicOS custom E-CLI does not certify legacy preference formats. |
 | F5 module/default branches | Existing explicit/module/release qualifications retained. Missing NTP configuration is already ungraded. Provisioning a module is not proof of complete AFM/APM/ASM rule content; UCS/F5OS are separate inputs. |
 
 Review 2026-10-06 (SC-064, after the omitted-setting correction): the remaining
@@ -221,6 +226,22 @@ template and unsuccessful-audit handling is preserved. The manifest ID is an
 auditor's declared identity, not a verified physical identity. Current findings
 remain visible in both JSON and escaped HTML comparison views. Stable scoped
 subject metadata is separately planned under SC-050, not implemented here.
+
+The current ASA corpus comparison expects 20 resolved findings and four
+no-longer-assessable (console timeout, local-user storage, tunnel-group key
+storage and management certificate). Masked keys, unexported certificate
+material and an unqualified ASDM timeout default introduce uncertainty into
+the related controls; console uncertainty comes from another instance in its
+shared session-timeout control. This is the conservative subject-binding
+limitation, not proof that the console setting is still unsafe.
+Reverse comparison still reports 24 new findings. SC-049/SC-050 retain a review
+of whether these control groupings are appropriately narrow.
+
+The current PAN-OS default-admin control has a known accuracy defect:
+malformed strings with a supported crypt prefix can be reported as changed.
+It is recorded as open under SC-049; passing existing tests does not validate
+that malformed-input branch. Future fixes must validate the parser-owned
+format before recording an evaluated-no-finding outcome.
 
 ## PAN-OS snapshot cache boundary
 

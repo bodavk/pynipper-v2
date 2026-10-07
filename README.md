@@ -76,13 +76,13 @@ pynipper-ng -d cisco-ios -i tests\test_data\cisco_ios_example.conf -o JSON -f re
 
 ## Reading the report
 
-Checks cover management access, authentication, passwords and keys, logging, firewall policy, routing, VPN, cryptography and platform protections. Each report also has a coverage section that lists what was checked, what was unknown and what isn't supported.
+Checks cover management access, authentication, passwords and keys, logging, firewall policy, routing, VPN, cryptography and platform protections. Each report also has a coverage section that lists what was checked, what was unknown and what isn't supported. Registered controls cover many existing checks, but coverage is not yet exhaustive; [open work](docs/TODO.md) distinguishes remaining implementation from evidence gates.
 
 Keep in mind:
 
 - **This is a static review of a saved file, not a live test.** It can't see whether a policy is installed, what certificate is actually served, or whether a backup succeeded.
 - **No findings doesn't mean secure.** Missing data, inherited settings and runtime behavior may be unknown. Check the coverage section.
-- **"Not configured" is not "misconfigured".** A finding marked *Not configured (setting omitted)* means the export doesn't contain that protection; nothing is set to a wrong value. If the setting is applied elsewhere (Panorama, a template, a section left out of the export), confirm it there. Only a section missing from the export entirely, a malformed value, or a reference to something outside the export is shown as unknown. See [export evidence and limitations](docs/EXPORT_EVIDENCE.md).
+- **Omitted settings and unknown evidence are different.** A required protection missing inside an exported object can be a finding; documented defaults are release-qualified. Absent sections, malformed/unsupported values, external inheritance and needed unverified defaults remain unknown. See [export evidence](docs/EXPORT_EVIDENCE.md).
 - If a report shows a `parse_error`, the export couldn't be read. PAN-OS and FortiOS templates with unfilled placeholders are marked `unrendered-template`; use a real device export instead.
 
 ## Many devices at once

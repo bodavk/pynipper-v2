@@ -1,4 +1,10 @@
-# Implementation handoff: preserve functionality while correcting audit accuracy
+# Historical implementation handoff: audit accuracy cleanup
+
+**Retired as an execution prompt — 2026-10-07.** The ready SC-068/069, SC-050 stages 1–2 and profiling-qualified SC-066 scope below has been implemented. The original text is retained for traceability, not as instructions to repeat completed work or reset later functionality. Current open work lives in [Security coverage tasks](SECURITY_COVERAGE_TASKS.md) and [the documentation/open-work index](../TODO.md).
+
+Durable contracts are maintained in [Export evidence](../EXPORT_EVIDENCE.md), [Architecture](../ARCHITECTURE.md), [Extending](../EXTENDING.md) and [AGENTS.md](../../AGENTS.md). Original 59-control and 24-resolved references below describe the pre-expansion snapshot; current source has 420 controls and the ASA comparison fixture expects 20 resolved plus four no-longer-assessable. That grouping remains a documented review item, not a reason to silently restore older expectations.
+
+## Original handoff (historical)
 
 Implement the ready cleanup work in the authoritative [Security coverage backlog](SECURITY_COVERAGE_TASKS.md), in this order:
 

@@ -6,9 +6,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Documentation reconciliation (2026-10-07): replace duplicate roadmap bullets
+  with a current navigation/open-work index, retire the completed cleanup prompt
+  in place, and distinguish historical benchmark/validation evidence from active
+  tasks. Preserve architectural contracts, source registers and sample gates.
+- Cross-vendor control outcomes (SC-049): expand the registry from 74 to 420
+  controls and add seven vendor completion test files (697 cases). This records
+  outcomes for existing checks; remaining mappings and accuracy review stay open.
+  The latest full implementation gate passed 3,856 tests and all 39 corpus cases.
+- F5 SSH: an exported `sys sshd` with omitted `login` and explicit unrestricted
+  sources now reports the documented enabled default on 13.x–17.x.
+- ASA batch comparison: current tests distinguish 20 resolved findings from four
+  no-longer-assessable as the expanded ledger exposes uncertainty. Reverse
+  comparison remains 24 new; stable object identity/grouping review remains open.
+
 - FortiOS trusted hosts: an administrator who restricts only one address family is now reported when the omitted `trusthost`/`ip6-trusthost` takes its documented 7.4.1+ default (any source) and an interface allows administration in that family; older releases record unknown.
 
-- Control outcomes (SC-049, fifth batch): 15 more controls (74 in total), the first for F5 BIG-IP and Check Point Gaia.
+- Control outcomes (SC-049, fifth batch): 15 more controls (historical 74-control milestone), the first for F5 BIG-IP and Check Point Gaia.
 
 - Batch input preservation (SC-068): preflight all JSON/HTML/index destinations
   against configurations, directory exports, manifest, policies and local bundles,
@@ -26,7 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Attack paths (SC-063): `cleartext-admin-unrestricted` for IOS/IOS-XE VTY Telnet and ASA Telnet grants, and `writable-default-snmp` for IOS/IOS-XE. ASA was removed from the SNMP pattern because the ASA supports SNMP read-only access only. Findings are unchanged.
 
-- Control outcomes (SC-049, fourth batch): 13 more controls (59 in total) for FortiOS, Junos, EOS and PAN-OS banners, idle timeouts, lockout, SNMP, NTP authentication and policy logging.
+- Control outcomes (SC-049, fourth batch): 13 more controls (historical 59-control milestone) for FortiOS, Junos, EOS and PAN-OS banners, idle timeouts, lockout, SNMP, NTP authentication and policy logging.
 
 - Control outcomes (SC-049, third batch): 9 more controls (46 in total) for IOS HTTP server, ASA Telnet and SSH source restriction, FortiOS administrator lockout and password policy, Junos NTP authentication and login lockout, EOS NTP authentication and PAN-OS cleartext management.
 
@@ -48,7 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Omitted-settings correction (maintainer rule, see `AGENTS.md`): settings omitted inside exported objects are again reported as not configured (`REQUIRED_SETTING_MISSING`) or by their documented default instead of unknown. Restored PAN-OS `policy.security_profiles`, `updates.threat_content`, `admin.ssh_profile_missing`, `management.tls_profile_missing`, omitted TLS minimum and password complexity; ASA management AAA authentication/accounting; FortiOS omitted interface `status` (default up) and policy `utm-status` (default disable) on 7.x. Hostname-only fragments, malformed values and references outside the export stay unknown. The basis note now reads "Not configured (setting omitted)" and states that nothing is set to a wrong value. New `AGENTS.md` records the maintainer rules for coding agents.
 
-- Offline accuracy cleanup (SC-064–SC-067): partial PAN-OS password, management,
+- Initial accuracy cleanup (historical, later corrected under the omitted-setting rule above) (SC-064–SC-067): partial PAN-OS password, management,
   role/authentication, inspection and update exports, plus absent ASA management
   AAA bindings, retain unknown evidence instead of unsupported absence findings.
   Explicit unsafe settings remain findings; release-default data is unchanged.

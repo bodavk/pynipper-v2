@@ -29,19 +29,19 @@ Junos REST HTTP detection reports explicit non-loopback listener bindings with c
 
 | Platform | Implemented analysis |
 |---|---|
-| F5 BIG-IP TMOS | Explicit configuration-utility legacy TLS versions and weak literal cipher suites, reachable SNMP community/v3-user weaknesses, management SSH source/idle state, HTTP configuration utility source/redirect state, console and tmsh idle timeouts, tmsh command auditing, local password-policy enforcement, standard remote-syslog server state, and enabled virtual servers with attached enabled Client SSL profiles that allow non-SSL traffic. No absence-based defaults, broader LTM policy analysis, iRules, APM/AFM/WAF, F5OS, or runtime state assessment. |
+| F5 BIG-IP TMOS | Explicit configuration-utility legacy TLS versions and weak literal cipher suites, reachable SNMP community/v3-user weaknesses, management SSH source/idle state, HTTP configuration utility source/redirect state, console and tmsh idle timeouts, tmsh command auditing, local password-policy enforcement, standard remote-syslog server state, and enabled virtual servers with attached enabled Client SSL profiles that allow non-SSL traffic. Qualified release defaults include omitted SSH login with explicit unrestricted allow on 13.x–17.x. Selected LTM, AFM-default and bound-ASM checks remain limited to the documented slice in [Supported devices](../../docs/SUPPORTED_DEVICES.md); broader iRules/APM/AFM rule contents/ASM signatures, F5OS and runtime behavior remain unassessed. |
 
-T-030 and T-032 are closed at this bounded static-analysis scope. These are not claims of the same breadth as the seven target platforms: an explicit assessment time can grade exported certificate material, but the certificate actually served, revocation, runtime authorization outcome, licensing/subscription state, installed policy, negotiated VPN security associations, peer identity, and time-sensitive firmware support cannot be established from the supported configuration files alone.
+Secondary-platform and basic-support scope is bounded by the supported export, not the size of the outcome registry. An explicit assessment time can grade exported certificate material, but the certificate actually served, revocation, runtime authorization outcome, licensing/subscription state, installed policy, negotiated VPN security associations, peer identity, and time-sensitive firmware support cannot be established from the supported configuration files alone.
 
 Check Point analysis is intentionally limited to what matching offline exports prove. It does not claim the policy was successfully compiled or installed, resolve runtime dynamic-object membership, use hit counts, or detect conflicts across different ordered/inline layers. Expiry findings require a directly exported literal date. Shadow/redundancy findings require positive non-negated fields with matching time, VPN, through, compatible install-on scope, and completely resolved static network and service semantics; partial overlap is not reported as full containment.
 
-Every finding constructed by the twelve corpus pipelines now includes at least one authoritative vendor-documentation URL. A source-level test rejects any covered plugin `Finding` construction without references, and the permanent public-pipeline corpus rejects emitted findings without an HTTPS source or with an insecure external URL.
+Every finding constructed by the thirteen corpus pipelines now includes at least one authoritative vendor-documentation URL. A source-level test rejects any covered plugin `Finding` construction without references, and the permanent public-pipeline corpus rejects emitted findings without an HTTPS source or with an insecure external URL.
 
 ## Plugin requirements
 
 Accuracy cleanup uses parser-owned scoped export knowledge and typed bounded
 effective-permission/NAT qualification APIs. Missing evidence is unknown, not a
-negative finding or a pass. Migrated controls record stable scoped outcomes and
+negative finding or a pass; settings omitted inside exported objects follow [AGENTS.md](../../AGENTS.md). Migrated controls record stable scoped outcomes and
 retain uncertainty beside findings. See [Export evidence](../../docs/EXPORT_EVIDENCE.md).
 
 - Extend `BasePlugin`.

@@ -1,6 +1,6 @@
-# Open tasks from practical testing
+# Practical testing: open work and implementation history
 
-Recorded **2026-09-24** from hands-on use of the tool. These are defects and usability gaps. PT-001 to PT-007 were implemented on 2026-09-24 (see status per task); PT-008 is open. Follow [Architecture](../ARCHITECTURE.md) and [Extending](../EXTENDING.md). Every task finishes with `.\.venv\Scripts\python.exe scripts\run_full_regression.py`, and any snapshot change must be reviewed deliberately.
+Recorded **2026-09-24**, status navigation reconciled **2026-10-07**. PT-001–PT-007 and the initial PT-009 finding-basis migration are implemented; PT-008 dependency modernization remains deferred. PT-010's acquisition/local-replay baseline is implemented, with qualified breadth and validation stages still open. Completed bodies below are historical evidence, not instructions to repeat fixes. Current feature/security work lives in [Security coverage tasks](SECURITY_COVERAGE_TASKS.md), and durable contracts in [Architecture](../ARCHITECTURE.md) and [Extending](../EXTENDING.md).
 
 | ID | Priority | Title |
 |---|---|---|
@@ -12,8 +12,8 @@ Recorded **2026-09-24** from hands-on use of the tool. These are defects and usa
 | PT-006 | P2 | Layered, user-friendly finding explanations (**done**) |
 | PT-007 | P2 | Point to related findings and compensating controls (**done**) |
 | PT-008 | P3 | Modernise the dependency stack (long-term fix for PT-001) |
-| PT-009 | P3 | Say whether a finding is an insecure value or a missing explicit hardening setting |
-| PT-010 | P1 | Look up known CVEs for the software version found in the configuration (opt-in) (**first stage done**) |
+| PT-009 | P3 | Finding-basis metadata (**initial migration done**, remaining parser distinctions recorded below) |
+| PT-010 | P1 | Separate advisory acquisition and offline replay (**baseline done**, qualified follow-ups open) |
 
 <a id="pt-001"></a>
 ### PT-001: Pin MarkupSafe
@@ -156,11 +156,17 @@ Recorded **2026-09-24** from hands-on use of the tool. These are defects and usa
 **Status:** Done (2026-10-06). Every finding call site in `src/analyze` now declares a basis per branch (AST scan: the only exception is the informational `paloalto.panos.analysis.panorama_inheritance_unknown`); the regression corpus has 163 explicit-value, 75 documented-default, 118 required-setting-missing and 7 missing-explicit-setting findings. Unresolved references to objects absent from the export are labelled required-setting-missing; per-branch choices follow the omitted-setting rule in `AGENTS.md`. Known simplifications: PAN-OS `policy.session_logging` cannot yet separate an omitted `log-end` from an explicit `no` (parser maps both to False), SonicOS per-branch labels inspect evidence command text, and FortiOS `dos.logging` treats an explicit `log disable` like an omission. History: `FindingBasis` (`explicit-value`, `documented-default`, `missing-explicit-setting`) is an optional `Finding` argument, also accepted by the vendor `_finding` helpers. `to_dict()` adds `basis`; the HTML card shows a labelled note and JSON adds `basis-note` (`src/report/explanations.py`, `BASIS_TEXT`). Declared for: IOS `vty.telnet` (missing `transport input` vs. explicit telnet/all), `vty.insecure_output_transport`, `ip.source_route`, SSH version/retries/timeout (explicit vs. documented default); ASA `management.certificate`; FortiOS `password_policy.disabled` (absent on 7.x = documented default, explicit disable) and `management.insecure_protocol`; EOS `authentication.lockout_disabled`; Junos `ssh.root_login`. Second batch (2026-09-25): explicit-value for configured default communities (IOS, ASA, EOS, AOS-S, F5), write communities (ASA, F5), SNMPv3 users without authPriv (IOS, ASA, EOS, AOS-S) and with MD5/DES (IOS, ASA, EOS, AOS-S, F5), and Junos insecure management services. Deliberately left undeclared: FortiOS/Junos/PAN-OS/SonicOS SNMPv3 security levels and F5 `v3_security` (the level may come from a release default), AOS-S `community_access` (unrestricted may be the default), and absence rules such as missing NTP or remote syslog, which fit none of the three labels. Corpus: 20 of 243 findings carry a basis. Third batch (2026-09-25, maintainer approved a fourth basis): `required-setting-missing` ("Required setting not configured") for missing NTP servers (IOS, ASA, EOS, Junos, ScreenOS, PAN-OS), IOS remote syslog and IOS login banner. The new SC checks declare their basis. Tests: `tests/test_finding_basis_pt009.py`. Remaining: declare the basis in the other rules, one rule at a time, from the code branch that raises the finding.
 
 <a id="pt-010"></a>
-### PT-010: CVE lookup for the configured software version (high priority, maintainer request 2026-09-25)
+### PT-010: Software advisory acquisition and local replay
+
+**Current operating contract (2026-10-07):** use the separate `python -m src.advisories fetch` command to acquire a bundle, then `--cve-data` during an offline audit. All audit runs remain passive and network-free, regardless of `-x`. AOS-S naming and repeated F5 module selection are implemented; see [README usage](../../README.md#known-cves-and-end-of-support-opt-in). Live acquisition validation and qualified vendor-feed/feature applicability work remain separate from audits.
+
+#### Historical design and validation (2026-09-25)
+
+The original design below predates SC-045. Its audit-time lookup flags and platform table are historical, not current commands or support limits.
 
 #### Analysis
 
-**What already exists.** Every parser has `get_version()`. Only the Cisco IOS analyzer queries advisories: the Cisco PSIRT openVuln API, which needs a registered client ID and secret in `default.conf`. Every other analyzer passes an empty advisory list. The report already has a "Software advisories" section and a JSON `vulnerabilities` list. The existing `CiscoVuln` has no `to_dict()`, so a JSON report with openVuln results would fail to serialize.
+**Pre-implementation state (historical).** Every parser has `get_version()`. Only the Cisco IOS analyzer queries advisories: the Cisco PSIRT openVuln API, which needs a registered client ID and secret in `default.conf`. Every other analyzer passes an empty advisory list. The report already has a "Software advisories" section and a JSON `vulnerabilities` list. The existing `CiscoVuln` has no `to_dict()`, so a JSON report with openVuln results would fail to serialize.
 
 **Version quality in exports** (checked on the regression corpus):
 
@@ -193,12 +199,12 @@ Recorded **2026-09-24** from hands-on use of the tool. These are defects and usa
 - Privacy: the lookup sends only the product CPE and version to NVD, never configuration content. It is still an outbound request, so it is **opt-in**. Default runs stay offline and deterministic, as the architecture requires (see also SC-022: never silently query vendors).
 - CVEs are shown as software advisories, not as configuration `Finding`s. No rule IDs are added and no snapshots change.
 
-#### Task
+#### Original task design (superseded audit flags)
 
 - New CLI options:
-  - `--cve-lookup`: query NVD online. Rejected together with `-x`.
+  - Historical `--cve-lookup`: superseded by the separate `src.advisories fetch` command; audit-time retrieval is prohibited.
   - `--software-version VALUE`: operator-supplied release, recorded as `version-origin: operator`.
-  - `--cve-save FILE`: save the raw NVD responses as a replayable bundle.
+  - Historical `--cve-save FILE`: superseded by `fetch --output FILE`.
   - `--cve-data FILE`: replay a bundle offline. It must match the device's product and version.
   - An NVD API key may be given in the configuration file (`[NVD] API_KEY`) or in the `NVD_API_KEY` environment variable. It is never written to the report.
 - New package `src/advisories/`:
@@ -212,11 +218,11 @@ Recorded **2026-09-24** from hands-on use of the tool. These are defects and usa
 
 **Tests (no network):** version mapping and the precision gate per family; CPE selection (exact version/update, deprecated names skipped); pagination; KEV and conditional marking; sorting; error and unavailable statuses; bundle save and replay; the conflict with `-x`; the API key is never serialized; HTML/JSON rendering; default runs make no request.
 
-**Status:** First stage done (2026-09-25): `src/advisories/` (versions, nvd, model, service), CLI options, all 12 analyzers, HTML/JSON rendering and `tests/test_cve_lookup_pt010.py` (36 tests, no network). The NVD API could not be reached from the development sandbox (egress policy), so the request format follows the NVD API 2.0 documentation and schema (`cpeMatchString`, `cpeName` + `isVulnerable`, `resultsPerPage`/`startIndex`/`totalResults`, `apiKey` header, `cisaExploitAdd`). First maintainer run (2026-09-25, Windows) failed with `SSLError`: certifi was current, so the likely cause is HTTPS inspection by a local proxy/antivirus. Fix: requests now verify against the OS store via `truststore` (new requirement), and TLS errors name the reason and the options (`REQUESTS_CA_BUNDLE`, `--cve-data`). Second maintainer run (FortiOS 6.4.2) reported 0 CVEs. Checked live on 2026-09-25 through the maintainer's browser: the CPE step was correct, but the CVE API returned `resultsPerPage: 0` with `totalResults: 134` whenever 2000 (or the default page size) was requested; 1000 and 1999 worked. Fixed with a page size of 1000 and a guard that turns an empty page with results into an error. A trimmed real record is in `tests/test_data/advisories/`. **Validate one real `--cve-lookup --cve-save` run** (for example FortiOS 7.4.6 and a Junos release) before relying on it, and keep the saved bundle out of the repository (`*.nvd.json` is ignored).
+**Historical first-stage validation:** First stage done (2026-09-25): `src/advisories/` (versions, nvd, model, service), CLI options, all 12 analyzers, HTML/JSON rendering and `tests/test_cve_lookup_pt010.py` (36 tests, no network). The NVD API could not be reached from the development sandbox (egress policy), so the request format follows the NVD API 2.0 documentation and schema (`cpeMatchString`, `cpeName` + `isVulnerable`, `resultsPerPage`/`startIndex`/`totalResults`, `apiKey` header, `cisaExploitAdd`). First maintainer run (2026-09-25, Windows) failed with `SSLError`: certifi was current, so the likely cause is HTTPS inspection by a local proxy/antivirus. Fix: requests now verify against the OS store via `truststore` (new requirement), and TLS errors name the reason and the options (`REQUESTS_CA_BUNDLE`, `--cve-data`). Second maintainer run (FortiOS 6.4.2) reported 0 CVEs. Checked live on 2026-09-25 through the maintainer's browser: the CPE step was correct, but the CVE API returned `resultsPerPage: 0` with `totalResults: 134` whenever 2000 (or the default page size) was requested; 1000 and 1999 worked. Fixed with a page size of 1000 and a guard that turns an empty page with results into an error. A trimmed real record is in `tests/test_data/advisories/`. **Outstanding acquisition validation: use the separate `python -m src.advisories fetch` command** (for example FortiOS 7.4.6 and a Junos release) before relying on it, and keep the saved bundle out of the repository (`*.nvd.json` is ignored).
 
 **NVD naming checked 2026-09-25:** ArubaOS-Switch is `cpe:2.3:o:hpe:arubaos-switch:<version>`, where the version has no platform prefix (`YA.16.10.0023` becomes `16.10.0023`). F5 has one `a:f5:big-ip_<module>` CPE per module (for example `local_traffic_manager`, `access_policy_manager`, `advanced_firewall_manager`, `application_security_manager`, `advanced_web_application_firewall`, `domain_name_system`, `global_traffic_manager`, `ssl_orchestrator`), with versions such as `16.1.5` and `16.1.5.2`.
 
 **Implemented 2026-09-25:** ArubaOS-Switch mapping and BIG-IP per-module lookup from `sys provision` (bundle format version 2; version 1 still read). Modules without an NVD product (`ilx`, `swg`, `urldb`, `vcmp`) are named in the report note.
 
-**Later stages:** Palo Alto and Cisco vendor feeds as cross-checks; F5 per provisioned module; AOS-S CPE qualification; correlating CVEs with the features the configuration enables (for example SSL VPN or GlobalProtect).
+**Remaining stages:** qualified vendor-feed cross-checks, separate acquisition validation and evidence-bound feature applicability. AOS-S naming and F5 per-module acquisition are already implemented; neither version matching nor acquisition success proves configuration-backed exploitability.
 

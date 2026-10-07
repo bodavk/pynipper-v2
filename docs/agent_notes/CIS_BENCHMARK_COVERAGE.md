@@ -1,10 +1,12 @@
-# CIS benchmark coverage review
+# CIS benchmark coverage review (historical evidence)
+
+**Snapshot, not current implementation status.** The tables and gap descriptions below record the 2026-10-05 review. Later implementations are tracked in [Security coverage tasks](SECURITY_COVERAGE_TASKS.md#current-execution-priorities--2026-10-06); do not treat every original gap below as still open or update historical counts from outcome-control registrations.
 
 Reviewed 2026-10-05 (rule IDs verified against the code the same day) from CIS benchmark PDFs supplied by the maintainer (kept outside the repository; CIS text is licensed and is not reproduced here). Recommendation numbers are cited; descriptions below are our own paraphrases. The full per-recommendation catalogue with CIS titles lives in the git-ignored `Claude outputs/cis/` folder.
 
 Mapping status: **C** covered by an existing rule, **P** partially covered, **V** believed covered but the rule ID must be verified against the code, **G** configuration-assessable gap, **M** organisational/manual (not provable from a configuration), **R** needs runtime or companion data (advisories, hit counters), **N** not a security control for this tool or a policy-specific variant.
 
-CIS mapping is cross-reference metadata, not a compliance claim (see SC-049 and the standards note in `SECURITY_COVERAGE_TASKS.md`). The tool's evidence rules still apply: an absent setting is a finding only with a vendor-documented default; a CIS recommendation alone is not a source for a default.
+CIS mapping is cross-reference metadata, not a compliance claim (see SC-049 and the standards note in `SECURITY_COVERAGE_TASKS.md`). Follow [AGENTS.md](../../AGENTS.md): omitted required protection inside an exported object can be a not-configured finding; a vendor default requires a cited release-qualified vendor source. A CIS recommendation alone is never a source for a default.
 
 ## Benchmarks reviewed
 
@@ -21,7 +23,7 @@ CIS mapping is cross-reference metadata, not a compliance claim (see SC-049 and 
 
 Older or sibling benchmarks were compared with the newest one for the same family; only recommendations without an equivalent are listed in the tasks below: FortiGate 7.0.x v1.4.0 and FortiGate v1.1.0; Cisco IOS XE 16.x v2.2.0, IOS 17.x v2.0.0, IOS 16 v2.0.0, IOS 15 v4.1.1 (archived), IOS XE v1.0.0; Cisco Firewall 8.x v4.2.0 (archived, ASA 8.x/PIX); Palo Alto Firewall 10 v1.3.0. Cisco IOS XR 7.x v1.0.1 and NX-OS v1.2.0 were supplied but cover platforms the tool does not support; they are not mapped.
 
-## New tasks
+## Review proposals (implementation status lives in the SC backlog)
 
 Priorities follow the existing scheme (P1 direct administrative/authentication/route-injection risk, P2 hardening depth, P3 hygiene). Each task still needs a vendor source for any default it relies on.
 

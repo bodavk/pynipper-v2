@@ -1,110 +1,77 @@
 # Open improvement work
 
-Updated on 2026-09-26. The prioritized, source-backed implementation backlog for all 16 device IDs is [High-risk security coverage tasks](agent_notes/SECURITY_COVERAGE_TASKS.md). It contains 50 tasks, including explicit evidence prerequisites, parser/detection contracts, interface constraints and acceptance tests. Completed RV task bodies were removed from [external-validation tasks](agent_notes/REALWORLD_VALIDATION_TASKS.md); RV-008 remains open. This index retains genuinely open work outside that focused review.
+Reconciled **2026-10-07** against the current source and regression results.
+This page is a navigation index, not a second implementation backlog.
+[Security coverage tasks](agent_notes/SECURITY_COVERAGE_TASKS.md#current-execution-priorities--2026-10-06)
+owns security-task priorities, verified scope and evidence gates.
 
-An item is not permission to turn absent or incomplete configuration evidence into a finding: first verify the vendor grammar, applicable release, authoritative control source, and representative sanitized fixtures. Follow [Extending pynipper-v2](EXTENDING.md) for implementation and validation requirements.
+## Documentation map
 
-## Current security-risk priority queue
+- [Architecture](ARCHITECTURE.md): runtime structure and durable engineering decisions.
+- [Extending](EXTENDING.md): adding checks, controls and device support.
+- [Export evidence](EXPORT_EVIDENCE.md): omitted settings, unknown evidence, scoped outcomes, policy proof and comparison limits.
+- [Assessment policy](ASSESSMENT_POLICY.md): approved deployment context and offline assessment inputs.
+- [Supported devices](SUPPORTED_DEVICES.md): verified formats and support boundaries.
+- [Security coverage tasks](agent_notes/SECURITY_COVERAGE_TASKS.md): authoritative SC-001–SC-069 backlog.
+- [Practical testing tasks](agent_notes/PRACTICAL_TESTING_TASKS.md): deferred dependency work and practical-testing history.
+- [External validation tasks](agent_notes/REALWORLD_VALIDATION_TASKS.md): remaining RV-008 evidence gate and compact completed-work ledger.
 
-Use the [SC execution priorities](agent_notes/SECURITY_COVERAGE_TASKS.md#current-execution-priorities--2026-09-26) before the historical lists below. Only unfinished stages are scheduled; completed implementations are retained as evidence.
+[CIS review](agent_notes/CIS_BENCHMARK_COVERAGE.md) and
+[external validation findings](agent_notes/REALWORLD_VALIDATION_FINDINGS.md)
+are dated evidence records, not current implementation status.
+[Insecure defaults by release](agent_notes/INSECURE_DEFAULTS_BY_RELEASE.md)
+is the separately maintained per-row source register.
+The [completed cleanup handoff](agent_notes/ACCURACY_FIX_IMPLEMENTATION_PROMPT.md)
+is historical reference only.
 
-- [ ] **P1 — direct high-impact risks:** SC-046 effective management ACLs; SC-026 unsafe management APIs; SC-011 privileged API identities; SC-047 SRX host-inbound access; SC-013 remote-access authentication/legacy VPN; SC-005 explicit RIPv1/IS-IS trust; SC-043 effective risky-service exposure. New work extends existing tasks where applicable.
-- [ ] **P1 — FortiOS firewall-policy depth:** SC-051 IPv4/IPv6 resolved broad-policy parity is implemented; SC-052 now has bounded multi-dimensional source/destination/service first-match shadow and fully blocked broad-allow handling. SC-043 covers a risky-port rule from a narrow, assessed external source to an assessed internal interface; SC-053 covers risky Internet-bound egress with explicit interface roles and an optional exact prohibited outbound protocol/port list. Both boundary checks include later rules only when all preceding enabled rules are proven disjoint on resolved address or protocol/port selectors. Sensitive-asset policy inputs, richer egress intent, interface-partition unions and other qualifiers remain open. SC-054 rule-hit evidence requires a real, versioned counter export and observation window; configuration alone cannot prove zero use.
-- [x] **P1 — offline requirement:** [SC-045](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-045) removes implicit outbound requests from audits. Advisory acquisition now uses a separate explicit command; local replay is retained.
-- [ ] **CIS benchmark follow-ups (2026-10-05):** [SC-055](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-055)–[SC-062](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-062) from the [CIS coverage review](agent_notes/CIS_BENCHMARK_COVERAGE.md). P1 items: Junos routing-protocol authentication and REST API (SC-058), PAN-OS update-server identity (SC-061).
-- [ ] **P2 — deployment-specific protection:** [SC-048](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-048) IPv6 first-hop and dual-stack coverage; multicast/IPv6 routing stages in SC-005; bounded DNS exposure in SC-026. Elevate a stage only when supplied scope establishes high-impact exposure.
-- [ ] **P2 — assessment assurance:** [SC-049](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-049) rule-level outcomes and manual-review coverage, complementary to PT-009.
-- [ ] **P3 — lower security priority:** [SC-050](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-050) offline batch manifests and comparisons.
+## Current implemented foundations
 
-SC-044 insecure-default research remains unchanged and separately owned. Detailed requirements and acceptance tests live only in the SC backlog, not in this index.
+- Offline single-device and batch audits, input-preserving output preflight, local advisory replay and JSON/HTML reports.
+- 420 explicitly registered outcome controls; this is not complete rule coverage or benchmark certification.
+- Five active and five gated attack-path patterns; HTTP clear-text administration is not yet part of the active Telnet pattern.
+- Comparison family/provenance checks and mixed-instance uncertainty; stable per-object comparison identity is still open.
+- Qualified F5 SSH omission finding, shared FortiOS trusted-host validation, finding-basis notes and parser-owned secret-report appendices.
 
-SC-046 progress (2026-10-02): standard IPv4 permit-all ACL detection is implemented for active IOS/XE SSH and HTTP/HTTPS management, including ordered removals and overlapping VTY changes. SSH also supports bounded named/numbered extended IPv4 IP/TCP rules with universal destinations and no port predicates. Explicit IPv6 ACL attachments are independently assessed for SSH VTY on IOS/IOS-XE and WebUI on IOS-XE. Supported first-match source-range unions prove permit-all across IPv4 or IPv6 only when no effective deny or gap remains. On IOS-XE 17.x, an enabled WebUI and configured-up IPv6 interface without an IPv6 WebUI ACL now receive a sanitized manual-review note; the normalized service inventory records each ACL family separately. Unresolved/unsupported attachments also produce sanitized coverage notes. Remaining: missing-family applicability for SSH/other releases, broader extended predicates, VRF-specific bindings and other adapters.
+The **2026-10-07 implementation review**, before this documentation-only edit,
+passed 3,856 tests and all 39 corpus configurations. Current ASA comparison
+expects 20 resolved and four no-longer-assessable findings; reverse comparison
+has 24 new findings. Older validation counts are historical.
 
-SC-047 (2026-09-29): SRX host-inbound admission of enabled management services on assessed external interfaces is implemented, including interface overrides, `all`/`any-service` with exceptions, management functional zone, J-Web listener lists and lo0/interface filter uncertainty. Parser records now also expose routing-protocol admission and separate logical-system zone/interface scopes. Remaining: qualify active routing relationships against protocol admission and tenant-local service enablement before adding findings.
+## Remaining work
 
-SC-005 (2026-09-29): Cisco IOS/IOS-XE explicit RIPv1 participation is assessed on active, network-bound interfaces. Global/interface send and receive versions are resolved independently; passive interfaces do not generate outbound findings. A bounded IS-IS stage now assesses explicit send-only, text-mode/legacy-password and unresolved MD5-key-chain state independently for hello and database scopes on active, explicitly leveled IPv4 process/interface bindings. Missing authentication, multiarea defaults, key lifetime, IPv6-only bindings, other vendors and multicast remain open or ungraded.
+- **Accuracy and assurance — SC-049/SC-050:** fix the newly identified PAN-OS malformed-hash false-success state; finish remaining rule mappings, scoped outcomes and vendor tests; review the conservative ASA comparison grouping. Stable subject identity is a separate stage.
+- **Direct security depth:** follow the SC priority queue for evidence-ready management ACL/API, identity, VPN, routing and risky-service work. Completed stages must not be reimplemented from older wave descriptions.
+- **Attack paths — SC-063:** HTTP administration and the five gated catalogue patterns require their exact same-entity admission/binding proof before expansion.
+- **Deployment-specific work:** remaining IPv6/access-edge and FortiOS policy/boundary depth belongs to the named SC tasks, not duplicate tasks here.
+- **PT-008 (deferred):** modernize dependencies, add reproducible constraints and fresh-install validation.
+- **Advisory breadth — SC-022/PT-010:** validate and extend separate acquisition/local replay only with qualified product/module/version evidence; never introduce audit-time retrieval.
 
-SC-011 (2026-09-29): FortiOS API-user explicit broad trusted-host detection is implemented for proven write-capable profiles, with separate IPv4/IPv6 and VDOM scope and redacted API keys. Exported peer-group/member references resolve to typed known/unresolved state; certificate validity, effective authentication and omitted defaults remain open.
+## Evidence gates kept open
 
-SC-026 progress (2026-09-28): Junos REST HTTP and classic JET gRPC clear-text explicit network-listener detection are implemented. gRPC authentication-bypass/TLS interactions, omitted listener defaults, EOS API controls and the other API/DNS stages remain open.
+These are not completed merely because adjacent checks or synthetic tests pass:
 
-## Priority: practical-testing defects
+- SC-054 FortiOS rule-hit evidence: a versioned counter export and observation window.
+- SC-017 Check Point anti-spoofing/implied rules: matching sanitized `objects.C` and `rules.C`.
+- SC-024 F5 AFM/APM/ASM depth: real module-provisioned exports and exact active bindings.
+- SC-018 remaining SonicOS zone/default/direction semantics: representative supported custom E-CLI exports.
+- SC-019 and RV-008 ScreenOS screens, time and VPN anti-replay: qualified release documentation and exports.
+- SC-020 PIX and SC-023 Gaia qualification: representative dialect/release exports; registry support is not parity.
+- Controller inheritance: merged-effective or representative Panorama/FortiManager exports.
+- Check Point FW1 `--show-secrets`: a sanitized export proving the relevant secret fields; current FW1 input remains explicitly unsupported for this option.
+- SC-044 source conflicts and unqualified old-release defaults: preserve the separate register and its open rows.
 
-- [x] PT-001 to PT-004 ([details](agent_notes/PRACTICAL_TESTING_TASKS.md)): MarkupSafe pin, FortiOS and cross-vendor multi-line value parsing, and evidence line numbers.
-- [x] PT-005 to PT-007: report readability, layered explanations and related-control hints.
-- [x] **PT-010 (high priority)**: opt-in CVE lookup for the configured software version through the free NVD CVE/CPE APIs, with offline bundle replay. See the [analysis](agent_notes/PRACTICAL_TESTING_TASKS.md#pt-010). **First stage done 2026-09-25**; remaining: one live validation run against NVD, then F5 per-module, AOS-S naming, vendor-feed cross-checks and feature correlation.
-- [ ] PT-008 (deferred): dependency modernisation.
-- [ ] PT-009 (low priority): label findings as explicit insecure value vs. missing explicit hardening setting. **Progress 2026-09-25:** `FindingBasis` model, report note and JSON field done, declared for a representative rule set; remaining: declare the basis in the other plugins rule by rule.
+## Retained maintainer boundaries and optional work
 
-## Priority: report secret visibility (maintainer priority)
+- Do not grade FortiOS log-administrator rights against a new organization role list; retain bound write-capable-role checks.
+- Lifecycle data must come from a free external dataset acquired separately; do not maintain a private lifecycle list or fetch during audits.
+- PAN-OS/SonicOS community-SNMP and SonicOS Telnet additions remain unscheduled unless separately approved.
+- FW1 local user credentials live in a separate user database; policy exports do not prove those credentials. Gaia OS secret appendices are independently supported.
+- Junos stateless-filter effectiveness needs proven attachment/order/selector semantics; runtime usage cannot be inferred.
+- New dialects (FWSM, old SonicOS preferences, CatOS/NMP, CSS, Passport/Accelar, F5OS/UCS) need demand, representative exports and maintenance justification.
+- Continue adding anonymized syntax fixtures and reviewing support maturity as evidence improves.
+- A cracking-tool hash export remains an optional design requiring approved handling, validated formats, explicit destination/permissions and no automatic cracking.
 
-- [ ] Complete opt-in report-secret visibility across supported families. The CLI now provides `--show-secrets` for parser-qualified credential lines on IOS/IOS-XE/ASA, FortiOS, Junos, ScreenOS, SonicOS 7, AOS-S, EOS, and F5 TMOS; default findings remain masked, unsupported families fail explicitly, and sensitive output requires a new path. SonicOS coverage is limited to explicit built-in/local administrator passwords. Extend parser-owned mappings to remaining families and additional secret types only with precise effective-state and redaction tests. Do not imply hashes can be reversed or hidden values recovered. **Progress 2026-09-24:** added PAN-OS (element-only excerpts), IOS/IOS-XE/ASA/EOS SNMP and NTP keys, IOS/IOS-XE/EOS routing keys, and fail-closed Windows ACL restriction (`icacls`). IOS TACACS+/IKE keys, ASA tunnel-group/AAA keys and Junos RADIUS/TACACS+/NTP/SNMP/IKE/routing keys were added the same day. AOS-S and ScreenOS non-administrator secrets were added on 2026-09-25. SonicOS non-administrator secrets (RADIUS/TACACS+/LDAP, SNMP communities, VPN shared secrets) were added on 2026-09-25 from the SonicOS/X 7 E-CLI reference. Check Point Gaia OS (password hashes, SNMP communities, SNMPv3 users) was added on 2026-09-25 with SC-023. **2026-10-02:** Windows ACL restriction now grants the actual process-token SID; the secret-report read tests pass in the Windows sandbox. Remaining: Check Point FW1 `objects.C` (see the maintainer decision below).
-
-## Priority: cleartext protocols and credential protection (maintainer request, 2026-09-25)
-
-Wave 4 of the [coverage backlog](agent_notes/SECURITY_COVERAGE_TASKS.md#wave-4--cleartext-protocols-credential-protection-and-attack-simplifying-settings). **Cisco (IOS, IOS-XE, ASA, PIX), FortiGate, Check Point and F5 first**, current and legacy releases. Every item is an evidence gate: read and cite the vendor source for syntax and defaults before implementing.
-
-P1:
-
-- [ ] [SC-025](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-025) Cisco Smart Install (`vstack`) enabled. **Done 2026-09-26** (explicit `vstack`; older releases without the line stay unknown).
-- [ ] [SC-031](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-031) AAA without protection: TACACS+/RADIUS servers without keys, LDAP without TLS, RADIUS without Message-Authenticator (IOS, ASA, FortiOS, F5). **First stage done 2026-09-26** (IOS/ASA TACACS+ keys, ASA and FortiOS LDAP); RADIUS Message-Authenticator for IOS/ASA/F5 remains.
-- [ ] [SC-034](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-034) IKEv1 aggressive mode with pre-shared keys (IOS, ASA, FortiOS, F5; Check Point needs a sample). **First stage done 2026-09-26** for IOS, ASA, FortiOS and F5.
-- [ ] [SC-035](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-035) Recoverable stored secrets: IOS/ASA keys without `password encryption aes`, FortiOS `private-data-encryption` off, legacy FortiOS `AK1` hashes. **First stage done 2026-09-26** (IOS, ASA, FortiOS private-data-encryption); `AK1` hashes remain.
-- [ ] [SC-039](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-039) FortiGate SSL-VPN: old TLS, factory certificate, open source address, no login-attempt limit. **First stage done 2026-09-26** (explicit values on an active SSL-VPN).
-- [x] [SC-041](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-041) F5 self-IP port lockdown exposing SSH and the configuration utility on traffic VLANs. **Done 2026-09-26.**
-
-P2:
-
-- [ ] [SC-026](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-026) More IOS legacy/cleartext services (`service pad`, `ip identd`, `mop`, rsh/rcp, `tftp-server`, `ip dns server`, `ip finger`) and IOS-XE insecure gNMI. **Done 2026-09-26** (explicit states; `ip dns server` remains).
-- [x] [SC-027](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-027) IOS HTTPS server TLS version and ciphers. **Done 2026-09-26.**
-- [ ] [SC-028](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-028) HSRP/VRRP/GLBP without authentication or with plain-text authentication (IOS first, then EOS/Junos). **IOS and Junos done 2026-09-26** (EOS blocked: vendor page not readable).
-- [ ] [SC-029](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-029) VTP server/client without a password. **Blocked 2026-09-26:** the VTP password is not in running-config exports (VLAN database only).
-- [ ] [SC-030](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-030) Root SSH login and bash shells (F5, Gaia), F5 remote-user default admin role, F5 password history. **First stage done 2026-09-26.**
-- [ ] [SC-032](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-032) Cleartext log transport where TLS is available (IOS-XE, ASA, FortiAnalyzer, F5). **ASA and FortiAnalyzer done 2026-09-26.**
-- [ ] [SC-033](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-033) Device serving NTP or answering control queries without restriction (IOS, FortiOS, F5; then EOS/Junos). **IOS and FortiOS done 2026-09-26.**
-- [ ] [SC-036](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-036) Credentials in URLs, `ip ftp password`, HTTP client passwords, F5 monitors with basic-auth headers. **IOS and F5 done 2026-09-26.**
-- [x] [SC-037](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-037) SNMPv1/v2c trap and inform communities. **Done 2026-09-26** (IOS, F5; ASA and FortiOS already covered).
-- [ ] [SC-038](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-038) FortiGate HA heartbeat without authentication/encryption (Check Point ClusterXL research). **FortiOS done 2026-09-26.**
-- [ ] [SC-040](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-040) FortiGate maintainer account and USB auto-install. **USB auto-install done 2026-09-26**; maintainer setting not in current CLI reference.
-- [ ] [SC-042](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-042) F5 weak client-side TLS, unvalidated server-side TLS, unencrypted persistence cookies. **Weak client ciphers and cookies done 2026-09-26.**
-- [ ] [SC-043](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-043) Shared risky-service catalogue for firewall policies. Initial Check Point/ASA/FortiOS/F5 integrations are done; **P1 effective-exposure refinements remain**, including F5 protocol identity and policy-order accuracy. See the current queue.
-- [ ] [SC-044](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-044) Release-gated insecure defaults for IOS 12.x, ASA 8.x, PIX, FortiOS 5.x/6.0, BIG-IP 11.x/12.x and FW1 R6x/R7x. **IOS 11.x/12.0 finger and small-server defaults done 2026-09-26.** Research table: [INSECURE_DEFAULTS_BY_RELEASE.md](agent_notes/INSECURE_DEFAULTS_BY_RELEASE.md) (2026-09-28). **91 of 109 primary-vendor rows implemented 2026-09-29**; only sample-dependent FW1 rows (distant future) and FortiOS < 6.4.14 (no published defaults) remain; the other rows are closed with reasons.
-- [ ] Gaia OS items (allowed clients, web UI TLS, SSH ciphers, AAA, NTP, syslog) live in [SC-023](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-023); F5 APM in [SC-024](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-024).
-
-## Detection and parser coverage
-
-- [ ] Continue open work across [SC-001 through SC-050](agent_notes/SECURITY_COVERAGE_TASKS.md#current-coverage-and-explicit-per-device-work) in the documented risk/evidence waves; SC-001, SC-002, SC-009 and SC-012 have bounded explicit-state coverage, SC-007 is implemented and SC-011 is partly implemented. This replaces the former broad F5, routing, access-edge, ScreenOS and certificate-expansion bullets; do not maintain duplicate implementations here.
-
-## Inputs and assessment scope
-
-- [x] Improve `-d` usability: present one recommended name per configuration family, preserve existing IDs as compatibility aliases, and allow conservative automatic identification of recognizable exports. Ambiguous or unsupported inputs request an explicit family rather than silently choosing a parser; device role stays separate from configuration format. CLI, fixture, help-text, and report-device-type tests cover the behavior.
-
-## Maintainer decisions (2026-09-25)
-
-- SC-011: do **not** grade FortiOS log-administrator rights against an organization role list. Keep only the existing bound write-capable role checks.
-- SC-022: an end-of-support warning is wanted **only** if a freely accessible, externally maintained version/lifecycle source can be used through an API, so the project does not maintain its own list. **Done 2026-09-25 with endoflife.date** (free API, community maintained, schema 1.2.1). It covers FortiOS, PAN-OS, Cisco IOS XE and F5 BIG-IP. Junos, ASA, EOS, SonicOS, AOS-S and classic IOS are not covered by that dataset and are reported as "not covered". Vendor feeds for those remain a possible later stage.
-- Not scheduled: SNMPv1/v2c community checks for PAN-OS and SonicOS, and SonicOS Telnet management.
-- PT-009: add a fourth basis, "required setting not configured", for absence rules such as a missing NTP server or remote syslog destination.
-- Check Point `--show-secrets` (checked 2026-09-25): locally managed users and their passwords live in the separate user database `fwauth.NDB`, not in `objects.C`/`rules.C` ([CheckMates](https://community.checkpoint.com/t5/Management/Working-with-Checkpoint-files/td-p/33712)). Whether `objects.C` carries RADIUS/TACACS+ or VPN shared secrets (possibly encrypted) could not be confirmed without a sample. The FW1 family therefore stays *unsupported* (explicitly rejected), not "not applicable"; revisit with a sanitized `objects.C` (nice to have, below). Gaia OS exports are supported since 2026-09-25 (SC-023).
-
-## Nice to have (distant future, needs sample exports the maintainer does not have)
-
-Kept open on purpose; do not close or delete. Each needs a real sanitized export before implementation.
-
-- [ ] SC-017 Check Point anti-spoofing and implied rules (matched `objects.C` + `rules.C` needed).
-- [ ] SC-024 F5 module-specific protection (SCF from a unit with AFM, APM or ASM provisioned). **First stage done 2026-09-25 from F5 documentation:** AFM default-accept, and inactive or transparent ASM policies bound to an enabled virtual server. Remaining: validate against a real export; APM access-policy bypass.
-- [ ] SC-018 remainder: zone defaults, protocol direction and exclusion lists (a real `show current-config` export). The explicit zone stage is done.
-- [ ] SC-019 ScreenOS screens and authenticated time, and RV-008 VPN anti-replay (ScreenOS 6.3 export).
-- [ ] SC-020 Cisco PIX qualification (PIX 6.x export).
-- [ ] SC-023 Check Point Gaia OS posture input (Gaia `show configuration` export). **First stage done 2026-09-25 from the R81 Gaia Administration Guide:** new `checkpoint-gaia` family with Telnet, SNMP, password-policy, idle-timeout and banner checks and `--show-secrets`. Remaining: validate against a real export; remote AAA, NTP, syslog and web-UI settings.
-- [ ] Check Point FW1 `--show-secrets`: qualify secret fields in a sanitized `objects.C` (Gaia OS is already supported).
-
-## Low priority (maintainer decision, 2026-09-24)
-
-These items stay recorded but are scheduled after the SC backlog work that can be done without new vendor evidence and after `--show-secrets` completion.
-
-- [ ] Extend bounded policy-effectiveness analysis to Junos stateless firewall filters where attachment, term order, address/service semantics, and unsupported predicates can be proven. Expand other native adapters only when equivalent evidence and adversarial tests are available; never infer runtime-unused rules from configuration alone.
-- [ ] Qualify additional discovery protections only where explicit roles and fixtures demonstrate value. IPv6 access-edge work is now owned by SC-048 at deployment-dependent P2 priority; do not keep a duplicate low-priority task here. No blanket discovery disablement or platform defaults inferred from names.
-- [ ] PIX qualification is owned by [SC-020](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-020); optional Check Point OS posture is owned by [SC-023](agent_notes/SECURITY_COVERAGE_TASKS.md#sc-023). Other new/legacy dialects (FWSM, old SonicOS preferences, CatOS/NMP, CSS, Passport/Accelar, F5OS/UCS) require demonstrated demand, representative exports and maintenance justification before becoming implementation tasks.
-- [ ] Add anonymized fixtures for newly encountered, supported configuration syntax and review maturity claims in [Supported devices](SUPPORTED_DEVICES.md) as evidence improves.
-- [ ] Design a user-requested cracking-tool hash export for individually validated formats, if its handling and maintenance are approved. Keep normal findings, logs, and reports secret-free; require explicit destination, overwrite, permissions, and format rules, and never launch a cracking tool automatically.
+Follow [AGENTS.md](../AGENTS.md): omission inside an exported object is known
+not-configured state or a qualified default, while absent domains, malformed or
+unsupported values, external inheritance and needed unqualified defaults retain
+uncertainty. Do not delete sample-gated tasks or imply passes from absent findings.
