@@ -143,7 +143,7 @@ class PluginSSH(BasePlugin):
         record_control(parser, "cisco.ios.ssh-source-restriction", ControlOutcome.FINDING,
                        "An SSH-enabled VTY range has no inbound access-class.", instance="vty access-class")
 
-        evidence = tuple(profile.line for profile in unrestricted) or ("No SSH-enabled VTY access-class found",)
+        evidence = tuple(ios.get_vty_evidence(profile.line) for profile in unrestricted) or ("No SSH-enabled VTY access-class found",)
         return Finding(
             rule_id="cisco.ios.ssh.vty_access_restriction",
             device=parser.device_type,
@@ -190,7 +190,7 @@ class PluginSSH(BasePlugin):
                         exploitability="A source with network reachability can attempt SSH access; upstream controls are not assessed.",
                         recommendation="Restrict the attached ACL to approved management sources.",
                         severity=Severity.HIGH,
-                        evidence=(profile.line,) + acl.evidence,
+                        evidence=(ios.get_vty_evidence(profile.line),) + acl.evidence,
                         references=(
                             CISCO_IOS_SSH_GUIDE,
                             "https://www.cisco.com/c/en/us/td/docs/routers/ios-xe/security-vpn/security-vpn/m_ip6-acls-xe.html",

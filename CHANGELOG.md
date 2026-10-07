@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Improve report evidence usability: source-qualified context rows, visible
+  decisive-setting previews and omission notes, explicit presentation-origin
+  labels, and collapsed long legacy evidence lists. Navigation reveals hidden
+  targets; printing restores the prior disclosure and severity-filter selection.
+- Add scoped PAN-OS security-policy/profile/zone contexts, Check Point FW1 rule
+  and companion-object contexts, and IOS/IOS-XE effective VTY ACL/AAA contexts.
+  Detection conclusions, severities, policy selection and offline audits remain
+  unchanged. ScreenOS policy evidence excludes unrelated IKE commands while its
+  existing conservative unsupported-predicate semantics are deliberately retained.
+  Corrected ScreenOS evidence tuples may have different comparison keys from old
+  reports; the context additions for other vendors retain their evidence identities.
+
 - FortiOS finding evidence now includes scoped, sanitized configuration context
   for administrators, policies and other parsed objects, rather than only their
   opening line. Short contexts display inline; longer contexts are expandable.

@@ -32,6 +32,17 @@ Prefer a typed parser method or normalized record over regex inside the plugin. 
   and tenant, retain exact locations, mask unknown/free-form sensitive values,
   and declare truncation. Do not gather arbitrary neighboring raw lines in the
   report. Test ordering/removal, redaction and tenant isolation for the excerpt.
+  Mark proof-bearing lines `decisive=True` for the visible preview; annotate
+  derived/omitted/default/redacted/withheld values with `EvidencePresentation`.
+  An omission has no invented line. Put important absence/inheritance explanations
+  in context notes, which stay visible when statements are collapsed. Use
+  `bounded_context` only after native selection/resolution: it caps statements at
+  200 while prioritizing decisive rows, and never reads or parses configuration.
+  Supply up to 32 nonrecursive `related` contexts for selected referenced objects
+  with their own filenames/locations; declare any relationship limit explicitly.
+  `context_statement` bounds oversized selected statements with a visible
+  truncation marker. Preserve original finding evidence text and tuple order;
+  context is additive, not a replacement detection identity.
 - Return explicit unknown or parse-error state when the export is insufficient.
 - Gate documented defaults and legacy command aliases to the exact verified release family; an OS name alone is not applicability evidence.
 

@@ -167,6 +167,9 @@
                             </div>
                             {% if finding.evidence_locations %}
                                 <h4>Evidence in the configuration</h4>
+                                {% if finding.evidence_locations|length > 8 %}
+                                <ul class="evidence-preview">{% for item in finding.evidence_locations[:3] %}<li><code>{{ item.text }}</code> <span class="muted small">{{ item.source or '' }}{% if item.line_number %}:{{ item.line_number }}{% endif %}</span></li>{% endfor %}</ul>
+                                <details class="legacy-evidence"><summary>{{ finding.evidence_locations|length }} evidence statements (expand to inspect)</summary>{% endif %}
                                 <div class="scroll">
                                 <table class="evidence">
                                     <thead><tr><th scope="col">Line</th><th scope="col">File</th><th scope="col">Configuration</th></tr></thead>
@@ -175,13 +178,26 @@
                                         <tr>
                                             <td class="line">{% if item.line_number %}Line {{ item.line_number }}{% else %}&mdash;{% endif %}</td>
                                             <td>{{ item.source if item.source else '' }}</td>
-                                            <td><code>{{ item.text }}</code>{% if not item.line_number %}<span class="muted small"> (no single source line, e.g. a missing setting or a summarized/redacted value)</span>{% endif %}</td>
+                                            <td><code>{{ item.text }}</code>{% if item.presentation %}<span class="muted small"> ({{ item.presentation_label }})</span>{% endif %}{% if not item.line_number %}<span class="muted small"> (no single source line, e.g. a missing setting or a summarized/redacted value)</span>{% endif %}</td>
                                         </tr>
                                     {% endfor %}
                                     </tbody>
                                 </table>
                                 </div>
+                                {% if finding.evidence_locations|length > 8 %}</details>{% endif %}
                                 {% for context in finding.evidence_contexts %}
+                                    <div class="context-group">
+                                    {% for note in context.notes %}<p class="note">{{ note }}</p>{% endfor %}
+                                    {% if context.omitted_line_count %}<p class="note">{{ context.omitted_line_count }} additional statements truncated by the context size limit. Consult the supplied configuration for the remaining object settings.</p>{% endif %}
+                                    {% if context.lines|length > 8 and context.preview %}
+                                        <h4>{{ context.title }} — decisive settings</h4>
+                                        <div class="evidence-context-lines evidence-preview">
+                                        {% for statement in context.preview %}
+                                            <div><span class="line">{{ statement.source_name }}{% if statement.line_number %}:{{ statement.line_number }}{% endif %}<small>{{ statement.presentation_label }}</small></span><code class="pre">{{ statement.text }}</code></div>
+                                        {% endfor %}
+                                        </div>
+                                        {% if context.preview_remaining_count %}<p class="note">{{ context.preview_remaining_count }} further decisive statements are available in the full context below; the preview is not the complete proof.</p>{% endif %}
+                                    {% endif %}
                                     {% if context.lines|length > 8 %}
                                     <details class="evidence-context">
                                         <summary>{{ context.title }} ({{ context.lines|length }} statements; expand to inspect)</summary>
@@ -191,12 +207,11 @@
                                     {% endif %}
                                         <div class="evidence-context-lines">
                                         {% for statement in context.lines %}
-                                            <div><span class="line">{% if statement.line_number %}Line {{ statement.line_number }}{% else %}Derived{% endif %}</span><code class="pre">{{ statement.text }}</code></div>
+                                            <div><span class="line">{{ statement.source_name }}{% if statement.line_number %}:{{ statement.line_number }}{% endif %}<small>{{ statement.presentation_label }}</small></span><code class="pre">{{ statement.text }}</code></div>
                                         {% endfor %}
                                         </div>
-                                        {% for note in context.notes %}<p class="note">{{ note }}</p>{% endfor %}
-                                        {% if context.omitted_line_count %}<p class="note">{{ context.omitted_line_count }} additional statements omitted by the context size limit. Consult the supplied configuration for the remaining object settings.</p>{% endif %}
                                     {% if context.lines|length > 8 %}</details>{% else %}</div>{% endif %}
+                                    </div>
                                 {% endfor %}
                             {% endif %}
                             {% if view.related %}

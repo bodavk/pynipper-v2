@@ -723,7 +723,11 @@ class JuniperScreenOSParser(BaseDeviceParser):
         if len(tokens) < 2:
             return
         operation, command = lowered[0], lowered[1]
-        policy.evidence.append(self._evidence(raw_line, line_number))
+        # Limit evidence membership without changing the conservative unsupported
+        # predicate gate below. Unrelated top-level IKE statements are not proof
+        # of this policy's settings.
+        if command in {"src-address", "dst-address", "service", "action", "disable", "log", "auth"}:
+            policy.evidence.append(self._evidence(raw_line, line_number, redact=True))
         target = {
             "src-address": policy.sources,
             "dst-address": policy.destinations,

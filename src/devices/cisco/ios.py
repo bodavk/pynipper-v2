@@ -2,7 +2,7 @@ import ipaddress
 import base64
 import re
 import shlex
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Optional
@@ -15,9 +15,11 @@ from src.common.certificates import (
     load_public_certificate,
 )
 from src.devices.common.base_parser import BaseDeviceParser
+from src.devices.common.evidence_context import bounded_context, context_statement
 from src.devices.common.models import (
     BlocklistCredentialAssessment,
     ConfigEvidence,
+    EvidencePresentation,
     ConfigurationState as NormalizedConfigurationState,
     CredentialMetadata,
     CredentialStorageAssessment,
@@ -2863,6 +2865,112 @@ class CiscoIOSParser(BaseDeviceParser):
                 evidence=(ConfigEvidence(label, self.config_filepath), *state["evidence"]),
             ))
         return tuple(result)
+
+    @staticmethod
+    def _vty_numbers(label: str) -> frozenset[int]:
+        match = re.fullmatch(r"line vty (\d+)(?: (\d+))?", label)
+        if match:
+            first, last = int(match[1]), int(match[2] or match[1])
+            return frozenset(range(first, last + 1)) if 0 <= last - first <= 4096 else frozenset()
+        if re.fullmatch(r"VTY lines \d+(?:, \d+)*", label):
+            return frozenset(int(value) for value in label[10:].split(", "))
+        return frozenset()
+
+    def get_vty_evidence(self, label: str, binding: IOSVTYAAABinding | None = None) -> ConfigEvidence:
+        """Add presentation to the unchanged evidence identity using resolved APIs.
+
+        ACL and AAA overlays remain their existing parser-owned implementations;
+        a source block never establishes the state of an overlapping physical line.
+        """
+        requested = self._vty_numbers(label)
+        contexts = []
+        methods = self.get_aaa_method_lists()
+        accounting = self.get_aaa_accounting_lists()
+        bindings = (binding,) if binding is not None else self.get_effective_vty_aaa()
+        source_blocks = self.get_management_lines("vty")
+        for profile in self.get_management_acl_vty_profiles():
+            admitted = requested & self._vty_numbers(profile.line)
+            if not admitted:
+                continue
+            for aaa in bindings:
+                numbers = admitted & self._vty_numbers(aaa.line)
+                if not numbers:
+                    continue
+                source = self.config_filepath
+                lines = [context_statement("Effective VTY lines: " + ", ".join(map(str, sorted(numbers))),
+                    source, presentation=EvidencePresentation.DERIVED)]
+                for name, value in (("transport input", " ".join(profile.transports)),
+                                    ("IPv4 access-class", profile.ipv4_access_class),
+                                    ("IPv6 access-class", profile.ipv6_access_class),
+                                    ("login kind", aaa.login_kind or ""),
+                                    ("login authentication", aaa.login_list or ""),
+                                    ("authorization exec", aaa.exec_authorization_list or ""),
+                                    ("authorization commands 15", aaa.command_authorization_list or ""),
+                                    ("accounting exec", aaa.exec_accounting_list or ""),
+                                    ("accounting commands 15", aaa.command_accounting_list or "")):
+                    lines.append(context_statement(f"{name}: {value or 'not explicitly configured'}", source,
+                        presentation=EvidencePresentation.DERIVED if value else EvidencePresentation.OMITTED,
+                        decisive=name in {"transport input", "IPv4 access-class", "IPv6 access-class", "login kind", "login authentication"}))
+                related, notes = [], []
+                for family, acl_name in (("IPv4", profile.ipv4_access_class), ("IPv6", profile.ipv6_access_class)):
+                    if not acl_name:
+                        notes.append(f"{family} inbound access-class is not configured on these effective VTY lines.")
+                        continue
+                    acl = (self.get_management_ipv4_acl(acl_name, allow_extended=True)
+                           if family == "IPv4" else self.get_management_ipv6_acl(acl_name))
+                    if acl.evidence:
+                        related.append(bounded_context(f"Selected {family} management ACL: {acl_name}",
+                            [replace(item, context=None, decisive=True) for item in acl.evidence],
+                            notes=(f"Existing bounded ACL qualification: {acl.state}; not runtime reachability.",)))
+                    else:
+                        notes.append(f"Selected {family} ACL has no exported statement context; its existing qualification is {acl.state}.")
+                selected = [("login_authentication", aaa.login_list, None),
+                            ("exec_authorization", aaa.exec_authorization_list or "default", None),
+                            ("command_authorization", aaa.command_authorization_list or "default", 15)]
+                for service, name, level in selected:
+                    if name is None:
+                        continue
+                    targets = [item for item in methods if (item.service, item.name, item.privilege_level) == (service, name, level)]
+                    if targets:
+                        related.append(bounded_context(f"Selected AAA {service}: {name}",
+                            [replace(item.evidence, decisive=True) for item in targets]))
+                    else:
+                        notes.append(f"AAA {service} list '{name}' is not defined in this local export; no target is inferred.")
+                for service, name, level in (("exec", aaa.exec_accounting_list or "default", None),
+                                             ("commands", aaa.command_accounting_list or "default", 15)):
+                    targets = [item for item in accounting if (item.service, item.name, item.privilege_level) == (service, name, level)]
+                    if targets:
+                        related.append(bounded_context(f"Selected AAA accounting {service}: {name}",
+                            [replace(item.evidence, decisive=True) for item in targets]))
+                # Original mutation statements are supporting proof, not an
+                # invented contiguous effective block. They can include removals.
+                for item in aaa.evidence[1:]:
+                    lines.append(replace(item, context=None))
+                for block in source_blocks:
+                    if numbers & self._vty_numbers(block.line):
+                        lines.extend(replace(item, context=None) for item in block.evidence
+                                     if item.text.startswith(("line vty", "transport input", "access-class", "ipv6 access-class",
+                                                              "no access-class", "default access-class", "no ipv6 access-class",
+                                                              "default ipv6 access-class")))
+                lines = list(dict.fromkeys(lines))
+                notes.insert(0, "Effective bindings reconstructed by the parser across overlapping ranges; derived values and omissions have no invented source line. Original mutations below may be superseded.")
+                contexts.append(bounded_context(f"VTY management binding: {label}", lines, notes=notes, related=related))
+        if not contexts:
+            return ConfigEvidence(label, self.config_filepath, self.locate_source_line(label))
+        primary = contexts[0]
+        related = (*primary.related, *contexts[1:])
+        # Flatten sibling binding contexts to preserve the one-level relationship
+        # contract, without discarding their own selected ACL/method contexts.
+        flattened = []
+        for item in related:
+            flattened.append(replace(item, related=()))
+            flattened.extend(item.related)
+        notes = primary.notes
+        if len(flattened) > 32:
+            notes += ("Additional VTY relationship contexts withheld by the 32-context bound; consult configuration.",)
+        primary = replace(primary, related=tuple(flattened[:32]), notes=notes)
+        return ConfigEvidence(label, self.config_filepath, self.locate_source_line(label), primary,
+            EvidencePresentation.ORIGINAL if self.locate_source_line(label) else EvidencePresentation.DERIVED)
 
     def get_aaa_server_groups(self) -> set[str]:
         groups: set[str] = set()

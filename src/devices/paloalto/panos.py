@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from collections import OrderedDict
 import ipaddress
 import re
@@ -28,8 +28,10 @@ from src.devices.common.policy_semantics import (
 from src.common.unix_crypt import crypt_matches
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.input_scope import contains_unresolved_template
+from src.devices.common.evidence_context import bounded_context, context_statement
 from src.devices.common.models import (
     ConfigEvidence,
+    EvidencePresentation,
     ConfigurationState,
     CryptoSetting,
     LocalUser,
@@ -1395,6 +1397,106 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                         "Same-vsys NAT may intersect the comparison; pre-NAT address/post-NAT zone interaction is unassessed.")
         return PanosNATQualification(ProofState.PROVEN, "All supplied NAT rules are inactive, outside this vsys or proven disjoint on original-packet selectors.")
 
+    def _security_rule_context(self, entry, device, vsys, rulebase, position):
+        """Selected XML leaves in the exact device/vsys/rulebase, not a subtree dump."""
+        scope = f"{self._device_scope(device)}/{vsys.get('name') or 'vsys'}/{rulebase}"
+        source = self.config_filepath
+        lines = [context_statement(
+            f"Security rule {position}: {entry.get('name') or 'unnamed'}; scope {scope}",
+            source, self._element_lines.get(entry), presentation=EvidencePresentation.SUMMARY,
+        )]
+        notes = []
+        for field in ("from", "to", "source", "destination", "application", "service",
+                      "source-user", "category", "action", "disabled", "negate-source",
+                      "negate-destination", "schedule", "log-start", "log-end", "log-setting"):
+            for node in entry.findall(field):
+                leaves = node.findall("member") or [node]
+                for leaf in leaves:
+                    if list(leaf):
+                        notes.append(f"Unsupported structured {field} evidence withheld; consult source.")
+                        continue
+                    lines.append(context_statement(f"{field}: {self._text(leaf)}", source,
+                        self._element_lines.get(leaf), decisive=field in {"source", "destination", "application", "service", "action", "log-start", "log-end"}))
+        for field in ("log-start", "log-end"):
+            if entry.find(field) is None:
+                notes.append(f"{field} is not configured in this rule; no physical line represents the omission.")
+        attachment = entry.find("profile-setting")
+        related = []
+        for name in dict.fromkeys((*self._members(entry, "from"), *self._members(entry, "to"))):
+            zones = [zone for zone in vsys.findall("./zone/entry") if zone.get("name") == name]
+            if len(zones) != 1:
+                continue
+            zone = zones[0]
+            zone_lines = [context_statement(f"zone: {name}; scope {scope}", source,
+                self._element_lines.get(zone), presentation=EvidencePresentation.SUMMARY)]
+            for member in zone.findall("./network/layer3/member"):
+                zone_lines.append(context_statement(f"network/layer3: {self._text(member)}", source,
+                    self._element_lines.get(member)))
+            related.append(bounded_context(f"Referenced zone: {name} ({scope})", zone_lines,
+                notes=("Exported zone membership only; no live interface or reachability claim.",)))
+        if attachment is None:
+            notes.append("Security-profile attachments are not configured in this rule.")
+        else:
+            refs = [("profile-group", self._text(member), member)
+                    for member in attachment.findall("./group/member")]
+            supported_types = {"virus", "spyware", "vulnerability", "url-filtering", "file-blocking", "wildfire-analysis", "data-filtering"}
+            refs += [(kind.tag, self._text(member), member)
+                     for kind in attachment.findall("./profiles/*") if kind.tag in supported_types
+                     for member in kind.findall("member")]
+            if any(kind.tag not in supported_types for kind in attachment.findall("./profiles/*")):
+                notes.append("Unsupported profile attachment fields withheld from context; consult source.")
+            for index, (kind, name, member) in enumerate(refs):
+                if index >= 64:
+                    notes.append("Additional profile references withheld by the 64-reference selection bound; consult source.")
+                    break
+                reference_kind = "profile-setting" if member in attachment.iter() else "referenced profile-group member"
+                lines.append(context_statement(f"{reference_kind}/{kind}: {name}", source,
+                    self._element_lines.get(member), decisive=True))
+                relative = "profile-group/entry" if kind == "profile-group" else f"profiles/{kind}/entry"
+                candidates = [node for node in vsys.findall(relative) if node.get("name") == name]
+                definition_scope = scope
+                if not candidates:
+                    candidates = [node for node in self._shared_nodes(relative) if node.get("name") == name]
+                    definition_scope = "shared"
+                if len(candidates) != 1 or self.panorama_inheritance_unknown:
+                    notes.append("Referenced profile context is unresolved or externally inherited; no target is inferred.")
+                    continue
+                target = candidates[0]
+                selected = [context_statement(f"{kind}: {name}; scope {definition_scope}", source,
+                    self._element_lines.get(target), presentation=EvidencePresentation.SUMMARY)]
+                node_order = {node: index for index, node in enumerate(target.iter())}
+                selected_fields = []
+                # Only known profile selector/action leaves; never certificate,
+                # credential, description or free-form payloads.
+                paths = ([f"{tag}/member" for tag in ("virus", "spyware", "vulnerability", "url-filtering", "file-blocking", "wildfire-analysis", "data-filtering")]
+                         if kind == "profile-group" else ["rules/entry/severity/member", "rules/entry/action", "rules/entry/action/*",
+                             "rules/entry/application/member", "rules/entry/category/member", "rules/entry/threat-name"])
+                for path in paths:
+                    for leaf in target.findall(path):
+                        if list(leaf):
+                            continue
+                        if path == "rules/entry/action/*" and leaf.tag not in {
+                            "allow", "alert", "block", "drop", "reset-both", "reset-client", "reset-server",
+                            "default", "pass", "monitor", "continue", "forward", "sinkhole",
+                        }:
+                            notes.append("Unsupported profile action fields withheld; consult source.")
+                            continue
+                        owner = next((rule for rule in target.findall("./rules/entry") if leaf in rule.iter()), None)
+                        prefix = f"profile rule {owner.get('name') or 'unnamed'} / " if owner is not None else ""
+                        selected_fields.append((node_order[leaf], context_statement(f"{prefix}{path}: {self._text(leaf) or leaf.tag}", source,
+                            self._element_lines.get(leaf), decisive="action" in path)))
+                selected.extend(statement for _, statement in sorted(selected_fields, key=lambda pair: pair[0]))
+                if kind == "profile-group":
+                    for tag in ("virus", "spyware", "vulnerability", "url-filtering", "file-blocking", "wildfire-analysis", "data-filtering"):
+                        refs.extend((tag, self._text(member), member) for member in target.findall(f"{tag}/member"))
+                related.append(bounded_context(f"Referenced {kind}: {name} ({definition_scope})", selected,
+                    notes=("Selected profile fields only; this is not proof of runtime inspection or resolved inheritance.",)))
+        if len(related) > 32:
+            notes.append(f"{len(related) - 32} additional profile contexts withheld by the relationship bound; consult source.")
+        if self.panorama_inheritance_unknown:
+            notes.append("Panorama inheritance is unresolved; context shows local exported fields only.")
+        return bounded_context(f"Security policy: {scope} / {entry.get('name') or 'unnamed'}", lines, notes=notes, related=related)
+
     def get_security_rules(self) -> list[PanosSecurityRule]:
         rules = []
         for device in self._device_entries():
@@ -1459,10 +1561,10 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                             profile_setting=tuple(profiles),
                             profile_group=profile_group,
                             individual_profiles=tuple(individual_profiles),
-                            evidence=(self._evidence(
+                            evidence=(replace(self._evidence(
                                 f"{device_scope}/{scope}/{rulebase_name}: security rule {position} {name}",
                                 entry,
-                            ),),
+                            ), context=self._security_rule_context(entry, device, vsys, rulebase_name, position)),),
                             unsupported_predicates=tuple(sorted(
                                 [field for field in ("hip-profiles", "source-hip", "destination-hip", "source-device", "destination-device")
                                  if entry.find(field) is not None and self._members(entry, field) != ("any",)]

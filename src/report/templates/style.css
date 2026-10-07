@@ -118,7 +118,9 @@ table { border-collapse: collapse; width: 100%; }
 .evidence td.line { white-space: nowrap; font-weight: 600; }
 .evidence-context { margin-top: 12px; }
 .evidence-context-lines { margin-top: 8px; padding: 10px; background: var(--code-bg); border-radius: 6px; }
-.evidence-context-lines > div { display: grid; grid-template-columns: 80px minmax(0, 1fr); gap: 8px; }
+.evidence-context-lines > div { display: grid; grid-template-columns: minmax(110px, 20%) minmax(0, 1fr); gap: 8px; }
+.evidence-context-lines .line { overflow-wrap: anywhere; }
+.evidence-context-lines small { display: block; font-weight: normal; }
 .evidence-context-lines .line { color: var(--muted); font-size: 0.85rem; }
 .evidence-context-lines code { white-space: pre-wrap; }
 

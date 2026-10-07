@@ -94,6 +94,42 @@ contexts within each finding, expand short excerpts inline and collapse excerpts
 over eight statements. JSON adds context only when the parser supplies it. Other
 adapters retain their existing evidence until they provide a qualified context.
 
+Presentation annotations (`EvidencePresentation`) distinguish source configuration,
+derived effective values, omissions, defaults, redacted/withheld values and
+truncated statements without changing `FindingBasis` or finding evidence keys.
+Context rows include source filenames, and parser-marked decisive settings and
+omission notes remain visible above collapsed supporting evidence. Context is
+bounded to 200 statements; related contexts are bounded to 32 nonrecursive
+objects with explicit limit notes. JSON adds annotations, decisive-line indices
+and related contexts without removing existing evidence or coverage fields.
+The visible preview is limited to six decisive statements, with an explicit
+remaining count when further proof requires expansion. New producers bound each
+selected display statement to 1,024 characters and label truncation; the input
+and detection records are not truncated by this presentation helper.
+
+Focused producers now cover PAN-OS local-vsys security policies (including pre/post
+rulebase identity), selected zones and same-device/vsys or shared inspection
+attachments; Check Point FW1 rules and referenced `objects.C` address/service
+objects, each with original field locations; and IOS/IOS-XE VTY ACL/AAA bindings.
+The IOS producer consumes the existing physical-line overlays rather than
+reinterpreting overlapping ranges in the renderer. Mutation statements are
+supporting history, not a fabricated contiguous effective block. PAN-OS contexts
+do not resolve Panorama inheritance or borrow profiles from other devices/vsys.
+Unsupported profile fields and arbitrary XML/database subtrees stay excluded.
+
+HTML collapses legacy evidence lists exceeding eight entries as well as long
+contexts, retaining a compact preview. Anchor navigation reveals collapsed
+targets and findings hidden by a severity filter. Printing expands disclosures
+and includes all severities, then restores the previous filter and disclosure
+state. Coverage remains the final, initially closed chapter.
+
+The ScreenOS evidence-membership correction removes unrelated IKE/top-level
+statements from policy findings. It deliberately does not repair their existing
+unsupported-predicate gate during this presentation stage. Rule IDs, counts and
+severities remain unchanged, but the corrected policy evidence tuples differ
+from older reports and therefore their evidence-based batch comparison keys can
+change. This is a narrow correction, not a general identity migration.
+
 Normalized adapters remain bounded by native evidence. IOS/IOS-XE, for example, reports explicit VTY and HTTP(S) endpoints, redacted local-user metadata, ordered interface state, effectively attached interface ACL/control-plane policy, syslog destinations and configured SSH cryptography. Unattached ACL definitions are excluded from effective policy inventory; device-model metadata and omitted service defaults remain unknown. FortiOS retains VDOM scope and includes both IPv4 and IPv6 transit-policy sections with explicit logging state. Junos keeps stateless firewall terms distinct from SRX zone-pair policies while exposing both through the common policy inventory. These reporting adapters do not replace the richer native records used by security checks.
 
 Line-oriented parsers first map physical lines to logical statements. `src/devices/common/source_lines.py` joins lines while a double-quoted value is open, so PEM keys and certificates, comments and quoted banner text are one statement. FortiOS and Junos display-set treat an unterminated value as a parse error; ScreenOS, AOS-S and SonicOS record a diagnostic and fall back to physical lines. Delimited banners are masked by the vendor parser: IOS/IOS-XE `banner <type> <delimiter>` bodies and EOS `banner login|motd` ... `EOF` blocks never reach command readers. The helper only groups lines; grammar and redaction remain vendor-owned.

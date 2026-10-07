@@ -5,7 +5,7 @@ from enum import Enum
 from pathlib import PurePath
 from typing import Iterable, Optional, Tuple, Union
 
-from src.devices.common.models import ConfigEvidence, EvidenceContext
+from src.devices.common.models import ConfigEvidence, EvidenceContext, EvidencePresentation
 
 
 class Severity(str, Enum):
@@ -65,6 +65,12 @@ class EvidenceLocation:
     source: Optional[str] = None
     origin: Optional[str] = None
     context: Optional[EvidenceContext] = None
+    presentation: Optional[EvidencePresentation] = None
+
+    @property
+    def presentation_label(self) -> str:
+        return (self.presentation or (EvidencePresentation.ORIGINAL if self.line_number
+                                     else EvidencePresentation.SUMMARY)).value.replace("-", " ")
 
     @classmethod
     def from_item(cls, item: Union[str, ConfigEvidence]) -> "EvidenceLocation":
@@ -75,6 +81,7 @@ class EvidenceLocation:
                 PurePath(item.source).name or None,
                 "parser" if item.line_number is not None else None,
                 item.context,
+                item.presentation,
             )
         return cls(item)
 
@@ -85,13 +92,23 @@ class EvidenceLocation:
             "source": self.source,
             "line_origin": self.origin,
         }
+        if self.presentation is not None:
+            result["presentation"] = self.presentation.value
         if self.context is not None:
-            result["context"] = {
-                "title": self.context.title,
-                "lines": [self.from_item(line).to_dict() for line in self.context.lines],
-                "notes": list(self.context.notes),
-                "omitted-line-count": self.context.omitted_line_count,
-            }
+            result["context"] = self.context_dict(self.context)
+        return result
+
+    @classmethod
+    def context_dict(cls, context: EvidenceContext) -> dict:
+        result = {
+            "title": context.title,
+            "lines": [cls.from_item(line).to_dict() for line in context.lines],
+            "notes": list(context.notes),
+            "omitted-line-count": context.omitted_line_count,
+            "decisive-lines": [index for index, line in enumerate(context.lines) if line.decisive],
+        }
+        if context.related:
+            result["related-contexts"] = [cls.context_dict(item) for item in context.related]
         return result
 
 
@@ -165,7 +182,7 @@ class Finding:
                 number = locate_line(location.text)
                 if number is not None:
                     location = EvidenceLocation(
-                        location.text, number, location.source or source_name, "source-match", location.context
+                        location.text, number, location.source or source_name, "source-match", location.context, location.presentation
                     )
             located.append(location)
         self.evidence_locations = tuple(located)
@@ -173,9 +190,11 @@ class Finding:
     @property
     def evidence_contexts(self) -> Tuple[EvidenceContext, ...]:
         """Distinct excerpts for presentation; original finding identity is unchanged."""
-        return tuple(dict.fromkeys(
-            item.context for item in self.evidence_locations if item.context is not None
-        ))
+        contexts = []
+        for item in self.evidence_locations:
+            if item.context is not None:
+                contexts.extend((item.context, *item.context.related))
+        return tuple(dict.fromkeys(contexts))
 
     @property
     def ease(self) -> str:

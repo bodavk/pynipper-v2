@@ -36,11 +36,12 @@ class CheckPointFields(dict):
     cite where a rule or object starts in the export.
     """
 
-    __slots__ = ("line",)
+    __slots__ = ("line", "field_lines")
 
     def __init__(self, *args, line: Optional[int] = None, **kwargs):
         super().__init__(*args, **kwargs)
         self.line = line
+        self.field_lines = {}
 
 
 @dataclass(frozen=True)
@@ -210,6 +211,7 @@ class CheckPointFileParser:
             item = items[index]
             if isinstance(item, CheckPointToken) and item.kind == "ATOM" and item.value.startswith(":"):
                 key = item.value[1:] or "_value"
+                fields.field_lines.setdefault(key, []).append(item.line)
                 if index + 1 < len(items):
                     following = items[index + 1]
                     if not (

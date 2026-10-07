@@ -21,6 +21,7 @@ from src.devices.common.source_lines import group_double_quoted_lines, single_li
 from src.devices.common.models import (
     ConfigEvidence,
     EvidenceContext,
+    EvidencePresentation,
     ConfigurationState,
     CryptoSetting,
     LocalUser,
@@ -895,7 +896,8 @@ class FortiOSParser(BaseDeviceParser):
         item = self.evidence.get(path)
         if item is None:
             return ()
-        return (replace(item, context=self._evidence_context(path)),)
+        return (replace(item, context=self._evidence_context(path),
+                        presentation=EvidencePresentation.REDACTED if "<redacted>" in item.text else item.presentation),)
 
     # Context is intentionally allowlisted: unrelated/free-form/unknown fields
     # must not leak a secret merely because they neighbor a finding's evidence.
@@ -965,12 +967,20 @@ class FortiOSParser(BaseDeviceParser):
             if not visible:
                 words = item.text.split(None, 2)
                 text = " ".join(words[:2]) + " <value omitted from context>"
-                item = replace(item, text=text)
+                item = replace(item, text=text, presentation=EvidencePresentation.WITHHELD)
+            decisive = visible and (
+                object_path + (str(field),) == path or str(field) in {
+                    "accprofile", "action", "srcaddr", "dstaddr", "service", "logtraffic",
+                    "utm-status", "allowaccess", "ip6-allowaccess",
+                } or "trusthost" in str(field)
+            )
+            item = replace(item, decisive=bool(decisive))
             entries.append(item)
             if visible and item.text.split(None, 1)[0].lower() in {"append", "unselect"}:
                 entries.append(ConfigEvidence(
                     text=f"Effective {field}: " + " ".join(self._as_list(value)),
                     source=self.config_filepath,
+                    presentation=EvidencePresentation.DERIVED, decisive=bool(decisive),
                 ))
         if len(entries) <= 1:
             return None

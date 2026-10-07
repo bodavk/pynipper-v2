@@ -7,6 +7,7 @@ implemented a field must return ``UNKNOWN`` or ``UNSUPPORTED`` explicitly.
 
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import PurePath
 from typing import Generic, Optional, Tuple, TypeVar
 
 
@@ -74,12 +75,35 @@ class BlocklistCredentialAssessment(str, Enum):
         return cls.MATCH if result else cls.NO_MATCH
 
 
+class EvidencePresentation(str, Enum):
+    ORIGINAL = "original-configuration"
+    DERIVED = "derived-effective-value"
+    OMITTED = "omitted-setting"
+    REDACTED = "redacted-value"
+    WITHHELD = "withheld-value"
+    DEFAULT = "documented-default"
+    SUMMARY = "summary"
+    TRUNCATED = "truncated-statement"
+
+
 @dataclass(frozen=True)
 class ConfigEvidence:
     text: str
     source: str
     line_number: Optional[int] = None
     context: Optional["EvidenceContext"] = None
+    presentation: Optional[EvidencePresentation] = field(default=None, compare=False)
+    decisive: bool = field(default=False, compare=False)
+
+    @property
+    def source_name(self) -> str:
+        return PurePath(self.source).name
+
+    @property
+    def presentation_label(self) -> str:
+        return (self.presentation or (
+            EvidencePresentation.ORIGINAL if self.line_number else EvidencePresentation.SUMMARY
+        )).value.replace("-", " ")
 
     def __post_init__(self):
         if not self.text.strip():
@@ -98,6 +122,15 @@ class EvidenceContext:
     lines: Tuple[ConfigEvidence, ...]
     notes: Tuple[str, ...] = ()
     omitted_line_count: int = 0
+    related: Tuple["EvidenceContext", ...] = ()
+
+    @property
+    def preview(self) -> Tuple[ConfigEvidence, ...]:
+        return tuple(line for line in self.lines if line.decisive)[:6]
+
+    @property
+    def preview_remaining_count(self) -> int:
+        return max(0, sum(line.decisive for line in self.lines) - 6)
 
     def __post_init__(self):
         if not self.title.strip() or not self.lines:
@@ -106,6 +139,10 @@ class EvidenceContext:
             raise ValueError("Omitted context line count must not be negative")
         if any(line.context is not None for line in self.lines):
             raise ValueError("Evidence contexts cannot contain nested contexts")
+        if len(self.lines) > 200:
+            raise ValueError("Evidence contexts are bounded to 200 statements")
+        if len(self.related) > 32 or any(context.related for context in self.related):
+            raise ValueError("Related contexts must be bounded and nonrecursive")
 
 
 @dataclass(frozen=True)
@@ -315,6 +352,7 @@ class NormalizedConfig:
 __all__ = [
     "ConfigEvidence",
     "EvidenceContext",
+    "EvidencePresentation",
     "BlocklistCredentialAssessment",
     "ConfigurationState",
     "CredentialMetadata",

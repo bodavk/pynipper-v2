@@ -2,12 +2,14 @@ import os
 import ipaddress
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Iterator, List, Optional, Tuple
 
 from src.devices.common.base_parser import BaseDeviceParser
+from src.devices.common.evidence_context import bounded_context, context_statement
 from src.devices.common.models import (
     ConfigEvidence,
+    EvidencePresentation,
     ConfigurationState,
     NormalizedCollection,
     NormalizedConfig,
@@ -276,6 +278,60 @@ class CheckPointFW1Parser(BaseDeviceParser):
                 return None
         return current if isinstance(current, Mapping) else None
 
+    @classmethod
+    def _context_values(cls, value: object) -> Tuple[str, ...]:
+        """Select known reference/scalar containers, never arbitrary field children."""
+        if isinstance(value, str):
+            return () if value.casefold() in {"referenceobject", "reference_object"} else (value,)
+        if isinstance(value, Mapping):
+            allowed = {"name", "type", "_items", "_value"}
+            return tuple(text for key, child in value.items() if str(key).casefold() in allowed
+                         for text in cls._context_values(child))
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            return tuple(text for child in value for text in cls._context_values(child))
+        return ()
+
+    def _selected_context(self, title: str, record: Mapping, source: str, fields: set[str],
+                          *, related=(), notes=()):
+        lines = [context_statement(title, source, getattr(record, "line", None),
+                                   presentation=EvidencePresentation.SUMMARY)]
+        locations = getattr(record, "field_lines", {})
+        for key, value in record.items():
+            if str(key).casefold().replace("-", "_") not in fields:
+                continue
+            # Only parser-supported scalar/reference projections, never raw maps
+            # (which can contain credentials, comments or unrelated objects).
+            values = self._context_values(value)
+            text = f":{key} (" + ", ".join(values) + ")" if values else f":{key} (unsupported value withheld from context)"
+            numbers = locations.get(key, ())
+            lines.append(context_statement(text, source, numbers[0] if numbers else None,
+                presentation=EvidencePresentation.SUMMARY if values else EvidencePresentation.WITHHELD,
+                decisive=str(key).casefold() in {"src", "dst", "services", "action", "track", "tracking"}))
+        return bounded_context(title, lines, notes=notes, related=related)
+
+    def _rule_related_contexts(self, rule):
+        objects, services = self._object_records()
+        index = {}
+        for item in (*objects, *services):
+            index.setdefault(item.name, []).append(item)
+        names = list(dict.fromkeys((*rule.sources, *rule.destinations, *rule.services, *rule.install_on)))
+        contexts, notes, visited = [], [], set()
+        while names and len(visited) < 32:
+            name = names.pop(0)
+            if name in visited or name.casefold() in {"any", "all", "policy targets"}:
+                continue
+            visited.add(name)
+            matches = index.get(name, ())
+            if len(matches) != 1:
+                notes.append("Referenced object context is absent or ambiguous; no definition is inferred.")
+                continue
+            target = matches[0]
+            contexts.extend(item.context for item in target.evidence if item.context)
+            names.extend(target.members)
+        if names:
+            notes.append("Additional referenced objects withheld by the 32-object context bound; consult objects export.")
+        return tuple(contexts), tuple(dict.fromkeys(notes))
+
     def get_policy_rules(self) -> Tuple[CheckPointRule, ...]:
         # rules.C contains the rule semantics.  Legacy rulebases files often
         # repeat those rules to attach display metadata, so use them only when
@@ -370,6 +426,18 @@ class CheckPointFW1Parser(BaseDeviceParser):
                     evidence=evidence,
                 )
             )
+            parsed = rules[-1]
+            related, notes = self._rule_related_contexts(parsed)
+            if tracking is None:
+                notes += ("Tracking is not configured in this exported rule; no physical line represents the omission.",)
+            context = self._selected_context(
+                f"Policy: {layer} / rule {position} / {name}", rule, document.source,
+                {"src", "source", "object", "dst", "destination", "services", "service", "action",
+                 "track", "tracking", "install", "install_on", "installon", "disabled", "through", "vpn",
+                 "vpn_community", "time", "src_op", "dst_op", "services_op"},
+                related=related, notes=notes,
+            )
+            rules[-1] = replace(parsed, evidence=(replace(evidence[0], context=context),))
         return tuple(rules)
 
     def get_policy_layers(self) -> Tuple[CheckPointLayer, ...]:
@@ -462,6 +530,12 @@ class CheckPointFW1Parser(BaseDeviceParser):
                     line_number=getattr(record, "line", None),
                 ),
             )
+            context = self._selected_context(
+                f"Referenced object: {name} ({normalized_kind})", record, document.source,
+                {"type", "class", "ipaddr", "ipaddr_first", "ipaddr_last", "netmask", "members", "member",
+                 "cluster_members", "port", "protocol", "firewall"},
+            )
+            evidence = (replace(evidence[0], context=context),)
             path_is_service = any("service" in element.casefold() for element in path[:-1])
             has_service_fields = any(
                 self._field(record, field) is not None for field in ("port", "protocol")

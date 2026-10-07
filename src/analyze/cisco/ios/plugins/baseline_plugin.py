@@ -632,7 +632,7 @@ class PluginIOSBaseline(BasePlugin):
                     record_control(parser, control, CO.NOT_APPLICABLE, "The VTY line does not accept sessions.",
                                    instance=line.line)
                 continue
-            evidence = tuple(item for item in line.evidence)
+            evidence = (ios.get_vty_evidence(line.line, line), *line.evidence[1:])
             login = methods.get(("login_authentication", line.login_list, None))
             authenticated = (
                 line.login_kind == "local" and has_local_users
