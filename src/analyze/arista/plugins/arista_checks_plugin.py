@@ -43,6 +43,13 @@ class PluginAristaChecks(BasePlugin):
         "MAC": {"hmac-md5", "hmac-md5-96", "hmac-sha1", "hmac-sha1-96"},
     }
     @staticmethod
+    def _no_remote_outcome(eos: AristaEOSParser) -> tuple[CO, str]:
+        """SC-049: outcome when no remote management service is active."""
+        if any(session.channel == "ssh" for session in eos.get_management_sessions()):
+            return CO.NOT_APPLICABLE, "No remote management service is active."
+        return CO.UNKNOWN, "No management ssh block is exported; the default SSH service state is not evaluated."
+
+    @staticmethod
     def _eos(parser: BaseDeviceParser) -> AristaEOSParser:
         if not isinstance(parser, AristaEOSParser):
             raise TypeError("PluginAristaChecks requires an AristaEOSParser")
@@ -97,9 +104,60 @@ class PluginAristaChecks(BasePlugin):
                 references=("https://aristanetworks.github.io/openmgmt/configuration/openconfig/", ARISTA_ACL_GUIDE),
                 basis=basis,
             ))
-        for endpoint in self._eos(parser).get_eapi_endpoints():
-            if not endpoint.active:
+        gnmi_control = "arista.eos.gnmi-transport"
+        gnmi_transports = self._eos(parser).get_gnmi_transports()
+        if not gnmi_transports:
+            record_control(parser, gnmi_control, CO.NOT_APPLICABLE, "No gNMI transport is configured.")
+        for transport in gnmi_transports:
+            gnmi_key = f"gnmi/{transport.name}"
+            if transport.active is False:
+                record_control(parser, gnmi_control, CO.NOT_APPLICABLE, "The gNMI transport is shut down.",
+                               instance=gnmi_key)
                 continue
+            if transport.active is None:
+                record_control(parser, gnmi_control, CO.UNKNOWN,
+                               "The transport has no explicit enable state; the release default is not verified.",
+                               instance=gnmi_key)
+                continue
+            if transport.address_state == "unknown":
+                record_control(parser, gnmi_control, CO.UNKNOWN,
+                               "Listen or address options are not evaluated.", instance=gnmi_key)
+                continue
+            gnmi_acl = (self._eos(parser).assess_service_acl("ip", transport.ipv4_acl).state
+                        if transport.ipv4_acl else "missing")
+            if transport.tls_state == "explicit-cleartext" or gnmi_acl in {"missing", "permit-all"}:
+                record_control(parser, gnmi_control, CO.FINDING,
+                               "TLS is explicitly removed or no effective IPv4 source restriction is attached.",
+                               instance=gnmi_key)
+            elif gnmi_acl == "undefined":
+                record_control(parser, gnmi_control, CO.UNKNOWN,
+                               "The attached IPv4 ACL is not defined in the export.", instance=gnmi_key)
+            elif transport.tls_state != "profile":
+                record_control(parser, gnmi_control, CO.UNKNOWN,
+                               "No SSL profile is attached; the transport TLS default is not verified.",
+                               instance=gnmi_key)
+            else:
+                record_control(parser, gnmi_control, CO.NO_FINDING,
+                               "The transport has an SSL profile and an attached IPv4 ACL without a universal first permit.",
+                               instance=gnmi_key)
+
+        eapi_controls = ("arista.eos.eapi-encryption", "arista.eos.eapi-tls", "arista.eos.eapi-source-restriction")
+        eapi_endpoints = self._eos(parser).get_eapi_endpoints()
+        if not eapi_endpoints:
+            for control in eapi_controls:
+                record_control(parser, control, CO.NOT_APPLICABLE,
+                               "No management api http-commands block is configured; eAPI is shut down by default.")
+        for endpoint in eapi_endpoints:
+            eapi_key = f"eapi/{endpoint.scope}"
+            if not endpoint.active:
+                for control in eapi_controls:
+                    record_control(parser, control, CO.NOT_APPLICABLE, "The eAPI endpoint is shut down.",
+                                   instance=eapi_key)
+                continue
+            record_control(parser, "arista.eos.eapi-encryption",
+                           CO.FINDING if endpoint.http or not endpoint.https else CO.NO_FINDING,
+                           "The active endpoint enables HTTP or disables HTTPS." if endpoint.http or not endpoint.https
+                           else "The active endpoint serves HTTPS without HTTP.", instance=eapi_key)
             evidence = tuple(item for item in endpoint.evidence)
             if endpoint.http:
                 self.add_issue(
@@ -149,6 +207,17 @@ class PluginAristaChecks(BasePlugin):
                         basis=FindingBasis.REQUIRED_SETTING_MISSING,
                     )
                 )
+            eapi_acls = [self._eos(parser).assess_service_acl(family, name).state
+                         for family, name in (("ip", endpoint.ipv4_acl), ("ipv6", endpoint.ipv6_acl)) if name]
+            if not eapi_acls or "permit-all" in eapi_acls:
+                record_control(parser, "arista.eos.eapi-source-restriction", CO.FINDING,
+                               "No service ACL is attached or an attached ACL permits every source.", instance=eapi_key)
+            elif "undefined" in eapi_acls:
+                record_control(parser, "arista.eos.eapi-source-restriction", CO.UNKNOWN,
+                               "An attached service ACL is not defined in the export.", instance=eapi_key)
+            else:
+                record_control(parser, "arista.eos.eapi-source-restriction", CO.NO_FINDING,
+                               "Attached service ACLs do not start with a universal permit.", instance=eapi_key)
             for family, name in (("ip", endpoint.ipv4_acl), ("ipv6", endpoint.ipv6_acl)):
                 if not name:
                     continue
@@ -177,9 +246,15 @@ class PluginAristaChecks(BasePlugin):
             for session in eos.get_management_sessions()
         )
         if not any(endpoint.active for endpoint in eos.get_eapi_endpoints()) and not remote_cli:
+            outcome, reason = self._no_remote_outcome(eos)
+            record_control(parser, "arista.eos.aaa-centralized", outcome, reason)
             return
         if eos.get_remote_authentication():
+            record_control(parser, "arista.eos.aaa-centralized", CO.NO_FINDING,
+                           "Default login authentication uses a RADIUS or TACACS+ group.")
             return
+        record_control(parser, "arista.eos.aaa-centralized", CO.FINDING,
+                       "Remote management is active without a centralized login method.")
         self.add_issue(
             Finding(
                 rule_id="arista.eos.authentication.centralized",
@@ -205,7 +280,15 @@ class PluginAristaChecks(BasePlugin):
             item.channel in {"ssh", "telnet"} for item in interactive
         )
 
-        for administrator in eos.get_administrators():
+        administrators = eos.get_administrators()
+        if not administrators:
+            record_control(parser, "arista.eos.admin-roles", CO.NOT_APPLICABLE, "No local administrator is configured.")
+        for administrator in administrators:
+            record_control(parser, "arista.eos.admin-roles",
+                           CO.NO_FINDING if administrator.role_resolved else CO.FINDING,
+                           "The effective role is defined." if administrator.role_resolved
+                           else "The effective role is not defined in the export.",
+                           instance=f"user/{administrator.name}")
             if administrator.role_resolved:
                 continue
             self.add_issue(Finding(
@@ -222,6 +305,9 @@ class PluginAristaChecks(BasePlugin):
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
+        if not any(policy.unauthenticated is True for policy in eos.get_aaa_policies()):
+            record_control(parser, "arista.eos.aaa-no-bypass", CO.NO_FINDING,
+                           "No explicit AAA method list includes the none method.")
         for policy in eos.get_aaa_policies():
             if policy.unauthenticated is not True:
                 continue
@@ -230,8 +316,21 @@ class PluginAristaChecks(BasePlugin):
             ) or (
                 policy.connection == "default" and remote_active
             )
+            bypass_key = f"{policy.policy_type}:{policy.service}:{policy.connection}"
             if not applicable:
+                if policy.connection == "console":
+                    console_known = any(item.channel == "console" for item in sessions)
+                    record_control(parser, "arista.eos.aaa-no-bypass",
+                                   CO.NOT_APPLICABLE if console_known else CO.UNKNOWN,
+                                   "The console channel is not active." if console_known
+                                   else "No management console block is exported; console applicability is not evaluated.",
+                                   instance=bypass_key)
+                else:
+                    outcome, reason = self._no_remote_outcome(eos)
+                    record_control(parser, "arista.eos.aaa-no-bypass", outcome, reason, instance=bypass_key)
                 continue
+            record_control(parser, "arista.eos.aaa-no-bypass", CO.FINDING,
+                           "An applicable method list includes none.", instance=bypass_key)
             self.add_issue(Finding(
                 rule_id="arista.eos.authentication.unauthenticated_method",
                 device=parser.device_type,
@@ -250,6 +349,15 @@ class PluginAristaChecks(BasePlugin):
             ))
 
         remote_auth = eos.get_remote_authentication()
+        if not remote_auth:
+            record_control(parser, "arista.eos.aaa-authorization", CO.NOT_APPLICABLE,
+                           "No centralized login authentication is configured.", instance="commands")
+            record_control(parser, "arista.eos.aaa-accounting", CO.NOT_APPLICABLE,
+                           "No centralized login authentication is configured.")
+        elif not remote_active:
+            outcome, reason = self._no_remote_outcome(eos)
+            record_control(parser, "arista.eos.aaa-authorization", outcome, reason, instance="commands")
+            record_control(parser, "arista.eos.aaa-accounting", outcome, reason)
         if remote_active and remote_auth:
             aaa = eos.get_aaa_policies()
             commands_authorized = any(
@@ -262,6 +370,11 @@ class PluginAristaChecks(BasePlugin):
                 and not item.unauthenticated
                 for item in aaa
             )
+            record_control(parser, "arista.eos.aaa-authorization",
+                           CO.NO_FINDING if commands_authorized else CO.FINDING,
+                           "An effective default all-command authorization list is configured." if commands_authorized
+                           else "No effective default all-command authorization list is configured.",
+                           instance="commands")
             if not commands_authorized:
                 self.add_issue(Finding(
                     rule_id="arista.eos.authorization.commands",
@@ -287,6 +400,9 @@ class PluginAristaChecks(BasePlugin):
                 and "none" not in item.destinations
             }
             missing = sorted({"exec", "commands-all"} - covered)
+            record_control(parser, "arista.eos.aaa-accounting", CO.FINDING if missing else CO.NO_FINDING,
+                           "Default accounting is missing for: " + ", ".join(missing) + "." if missing
+                           else "Default EXEC and all-command accounting are configured.")
             if missing:
                 self.add_issue(Finding(
                     rule_id="arista.eos.authentication.accounting",
@@ -372,6 +488,38 @@ class PluginAristaChecks(BasePlugin):
             for policy in eos.get_aaa_policies()
         )
         password_minimum = eos.get_password_minimum_policy()
+        pw_control = "arista.eos.local-password-minimum"
+        pw_ineffective = password_minimum.resolution_state == "explicit-disabled" or (
+            password_minimum.resolution_state == "explicit" and password_minimum.minimum_length == 1
+        )
+        explicit_login = [
+            policy for policy in eos.get_aaa_policies()
+            if policy.policy_type == "authentication" and policy.service == "login"
+            and policy.connection == "default" and policy.methods is not None
+        ]
+        if not eos.get_administrators():
+            record_control(parser, pw_control, CO.NOT_APPLICABLE, "No local administrator is configured.")
+        elif not remote_active:
+            outcome, reason = self._no_remote_outcome(eos)
+            record_control(parser, pw_control, outcome, reason)
+        elif not local_admin_path and explicit_login:
+            record_control(parser, pw_control, CO.NOT_APPLICABLE,
+                           "Default login authentication does not use local accounts.")
+        elif not local_admin_path and password_minimum.resolution_state == "explicit" and not pw_ineffective:
+            record_control(parser, pw_control, CO.NO_FINDING,
+                           f"The explicit global minimum length is {password_minimum.minimum_length}.")
+        elif not local_admin_path:
+            record_control(parser, pw_control, CO.UNKNOWN,
+                           "Login relies on the implicit default method list; only an explicit local method is evaluated.")
+        elif pw_ineffective:
+            record_control(parser, pw_control, CO.FINDING, "The global local-password minimum is ineffective.")
+        elif password_minimum.resolution_state == "explicit":
+            record_control(parser, pw_control, CO.NO_FINDING,
+                           f"The explicit global minimum length is {password_minimum.minimum_length}.")
+        else:
+            record_control(parser, pw_control, CO.UNKNOWN,
+                           f"The global minimum is {password_minimum.resolution_state}; "
+                           "its default is not verified for this release.")
         if local_admin_path and password_minimum.resolution_state in {
             "explicit-disabled", "explicit"
         } and (
@@ -465,10 +613,16 @@ class PluginAristaChecks(BasePlugin):
 
         profiles = eos.get_ssl_profiles()
         for endpoint in endpoints:
+            tls_key = f"eapi/{endpoint.scope}"
+            if endpoint.active and not endpoint.https:
+                record_control(parser, "arista.eos.eapi-tls", CO.NOT_APPLICABLE,
+                               "HTTPS is disabled on the active endpoint.", instance=tls_key)
             if not endpoint.active or not endpoint.https:
                 continue
             evidence = tuple(item for item in endpoint.evidence)
             if not endpoint.ssl_profile:
+                record_control(parser, "arista.eos.eapi-tls", CO.FINDING,
+                               "Active HTTPS attaches no SSL profile.", instance=tls_key)
                 self.add_issue(Finding(
                     rule_id="arista.eos.eapi.tls_profile",
                     device=parser.device_type,
@@ -484,6 +638,21 @@ class PluginAristaChecks(BasePlugin):
                 ))
                 continue
             profile = profiles.get(endpoint.ssl_profile.casefold())
+            legacy_tls = profile is not None and profile.tls_versions is not None and bool(
+                set(profile.tls_versions) & {"1.0", "1.1"})
+            if profile is None or not profile.certificate or legacy_tls:
+                record_control(parser, "arista.eos.eapi-tls", CO.FINDING,
+                               "The attached SSL profile is undefined, has no certificate or permits legacy TLS.",
+                               instance=tls_key)
+            elif profile.resolution_state in {"partial-removal", "partial-addition"}:
+                record_control(parser, "arista.eos.eapi-tls", CO.UNKNOWN,
+                               "TLS versions are changed relative to an unverified default.", instance=tls_key)
+            else:
+                record_control(parser, "arista.eos.eapi-tls", CO.NO_FINDING,
+                               "The attached SSL profile has a certificate and permits no legacy TLS version."
+                               if profile.tls_versions is not None else
+                               "The attached SSL profile has a certificate and sets no explicit legacy TLS version.",
+                               instance=tls_key)
             if profile is None:
                 self.add_issue(Finding(
                     rule_id="arista.eos.eapi.tls_profile_reference",
@@ -538,8 +707,17 @@ class PluginAristaChecks(BasePlugin):
                            "No management ssh block is exported; the default SSH service policy is not evaluated.")
         elif not ssh.active:
             record_control(parser, ssh_control, CO.NOT_APPLICABLE, "Management SSH is shut down.")
+        if not ssh.configured or not ssh.active:
+            for control in ("arista.eos.ssh-algorithms", "arista.eos.passwordless-remote-login"):
+                record_control(parser, control, CO.UNKNOWN if not ssh.configured else CO.NOT_APPLICABLE,
+                               "No management ssh block is exported; SSH defaults are not evaluated."
+                               if not ssh.configured else "Management SSH is shut down.", instance="ssh")
         if ssh.configured and ssh.active:
             evidence = tuple(item for item in ssh.evidence)
+            record_control(parser, "arista.eos.passwordless-remote-login",
+                           CO.FINDING if ssh.empty_passwords == "permit" else CO.NO_FINDING,
+                           "SSH explicitly permits empty passwords." if ssh.empty_passwords == "permit"
+                           else "SSH does not explicitly permit empty passwords.", instance="ssh")
             if ssh.empty_passwords == "permit":
                 self.add_issue(
                     Finding(
@@ -562,6 +740,19 @@ class PluginAristaChecks(BasePlugin):
                 "MAC": sorted(set(ssh.macs) & self._WEAK_SSH["MAC"]),
             }
             weak = {name: values for name, values in weak.items() if values}
+            unparsed_algorithms = any(
+                re.match(r"(?:no\s+)?(?:cipher|key-exchange|mac)\s+\S+\s+\S", item.text, re.IGNORECASE)
+                for item in ssh.evidence
+            )
+            if weak:
+                record_control(parser, "arista.eos.ssh-algorithms", CO.FINDING,
+                               "The explicit SSH suite contains legacy algorithms.", instance="ssh")
+            elif unparsed_algorithms:
+                record_control(parser, "arista.eos.ssh-algorithms", CO.UNKNOWN,
+                               "A multi-value algorithm line is not evaluated.", instance="ssh")
+            else:
+                record_control(parser, "arista.eos.ssh-algorithms", CO.NO_FINDING,
+                               "No explicit legacy SSH algorithm is configured.", instance="ssh")
             if weak:
                 summary = "; ".join(f"{name}: {', '.join(values)}" for name, values in weak.items())
                 self.add_issue(
@@ -626,6 +817,14 @@ class PluginAristaChecks(BasePlugin):
                     basis=FindingBasis.EXPLICIT_VALUE,
                 ))
 
+        if not eos.get_remote_authentication():
+            record_control(parser, "arista.eos.aaa-authorization", CO.NOT_APPLICABLE,
+                           "No centralized login authentication is configured.", instance="exec")
+        else:
+            record_control(parser, "arista.eos.aaa-authorization",
+                           CO.NO_FINDING if eos.has_exec_authorization() else CO.FINDING,
+                           "Centralized exec authorization is configured." if eos.has_exec_authorization()
+                           else "No centralized exec authorization is configured.", instance="exec")
         if eos.get_remote_authentication() and not eos.has_exec_authorization():
             self.add_issue(
                 Finding(
@@ -650,6 +849,15 @@ class PluginAristaChecks(BasePlugin):
                            CO.UNKNOWN if eos.get_snmp_communities() else CO.NO_FINDING,
                            "The default-VRF SNMP agent is disabled; communities served in other VRFs are not evaluated."
                            if eos.get_snmp_communities() else "No SNMP community is configured.")
+            disabled_users = eos.get_snmpv3_relationships(include_disabled_agent=True)[2]
+            record_control(parser, "arista.eos.snmp-v3-replacement",
+                           CO.UNKNOWN if eos.get_snmp_communities() else CO.NOT_APPLICABLE,
+                           "The default-VRF SNMP agent is disabled; other VRFs are not evaluated."
+                           if eos.get_snmp_communities() else "No SNMP community is configured.")
+            record_control(parser, "arista.eos.snmpv3-users",
+                           CO.UNKNOWN if disabled_users else CO.NOT_APPLICABLE,
+                           "The default-VRF SNMP agent is disabled; other VRFs are not evaluated."
+                           if disabled_users else "No SNMPv3 user is configured.")
             return
         communities = eos.get_snmp_communities()
         record_control(parser, "arista.eos.snmp-default-community",
@@ -674,6 +882,13 @@ class PluginAristaChecks(BasePlugin):
                         basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
+        record_control(parser, "arista.eos.snmp-v3-replacement",
+                       CO.NOT_APPLICABLE if not communities
+                       else CO.FINDING if not eos.has_secure_snmpv3_user() else CO.NO_FINDING,
+                       "No SNMP community is configured." if not communities
+                       else "Communities are configured without a secure SNMPv3 user."
+                       if not eos.has_secure_snmpv3_user()
+                       else "A SHA/AES authPriv SNMPv3 user is configured.")
         if communities and not eos.has_secure_snmpv3_user():
             self.add_issue(
                 Finding(
@@ -694,9 +909,13 @@ class PluginAristaChecks(BasePlugin):
         views, groups, users = eos.get_snmpv3_relationships()
         view_map = {view.name.casefold(): view for view in views}
         group_map = {group.name.casefold(): group for group in groups}
+        if not users:
+            record_control(parser, "arista.eos.snmpv3-users", CO.NOT_APPLICABLE, "No SNMPv3 user is configured.")
         for user in users:
             evidence = tuple(item for item in user.evidence)
             if not user.group_resolved or (user.read_view and not user.read_view_resolved):
+                record_control(parser, "arista.eos.snmpv3-users", CO.FINDING,
+                               "The user references an unresolved group or view.", instance=f"user/{user.name}")
                 unresolved = f"group '{user.group}'" if not user.group_resolved else f"view '{user.read_view}'"
                 self.add_issue(
                     Finding(
@@ -792,11 +1011,31 @@ class PluginAristaChecks(BasePlugin):
                         ),
                     )
                 )
+            record_control(parser, "arista.eos.snmpv3-users",
+                           CO.FINDING if gaps or weak or access_gaps else CO.NO_FINDING,
+                           "The user lacks authPriv, uses weak algorithms or has broad scope."
+                           if gaps or weak or access_gaps
+                           else "The user is a resolved authPriv user with strong algorithms and narrow scope.",
+                           instance=f"user/{user.name}")
+
+    @staticmethod
+    def _record_credential(parser: BaseDeviceParser, result, credential) -> None:
+        approved = {CredentialStorageAssessment.APPROVED_HASH, CredentialStorageAssessment.APPROVED_REVERSIBLE}
+        record_control(parser, "arista.eos.credential-storage",
+                       CO.FINDING if result.unsafe_storage
+                       else CO.NO_FINDING if result.storage_assessment in approved else CO.UNKNOWN,
+                       f"Storage is classified as '{result.storage_assessment.value}'.",
+                       instance=f"{credential.context}/{credential.account}")
 
     def check_credentials(self, parser: BaseDeviceParser) -> None:
         policy = credential_policy_from_context(parser.assessment_context)
+        if not (self._eos(parser).get_credential_metadata()
+                or self._eos(parser).get_additional_credential_metadata()):
+            record_control(parser, "arista.eos.credential-storage", CO.NOT_APPLICABLE,
+                           "No stored credential or key is configured.")
         for credential in self._eos(parser).get_credential_metadata():
             result = evaluate_credential(credential, policy)
+            self._record_credential(parser, result, credential)
             if not result.unsafe_storage:
                 continue
             self.add_issue(
@@ -827,6 +1066,7 @@ class PluginAristaChecks(BasePlugin):
 
         for credential in self._eos(parser).get_additional_credential_metadata():
             result = evaluate_credential(credential, policy)
+            self._record_credential(parser, result, credential)
             if not result.unsafe_storage:
                 continue
             token = credential.context == "terminattr_ingestauth"
@@ -875,6 +1115,33 @@ class PluginAristaChecks(BasePlugin):
                     ),
                 )
             )
+        severity_control = "arista.eos.syslog-severity"
+        if not destinations:
+            record_control(parser, severity_control, CO.NOT_APPLICABLE,
+                           "No active remote syslog destination is configured.", instance="remote")
+        elif logging.trap_state == "explicit" and logging.trap_level is not None:
+            record_control(parser, severity_control, CO.FINDING if logging.trap_level < 3 else CO.NO_FINDING,
+                           f"The explicit remote trap threshold is {logging.trap_level}.", instance="remote")
+        elif logging.trap_state == "unknown":
+            record_control(parser, severity_control, CO.NO_FINDING,
+                           "No remote trap threshold is configured; the check treats the default as including errors.",
+                           instance="remote")
+        else:
+            record_control(parser, severity_control, CO.UNKNOWN,
+                           f"The remote trap threshold is {logging.trap_state}.", instance="remote")
+        if logging.logging_on is False:
+            record_control(parser, severity_control, CO.NOT_APPLICABLE, "System logging is disabled.",
+                           instance="buffer")
+        elif logging.buffer_state == "explicit" and logging.buffer_level is not None:
+            record_control(parser, severity_control, CO.FINDING if logging.buffer_level < 3 else CO.NO_FINDING,
+                           f"The explicit buffer threshold is {logging.buffer_level}.", instance="buffer")
+        elif logging.buffer_state in {"unknown", "unknown-reset", "unknown-size-only"}:
+            record_control(parser, severity_control, CO.NO_FINDING,
+                           "No buffer severity is configured; the check treats the default as including errors.",
+                           instance="buffer")
+        else:
+            record_control(parser, severity_control, CO.UNKNOWN,
+                           f"The buffer threshold is {logging.buffer_state}.", instance="buffer")
         if (destinations and logging.logging_on is not False
                 and logging.trap_state == "explicit"
                 and logging.trap_level is not None and logging.trap_level < 3):
@@ -918,6 +1185,9 @@ class PluginAristaChecks(BasePlugin):
         associations = eos.get_ntp_associations()
         if not associations:
             record_control(parser, "arista.eos.ntp-authentication", CO.NOT_APPLICABLE, "No active NTP server association is configured.")
+            record_control(parser, "arista.eos.ntp-servers", CO.FINDING, "No active NTP server association is configured.")
+            record_control(parser, "arista.eos.ntp-key-integrity", CO.NOT_APPLICABLE,
+                           "No active NTP server association is configured.")
             self.add_issue(
                 Finding(
                     rule_id="arista.eos.ntp.servers",
@@ -934,9 +1204,29 @@ class PluginAristaChecks(BasePlugin):
                 )
             )
         else:
+            record_control(parser, "arista.eos.ntp-servers", CO.NO_FINDING, "An active NTP server association is configured.")
             for association in associations:
                 ntp_state = association.authentication_state
                 ntp_instance = f"{association.vrf}/{association.address}"
+                if ntp_state == "unresolved":
+                    record_control(parser, "arista.eos.ntp-key-integrity", CO.FINDING,
+                                   "The authentication reference is unresolved.", instance=ntp_instance)
+                elif ntp_state == "authenticated" and association.algorithm in {"md5", "sha1"}:
+                    nts = eos.supports_nts()
+                    record_control(parser, "arista.eos.ntp-key-integrity",
+                                   CO.FINDING if nts is True else CO.UNKNOWN if nts is None else CO.NO_FINDING,
+                                   "A legacy algorithm is used although the release supports NTS." if nts is True
+                                   else "The release is not identified; NTS availability is not established."
+                                   if nts is None else "The release predates NTS.", instance=ntp_instance)
+                elif ntp_state == "authenticated":
+                    record_control(parser, "arista.eos.ntp-key-integrity", CO.NO_FINDING,
+                                   "The binding resolves without a legacy algorithm.", instance=ntp_instance)
+                elif ntp_state == "unauthenticated":
+                    record_control(parser, "arista.eos.ntp-key-integrity", CO.NOT_APPLICABLE,
+                                   "The association is unauthenticated.", instance=ntp_instance)
+                else:
+                    record_control(parser, "arista.eos.ntp-key-integrity", CO.UNKNOWN,
+                                   f"Association authentication is {ntp_state}.", instance=ntp_instance)
                 if ntp_state == "unauthenticated":
                     record_control(parser, "arista.eos.ntp-authentication", CO.FINDING,
                                    "Association has neither an effective symmetric-key binding nor NTS.",
@@ -1005,7 +1295,16 @@ class PluginAristaChecks(BasePlugin):
 
     def check_control_plane(self, parser: BaseDeviceParser) -> None:
         eos = self._eos(parser)
+        if not eos.get_control_plane_acls():
+            record_control(parser, "arista.eos.control-plane-acl", CO.NOT_APPLICABLE,
+                           "No custom control-plane ACL is attached; the platform default applies.")
         for acl in eos.get_control_plane_acls():
+            record_control(parser, "arista.eos.control-plane-acl",
+                           CO.NO_FINDING if acl.resolution_state == "resolved" and acl.protection_state == "effective"
+                           else CO.FINDING if acl.resolution_state == "undefined"
+                           or acl.protection_state in {"empty", "no-enforcement"} else CO.UNKNOWN,
+                           f"The attached ACL is {acl.resolution_state} with protection state {acl.protection_state}.",
+                           instance=f"{acl.family}/{acl.name}")
             evidence = tuple(item for item in acl.evidence)
             if acl.resolution_state == "undefined":
                 self.add_issue(Finding(
@@ -1051,7 +1350,19 @@ class PluginAristaChecks(BasePlugin):
                 ))
 
         policy = eos.get_copp_policy()
+        if not policy.classes:
+            record_control(parser, "arista.eos.copp-classes", CO.NOT_APPLICABLE,
+                           "No CoPP override class is exported; the platform-managed policy applies.")
         for policy_class in policy.classes:
+            copp_finding = policy_class.selector_state in {
+                "undefined-class", "empty-class", "empty-selector", "undefined-selector"
+            } or (policy_class.selector_state == "resolved" and policy_class.enforcement_state == "no-enforcement")
+            record_control(parser, "arista.eos.copp-classes",
+                           CO.FINDING if copp_finding
+                           else CO.NO_FINDING if policy_class.selector_state in {"resolved", "platform-managed"}
+                           else CO.UNKNOWN,
+                           f"Selector state {policy_class.selector_state}, enforcement {policy_class.enforcement_state}.",
+                           instance=f"class/{policy_class.name}")
             evidence = tuple(item for item in policy_class.evidence)
             if policy_class.selector_state == "undefined-class":
                 self.add_issue(Finding(
@@ -1098,10 +1409,22 @@ class PluginAristaChecks(BasePlugin):
     def check_bpdu_guard(self, parser: BaseDeviceParser) -> None:
         """Explicitly ineffective BPDU guard on assessed EOS access-edge ports."""
 
-        for port in self._eos(parser).get_bpdu_guard_policies():
+        bpdu_ports = self._eos(parser).get_bpdu_guard_policies()
+        if not any(port.active and port.role == "access-edge" and not port.lag_member and port.mode == "access"
+                   for port in bpdu_ports):
+            record_control(parser, "arista.eos.access-edge-bpdu-guard", CO.NOT_APPLICABLE,
+                           "No active access-edge access port is assessed.")
+        for port in bpdu_ports:
             if (not port.active or port.role != "access-edge" or port.lag_member
                     or port.mode != "access"):
                 continue
+            record_control(parser, "arista.eos.access-edge-bpdu-guard",
+                           CO.FINDING if port.guard_enabled is False
+                           or (port.guard_enabled is True and port.filter_enabled is True) else CO.NO_FINDING,
+                           "BPDU guard is explicitly ineffective or bypassed by BPDU filtering."
+                           if port.guard_enabled is False or (port.guard_enabled is True and port.filter_enabled is True)
+                           else f"No explicit BPDU-guard disablement or filter bypass (guard state {port.guard_state}).",
+                           instance=port.interface)
             evidence = tuple(port.evidence) + (f"assessment policy: {port.interface} role access-edge",)
             if port.guard_enabled is False:
                 cause = {
@@ -1140,9 +1463,26 @@ class PluginAristaChecks(BasePlugin):
     def check_access_admission(self, parser: BaseDeviceParser) -> None:
         """Explicit 802.1X bypasses on assessed EOS access-edge ports (SC-003)."""
 
-        for port in self._eos(parser).get_access_admission_interfaces():
+        dot1x_ports = self._eos(parser).get_access_admission_interfaces()
+        if not any(port.active and port.role == "access-edge" and port.mode == "access" for port in dot1x_ports):
+            record_control(parser, "arista.eos.access-edge-dot1x", CO.NOT_APPLICABLE,
+                           "No active access-edge access port is assessed.")
+        for port in dot1x_ports:
             if not port.active or port.role != "access-edge" or port.mode != "access":
                 continue
+            dot1x_bypass = port.port_control == "force-authorized" or (
+                port.port_control == "auto" and port.global_dot1x is False)
+            global_unset = port.port_control == "auto" and port.global_dot1x is None
+            record_control(parser, "arista.eos.access-edge-dot1x",
+                           CO.FINDING if dot1x_bypass
+                           else CO.NOT_APPLICABLE if port.port_control is None
+                           else CO.UNKNOWN if global_unset
+                           else CO.NO_FINDING,
+                           "802.1X is explicitly bypassed or globally disabled." if dot1x_bypass
+                           else "802.1X port control is not configured on the port." if port.port_control is None
+                           else "The global 802.1X state is not set explicitly in the export." if global_unset
+                           else "802.1X port control is enforced and not globally disabled.",
+                           instance=port.interface)
             evidence = tuple(port.evidence) + (f"assessment policy: {port.interface} role access-edge",)
             if port.port_control == "force-authorized":
                 self.add_issue(Finding(
@@ -1189,9 +1529,24 @@ class PluginAristaChecks(BasePlugin):
                 references=(ARISTA_BGP_GUIDE,), basis=basis,
             ))
 
-        for peer in eos.get_bgp_neighbors():
+        bgp_controls = ("arista.eos.bgp-authentication", "arista.eos.bgp-route-policy", "arista.eos.bgp-prefix-limit")
+        neighbors = eos.get_bgp_neighbors()
+        if not neighbors:
+            for control in bgp_controls:
+                record_control(parser, control, CO.NOT_APPLICABLE,
+                               "No default-VRF IPv4 unicast BGP neighbor is configured.")
+        for peer in neighbors:
+            bgp_key = f"neighbor/{peer.address}"
             if not peer.active or peer.inheritance_unknown:
+                for control in bgp_controls:
+                    record_control(parser, control, CO.NOT_APPLICABLE if not peer.active else CO.UNKNOWN,
+                                   "The neighbor is not active." if not peer.active
+                                   else "Template or peer inheritance is not evaluated.", instance=bgp_key)
                 continue
+            record_control(parser, "arista.eos.bgp-authentication",
+                           CO.FINDING if peer.authentication_state == "unauthenticated"
+                           else CO.NO_FINDING if peer.authentication_state == "authenticated" else CO.UNKNOWN,
+                           f"Session authentication is {peer.authentication_state}.", instance=bgp_key)
             scope = f"BGP neighbor {peer.address} (AS {peer.remote_as or '?'})"
             evidence = tuple(peer.evidence)
             if peer.authentication_state == "unauthenticated":
@@ -1201,7 +1556,13 @@ class PluginAristaChecks(BasePlugin):
                      "Configure 'neighbor <peer> password' (TCP MD5) with the peer, or another supported session protection.",
                      Severity.HIGH, evidence, FindingBasis.REQUIRED_SETTING_MISSING)
             if peer.peer_role != "external":
+                for control in bgp_controls[1:]:
+                    record_control(parser, control,
+                                   CO.NOT_APPLICABLE if peer.peer_role == "internal" else CO.UNKNOWN,
+                                   "The neighbor is internal." if peer.peer_role == "internal"
+                                   else "The neighbor role is not resolved.", instance=bgp_key)
                 continue
+            policy_fired = False
             for direction in ("in", "out"):
                 label = "inbound" if direction == "in" else "outbound"
                 maps = [name for bound, kind, name in peer.policy_references if bound == direction and kind == "route-map"]
@@ -1214,12 +1575,14 @@ class PluginAristaChecks(BasePlugin):
                              "Every route is accepted or advertised in this direction despite the intended filter.",
                              f"Define route map '{name}', or set 'bgp missing-policy direction {direction} action deny'.",
                              Severity.HIGH, evidence, FindingBasis.DOCUMENTED_DEFAULT)
+                        policy_fired = True
                     elif effect is not None and effect[0] == "permit-all" and len(maps) == 1:
                         emit("permit_all_route_map", "BGP neighbor route map permits every route",
                              f"External {scope} uses {label} route map '{name}' whose sole permit clause has no match condition.",
                              "The attached route map does not restrict route exchange in this direction.",
                              "Replace the permit-all clause with approved prefix or AS-path boundaries.",
                              Severity.HIGH, evidence + tuple(effect[1]), FindingBasis.EXPLICIT_VALUE)
+                        policy_fired = True
                 present = peer.inbound_policy if direction == "in" else peer.outbound_policy
                 if not present:
                     emit(f"{label}_policy", f"External BGP neighbor has no {label} route policy",
@@ -1227,6 +1590,15 @@ class PluginAristaChecks(BasePlugin):
                          "Unfiltered route exchange can admit or advertise unintended prefixes across the routing boundary.",
                          f"Apply an explicit least-privilege {label} route map or prefix list to this peer.",
                          Severity.HIGH, evidence, FindingBasis.MISSING_EXPLICIT_SETTING)
+                    policy_fired = True
+            record_control(parser, "arista.eos.bgp-route-policy", CO.FINDING if policy_fired else CO.NO_FINDING,
+                           "Route policy is missing, undefined with a permit missing-policy, or permit-all."
+                           if policy_fired else "Both directions have route policy that is not proven permit-all.",
+                           instance=bgp_key)
+            record_control(parser, "arista.eos.bgp-prefix-limit",
+                           CO.FINDING if peer.maximum_routes == "0" else CO.NO_FINDING,
+                           "'maximum-routes 0' removes the route limit." if peer.maximum_routes == "0"
+                           else "The route limit is not removed.", instance=bgp_key)
             if peer.maximum_routes == "0":
                 emit("prefix_limit_disabled", "External BGP neighbor has no route limit",
                      f"External {scope} sets 'maximum-routes 0', which removes the route limit (the EOS default is 256000).",
@@ -1252,6 +1624,12 @@ class PluginAristaChecks(BasePlugin):
 
         cleartext = [c for c, f in zip(top, folded)
                      if re.fullmatch(r"logging (?:vrf \S+ )?host \S+.*", f) and " protocol tls" not in f]
+        syslog_hosts = [f for f in folded if re.fullmatch(r"logging (?:vrf \S+ )?host \S+.*", f)]
+        record_control(parser, "arista.eos.syslog-transport",
+                       CO.FINDING if cleartext else CO.NO_FINDING if syslog_hosts else CO.NOT_APPLICABLE,
+                       "A remote syslog destination does not use TLS." if cleartext
+                       else "Every remote syslog destination uses TLS." if syslog_hosts
+                       else "No remote syslog destination is configured.")
         if cleartext:
             self.add_issue(Finding(
                 rule_id="arista.eos.logging.remote_cleartext",
@@ -1267,6 +1645,10 @@ class PluginAristaChecks(BasePlugin):
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
         telnet = block("management telnet")
+        record_control(parser, "arista.eos.telnet-disabled",
+                       CO.FINDING if "no shutdown" in telnet else CO.NO_FINDING,
+                       "'management telnet' contains 'no shutdown'." if "no shutdown" in telnet
+                       else "Telnet management is shut down (the default).")
         if "no shutdown" in telnet:
             self.add_issue(Finding(
                 rule_id="arista.eos.management.insecure_protocol",
@@ -1354,6 +1736,12 @@ class PluginAristaChecks(BasePlugin):
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
         text = eos.get_isis_text_authentication()
+        isis_present = eos.has_isis_instance()
+        record_control(parser, "arista.eos.isis-authentication",
+                       CO.FINDING if text else CO.NO_FINDING if isis_present else CO.NOT_APPLICABLE,
+                       "IS-IS uses 'authentication mode text'." if text
+                       else "No IS-IS clear-text authentication mode is configured." if isis_present
+                       else "IS-IS is not configured.")
         if text:
             self.add_issue(Finding(
                 rule_id="arista.eos.routing.isis.cleartext_authentication",
@@ -1401,12 +1789,23 @@ class PluginAristaChecks(BasePlugin):
                 references=(ARISTA_USER_SECURITY_GUIDE,),
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
+        record_control(parser, "arista.eos.root-account",
+                       CO.FINDING if state in {"secret", "nopassword"} else CO.NO_FINDING,
+                       f"'aaa root {state}' enables the root account." if state in {"secret", "nopassword"}
+                       else "The root account is not enabled.")
         remote = eos.get_nopassword_remote_login()
         if remote is None:
+            record_control(parser, "arista.eos.passwordless-remote-login", CO.NO_FINDING,
+                           "Password-less users are limited to the console (default).", instance="aaa-policy")
             return
         users = sorted(c.account for c in eos.get_credential_metadata() if c.method == "nopassword")
         if not users:
+            record_control(parser, "arista.eos.passwordless-remote-login", CO.NO_FINDING,
+                           "Remote password-less login is allowed but no password-less user exists.",
+                           instance="aaa-policy")
             return
+        record_control(parser, "arista.eos.passwordless-remote-login", CO.FINDING,
+                       "Password-less users may log in remotely.", instance="aaa-policy")
         self.add_issue(Finding(
             rule_id="arista.eos.auth.nopassword_remote_login",
             device=parser.device_type,

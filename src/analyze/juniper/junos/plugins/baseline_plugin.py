@@ -168,6 +168,29 @@ JUNIPER_VRRP_AUTH_REFERENCE = (
     "authentication-type-edit-interfaces.html"
 )
 
+# SC-049: controls this plugin records only after the release/parse gate in analyze().
+_SC049_GATED_CONTROLS = (
+    "juniper.junos.login-lockout", "juniper.junos.login-banner", "juniper.junos.idle-timeout",
+    "juniper.junos.remote-logging", "juniper.junos.ntp-authentication", "juniper.junos.isis-authentication",
+    "juniper.junos.centralized-authentication", "juniper.junos.super-user-authentication",
+    "juniper.junos.credential-storage", "juniper.junos.login-class-binding", "juniper.junos.admin-accounting",
+    "juniper.junos.web-session-limits", "juniper.junos.radius-transport", "juniper.junos.syslog-event-coverage",
+    "juniper.junos.change-audit", "juniper.junos.config-archive", "juniper.junos.ntp-servers",
+    "juniper.junos.ntp-key-algorithm", "juniper.junos.re-input-filter", "juniper.junos.icmp-redirects",
+    "juniper.junos.vrrp-authentication", "juniper.junos.bgp-authentication", "juniper.junos.bgp-external-policy",
+    "juniper.junos.ospf-authentication", "juniper.junos.isis-authentication-strict",
+    "juniper.junos.rip-authentication", "juniper.junos.bfd-authentication",
+    "juniper.junos.signalling-authentication", "juniper.junos.ospf3-authentication",
+    "juniper.junos.lldp-external", "juniper.junos.access-edge-bpdu", "juniper.junos.access-edge-dot1x",
+    "juniper.junos.access-edge-ipv6-ra", "juniper.junos.zone-screens", "juniper.junos.host-inbound-management",
+    "juniper.junos.host-inbound-routing", "juniper.junos.auto-installation", "juniper.junos.router-discovery",
+    "juniper.junos.idp-blocking",
+)
+_ACCESS_EDGE_CONTROLS = (
+    "juniper.junos.access-edge-bpdu", "juniper.junos.access-edge-dot1x", "juniper.junos.access-edge-ipv6-ra",
+)
+
+
 class PluginJunOSBaseline(BasePlugin):
     """Evaluate explicit Junos security state without inventing release defaults."""
 
@@ -241,8 +264,49 @@ class PluginJunOSBaseline(BasePlugin):
         junos = self._junos(parser)
         return not junos.parse_error and junos.get_version() != "?"
 
+    def _absent(self, parser: BaseDeviceParser, control: str, reason: str, instance: str = "device") -> None:
+        """SC-049: the feature is not configured; unknown while apply-groups are unexpanded."""
+        if self._junos(parser).has_unexpanded_inheritance():
+            record_control(parser, control, CO.UNKNOWN, reason + " apply-groups inheritance is not expanded.",
+                           instance=instance)
+        else:
+            record_control(parser, control, CO.NOT_APPLICABLE, reason, instance=instance)
+
+    def _clean(self, parser: BaseDeviceParser, control: str, reason: str, instance: str = "device") -> None:
+        """SC-049: no insecure statement is exported; unknown while apply-groups are unexpanded."""
+        if self._junos(parser).has_unexpanded_inheritance():
+            record_control(parser, control, CO.UNKNOWN, reason + " apply-groups inheritance is not expanded.",
+                           instance=instance)
+        else:
+            record_control(parser, control, CO.NO_FINDING, reason, instance=instance)
+
+    def _srx_skipped(self, parser: BaseDeviceParser, control: str) -> None:
+        """SC-049: outcome when an SRX-only check does not run."""
+        junos = self._junos(parser)
+        if junos.parse_error:
+            record_control(parser, control, CO.UNKNOWN, "The configuration did not parse.")
+        elif junos.has_unexpanded_inheritance():
+            record_control(parser, control, CO.UNKNOWN, "apply-groups inheritance is not expanded.")
+        elif self._statements(parser, ("security", "zones")):
+            record_control(parser, control, CO.UNKNOWN,
+                           "Security zones are configured but the model is not identified as SRX; the check did not run.")
+        else:
+            record_control(parser, control, CO.NOT_APPLICABLE, "The device is not an identified SRX firewall.")
+
     def check_default_security_policy(self, parser: BaseDeviceParser) -> None:
         state = self._junos(parser).get_default_security_policy()
+        control = "juniper.junos.default-policy-deny"
+        if state.resolution_state in {"explicit", "inherited"}:
+            record_control(parser, control, CO.FINDING if state.action == "permit-all" else CO.NO_FINDING,
+                           f"default-policy {state.action} ({state.resolution_state}).")
+        elif state.resolution_state == "not-configured":
+            if self._statements(parser, ("security", "policies")) or self._statements(parser, ("security", "zones")):
+                record_control(parser, control, CO.NO_FINDING,
+                               "default-policy is omitted; the documented default is deny-all.")
+            else:
+                self._absent(parser, control, "No SRX security zones or policies are configured.")
+        else:
+            record_control(parser, control, CO.UNKNOWN, f"default-policy resolution is {state.resolution_state}.")
         if state.resolution_state not in {"explicit", "inherited"} or state.action != "permit-all":
             return
         self.add_issue(self._finding(
@@ -263,6 +327,11 @@ class PluginJunOSBaseline(BasePlugin):
         order_tokens = {
             token for statement in authentication_order for token in statement.path[2:]
         }
+        centralized = bool(order_tokens.intersection({"radius", "tacplus"}))
+        record_control(parser, "juniper.junos.centralized-authentication",
+                       CO.NO_FINDING if centralized else CO.FINDING,
+                       "authentication-order includes RADIUS or TACACS+." if centralized
+                       else "authentication-order uses only local passwords or is omitted (local-password default).")
         if not order_tokens.intersection({"radius", "tacplus"}):
             self.add_issue(self._finding(
                 parser, "juniper.junos.authentication.centralized",
@@ -329,7 +398,14 @@ class PluginJunOSBaseline(BasePlugin):
                 basis=FindingBasis.REQUIRED_SETTING_MISSING,
             ))
 
+        super_users = 0
         for user in self._junos(parser).get_users():
+            if user["class"] == "super-user":
+                super_users += 1
+                record_control(parser, "juniper.junos.super-user-authentication",
+                               CO.NO_FINDING if user["authentication"] else CO.FINDING,
+                               f"Authentication method {user['authentication']} is configured." if user["authentication"]
+                               else "No authentication method is configured.", instance=f"user:{user['username']}")
             if user["class"] == "super-user" and not user["authentication"]:
                 self.add_issue(self._finding(
                     parser, "juniper.junos.authentication.super_user",
@@ -342,9 +418,19 @@ class PluginJunOSBaseline(BasePlugin):
                     basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
 
+        if not super_users:
+            self._absent(parser, "juniper.junos.super-user-authentication", "No local user has class super-user.")
         credential_policy = credential_policy_from_context(parser.assessment_context)
-        for credential in self._junos(parser).get_credential_metadata():
+        credentials = self._junos(parser).get_credential_metadata()
+        if not credentials:
+            self._absent(parser, "juniper.junos.credential-storage", "No stored administrative password is configured.")
+        for credential in credentials:
             result = evaluate_credential(credential, credential_policy)
+            record_control(parser, "juniper.junos.credential-storage",
+                           CO.FINDING if result.unsafe_storage
+                           else CO.NO_FINDING if result.storage_state.value == "pass" else CO.UNKNOWN,
+                           f"Storage is classified '{result.storage_assessment.value}'.",
+                           instance=f"{credential.context}:{credential.account}")
             if result.unsafe_storage:
                 self.add_issue(self._finding(
                     parser, "juniper.junos.authentication.weak_storage",
@@ -380,7 +466,17 @@ class PluginJunOSBaseline(BasePlugin):
             ))
 
         inheritance_unknown = junos.has_unexpanded_inheritance()
-        for user in junos.get_users():
+        local_users = junos.get_users()
+        if not local_users:
+            self._absent(parser, "juniper.junos.login-class-binding", "No local user is configured.")
+        for user in local_users:
+            if not user["class"]:
+                record_control(parser, "juniper.junos.login-class-binding",
+                               CO.UNKNOWN if inheritance_unknown else CO.FINDING,
+                               "No login class is bound directly; apply-groups inheritance is not expanded."
+                               if inheritance_unknown else "No login class is bound.",
+                               instance=f"user:{user['username']}")
+        for user in local_users:
             if not user["class"] and not inheritance_unknown:
                 self.add_issue(self._finding(
                     parser, "juniper.junos.authentication.login_class_binding",
@@ -416,6 +512,12 @@ class PluginJunOSBaseline(BasePlugin):
                 record_control(parser, "juniper.junos.idle-timeout", CO.NO_FINDING,
                                f"Idle timeout is {policy.idle_timeout_minutes} minutes.", instance=idle_instance)
             evidence = tuple(item for item in policy.evidence)
+            for class_user in policy.users:
+                record_control(parser, "juniper.junos.login-class-binding",
+                               CO.NO_FINDING if policy.defined else CO.UNKNOWN if policy.inheritance_unknown
+                               else CO.FINDING,
+                               f"Login class '{policy.name}' is {'resolved' if policy.defined else 'not defined'}.",
+                               instance=f"user:{class_user}")
             if not policy.defined and not policy.inheritance_unknown:
                 self.add_issue(self._finding(
                     parser, "juniper.junos.authentication.login_class_binding",
@@ -461,12 +563,20 @@ class PluginJunOSBaseline(BasePlugin):
             token for statement in authentication_order for token in statement.path[2:]
             if token in {"radius", "tacplus"}
         }
+        if not remote_methods:
+            self._absent(parser, "juniper.junos.admin-accounting",
+                         "authentication-order uses no RADIUS or TACACS+ method.")
         if remote_methods:
             accounting = junos.get_accounting_policy()
             missing_events = sorted(
                 {"login", "change-log", "interactive-commands"} - set(accounting.events)
             )
             evidence = tuple(item for item in accounting.evidence)
+            record_control(parser, "juniper.junos.admin-accounting",
+                           CO.NO_FINDING if not missing_events
+                           else CO.UNKNOWN if accounting.inheritance_unknown else CO.FINDING,
+                           "Accounting covers login, change-log and interactive-commands." if not missing_events
+                           else f"Accounting omits: {', '.join(missing_events)}.", instance="events")
             if missing_events and not accounting.inheritance_unknown:
                 self.add_issue(self._finding(
                     parser, "juniper.junos.authentication.accounting_events",
@@ -482,6 +592,12 @@ class PluginJunOSBaseline(BasePlugin):
             unresolved = sorted(
                 set(accounting.destination_methods) - set(accounting.resolved_methods)
             )
+            destination_gap = not accounting.destination_methods or bool(unresolved)
+            record_control(parser, "juniper.junos.admin-accounting",
+                           CO.NO_FINDING if not destination_gap
+                           else CO.UNKNOWN if accounting.inheritance_unknown else CO.FINDING,
+                           "Accounting destination methods resolve to servers." if not destination_gap
+                           else "Accounting destination is missing or unresolved.", instance="destination")
             if not accounting.inheritance_unknown and (
                 not accounting.destination_methods or unresolved
             ):
@@ -503,8 +619,23 @@ class PluginJunOSBaseline(BasePlugin):
 
         web = junos.get_web_management_policy()
         if not web.enabled:
+            self._absent(parser, "juniper.junos.web-session-limits", "J-Web (web-management HTTP/HTTPS) is not enabled.")
             return
         evidence = tuple(item for item in web.evidence)
+        record_control(parser, "juniper.junos.web-session-limits",
+                       (CO.FINDING if web.idle_timeout_minutes is not None and web.idle_timeout_minutes > 30
+                        else CO.NO_FINDING) if web.idle_timeout_resolution == "known" else CO.UNKNOWN,
+                       f"J-Web idle-timeout is {web.idle_timeout_minutes} minutes." if web.idle_timeout_resolution == "known"
+                       else f"J-Web idle-timeout is {web.idle_timeout_resolution}; an omitted value has no verified release default.",
+                       instance="idle-timeout")
+        record_control(parser, "juniper.junos.web-session-limits",
+                       (CO.FINDING if web.session_limit is None else CO.NO_FINDING)
+                       if web.session_limit_resolution == "known" else CO.UNKNOWN,
+                       (f"J-Web session-limit is {web.session_limit}." if web.session_limit is not None
+                        else "J-Web session-limit is omitted; the documented default is unlimited.")
+                       if web.session_limit_resolution == "known"
+                       else f"J-Web session-limit is {web.session_limit_resolution}.",
+                       instance="session-limit")
         if (
             web.idle_timeout_resolution == "known"
             and web.idle_timeout_minutes is not None
@@ -533,11 +664,31 @@ class PluginJunOSBaseline(BasePlugin):
     def check_aaa_transport(self, parser: BaseDeviceParser) -> None:
         junos = self._junos(parser)
         inheritance_unknown = junos.has_unexpanded_inheritance()
-        for profile in junos.get_aaa_transport_profiles():
+        profiles = junos.get_aaa_transport_profiles()
+        if not profiles:
+            self._absent(parser, "juniper.junos.radius-transport", "No administrative RADIUS server is in use.")
+        for profile in profiles:
             evidence = tuple(item for item in profile.evidence) or (
                 f"system RADIUS server {profile.address}",
             )
             use = " and ".join(profile.roles)
+            radius_instance = f"radius {profile.address}"
+            if profile.transport == "tls":
+                for gap, label in ((not profile.trusted_ca_group, "trusted-ca-group"),
+                                   (profile.mutual_authentication and not profile.client_certificate_id,
+                                    "mutual-authentication certificate-id")):
+                    record_control(parser, "juniper.junos.radius-transport",
+                                   CO.NO_FINDING if not gap else CO.UNKNOWN if inheritance_unknown else CO.FINDING,
+                                   f"RadSec {label} binding is {'missing' if gap else 'present or not required'}.",
+                                   instance=radius_instance)
+            else:
+                record_control(parser, "juniper.junos.radius-transport",
+                               CO.FINDING if profile.message_authenticator == "disabled"
+                               else CO.NO_FINDING if profile.message_authenticator == "enabled" else CO.UNKNOWN,
+                               "no-message-authenticator is configured." if profile.message_authenticator == "disabled"
+                               else "message-authenticator is configured." if profile.message_authenticator == "enabled"
+                               else "message-authenticator is omitted; the release default is not verified.",
+                               instance=radius_instance)
             if profile.transport == "tls":
                 if not profile.trusted_ca_group and not inheritance_unknown:
                     self.add_issue(self._finding(
@@ -591,6 +742,7 @@ class PluginJunOSBaseline(BasePlugin):
 
     def check_ssh_algorithms(self, parser: BaseDeviceParser) -> None:
         if not self._junos(parser).get_services()["ssh"]:
+            self._absent(parser, "juniper.junos.ssh-algorithms", "SSH service is not configured.")
             return
         for field, weak_values in self._WEAK_SSH.items():
             statements = self._statements(
@@ -602,6 +754,12 @@ class PluginJunOSBaseline(BasePlugin):
                 for token in statement.path[4:]
             }
             weak = sorted(configured.intersection(weak_values))
+            record_control(parser, "juniper.junos.ssh-algorithms",
+                           CO.FINDING if weak else CO.NO_FINDING if configured else CO.UNKNOWN,
+                           f"Weak {field}: {', '.join(weak)}." if weak
+                           else f"The explicit {field} list contains no weak value." if configured
+                           else f"{field} is omitted; the release default algorithm list is not verified.",
+                           instance=field)
             if not weak:
                 continue
             self.add_issue(
@@ -630,7 +788,11 @@ class PluginJunOSBaseline(BasePlugin):
         for service in sorted(insecure):
             statements = self._statements(parser, ("system", "services", service))
             if not statements:
+                self._clean(parser, "juniper.junos.cleartext-management", f"{service} is not configured.",
+                            instance=service)
                 continue
+            record_control(parser, "juniper.junos.cleartext-management", CO.FINDING, f"{service} is enabled.",
+                           instance=service)
             self.add_issue(
                 self._finding(
                     parser,
@@ -648,6 +810,12 @@ class PluginJunOSBaseline(BasePlugin):
 
     def check_rest_listeners(self, parser: BaseDeviceParser) -> None:
         for listener in self._junos(parser).get_rest_listeners():
+            record_control(parser, "juniper.junos.rest-api",
+                           CO.FINDING if listener.transport == "http" and listener.resolution_state == "network"
+                           else CO.NO_FINDING if listener.transport == "https" or listener.resolution_state == "local-only"
+                           else CO.UNKNOWN,
+                           f"REST {listener.transport} listener binding is {listener.resolution_state}.",
+                           instance=f"listener {listener.transport}")
             if listener.transport != "http" or listener.resolution_state != "network":
                 continue
             port = str(listener.port) if listener.port is not None else "not explicitly exported"
@@ -670,6 +838,21 @@ class PluginJunOSBaseline(BasePlugin):
         junos = self._junos(parser)
         reference = "https://www.juniper.net/documentation/us/en/software/junos/rest-api/topics/task/rest-api-configuring.html"
         network = [listener for listener in junos.get_rest_listeners() if listener.resolution_state == "network"]
+        rest_listeners = junos.get_rest_listeners()
+        rest_configured = bool(self._statements(parser, ("system", "services", "rest")))
+        if not rest_configured:
+            self._absent(parser, "juniper.junos.rest-api", "The REST API service is not configured.")
+        elif network:
+            restricted = any(listener.allowed_sources for listener in network)
+            record_control(parser, "juniper.junos.rest-api", CO.NO_FINDING if restricted else CO.FINDING,
+                           "control allowed-sources is configured." if restricted
+                           else "Network REST listeners have no allowed-sources.", instance="allowed-sources")
+        elif any(listener.resolution_state != "local-only" for listener in rest_listeners):
+            record_control(parser, "juniper.junos.rest-api", CO.UNKNOWN,
+                           "The REST listener binding could not be resolved.", instance="allowed-sources")
+        else:
+            record_control(parser, "juniper.junos.rest-api", CO.NOT_APPLICABLE,
+                           "No network REST listener is configured.", instance="allowed-sources")
         if network and not any(listener.allowed_sources for listener in network):
             self.add_issue(Finding(
                 rule_id="juniper.junos.management.unrestricted_rest",
@@ -687,6 +870,11 @@ class PluginJunOSBaseline(BasePlugin):
             ))
         explorer = junos.get_rest_explorer()
         if explorer:
+            record_control(parser, "juniper.junos.rest-api", CO.FINDING, "enable-explorer is configured.",
+                           instance="explorer")
+        elif rest_configured:
+            self._clean(parser, "juniper.junos.rest-api", "enable-explorer is not configured.", instance="explorer")
+        if explorer:
             self.add_issue(self._finding(
                 parser, "juniper.junos.management.rest_explorer",
                 "REST API Explorer is enabled",
@@ -698,7 +886,17 @@ class PluginJunOSBaseline(BasePlugin):
             ))
 
     def check_grpc_listener(self, parser: BaseDeviceParser) -> None:
-        for listener in self._junos(parser).get_grpc_listeners():
+        grpc_listeners = self._junos(parser).get_grpc_listeners()
+        if not grpc_listeners:
+            self._absent(parser, "juniper.junos.grpc-security", "No JET gRPC listener is configured.")
+        for listener in grpc_listeners:
+            grpc_gap = listener.transport == "clear-text" or (
+                listener.skip_authentication and not listener.client_certificate_verification_required)
+            record_control(parser, "juniper.junos.grpc-security",
+                           (CO.FINDING if grpc_gap else CO.NO_FINDING) if listener.resolution_state == "network"
+                           else CO.NO_FINDING if listener.resolution_state == "local-only" else CO.UNKNOWN,
+                           f"gRPC {listener.transport} listener binding is {listener.resolution_state}.",
+                           instance=f"grpc {listener.transport}")
             if listener.resolution_state != "network":
                 continue
             if listener.transport == "clear-text":
@@ -777,6 +975,8 @@ class PluginJunOSBaseline(BasePlugin):
         for statement in self._statements(parser, prefix):
             if len(statement.path) > 5:
                 users[statement.path[5]].append(statement)
+        if not users:
+            self._absent(parser, "juniper.junos.snmpv3-users", "No SNMPv3 USM user is configured.")
         for username, statements in users.items():
             values = {
                 token.casefold()
@@ -799,6 +999,12 @@ class PluginJunOSBaseline(BasePlugin):
                 # privacy-3des: 64-bit block cipher; AES-128 is the stronger supported option.
                 if token in {"authentication-md5", "authentication-none", "privacy-des", "privacy-3des", "privacy-none"}
             )
+            record_control(parser, "juniper.junos.snmpv3-users",
+                           CO.NO_FINDING if has_auth and has_privacy and not weak else CO.FINDING,
+                           "The user has authentication and privacy with strong algorithms."
+                           if has_auth and has_privacy and not weak
+                           else "The user lacks authentication or privacy, or uses a weak algorithm.",
+                           instance=f"user {username}")
             if has_auth and has_privacy and not weak:
                 continue
             detail = "missing authentication or privacy" if not (has_auth and has_privacy) else f"weak settings: {', '.join(weak)}"
@@ -830,6 +1036,18 @@ class PluginJunOSBaseline(BasePlugin):
         # Remote-authentication accounting gaps are already reported by the
         # administrative-policy check with precise event/destination causes.
         if state.change_audit_state == "missing" and not remote_authentication:
+            record_control(parser, "juniper.junos.change-audit", CO.FINDING,
+                           "No change-log syslog selector or resolved change accounting is configured.")
+        elif state.change_audit_state == "effective":
+            record_control(parser, "juniper.junos.change-audit", CO.NO_FINDING,
+                           "Configuration changes reach: " + ", ".join(state.change_audit_destinations[:3]) + ".")
+        elif state.change_audit_state == "unknown-inheritance":
+            record_control(parser, "juniper.junos.change-audit", CO.UNKNOWN,
+                           "No change-audit destination is configured directly; apply-groups inheritance is not expanded.")
+        else:
+            record_control(parser, "juniper.junos.change-audit", CO.NOT_APPLICABLE,
+                           "Remote authentication is used; change accounting is assessed by juniper.junos.admin-accounting.")
+        if state.change_audit_state == "missing" and not remote_authentication:
             self.add_issue(self._finding(
                 parser,
                 "juniper.junos.configuration.change_audit",
@@ -847,6 +1065,30 @@ class PluginJunOSBaseline(BasePlugin):
             state.routing_instance
         )
         archive_complete = bool(state.sites) and state.schedule_state == "effective"
+        archive_required = parser.assessment_context.configuration_backup_scope == "on-device-required"
+        if archive_configured and not archive_complete:
+            record_control(parser, "juniper.junos.config-archive", CO.FINDING,
+                           "Archival is configured without both an archive site and an effective schedule.",
+                           instance="schedule")
+        elif archive_complete:
+            record_control(parser, "juniper.junos.config-archive", CO.NO_FINDING,
+                           "An archive site and an effective transfer schedule are configured.", instance="schedule")
+        elif archive_required:
+            record_control(parser, "juniper.junos.config-archive",
+                           CO.UNKNOWN if state.inheritance_unknown else CO.FINDING,
+                           "Policy requires on-device archival; none is configured directly"
+                           + ("; apply-groups inheritance is not expanded." if state.inheritance_unknown else "."),
+                           instance="schedule")
+        else:
+            record_control(parser, "juniper.junos.config-archive", CO.NOT_APPLICABLE,
+                           "Archival is not configured and the assessment policy does not require it.",
+                           instance="schedule")
+        for site in state.sites:
+            record_control(parser, "juniper.junos.config-archive",
+                           CO.FINDING if site.transport_security == "insecure"
+                           else CO.UNKNOWN if site.transport_security == "unknown" else CO.NO_FINDING,
+                           f"Archive site transport is {site.protocol} ({site.transport_security}).",
+                           instance=f"site {site.destination}")
         if archive_configured and not archive_complete:
             gaps = []
             if not state.sites:
@@ -919,6 +1161,7 @@ class PluginJunOSBaseline(BasePlugin):
                     basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
+            self._absent(parser, "juniper.junos.syslog-event-coverage", "No remote syslog host is configured.")
             return
 
         accepted_severities = {"any", "info", "informational"}
@@ -932,6 +1175,13 @@ class PluginJunOSBaseline(BasePlugin):
                     for selector in destination.selectors
                 )
             }
+            record_control(parser, "juniper.junos.syslog-event-coverage",
+                           CO.NO_FINDING if len(covered) == 2 else CO.UNKNOWN if destination.has_unknown_selector
+                           else CO.FINDING,
+                           "authorization and interactive-commands are covered." if len(covered) == 2
+                           else "A selector could not be interpreted." if destination.has_unknown_selector
+                           else "authorization or interactive-commands coverage is missing.",
+                           instance=f"host {destination.address} ({destination.routing_instance or 'default'})")
             if len(covered) == 2 or destination.has_unknown_selector:
                 continue
             missing = sorted({"authorization", "interactive-commands"} - covered)
@@ -960,6 +1210,8 @@ class PluginJunOSBaseline(BasePlugin):
                                "No NTP association is configured directly, but apply-groups inheritance is not expanded.")
             else:
                 record_control(parser, "juniper.junos.ntp-authentication", CO.NOT_APPLICABLE, "No NTP server or peer is configured.")
+            record_control(parser, "juniper.junos.ntp-servers", CO.FINDING, "No NTP server or peer is configured.")
+            record_control(parser, "juniper.junos.ntp-key-algorithm", CO.NOT_APPLICABLE, "No NTP association is configured.")
             self.add_issue(
                 self._finding(
                     parser,
@@ -979,9 +1231,27 @@ class PluginJunOSBaseline(BasePlugin):
         legacy_only = model.startswith(
             ("ex4300", "ex4600", "qfx5100")
         )
+        record_control(parser, "juniper.junos.ntp-servers", CO.NO_FINDING,
+                       f"{len(associations)} NTP association(s) are configured.")
         for association in associations:
             evidence = tuple(item for item in association.evidence)
             authenticated = association.authentication_state == "authenticated"
+            ntp_instance = f"{association.role} {association.address}"
+            if not authenticated:
+                record_control(parser, "juniper.junos.ntp-key-algorithm", CO.NOT_APPLICABLE,
+                               "The association has no resolved key; see juniper.junos.ntp-authentication.",
+                               instance=ntp_instance)
+            elif model == "?":
+                record_control(parser, "juniper.junos.ntp-key-algorithm", CO.UNKNOWN,
+                               "The platform model is not identified, so SHA-256 support is not established.",
+                               instance=ntp_instance)
+            elif legacy_only:
+                record_control(parser, "juniper.junos.ntp-key-algorithm", CO.NOT_APPLICABLE,
+                               "The platform supports only legacy NTP key algorithms.", instance=ntp_instance)
+            else:
+                record_control(parser, "juniper.junos.ntp-key-algorithm",
+                               CO.FINDING if association.algorithm in {"md5", "sha1"} else CO.NO_FINDING,
+                               f"The key algorithm is {association.algorithm}.", instance=ntp_instance)
             record_control(parser, "juniper.junos.ntp-authentication", CO.NO_FINDING if authenticated else CO.FINDING,
                            "Association is bound to a trusted, resolved key." if authenticated
                            else f"Association is {association.authentication_state}.",
@@ -1032,8 +1302,12 @@ class PluginJunOSBaseline(BasePlugin):
             for statement in junos.statements
         )
         if not protections and inheritance_unknown:
+            record_control(parser, "juniper.junos.re-input-filter", CO.UNKNOWN,
+                           "No lo0 input filter is attached directly; lo0 apply-groups inheritance is not expanded.")
             return
         if not protections:
+            record_control(parser, "juniper.junos.re-input-filter", CO.FINDING,
+                           "No family inet or inet6 input filter is attached to lo0.")
             self.add_issue(self._finding(
                 parser,
                 "juniper.junos.control_plane.lo0_filter",
@@ -1051,6 +1325,22 @@ class PluginJunOSBaseline(BasePlugin):
         for protection in protections:
             evidence = tuple(item for item in protection.evidence)
             scope = f"{protection.interface}.{protection.unit} family {protection.family}"
+            re_instance = f"{scope} filter {protection.filter_name}"
+            if not protection.filter_resolved:
+                record_control(parser, "juniper.junos.re-input-filter",
+                               CO.UNKNOWN if protection.protection_state == "unknown-inheritance" else CO.FINDING,
+                               "The attached filter is not defined in the export.", instance=re_instance)
+            elif (protection.protection_state in {"empty-filter", "no-enforcement"}
+                  or any(term.policer_resolution in {"undefined", "incomplete"} for term in protection.terms)):
+                record_control(parser, "juniper.junos.re-input-filter", CO.FINDING,
+                               f"The attached filter state is {protection.protection_state} or a policer is unresolved.",
+                               instance=re_instance)
+            else:
+                record_control(parser, "juniper.junos.re-input-filter",
+                               CO.UNKNOWN if protection.inheritance_unknown else CO.NO_FINDING,
+                               "The attached filter enforces discard, reject or complete policers."
+                               + (" apply-groups inheritance is not expanded." if protection.inheritance_unknown else ""),
+                               instance=re_instance)
             if not protection.filter_resolved:
                 if protection.protection_state == "unknown-inheritance":
                     continue
@@ -1114,7 +1404,9 @@ class PluginJunOSBaseline(BasePlugin):
 
     def check_redirects(self, parser: BaseDeviceParser) -> None:
         if self._statements(parser, ("system", "no-redirects")):
+            record_control(parser, "juniper.junos.icmp-redirects", CO.NO_FINDING, "system no-redirects is configured.")
             return
+        record_control(parser, "juniper.junos.icmp-redirects", CO.FINDING, "system no-redirects is not configured.")
         self.add_issue(
             self._finding(
                 parser,
@@ -1132,7 +1424,17 @@ class PluginJunOSBaseline(BasePlugin):
 
     def check_routing(self, parser: BaseDeviceParser) -> None:
         junos = self._junos(parser)
-        for peer in junos.get_bgp_neighbors():
+        bgp_peers = junos.get_bgp_neighbors()
+        if not bgp_peers:
+            for control in ("juniper.junos.bgp-authentication", "juniper.junos.bgp-external-policy"):
+                self._absent(parser, control, "No BGP neighbor is configured.")
+        for peer in bgp_peers:
+            bgp_instance = f"{peer.routing_instance} {peer.group} {peer.address} {peer.address_family}"
+            if not peer.active or peer.inheritance_unknown:
+                for control in ("juniper.junos.bgp-authentication", "juniper.junos.bgp-external-policy"):
+                    record_control(parser, control, CO.NOT_APPLICABLE if not peer.active else CO.UNKNOWN,
+                                   "The neighbor is shut down." if not peer.active
+                                   else "apply-groups inheritance is not expanded.", instance=bgp_instance)
             if not peer.active or peer.inheritance_unknown:
                 continue
             scope = (
@@ -1140,6 +1442,21 @@ class PluginJunOSBaseline(BasePlugin):
                 f"family {peer.address_family}, routing-instance {peer.routing_instance}"
             )
             evidence = tuple(item for item in peer.evidence)
+            record_control(parser, "juniper.junos.bgp-authentication",
+                           CO.FINDING if peer.authentication_state in {"unauthenticated", "unresolved"}
+                           else CO.NO_FINDING if peer.authentication_state == "authenticated" else CO.UNKNOWN,
+                           f"Authentication state is {peer.authentication_state}.", instance=bgp_instance)
+            if peer.peer_role != "external":
+                record_control(parser, "juniper.junos.bgp-external-policy",
+                               CO.NOT_APPLICABLE if peer.peer_role == "internal" else CO.UNKNOWN,
+                               "The neighbor is internal." if peer.peer_role == "internal"
+                               else "The peer type is not established.", instance=bgp_instance)
+            else:
+                gaps = [name for name, present in (("import", peer.inbound_policy), ("export", peer.outbound_policy),
+                                                   ("prefix-limit", peer.prefix_limit)) if not present]
+                record_control(parser, "juniper.junos.bgp-external-policy", CO.FINDING if gaps else CO.NO_FINDING,
+                               f"Missing: {', '.join(gaps)}." if gaps else "import, export and prefix-limit are configured.",
+                               instance=bgp_instance)
             if peer.authentication_state in {"unauthenticated", "unresolved"}:
                 detail = "has no authentication" if peer.authentication_state == "unauthenticated" else "has an unresolved authentication key-chain or algorithm"
                 self.add_issue(self._finding(
@@ -1185,7 +1502,19 @@ class PluginJunOSBaseline(BasePlugin):
                     basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
 
-        for interface in junos.get_ospf_interfaces():
+        ospf_interfaces = junos.get_ospf_interfaces()
+        if not ospf_interfaces:
+            self._absent(parser, "juniper.junos.ospf-authentication", "OSPFv2 is not configured.")
+        for interface in ospf_interfaces:
+            ospf_instance = f"{interface.routing_instance} area {interface.area} {interface.interface}"
+            if not interface.active or interface.passive:
+                record_control(parser, "juniper.junos.ospf-authentication", CO.NOT_APPLICABLE,
+                               "The interface is passive or disabled.", instance=ospf_instance)
+            else:
+                record_control(parser, "juniper.junos.ospf-authentication",
+                               CO.NO_FINDING if interface.authentication_state == "authenticated"
+                               else CO.UNKNOWN if interface.authentication_state == "unknown" else CO.FINDING,
+                               f"Authentication state is {interface.authentication_state}.", instance=ospf_instance)
             if not interface.active or interface.passive or interface.authentication_state in {"authenticated", "unknown"}:
                 continue
             evidence = tuple(item for item in interface.evidence)
@@ -1212,7 +1541,22 @@ class PluginJunOSBaseline(BasePlugin):
         if not isis_records:
             record_control(parser, "juniper.junos.isis-authentication", CO.NOT_APPLICABLE,
                            "IS-IS does not run on an adjacency-forming interface.")
+            record_control(parser, "juniper.junos.isis-authentication-strict", CO.NOT_APPLICABLE,
+                           "IS-IS does not run on an adjacency-forming interface.")
         for record in isis_records:
+            isis_instance = f"routing-instance {record.routing_instance}"
+            if record.authenticated and (record.suppressed or record.loose_check):
+                record_control(parser, "juniper.junos.isis-authentication-strict", CO.FINDING,
+                               "Authentication is suppressed for some PDUs or loosely checked.", instance=isis_instance)
+            elif record.unknown:
+                record_control(parser, "juniper.junos.isis-authentication-strict", CO.UNKNOWN,
+                               "apply-groups inheritance is not expanded.", instance=isis_instance)
+            elif record.authenticated:
+                record_control(parser, "juniper.junos.isis-authentication-strict", CO.NO_FINDING,
+                               "No suppression or loose-authentication-check is configured.", instance=isis_instance)
+            else:
+                record_control(parser, "juniper.junos.isis-authentication-strict", CO.NOT_APPLICABLE,
+                               "IS-IS is unauthenticated; see juniper.junos.isis-authentication.", instance=isis_instance)
             if record.unknown:
                 record_control(parser, "juniper.junos.isis-authentication", CO.UNKNOWN,
                                "apply-groups inheritance is not expanded.")
@@ -1278,7 +1622,24 @@ class PluginJunOSBaseline(BasePlugin):
         junos = self._junos(parser)
         if junos.parse_error or junos.get_version() == "?":
             return
-        for record in junos.get_rip_authentication():
+        rip_records = junos.get_rip_authentication()
+        if not rip_records:
+            self._absent(parser, "juniper.junos.rip-authentication", "RIP is not configured.")
+        for record in rip_records:
+            rip_instance = f"routing-instance {record.routing_instance}"
+            if record.neighbors and not record.unknown and record.mode not in {"md5", "unknown"}:
+                record_control(parser, "juniper.junos.rip-authentication", CO.FINDING,
+                               f"RIP authentication mode is {record.mode}.", instance=rip_instance)
+            elif not record.neighbors:
+                record_control(parser, "juniper.junos.rip-authentication", CO.NOT_APPLICABLE,
+                               "RIP has no neighbor.", instance=rip_instance)
+            elif record.unknown or record.mode == "unknown":
+                record_control(parser, "juniper.junos.rip-authentication", CO.UNKNOWN,
+                               "The authentication mode is unrecognized or apply-groups inheritance is not expanded.",
+                               instance=rip_instance)
+            else:
+                record_control(parser, "juniper.junos.rip-authentication", CO.NO_FINDING,
+                               "RIP uses MD5 authentication.", instance=rip_instance)
             if not record.neighbors or record.unknown or record.mode in {"md5", "unknown"}:
                 continue
             scope = f"routing-instance {record.routing_instance}"
@@ -1307,6 +1668,17 @@ class PluginJunOSBaseline(BasePlugin):
                     references=(JUNIPER_RIP_AUTH_GUIDE,),
                     basis=FindingBasis.DOCUMENTED_DEFAULT,
                 ))
+        bfd_sessions = junos.get_bfd_sessions()
+        if not bfd_sessions:
+            self._absent(parser, "juniper.junos.bfd-authentication", "BFD is not configured.")
+        elif junos.has_unexpanded_inheritance():
+            record_control(parser, "juniper.junos.bfd-authentication", CO.UNKNOWN,
+                           "apply-groups inheritance is not expanded.")
+        else:
+            for context, bfd_state, _ in bfd_sessions:
+                record_control(parser, "juniper.junos.bfd-authentication",
+                               CO.NO_FINDING if bfd_state == "authenticated" else CO.FINDING,
+                               f"BFD authentication state is {bfd_state}.", instance=context)
         if not junos.has_unexpanded_inheritance():
             sessions = junos.get_bfd_sessions()
             none = [s for s in sessions if s[1] == "none"]
@@ -1338,6 +1710,20 @@ class PluginJunOSBaseline(BasePlugin):
                     Severity.LOW, tuple(item for s in loose[:4] for item in s[2])[:8], (JUNIPER_BFD_AUTH_GUIDE,),
                     basis=FindingBasis.EXPLICIT_VALUE,
                 ))
+        signalling = junos.get_signalling_protocol_instances()
+        if not signalling:
+            self._absent(parser, "juniper.junos.signalling-authentication", "LDP, RSVP and MSDP are not configured.")
+        elif junos.has_unexpanded_inheritance():
+            record_control(parser, "juniper.junos.signalling-authentication", CO.UNKNOWN,
+                           "apply-groups inheritance is not expanded.")
+        else:
+            unauthenticated = {(item.protocol, item.routing_instance) for item in junos.get_signalling_authentication()}
+            for protocol, routing_instance in signalling:
+                record_control(parser, "juniper.junos.signalling-authentication",
+                               CO.FINDING if (protocol, routing_instance) in unauthenticated else CO.NO_FINDING,
+                               "Some sessions have no authentication-key." if (protocol, routing_instance) in unauthenticated
+                               else "Every session, interface or peer is keyed.",
+                               instance=f"{protocol} {routing_instance}")
         if not junos.has_unexpanded_inheritance():
             labels = {
                 "ldp": ("LDP sessions are not authenticated", Severity.MEDIUM,
@@ -1368,6 +1754,19 @@ class PluginJunOSBaseline(BasePlugin):
                     basis=(FindingBasis.DOCUMENTED_DEFAULT if record.protocol == "msdp"
                            else FindingBasis.REQUIRED_SETTING_MISSING),
                 ))
+        ospf3_interfaces = junos.get_ospf3_interfaces()
+        if not ospf3_interfaces:
+            self._absent(parser, "juniper.junos.ospf3-authentication",
+                         "OSPFv3 does not run on an adjacency-forming interface.")
+        elif junos.has_unexpanded_inheritance():
+            record_control(parser, "juniper.junos.ospf3-authentication", CO.UNKNOWN,
+                           "apply-groups inheritance is not expanded.")
+        else:
+            for item in ospf3_interfaces:
+                record_control(parser, "juniper.junos.ospf3-authentication",
+                               CO.NO_FINDING if item.ipsec_sa else CO.FINDING,
+                               "An ipsec-sa is bound." if item.ipsec_sa else "No ipsec-sa is bound.",
+                               instance=f"{item.routing_instance} {item.interface}")
         unprotected = [r for r in junos.get_ospf3_interfaces() if not r.ipsec_sa]
         if unprotected and not junos.has_unexpanded_inheritance():
             self.add_issue(Finding(
@@ -1390,6 +1789,9 @@ class PluginJunOSBaseline(BasePlugin):
         """SC-058: CIS Juniper OS follow-ups (autoinstallation, router discovery, hygiene)."""
         junos = self._junos(parser)
         if junos.parse_error or junos.get_version() == "?" or junos.has_unexpanded_inheritance():
+            for control in ("juniper.junos.auto-installation", "juniper.junos.router-discovery"):
+                record_control(parser, control, CO.UNKNOWN,
+                               "apply-groups inheritance is not expanded or the release is not identified.")
             return
         paths = [statement.path for statement in junos.statements if statement.active]
 
@@ -1410,6 +1812,10 @@ class PluginJunOSBaseline(BasePlugin):
              "Remove 'protocols router-discovery' unless required (CIS Juniper OS 4.10.1).", Severity.LOW),
         ):
             evidence = first(*prefix)
+            follow_up_control = {"juniper.junos.services.autoinstallation": "juniper.junos.auto-installation",
+                                 "juniper.junos.routing.router_discovery": "juniper.junos.router-discovery"}[rule]
+            record_control(parser, follow_up_control, CO.FINDING if evidence is not None else CO.NO_FINDING,
+                           f"'{' '.join(prefix)}' is {'configured' if evidence is not None else 'not configured'}.")
             if evidence is not None:
                 self.add_issue(self._finding(
                     parser, rule, title, f"'{' '.join(prefix)}' is configured.", impact, recommendation,
@@ -1489,7 +1895,21 @@ class PluginJunOSBaseline(BasePlugin):
         junos = self._junos(parser)
         if junos.parse_error or junos.get_version() == "?":
             return
-        for interface in junos.get_discovery_interfaces():
+        discovery = junos.get_discovery_interfaces()
+        if not any(interface.role == "external" for interface in discovery):
+            record_control(parser, "juniper.junos.lldp-external", CO.NOT_APPLICABLE,
+                           "No interface is classified external by the assessment policy.")
+        for interface in discovery:
+            if interface.role == "external":
+                if not interface.active:
+                    record_control(parser, "juniper.junos.lldp-external", CO.NOT_APPLICABLE,
+                                   "The interface is disabled.", instance=interface.interface)
+                elif interface.transmit or interface.receive:
+                    record_control(parser, "juniper.junos.lldp-external", CO.FINDING,
+                                   "LLDP is enabled on the external interface.", instance=interface.interface)
+                else:
+                    self._clean(parser, "juniper.junos.lldp-external", "LLDP is not enabled on the external interface.",
+                                instance=interface.interface)
             if (
                 not interface.active
                 or interface.role != "external"
@@ -1523,10 +1943,14 @@ class PluginJunOSBaseline(BasePlugin):
         junos = self._junos(parser)
         if (junos.parse_error or not junos.get_model().upper().startswith("SRX")
                 or junos.has_unexpanded_inheritance()):
+            self._srx_skipped(parser, "juniper.junos.host-inbound-management")
             return
         enabled = junos.get_enabled_management_services()
         if not enabled:
+            record_control(parser, "juniper.junos.host-inbound-management", CO.NOT_APPLICABLE,
+                           "No management service is enabled.")
             return
+        external_admission = False
         lo0_filtered = any(
             not junos.is_accept_all_filter(protection.family, protection.filter_name)
             for protection in junos.get_routing_engine_protections()
@@ -1546,6 +1970,16 @@ class PluginJunOSBaseline(BasePlugin):
                 if admission.admits(service)
                 and (listeners is None or admission.interface in listeners or physical in listeners)
             )
+            external_admission = True
+            record_control(parser, "juniper.junos.host-inbound-management",
+                           CO.NO_FINDING if not exposed
+                           else CO.UNKNOWN if lo0_filtered or admission.interface in interface_filters
+                           else CO.FINDING,
+                           "No enabled management service is admitted." if not exposed
+                           else "Admitted services may be restricted by an attached input filter."
+                           if lo0_filtered or admission.interface in interface_filters
+                           else f"Admits {', '.join(exposed)} without an input filter.",
+                           instance=f"zone {admission.zone} {admission.interface}")
             if not exposed or lo0_filtered or admission.interface in interface_filters:
                 continue
             cleartext = [service for service in exposed if service in _CLEARTEXT_ADMIN_SERVICES]
@@ -1574,6 +2008,9 @@ class PluginJunOSBaseline(BasePlugin):
                 (JUNIPER_HOST_INBOUND_REFERENCE, JUNIPER_ZONE_GUIDE),
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
+        if not external_admission:
+            record_control(parser, "juniper.junos.host-inbound-management", CO.NOT_APPLICABLE,
+                           "No zone interface is classified external by the assessment policy.")
 
     def check_host_inbound_routing(self, parser: BaseDeviceParser) -> None:
         """SC-047: unauthenticated OSPF/IS-IS adjacencies admitted on an assessed external interface.
@@ -1585,9 +2022,12 @@ class PluginJunOSBaseline(BasePlugin):
         junos = self._junos(parser)
         if (junos.parse_error or not junos.get_model().upper().startswith("SRX")
                 or junos.has_unexpanded_inheritance()):
+            self._srx_skipped(parser, "juniper.junos.host-inbound-routing")
             return
         if any(not junos.is_accept_all_filter(p.family, p.filter_name)
                for p in junos.get_routing_engine_protections()):
+            record_control(parser, "juniper.junos.host-inbound-routing", CO.UNKNOWN,
+                           "An attached lo0 input filter may restrict routing protocol traffic.")
             return
         filtered = {
             interface for interface, filters in junos.get_interface_input_filters().items()
@@ -1608,11 +2048,29 @@ class PluginJunOSBaseline(BasePlugin):
                 for interface in record.interfaces:
                     weak.setdefault(interface, {})["isis"] = state
         if not weak:
+            if junos.get_ospf_interfaces() or junos.get_isis_authentication():
+                record_control(parser, "juniper.junos.host-inbound-routing", CO.NO_FINDING,
+                               "No default-instance OSPF or IS-IS interface runs with no or simple authentication.")
+            else:
+                record_control(parser, "juniper.junos.host-inbound-routing", CO.NOT_APPLICABLE,
+                               "OSPF and IS-IS are not configured.")
             return
+        external_admission = False
         for admission in junos.get_host_inbound_protocol_admissions():
             physical = admission.interface.split(".", 1)[0]
             roles = {junos.assessment_context.role_for_interface(admission.interface),
                      junos.assessment_context.role_for_interface(physical)}
+            if "external" in roles:
+                external_admission = True
+                admitted = {k for k in weak.get(admission.interface, {}) if admission.admits(k)}
+                record_control(parser, "juniper.junos.host-inbound-routing",
+                               CO.UNKNOWN if admission.interface in filtered
+                               else CO.FINDING if admitted else CO.NO_FINDING,
+                               "An attached interface input filter may restrict the traffic."
+                               if admission.interface in filtered
+                               else f"Admits weakly authenticated {', '.join(sorted(admitted))}." if admitted
+                               else "No weakly authenticated routing protocol is admitted.",
+                               instance=f"zone {admission.zone} {admission.interface}")
             if "external" not in roles or admission.interface in filtered:
                 continue
             protocols = {k: v for k, v in weak.get(admission.interface, {}).items() if admission.admits(k)}
@@ -1633,6 +2091,9 @@ class PluginJunOSBaseline(BasePlugin):
                 (JUNIPER_HOST_INBOUND_REFERENCE, JUNIPER_OSPF_AUTH_GUIDE, JUNIPER_ISIS_AUTH_GUIDE),
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
+        if not external_admission:
+            record_control(parser, "juniper.junos.host-inbound-routing", CO.NOT_APPLICABLE,
+                           "No zone interface is classified external by the assessment policy.")
 
     def check_zone_screens(self, parser: BaseDeviceParser) -> None:
         junos = self._junos(parser)
@@ -1641,7 +2102,9 @@ class PluginJunOSBaseline(BasePlugin):
             or not junos.get_model().upper().startswith("SRX")
             or junos.has_unexpanded_inheritance()
         ):
+            self._srx_skipped(parser, "juniper.junos.zone-screens")
             return
+        screened = False
         for binding in junos.get_zone_screens():
             external = tuple(
                 interface for interface in binding.interfaces
@@ -1650,6 +2113,14 @@ class PluginJunOSBaseline(BasePlugin):
             )
             if not external:
                 continue
+            screened = True
+            screen_gap = any(state == "explicitly-inactive" for state in (
+                binding.syn_flood_state, binding.udp_flood_state, binding.icmp_flood_state)) or (
+                binding.alarm_without_drop and "active" in (binding.udp_flood_state, binding.icmp_flood_state))
+            record_control(parser, "juniper.junos.zone-screens", CO.FINDING if screen_gap else CO.NO_FINDING,
+                           "A configured flood option is inactive or alarms without dropping." if screen_gap
+                           else "No configured flood option is inactive or alarm-only.",
+                           instance=f"zone {binding.zone} screen {binding.screen}")
             evidence = tuple(item for item in binding.evidence) + tuple(
                 f"assessment policy: {interface} role external" for interface in external
             )
@@ -1697,6 +2168,9 @@ class PluginJunOSBaseline(BasePlugin):
                         (JUNIPER_SCREEN_OPTION_REFERENCE, reference),
                         basis=FindingBasis.EXPLICIT_VALUE,
                     ))
+        if not screened:
+            record_control(parser, "juniper.junos.zone-screens", CO.NOT_APPLICABLE,
+                           "No screen is bound to a zone with an interface classified external.")
 
     def check_idp_actions(self, parser: BaseDeviceParser) -> None:
         """Report an IDP policy applied by a permit rule whose every IPS rule is non-blocking."""
@@ -1707,8 +2181,24 @@ class PluginJunOSBaseline(BasePlugin):
             or not junos.get_model().upper().startswith("SRX")
             or junos.has_unexpanded_inheritance()
         ):
+            self._srx_skipped(parser, "juniper.junos.idp-blocking")
             return
-        for binding in junos.get_idp_bindings():
+        idp_bindings = junos.get_idp_bindings()
+        if not idp_bindings:
+            record_control(parser, "juniper.junos.idp-blocking", CO.NOT_APPLICABLE,
+                           "No security policy applies an IDP policy.")
+        for binding in idp_bindings:
+            idp_instance = f"{binding.from_zone}->{binding.to_zone}:{binding.security_policy}"
+            idp_actions = {rule.action for rule in binding.rules}
+            if binding.resolution_state != "resolved" or not binding.rules or None in idp_actions:
+                record_control(parser, "juniper.junos.idp-blocking", CO.UNKNOWN,
+                               f"The IDP binding is {binding.resolution_state}, has no active rule or a rule without action.",
+                               instance=idp_instance)
+            else:
+                record_control(parser, "juniper.junos.idp-blocking",
+                               CO.FINDING if idp_actions <= IDP_NON_BLOCKING_ACTIONS else CO.NO_FINDING,
+                               "Every IPS rule is non-blocking." if idp_actions <= IDP_NON_BLOCKING_ACTIONS
+                               else "At least one IPS rule blocks.", instance=idp_instance)
             if binding.resolution_state != "resolved" or not binding.rules:
                 continue
             actions = {rule.action for rule in binding.rules}
@@ -1737,9 +2227,46 @@ class PluginJunOSBaseline(BasePlugin):
     def check_access_edge(self, parser: BaseDeviceParser) -> None:
         """BPDU protection and 802.1X supplicant mode on declared access edges (SC-003/SC-004)."""
 
-        for port in self._junos(parser).get_access_edge_ports():
+        ports = self._junos(parser).get_access_edge_ports()
+        if not ports:
+            for control in _ACCESS_EDGE_CONTROLS:
+                record_control(parser, control, CO.NOT_APPLICABLE,
+                               "No interface is classified access-edge by the assessment policy.")
+        for port in ports:
             if not port.active or port.access_mode is not True:
+                for control in _ACCESS_EDGE_CONTROLS:
+                    record_control(parser, control,
+                                   CO.UNKNOWN if port.active and port.access_mode is None else CO.NOT_APPLICABLE,
+                                   "The port mode is not established." if port.active and port.access_mode is None
+                                   else "The port is disabled or not an access port.", instance=port.interface)
                 continue
+            record_control(parser, "juniper.junos.access-edge-bpdu",
+                           CO.FINDING if port.bpdu_protection == "none"
+                           else CO.UNKNOWN if port.bpdu_protection == "unknown" else CO.NO_FINDING,
+                           f"BPDU protection is {port.bpdu_protection}.", instance=port.interface)
+            if port.ra_guard_trusted:
+                record_control(parser, "juniper.junos.access-edge-ipv6-ra", CO.FINDING,
+                               "RA guard marks the port trusted.", instance=port.interface)
+            else:
+                self._clean(parser, "juniper.junos.access-edge-ipv6-ra", "The port is not marked RA-guard trusted.",
+                            instance=port.interface)
+            dot1x_port = port.interface.split(".", 1)[0]
+            if port.supplicant_mode == "single":
+                record_control(parser, "juniper.junos.access-edge-dot1x", CO.FINDING,
+                               "802.1X uses supplicant single.", instance=port.interface)
+            elif port.supplicant_mode in {"single-secure", "multiple"}:
+                record_control(parser, "juniper.junos.access-edge-dot1x", CO.NO_FINDING,
+                               f"802.1X uses supplicant {port.supplicant_mode}.", instance=port.interface)
+            elif port.supplicant_mode is not None or any(
+                    len(statement.path) > 4 and statement.path[4] in {
+                        dot1x_port, port.interface, f"{dot1x_port}.0", "all"}
+                    for statement in self._statements(parser, ("protocols", "dot1x", "authenticator", "interface"))):
+                record_control(parser, "juniper.junos.access-edge-dot1x", CO.UNKNOWN,
+                               "802.1X is configured without a recognized explicit supplicant mode; "
+                               "the default mode is not evaluated by this check.", instance=port.interface)
+            else:
+                record_control(parser, "juniper.junos.access-edge-dot1x", CO.NOT_APPLICABLE,
+                               "802.1X is not configured on the port.", instance=port.interface)
             evidence = port.evidence + (f"assessment policy: {port.interface} role access-edge",)
             if port.bpdu_protection == "none":
                 self.add_issue(self._finding(
@@ -1788,7 +2315,15 @@ class PluginJunOSBaseline(BasePlugin):
 
     def check_vrrp_authentication(self, parser: BaseDeviceParser) -> None:
         """SC-028: VRRPv2 groups without MD5 authentication (default none) or with simple passwords."""
-        for group in self._junos(parser).get_vrrp_groups():
+        vrrp_groups = self._junos(parser).get_vrrp_groups()
+        if not vrrp_groups:
+            self._absent(parser, "juniper.junos.vrrp-authentication",
+                         "No VRRPv2 group is configured on an enabled interface.")
+        for group in vrrp_groups:
+            record_control(parser, "juniper.junos.vrrp-authentication",
+                           CO.NO_FINDING if group["auth"] == "md5" else CO.FINDING,
+                           f"authentication-type is {group['auth']}.",
+                           instance=f"{group['interface']} vrrp-group {group['group']}")
             if group["auth"] == "md5":
                 continue
             explicit = group["auth"] == "simple"
@@ -1816,6 +2351,10 @@ class PluginJunOSBaseline(BasePlugin):
         self.check_snmp(parser)
         self.check_default_security_policy(parser)
         if not self._applicable(parser):
+            reason = ("The configuration did not parse." if self._junos(parser).parse_error
+                      else "The Junos release is not identified; release-gated checks did not run.")
+            for control in _SC049_GATED_CONTROLS:
+                record_control(parser, control, CO.UNKNOWN, reason)
             return
         self.check_authentication(parser)
         self.check_administrative_policy(parser)

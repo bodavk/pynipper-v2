@@ -100,7 +100,11 @@ class PluginASAChecks(BasePlugin):
             credential, credential_policy_from_context(parser.assessment_context)
         )
         if not result.unsafe_storage:
+            record_control(parser, "cisco.asa.device-passwords", ControlOutcome.NO_FINDING,
+                           "The enable credential uses a safe storage format.", instance="enable")
             return
+        record_control(parser, "cisco.asa.device-passwords", ControlOutcome.FINDING,
+                       "The enable credential uses an unsafe storage format.", instance="enable")
         self.add_issue(
             Finding(
                 rule_id="cisco.asa.credentials.weak_enable_password",
@@ -135,7 +139,15 @@ class PluginASAChecks(BasePlugin):
         aaa = {protocol for protocol in ("enable", "ssh", "telnet")
                if any(re.fullmatch(rf"aaa authentication {protocol} console \S+.*", line) for line in lines)}
         enable = asa.get_enable_credential()
+        if enable is None:
+            record_control(parser, "cisco.asa.device-passwords",
+                           ControlOutcome.NOT_APPLICABLE if "enable" in aaa else ControlOutcome.UNKNOWN,
+                           "Privileged mode uses 'aaa authentication enable console'." if "enable" in aaa else
+                           "No enable password is exported; the release default enable state is not modelled.",
+                           instance="enable")
         if enable is not None and enable.default_assessment == DefaultCredentialAssessment.MATCH and "enable" not in aaa:
+            record_control(parser, "cisco.asa.device-passwords", ControlOutcome.FINDING,
+                           "The stored enable password is the documented factory default.", instance="enable")
             self.add_issue(Finding(
                 rule_id="cisco.asa.credentials.known_default_value",
                 device=parser.device_type,
@@ -154,7 +166,23 @@ class PluginASAChecks(BasePlugin):
         telnet = bool(asa.get_management_grants("telnet")) and "telnet" not in aaa
         ssh = (bool(asa.get_management_grants("ssh")) and "ssh" not in aaa
                and (platform == "PIX" or (release is not None and release < (8, 4, 2))))
+        ssh_unqualified = (bool(asa.get_management_grants("ssh")) and "ssh" not in aaa
+                           and platform != "PIX" and release is None)
+        if not (telnet or ssh):
+            record_control(parser, "cisco.asa.device-passwords",
+                           ControlOutcome.UNKNOWN if ssh_unqualified else ControlOutcome.NOT_APPLICABLE,
+                           "SSH without AAA is granted, but the release that decides 'passwd' use is not identified."
+                           if ssh_unqualified else "No Telnet or pre-8.4(2) SSH login relies on the 'passwd' password.",
+                           instance="login")
+        elif login is None:
+            record_control(parser, "cisco.asa.device-passwords", ControlOutcome.UNKNOWN,
+                           "Logins rely on the 'passwd' password, which is not exported.", instance="login")
+        elif not login.default_value:
+            record_control(parser, "cisco.asa.device-passwords", ControlOutcome.NO_FINDING,
+                           "The 'passwd' login password is not a documented default.", instance="login")
         if login is not None and login.default_value and (telnet or ssh):
+            record_control(parser, "cisco.asa.device-passwords", ControlOutcome.FINDING,
+                           "The 'passwd' login password is the documented default and protects logins.", instance="login")
             self.add_issue(Finding(
                 rule_id="cisco.asa.credentials.known_default_value",
                 device=parser.device_type,
@@ -218,6 +246,14 @@ class PluginASAChecks(BasePlugin):
                 )
 
         legacy_hosts = [host for host in hosts if host.version in {"1", "2", "2c", "unknown"}]
+        for host in hosts:
+            legacy = host in legacy_hosts
+            record_control(parser, "cisco.asa.snmp-v3", ControlOutcome.FINDING if legacy else ControlOutcome.NO_FINDING,
+                           "SNMP destination uses v1/v2c or states no version." if legacy else
+                           "SNMP destination uses SNMPv3.", instance=f"host {host.interface}:{host.address}")
+        if not hosts and not any(user.active for user in users):
+            record_control(parser, "cisco.asa.snmp-v3", ControlOutcome.NOT_APPLICABLE,
+                           "No SNMP destination or active SNMPv3 user is configured.")
         if legacy_hosts:
             self.add_issue(
                 Finding(
@@ -238,9 +274,13 @@ class PluginASAChecks(BasePlugin):
         release = self._asa(parser)._release_tuple(parser.get_version())
         for user in users:
             if not user.active:
+                record_control(parser, "cisco.asa.snmp-v3", ControlOutcome.NOT_APPLICABLE,
+                               "SNMPv3 user is not referenced by an SNMPv3 host.", instance=f"user {user.name}")
                 continue
             evidence = tuple(item for item in user.evidence)
             if not user.group_resolved:
+                record_control(parser, "cisco.asa.snmp-v3", ControlOutcome.FINDING,
+                               "SNMPv3 user references a group that is not configured.", instance=f"user {user.name}")
                 self.add_issue(
                     Finding(
                         rule_id="cisco.asa.snmp.v3_reference",
@@ -266,6 +306,8 @@ class PluginASAChecks(BasePlugin):
             if not user.privacy:
                 gaps.append("missing privacy")
             if gaps:
+                record_control(parser, "cisco.asa.snmp-v3", ControlOutcome.FINDING,
+                               "SNMPv3 user lacks authentication or privacy.", instance=f"user {user.name}")
                 self.add_issue(
                     Finding(
                         rule_id="cisco.asa.snmp.v3_protection",
@@ -289,7 +331,16 @@ class PluginASAChecks(BasePlugin):
                 weak.append("SHA-1 authentication despite SHA-256 support")
             if user.privacy in {"des", "3des"}:
                 weak.append(f"{user.privacy.upper()} privacy")
+            if not gaps and not weak:
+                unqualified = release is None and user.authentication in {"sha", "sha-1"}
+                record_control(parser, "cisco.asa.snmp-v3",
+                               ControlOutcome.UNKNOWN if unqualified else ControlOutcome.NO_FINDING,
+                               "SHA-1 authentication cannot be judged without an identified release." if unqualified else
+                               "SNMPv3 user uses a priv group with authentication and privacy and no legacy algorithm.",
+                               instance=f"user {user.name}")
             if weak:
+                record_control(parser, "cisco.asa.snmp-v3", ControlOutcome.FINDING,
+                               "SNMPv3 user uses a weak algorithm.", instance=f"user {user.name}")
                 self.add_issue(
                     Finding(
                         rule_id="cisco.asa.snmp.v3_weak_algorithm",
@@ -366,11 +417,19 @@ class PluginASAChecks(BasePlugin):
                     basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
+            for control in ("cisco.asa.syslog-tls", "cisco.asa.logging-trap-level"):
+                record_control(parser, control, ControlOutcome.NOT_APPLICABLE,
+                               f"Remote logging is not operational: {reason}.")
             return
         record_control(parser, "cisco.asa.remote-logging", ControlOutcome.NO_FINDING,
                        f"Logging is enabled with {len(hosts)} remote host(s).")
 
         cleartext = [host for host in hosts if not re.search(r"\bsecure\b", host, re.IGNORECASE)]
+        for host in hosts:
+            record_control(parser, "cisco.asa.syslog-tls",
+                           ControlOutcome.FINDING if host in cleartext else ControlOutcome.NO_FINDING,
+                           "Remote syslog destination does not use TLS ('secure')." if host in cleartext else
+                           "Remote syslog destination uses TLS ('secure').", instance=host)
         if cleartext:
             self.add_issue(Finding(
                 rule_id="cisco.asa.logging.remote_cleartext",
@@ -398,6 +457,9 @@ class PluginASAChecks(BasePlugin):
             "debugging": 7,
         }
         numeric_level = int(level) if level and level.isdigit() else severity_values.get(level or "")
+        record_control(parser, "cisco.asa.logging-trap-level",
+                       ControlOutcome.FINDING if numeric_level is None or numeric_level < 6 else ControlOutcome.NO_FINDING,
+                       f"Effective trap level is {level or 'not configured'}.")
         if numeric_level is None or numeric_level < 6:
             self.add_issue(
                 Finding(
@@ -482,6 +544,44 @@ class PluginASAChecks(BasePlugin):
                 basis=FindingBasis.DOCUMENTED_DEFAULT,
             ))
 
+    def _record_tls_control(self, parser: BaseDeviceParser, policy) -> None:
+        """SC-049 outcome for the TLS minimum/cipher decisions of _check_ssl_defaults and check_ssl_version."""
+        control = "cisco.asa.tls-settings"
+        asa = self._asa(parser)
+        if not policy.active_interfaces and not policy.http_server_enabled:
+            record_control(parser, control, ControlOutcome.NOT_APPLICABLE, "Neither WebVPN nor the HTTP server is enabled.")
+            return
+        platform, release = asa.get_release()
+        defaults_known = platform == "ASA" and release is not None
+        webvpn = bool(policy.active_interfaces) and asa.get_version() != "?"
+        minimum = policy.server_minimum
+        if minimum is None:
+            outcome, reason = ((ControlOutcome.FINDING, "'ssl server-version' is omitted; the documented release default accepts legacy versions.")
+                               if defaults_known else
+                               (ControlOutcome.UNKNOWN, "'ssl server-version' is omitted and the release default is not qualified."))
+        elif not policy.server_minimum_valid:
+            outcome, reason = ControlOutcome.UNKNOWN, "'ssl server-version' uses an unsupported value."
+        elif minimum in {"any", "sslv3", "sslv3-only", "tlsv1", "tlsv1-only", "tlsv1.1"}:
+            outcome, reason = ((ControlOutcome.FINDING, "Explicit server minimum permits an obsolete version on active WebVPN.")
+                               if webvpn else
+                               (ControlOutcome.UNKNOWN, "An explicit legacy minimum is assessed only for active WebVPN on an identified release."))
+        else:
+            outcome, reason = ControlOutcome.NO_FINDING, f"Explicit server minimum is '{minimum}'."
+        record_control(parser, control, outcome, reason, instance="server-version")
+        if policy.weak_cipher_commands:
+            outcome, reason = ((ControlOutcome.FINDING, "Explicit cipher policy includes weak suites on active WebVPN.")
+                               if webvpn else
+                               (ControlOutcome.UNKNOWN, "Explicit weak cipher commands are assessed only for active WebVPN on an identified release."))
+        elif "tlsv1.2" not in policy.cipher_protocols:
+            outcome, reason = ((ControlOutcome.FINDING, "No 'ssl cipher tlsv1.2' line; the documented default level 'medium' applies.")
+                               if defaults_known and release >= (9, 3, 2) else
+                               (ControlOutcome.UNKNOWN, "No 'ssl cipher tlsv1.2' line and the default cipher level is not qualified for this release."))
+        elif policy.unknown_cipher_commands:
+            outcome, reason = ControlOutcome.UNKNOWN, "A cipher command uses an unsupported setting."
+        else:
+            outcome, reason = ControlOutcome.NO_FINDING, "Explicit TLS 1.2 cipher policy uses a high, FIPS or reviewed custom level."
+        record_control(parser, control, outcome, reason, instance="cipher")
+
     def check_pix_defaults(self, parser: BaseDeviceParser) -> None:
         """SC-044 PIX-01/02/03: PIX 6.x defaults from the PIX 6.3 command reference."""
         asa = self._asa(parser)
@@ -504,6 +604,9 @@ class PluginASAChecks(BasePlugin):
                     weak.append(f"isakmp policy {number} group {settings.get('group', '1 (default)')}")
             if not policies:
                 weak.append("no isakmp policy: default suite DES, SHA-1, DH group 1")
+            record_control(parser, "cisco.asa.ike-policy", ControlOutcome.FINDING if weak else ControlOutcome.NO_FINDING,
+                           "PIX ISAKMP policies resolve to weak values." if weak else
+                           "PIX ISAKMP policies set strong explicit values.", instance="pix-isakmp")
             if weak:
                 self.add_issue(Finding(
                     rule_id="cisco.asa.vpn.ike_weak_policy",
@@ -521,6 +624,8 @@ class PluginASAChecks(BasePlugin):
                 ))
         ssh = [line for line in lines if re.fullmatch(r"ssh \d+(?:\.\d+){3} \d+(?:\.\d+){3} \S+", line)]
         if ssh:
+            record_control(parser, "cisco.asa.ssh-settings", ControlOutcome.FINDING,
+                           "PIX 6.x implements SSH version 1 only.", instance="version")
             self.add_issue(Finding(
                 rule_id="cisco.asa.ssh.protocol_version",
                 device=parser.device_type,
@@ -536,6 +641,8 @@ class PluginASAChecks(BasePlugin):
             ))
         sysopt = [line for line in lines if line == "sysopt connection permit-ipsec"]
         if sysopt:
+            record_control(parser, "cisco.asa.vpn-acl-bypass", ControlOutcome.FINDING,
+                           "'sysopt connection permit-ipsec' exempts tunnel traffic from interface ACLs.")
             self.add_issue(Finding(
                 rule_id="cisco.asa.vpn.sysopt_permit_vpn",
                 device=parser.device_type,
@@ -554,6 +661,7 @@ class PluginASAChecks(BasePlugin):
         asa = self._asa(parser)
         policy = asa.get_ssl_service_policy()
         self._check_ssl_defaults(parser, policy)
+        self._record_tls_control(parser, policy)
         if not policy.active_interfaces or asa.get_version() == "?":
             return
         minimum = policy.server_minimum
@@ -599,9 +707,12 @@ class PluginASAChecks(BasePlugin):
         for binding in asa.get_acl_bindings():
             if binding["direction"] != "in" or levels.get(binding["interface"], -1) > 10:
                 continue
-            for entry in asa.get_acl_entries(binding["acl_name"]):
+            for position, entry in enumerate(asa.get_acl_entries(binding["acl_name"]), start=1):
                 if not entry.is_broad_permit:
                     continue
+                record_control(parser, "cisco.asa.acl-permit-scope", ControlOutcome.FINDING,
+                               "Broad any-to-any permit is bound inbound on a low-trust interface.",
+                               instance=f"system/acl:{entry.acl_name}/entry:{position}/{binding['direction']}:{binding['interface']}")
                 self.add_issue(
                     Finding(
                         rule_id="cisco.asa.acl.broad_inbound_permit",
@@ -639,11 +750,55 @@ class PluginASAChecks(BasePlugin):
             labels = risky_labels(protocol, port(qualifiers[1]), port(qualifiers[2]))
         return sorted(labels)
 
+    @staticmethod
+    def _acl_scope_unassessed(asa: CiscoASAParser, entry) -> str | None:
+        """Why the literal-selector permit-scope rules cannot judge this entry, or None."""
+        if entry.action != "permit":
+            return None
+        any_values = {"any", "any4", "any6"}
+
+        def may_be_any(value: str) -> bool:
+            if value in any_values:
+                return False
+            semantics = asa.resolve_acl_network(value)
+            return not semantics.complete or semantics.any
+        if not entry.inactive and entry.protocol.casefold().startswith(("object ", "object-group ")):
+            service = asa.resolve_acl_service(entry)
+            if not service.complete or service.any:
+                return "The permit's protocol object is unresolved or may permit every IP protocol; the rules match literal protocols."
+        if may_be_any(entry.source):
+            return "The permit's source is an object that is unresolved or resolves to any; the rules match literal selectors."
+        if entry.source not in any_values or entry.inactive:
+            return None
+        if may_be_any(entry.destination):
+            return "The permit's destination is an object that is unresolved or resolves to any; the rules match literal selectors."
+        protocol = entry.protocol.casefold()
+        if protocol in {"tcp", "udp", "tcp-udp"}:
+            qualifiers = list(entry.service_qualifiers)
+
+            def port(value: str) -> int | None:
+                return int(value) if value.isdigit() else CISCO_PORT_NAMES.get(value)
+            literal = ((len(qualifiers) >= 2 and qualifiers[0] == "eq" and port(qualifiers[1]) is not None)
+                       or (len(qualifiers) >= 3 and qualifiers[0] == "range"
+                           and port(qualifiers[1]) is not None and port(qualifiers[2]) is not None))
+            if not literal:
+                return "Any-source permit has a destination port scope other than a literal eq/range; the risky-service catalogue was not applied."
+        elif protocol.startswith(("object ", "object-group ")):
+            return "Any-source permit uses a protocol/service object; the risky-service catalogue was not applied."
+        return None
+
     def check_acl_hygiene_and_effectiveness(self, parser: BaseDeviceParser) -> None:
         asa = self._asa(parser)
         self._deny_shadows = []
+        scope_recorded = False
         for binding in asa.get_acl_bindings():
             entries = asa.get_acl_entries(binding["acl_name"])
+            if not entries:
+                scope_recorded = True
+                for control in ("cisco.asa.acl-permit-scope", "cisco.asa.policy-order"):
+                    record_control(parser, control, ControlOutcome.UNKNOWN,
+                                   "Bound ACL has no parsed extended entries (absent, non-extended or unsupported syntax).",
+                                   instance=f"system/acl:{binding['acl_name']}/{binding['direction']}:{binding['interface']}")
             order_unknown = any("duplicate-ace-order" in e.unsupported_predicates for e in entries)
             if order_unknown:
                 record_path_not_assessed(parser, "protective-deny-defeated", "Repeated identical ACE commands make bound ACL order unqualified.")
@@ -663,12 +818,20 @@ class PluginASAChecks(BasePlugin):
                     entry.raw_line,
                     f"access-group {entry.acl_name} {binding['direction']} interface {binding['interface']}",
                 )
+                scope_recorded = True
+                unassessed = self._acl_scope_unassessed(asa, entry)
+                record_control(parser, "cisco.asa.acl-permit-scope",
+                               ControlOutcome.UNKNOWN if unassessed else ControlOutcome.NO_FINDING,
+                               unassessed or "Entry is not a broad, protocol-wide, unlogged or risky-service permit.",
+                               instance=instance)
                 if entry.inactive:
                     if (
                         entry.action == "permit"
                         and entry.source in {"any", "any4", "any6"}
                         and entry.destination in {"any", "any4", "any6"}
                     ):
+                        record_control(parser, "cisco.asa.acl-permit-scope", ControlOutcome.FINDING,
+                                       "Inactive broad permit remains configured.", instance=instance)
                         self.add_issue(Finding(
                             rule_id="cisco.asa.acl.inactive_permissive_rule",
                             device=parser.device_type,
@@ -684,6 +847,8 @@ class PluginASAChecks(BasePlugin):
                         ))
                     continue
                 if entry.action == "permit" and entry.protocol.casefold() in {"ip", "any"} and not entry.is_broad_permit:
+                    record_control(parser, "cisco.asa.acl-permit-scope", ControlOutcome.FINDING,
+                                   "Permit is unrestricted by IP protocol.", instance=instance)
                     self.add_issue(Finding(
                         rule_id="cisco.asa.acl.broad_service",
                         device=parser.device_type,
@@ -717,6 +882,8 @@ class PluginASAChecks(BasePlugin):
                     ):
                         risky = []
                 if risky:
+                    record_control(parser, "cisco.asa.acl-permit-scope", ControlOutcome.FINDING,
+                                   "Any-source permit includes a catalogued risky service port.", instance=instance)
                     self.add_issue(Finding(
                         rule_id="cisco.asa.acl.risky_service_exposure",
                         device=parser.device_type,
@@ -731,6 +898,8 @@ class PluginASAChecks(BasePlugin):
                         basis=FindingBasis.EXPLICIT_VALUE,
                     ))
                 if entry.action == "permit" and entry.is_broad_permit and not entry.logging:
+                    record_control(parser, "cisco.asa.acl-permit-scope", ControlOutcome.FINDING,
+                                   "Broad permit has no explicit log option.", instance=instance)
                     self.add_issue(Finding(
                         rule_id="cisco.asa.acl.broad_permit_unlogged",
                         device=parser.device_type,
@@ -790,6 +959,10 @@ class PluginASAChecks(BasePlugin):
                         self._deny_shadows.append((binding, position, entry, earlier_position, earlier, finding))
                     break
                 previous.append((position, entry))
+        if not scope_recorded:
+            for control in ("cisco.asa.acl-permit-scope", "cisco.asa.policy-order"):
+                record_control(parser, control, ControlOutcome.NOT_APPLICABLE,
+                               "No access list is bound to an interface.")
 
     def analyze(self, parser: BaseDeviceParser) -> None:
         self.check_telnet(parser)

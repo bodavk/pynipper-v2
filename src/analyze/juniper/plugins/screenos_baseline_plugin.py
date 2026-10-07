@@ -3,6 +3,7 @@
 from collections import defaultdict
 
 from src.analyze.common.base_plugin import BasePlugin
+from src.analyze.common.controls import ControlOutcome, record_control
 from src.analyze.common.credentials import (
     CredentialPropertyState,
     credential_policy_from_context,
@@ -36,6 +37,48 @@ ORIGINAL_ADMIN_REFERENCE = (
 ORIGINAL_SNMP_REFERENCE = (
     "reference/nipper-ng-original/libnipper-0.12.6/Juniper-ScreenOS/snmp.cpp"
 )
+
+
+_TIMEOUT_CONTROLS = {
+    "console-telnet": "juniper.screenos.console-timeout",
+    "web-management": "juniper.screenos.web-timeout",
+    "authentication-server": "juniper.screenos.auth-server-timeout",
+}
+_VERSION_GATED_CONTROLS = (
+    "juniper.screenos.admin-credentials",
+    "juniper.screenos.login-banner",
+    "juniper.screenos.remote-logging",
+    "juniper.screenos.ntp-servers",
+)
+
+
+def record_unused_management(
+    parser: BaseDeviceParser,
+    screenos: JuniperScreenOSParser,
+    control_id: str,
+    feature: str,
+    instance: str = "device",
+) -> None:
+    """Not applicable only when no enabled interface relies on an unverified default."""
+
+    unstated = screenos.get_unstated_management_interfaces()
+    if unstated:
+        record_control(
+            parser,
+            control_id,
+            ControlOutcome.UNKNOWN,
+            f"{feature} is not explicitly enabled, but interface(s) {', '.join(unstated[:5])} have no exported "
+            "manage statement and the ScreenOS default management services are not verified for this release.",
+            instance=instance,
+        )
+    else:
+        record_control(
+            parser,
+            control_id,
+            ControlOutcome.NOT_APPLICABLE,
+            f"{feature} is not enabled globally or on any enabled interface.",
+            instance=instance,
+        )
 
 
 class PluginScreenOSBaseline(BasePlugin):
@@ -89,6 +132,43 @@ class PluginScreenOSBaseline(BasePlugin):
     def _applicable(self, parser: BaseDeviceParser) -> bool:
         return self._screenos(parser).get_version() != "?"
 
+    @staticmethod
+    def _record_timeout(parser, screenos, control, excessive: bool) -> None:
+        control_id = _TIMEOUT_CONTROLS.get(control.scope)
+        if control_id is None:
+            return
+        server = control.scope == "authentication-server"
+        instance = f"auth-server {control.name}" if server else "device"
+        source = (
+            "documented ScreenOS 6.3 default"
+            if control.value_source == "documented-default"
+            else "explicit value"
+        )
+        if excessive:
+            record_control(parser, control_id, ControlOutcome.FINDING,
+                           f"Effective timeout {control.timeout_minutes} minutes ({source}) is zero or above ten.",
+                           instance=instance)
+        elif not control.active:
+            if server:
+                record_control(parser, control_id, ControlOutcome.NOT_APPLICABLE,
+                               "The authentication server is not bound to any active use.", instance=instance)
+            else:
+                record_unused_management(
+                    parser, screenos, control_id,
+                    "Console/Telnet administration" if control.scope == "console-telnet"
+                    else "Web (HTTP/HTTPS) administration",
+                )
+        elif control.resolution_state == "unresolved":
+            record_control(parser, control_id, ControlOutcome.UNKNOWN,
+                           "The bound authentication server is not in the export; its timeout is not known.",
+                           instance=instance)
+        elif control.resolution_state != "known" or control.timeout_minutes is None:
+            record_control(parser, control_id, ControlOutcome.UNKNOWN,
+                           "The timeout value is malformed.", instance=instance)
+        else:
+            record_control(parser, control_id, ControlOutcome.NO_FINDING,
+                           f"Effective timeout {control.timeout_minutes} minutes ({source}).", instance=instance)
+
     def check_lifecycle(self, parser: BaseDeviceParser) -> None:
         screenos = self._screenos(parser)
         self.add_issue(
@@ -129,15 +209,40 @@ class PluginScreenOSBaseline(BasePlugin):
                     basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
+            record_control(parser, "juniper.screenos.manager-sources", ControlOutcome.FINDING,
+                           "Management is enabled without a global or per-interface manager-IP restriction.")
+        elif not management_enabled:
+            record_unused_management(parser, screenos, "juniper.screenos.manager-sources",
+                                     "SSH, HTTPS, HTTP or Telnet management")
+        elif screenos.manager_ips:
+            record_control(parser, "juniper.screenos.manager-sources", ControlOutcome.NO_FINDING,
+                           f"Global admin manager-ip restricts management to {len(screenos.manager_ips)} source entr"
+                           f"{'y' if len(screenos.manager_ips) == 1 else 'ies'}.")
+        else:
+            record_control(parser, "juniper.screenos.manager-sources", ControlOutcome.UNKNOWN,
+                           "Only interface manage-ip values are present; manage-ip sets the interface management "
+                           "address, not permitted manager sources, so a source restriction is not established.")
 
         session_controls = screenos.get_session_controls()
+        if screenos.is_screenos_63() and not any(
+            control.scope == "authentication-server" for control in session_controls
+        ):
+            record_control(parser, "juniper.screenos.auth-server-timeout", ControlOutcome.NOT_APPLICABLE,
+                           "No authentication server is defined or bound.")
+        if not screenos.is_screenos_63():
+            for control_id in (*_TIMEOUT_CONTROLS.values(), "juniper.screenos.auth-server-references"):
+                record_control(parser, control_id, ControlOutcome.UNKNOWN,
+                               f"ScreenOS release '{screenos.get_version()}' is not the verified 6.3 family; timeout "
+                               "defaults and authentication-server bindings are not resolved.")
         for control in session_controls:
-            if (
-                not control.active
-                or control.resolution_state != "known"
-                or control.timeout_minutes is None
-                or (0 < control.timeout_minutes <= 10)
-            ):
+            excessive = (
+                control.active
+                and control.resolution_state == "known"
+                and control.timeout_minutes is not None
+                and not (0 < control.timeout_minutes <= 10)
+            )
+            self._record_timeout(parser, screenos, control, excessive)
+            if not excessive:
                 continue
             evidence = tuple(item for item in control.evidence)
             if control.scope == "console-telnet":
@@ -201,7 +306,23 @@ class PluginScreenOSBaseline(BasePlugin):
                     )
                 )
 
+        active_servers = [
+            control for control in session_controls
+            if control.scope == "authentication-server" and control.active
+        ]
+        if screenos.is_screenos_63() and not active_servers:
+            record_control(parser, "juniper.screenos.auth-server-references", ControlOutcome.NOT_APPLICABLE,
+                           "No authentication server is bound to administrators, users, policies or 802.1X.")
         for control in session_controls:
+            if (
+                control.scope == "authentication-server"
+                and control.active
+                and control.resolution_state != "unresolved"
+            ):
+                record_control(parser, "juniper.screenos.auth-server-references", ControlOutcome.NO_FINDING,
+                               "The bound authentication server is defined in the export"
+                               + (" (built-in local database)." if control.name == "local" else "."),
+                               instance=f"auth-server {control.name}")
             if (
                 control.scope == "authentication-server"
                 and control.active
@@ -222,10 +343,23 @@ class PluginScreenOSBaseline(BasePlugin):
                         basis=FindingBasis.REQUIRED_SETTING_MISSING,
                     )
                 )
+                record_control(parser, "juniper.screenos.auth-server-references", ControlOutcome.FINDING,
+                               "The bound authentication server is not defined in the export.",
+                               instance=f"auth-server {control.name}")
 
         attempts = self._commands(parser, ("admin", "access", "attempts"))
+        if not attempts:
+            record_control(parser, "juniper.screenos.login-attempts", ControlOutcome.UNKNOWN,
+                           "admin access attempts is omitted and the ScreenOS default attempt limit is not cited "
+                           "for this release.")
         if attempts:
             value = attempts[-1].tokens[-1]
+            if not value.isdigit():
+                record_control(parser, "juniper.screenos.login-attempts", ControlOutcome.UNKNOWN,
+                               "The admin access attempts value is malformed.")
+            elif int(value) <= 3:
+                record_control(parser, "juniper.screenos.login-attempts", ControlOutcome.NO_FINDING,
+                               f"Administrator access attempts are limited to {value}.")
             if value.isdigit() and int(value) > 3:
                 self.add_issue(
                     self._finding(
@@ -241,7 +375,11 @@ class PluginScreenOSBaseline(BasePlugin):
                         basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
+                record_control(parser, "juniper.screenos.login-attempts", ControlOutcome.FINDING,
+                               f"Administrator access attempts are set to {value}, above three.")
 
+        if not screenos.get_services()["ssh"]:
+            record_unused_management(parser, screenos, "juniper.screenos.ssh-protocol", "SSH management")
         if screenos.get_services()["ssh"]:
             versions = self._commands(parser, ("ssh", "version"))
             effective = versions[-1].tokens[-1] if versions else "v1-and-v2 default"
@@ -260,6 +398,11 @@ class PluginScreenOSBaseline(BasePlugin):
                         basis=FindingBasis.EXPLICIT_VALUE if versions else FindingBasis.DOCUMENTED_DEFAULT,
                     )
                 )
+                record_control(parser, "juniper.screenos.ssh-protocol", ControlOutcome.FINDING,
+                               f"SSH management is active with effective version state '{effective}'.")
+            else:
+                record_control(parser, "juniper.screenos.ssh-protocol", ControlOutcome.NO_FINDING,
+                               "SSH management is restricted to protocol version 2.")
 
         ssl_interfaces = [
             interface.name
@@ -281,8 +424,23 @@ class PluginScreenOSBaseline(BasePlugin):
                     basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
+            record_control(parser, "juniper.screenos.https-activation", ControlOutcome.FINDING,
+                           "Interfaces permit SSL management but global 'set ssl enable' is absent.")
+        elif ssl_interfaces:
+            record_control(parser, "juniper.screenos.https-activation", ControlOutcome.NO_FINDING,
+                           "Interfaces permitting SSL management have SSL enabled globally.")
+        else:
+            record_unused_management(parser, screenos, "juniper.screenos.https-activation",
+                                     "Per-interface SSL management")
 
         weak_ciphers = self._commands(parser, ("ssl", "encrypt"))
+        if not weak_ciphers:
+            if screenos.get_services()["https"]:
+                record_control(parser, "juniper.screenos.https-ciphers", ControlOutcome.UNKNOWN,
+                               "HTTPS management is active, 'set ssl encrypt' is omitted and the ScreenOS default "
+                               "cipher set is not cited for this release.")
+            else:
+                record_unused_management(parser, screenos, "juniper.screenos.https-ciphers", "HTTPS management")
         for command in weak_ciphers:
             algorithms = set(command.tokens[2:])
             weak = sorted(
@@ -305,11 +463,21 @@ class PluginScreenOSBaseline(BasePlugin):
                         basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
+                record_control(parser, "juniper.screenos.https-ciphers", ControlOutcome.FINDING,
+                               f"The effective SSL cipher definition includes {', '.join(weak)}.")
+            else:
+                record_control(parser, "juniper.screenos.https-ciphers", ControlOutcome.NO_FINDING,
+                               "The effective SSL cipher definition names no legacy cipher or hash.")
 
     def check_credentials_and_banner(self, parser: BaseDeviceParser) -> None:
         policy = credential_policy_from_context(parser.assessment_context)
-        for credential in self._screenos(parser).get_credential_metadata():
+        credentials = self._screenos(parser).get_credential_metadata()
+        if not credentials:
+            record_control(parser, "juniper.screenos.admin-credentials", ControlOutcome.UNKNOWN,
+                           "No administrator password statement is exported.")
+        for credential in credentials:
             result = evaluate_credential(credential, policy)
+            instance = f"{credential.context} {credential.account}"
             if (
                 result.storage_assessment == CredentialStorageAssessment.EMPTY
                 or result.default_state == CredentialPropertyState.FAIL
@@ -335,8 +503,22 @@ class PluginScreenOSBaseline(BasePlugin):
                         basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
+                record_control(parser, "juniper.screenos.admin-credentials", ControlOutcome.FINDING,
+                               "The credential is empty or matches a known default or the blocklist.",
+                               instance=instance)
+            elif result.default_state == CredentialPropertyState.PASS:
+                record_control(parser, "juniper.screenos.admin-credentials", ControlOutcome.NO_FINDING,
+                               "The credential is not empty and does not equal a known default representation.",
+                               instance=instance)
+            else:
+                record_control(parser, "juniper.screenos.admin-credentials", ControlOutcome.UNKNOWN,
+                               "The known-default comparison was not evaluated for this credential.",
+                               instance=instance)
 
         banners = self._commands(parser, ("admin", "auth", "banner"))
+        if banners:
+            record_control(parser, "juniper.screenos.login-banner", ControlOutcome.NO_FINDING,
+                           "An administrator authentication banner is configured.")
         if not banners:
             self.add_issue(
                 self._finding(
@@ -352,11 +534,15 @@ class PluginScreenOSBaseline(BasePlugin):
                     basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
+            record_control(parser, "juniper.screenos.login-banner", ControlOutcome.FINDING,
+                           "No administrator authentication banner is configured.")
 
     def check_logging(self, parser: BaseDeviceParser) -> None:
         destinations = self._screenos(parser).get_logging_destinations()
         active = [item for item in destinations if item.state.value == "enabled"]
         if active:
+            record_control(parser, "juniper.screenos.remote-logging", ControlOutcome.NO_FINDING,
+                           f"{len(active)} syslog destination(s) are configured with syslog enabled.")
             return
         evidence = tuple(
             item.evidence[0] for item in destinations if item.evidence
@@ -375,6 +561,8 @@ class PluginScreenOSBaseline(BasePlugin):
                 basis=FindingBasis.REQUIRED_SETTING_MISSING,
             )
         )
+        record_control(parser, "juniper.screenos.remote-logging", ControlOutcome.FINDING,
+                       "No enabled syslog destination is configured.")
 
     def check_snmp(self, parser: BaseDeviceParser) -> None:
         screenos = self._screenos(parser)
@@ -383,9 +571,17 @@ class PluginScreenOSBaseline(BasePlugin):
             for interface in screenos.interfaces.values()
             if not interface.disabled and "snmp" in interface.management_methods
         ]
-        if not snmp_interfaces:
-            return
         communities = self._commands(parser, ("snmp", "community"))
+        if not snmp_interfaces:
+            if communities:
+                record_unused_management(parser, screenos, "juniper.screenos.snmp-community", "SNMP management")
+            else:
+                record_control(parser, "juniper.screenos.snmp-community", ControlOutcome.NOT_APPLICABLE,
+                               "No SNMP community is configured and no interface enables SNMP management.")
+            return
+        if not communities:
+            record_control(parser, "juniper.screenos.snmp-community", ControlOutcome.NO_FINDING,
+                           "SNMP management is enabled on interfaces but no SNMP community is configured.")
         hosts = self._commands(parser, ("snmp", "host"))
         for community in communities:
             name = community.tokens[2] if len(community.tokens) > 2 else ""
@@ -423,10 +619,15 @@ class PluginScreenOSBaseline(BasePlugin):
                     basis=FindingBasis.EXPLICIT_VALUE,
                 )
             )
+            record_control(parser, "juniper.screenos.snmp-community", ControlOutcome.FINDING,
+                           f"A {access} SNMP community is active on SNMP-managed interfaces (value redacted).",
+                           instance=f"community line {community.evidence.line_number or '?'}")
 
     def check_ntp(self, parser: BaseDeviceParser) -> None:
         servers = self._commands(parser, ("ntp", "server"))
         if servers:
+            record_control(parser, "juniper.screenos.ntp-servers", ControlOutcome.NO_FINDING,
+                           f"{len(servers)} NTP server command(s) are configured.")
             return
         self.add_issue(
             self._finding(
@@ -442,19 +643,34 @@ class PluginScreenOSBaseline(BasePlugin):
                 basis=FindingBasis.REQUIRED_SETTING_MISSING,
             )
         )
+        record_control(parser, "juniper.screenos.ntp-servers", ControlOutcome.FINDING,
+                       "No NTP server is configured.")
 
     def check_policy_logging(self, parser: BaseDeviceParser) -> None:
+        evaluated = False
         for policy in self._screenos(parser).policies.values():
             if policy.disabled or policy.action.casefold() not in {"permit", "accept"}:
                 continue
-            if policy.tracking:
-                continue
+            evaluated = True
+            instance = f"policy {policy.policy_id}"
             untrusted = policy.from_zone.casefold() in {"untrust", "dmz", "public"}
             broad = all(
                 values and all(value.casefold() == "any" for value in values)
                 for values in (policy.sources, policy.destinations, policy.services)
             )
+            if policy.tracking:
+                record_control(
+                    parser, "juniper.screenos.policy-logging",
+                    ControlOutcome.NO_FINDING if (untrusted or broad) else ControlOutcome.NOT_APPLICABLE,
+                    "The permit policy logs sessions." if (untrusted or broad)
+                    else "The permit policy is neither from an untrusted zone nor Any/Any/Any.",
+                    instance=instance,
+                )
+                continue
             if not (untrusted or broad):
+                record_control(parser, "juniper.screenos.policy-logging", ControlOutcome.NOT_APPLICABLE,
+                               "The permit policy is neither from an untrusted zone nor Any/Any/Any.",
+                               instance=instance)
                 continue
             self.add_issue(
                 self._finding(
@@ -470,9 +686,24 @@ class PluginScreenOSBaseline(BasePlugin):
                     basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
+            record_control(parser, "juniper.screenos.policy-logging", ControlOutcome.FINDING,
+                           "The high-risk permit policy has no session logging configured.", instance=instance)
+        if not evaluated:
+            record_control(parser, "juniper.screenos.policy-logging", ControlOutcome.NOT_APPLICABLE,
+                           "No enabled permit policy is configured.")
 
     def check_policy_default(self, parser: BaseDeviceParser) -> None:
         state = self._screenos(parser).get_firewall_policy_state()
+        if state.resolution_state == "unsupported-release":
+            record_control(parser, "juniper.screenos.default-deny", ControlOutcome.UNKNOWN,
+                           "The unmatched-policy default is verified only for the ScreenOS 6.3 family.")
+        elif state.default_action == "deny-all":
+            record_control(parser, "juniper.screenos.default-deny", ControlOutcome.NO_FINDING,
+                           "policy default-permit-all is not set; the documented ScreenOS 6.3 default denies "
+                           "unmatched interzone traffic.")
+        elif not (state.resolution_state == "explicit" and state.default_action == "permit-all"):
+            record_control(parser, "juniper.screenos.default-deny", ControlOutcome.UNKNOWN,
+                           "The unmatched-policy behavior is not resolved.")
         if state.resolution_state != "explicit" or state.default_action != "permit-all":
             return
         self.add_issue(
@@ -489,20 +720,43 @@ class PluginScreenOSBaseline(BasePlugin):
                 basis=FindingBasis.EXPLICIT_VALUE,
             )
         )
+        record_control(parser, "juniper.screenos.default-deny", ControlOutcome.FINDING,
+                       "policy default-permit-all is explicitly enabled.")
 
     def check_vpn_crypto(self, parser: BaseDeviceParser) -> None:
         commands = self._screenos(parser).effective_commands
         references: set[str] = set()
+        stated: dict[str, bool] = {}
         for command in commands:
             if not (
                 command.tokens[:2] == ("ike", "gateway")
                 or command.tokens[:1] == ("vpn",)
             ):
                 continue
+            group = " ".join(command.tokens[:3] if command.tokens[:1] == ("ike",) else command.tokens[:2])
+            stated.setdefault(group, False)
+            if "sec-level" in command.tokens:
+                stated[group] = True
+                record_control(parser, "juniper.screenos.vpn-proposals", ControlOutcome.UNKNOWN,
+                               "A predefined sec-level proposal set is used; its algorithms are not evaluated.",
+                               instance=group)
             if "proposal" in command.tokens:
+                stated[group] = True
                 index = command.tokens.index("proposal")
+                if index + 2 < len(command.tokens):
+                    record_control(parser, "juniper.screenos.vpn-proposals", ControlOutcome.UNKNOWN,
+                                   "Only the first proposal name on the statement is evaluated; later tokens "
+                                   "are not assessed.", instance=group)
                 if index + 1 < len(command.tokens):
                     references.add(command.tokens[index + 1])
+        if not stated:
+            record_control(parser, "juniper.screenos.vpn-proposals", ControlOutcome.NOT_APPLICABLE,
+                           "No IKE gateway or VPN is configured.")
+        for group, has_proposal in stated.items():
+            if not has_proposal:
+                record_control(parser, "juniper.screenos.vpn-proposals", ControlOutcome.UNKNOWN,
+                               "No proposal or sec-level is stated and the release default proposal set is not "
+                               "cited.", instance=group)
 
         weak_values = {
             "des",
@@ -516,6 +770,11 @@ class PluginScreenOSBaseline(BasePlugin):
         }
         proposals = self._commands(parser, ("ike", "p1-proposal"))
         proposals += self._commands(parser, ("ike", "p2-proposal"))
+        defined = {proposal.tokens[2] for proposal in proposals if len(proposal.tokens) >= 3}
+        for name in sorted(references - defined):
+            record_control(parser, "juniper.screenos.vpn-proposals", ControlOutcome.UNKNOWN,
+                           "The referenced proposal is not defined in the export (predefined suite or unexported "
+                           "object); its algorithms are not evaluated.", instance=f"proposal {name}")
         for proposal in proposals:
             if len(proposal.tokens) < 3 or proposal.tokens[2] not in references:
                 continue
@@ -529,7 +788,13 @@ class PluginScreenOSBaseline(BasePlugin):
                 )
             )
             if not weak:
+                record_control(parser, "juniper.screenos.vpn-proposals", ControlOutcome.NO_FINDING,
+                               "The referenced proposal names no weak algorithm or group.",
+                               instance=f"proposal {proposal.tokens[2]}")
                 continue
+            record_control(parser, "juniper.screenos.vpn-proposals", ControlOutcome.FINDING,
+                           f"The referenced proposal contains {', '.join(weak)}.",
+                           instance=f"proposal {proposal.tokens[2]}")
             self.add_issue(
                 self._finding(
                     parser,
@@ -554,6 +819,10 @@ class PluginScreenOSBaseline(BasePlugin):
         self.check_policy_default(parser)
         self.check_vpn_crypto(parser)
         if not self._applicable(parser):
+            for control_id in _VERSION_GATED_CONTROLS:
+                record_control(parser, control_id, ControlOutcome.UNKNOWN,
+                               "The export has no ScreenOS version header; these checks run only on identified "
+                               "ScreenOS exports.")
             return
         self.check_lifecycle(parser)
         self.check_credentials_and_banner(parser)

@@ -47,10 +47,15 @@ class PluginFortiOSChecks(BasePlugin):
         normalized = fortios.get_normalized_config()
         administrators = [admin for admin in fortios.get_administrator_trust() if admin["enabled"]]
 
+        cleartext = False
         for service in normalized.management_services.items:
             protocol = service.protocol.lower()
             if protocol not in {"http", "telnet"}:
                 continue
+            cleartext = True
+            record_control(parser, "fortinet.fortios.management-cleartext", ControlOutcome.FINDING,
+                           f"{protocol.upper()} administration is allowed on the interface.",
+                           instance=f"{service.scope}/{service.interface}/{protocol}")
             relevant_admins = [
                 admin
                 for admin in administrators
@@ -86,6 +91,12 @@ class PluginFortiOSChecks(BasePlugin):
                     basis=FindingBasis.EXPLICIT_VALUE,
                 )
             )
+        if not cleartext:
+            exported = any(True for _ in fortios.iter_interfaces())
+            record_control(parser, "fortinet.fortios.management-cleartext",
+                           ControlOutcome.NO_FINDING if exported else ControlOutcome.UNKNOWN,
+                           "No exported interface allows HTTP or Telnet administration." if exported
+                           else "No system interface section is exported.")
 
     @staticmethod
     def _values(settings: dict, key: str) -> list[str]:
@@ -106,8 +117,15 @@ class PluginFortiOSChecks(BasePlugin):
                     and policy.services.any
                     and policy.source_interfaces and policy.destination_interfaces):
                 continue
+            instance = f"{policy.scope}/{policy.family}/policy:{policy.name}"
             if fortios.get_covering_prior_policy_union(policy, earlier, "deny"):
+                record_control(parser, "fortinet.fortios.policy-broad-permission", ControlOutcome.NO_FINDING,
+                               "The all-address, all-service permission is fully covered by earlier deny policies.",
+                               instance=instance)
                 continue
+            record_control(parser, "fortinet.fortios.policy-broad-permission", ControlOutcome.FINDING,
+                           "Accept policy covers every source and destination address with service ALL.",
+                           instance=instance)
             interface_scope = (
                 "all interfaces"
                 if {value.casefold() for value in policy.source_interfaces + policy.destination_interfaces} == {"any"}
@@ -154,6 +172,9 @@ class PluginFortiOSChecks(BasePlugin):
                 )
             if not weak_values:
                 continue
+            record_control(parser, "fortinet.fortios.management-tls", ControlOutcome.FINDING,
+                           "Legacy TLS versions are explicitly permitted: " + ", ".join(weak_values) + ".",
+                           instance=scope)
             evidence = []
             for key in ("ssl-min-proto-version", "admin-https-ssl-versions"):
                 evidence.extend(item for item in fortios._field_evidence(path + (key,)))

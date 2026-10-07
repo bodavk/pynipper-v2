@@ -1,6 +1,7 @@
 import re
 
 from src.analyze.common.base_plugin import BasePlugin
+from src.analyze.common.controls import ControlOutcome, record_control
 from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.devices.common.base_parser import BaseDeviceParser
 
@@ -70,9 +71,11 @@ class PluginIOSXEChecks(BasePlugin):
             if re.fullmatch(r"key chain\s+\S+\s+macsec", block.text.strip())
         }
 
+        candidates = 0
         for interface in conf_parse.find_objects(r"^interface\s+"):
             if not self._macsec_candidate(parser, interface):
                 continue
+            candidates += 1
             children = self._children(interface)
             policy_match = next(
                 (re.fullmatch(r"mka policy\s+(\S+)", line) for line in children if line.startswith("mka policy ")),
@@ -112,7 +115,12 @@ class PluginIOSXEChecks(BasePlugin):
                     for child in key_chain.all_children
                 )
             )
-            if activation and policy and key_chain and cipher_valid and key_material_configured:
+            complete = bool(activation and policy and key_chain and cipher_valid and key_material_configured)
+            record_control(parser, "cisco.iosxe.macsec-links", ControlOutcome.NO_FINDING if complete else ControlOutcome.FINDING,
+                           "MACsec is active with a defined MKA policy, approved cipher and key chain." if complete
+                           else "MACsec activation, MKA policy, cipher suite or key chain is missing.",
+                           instance=interface.text.strip())
+            if complete:
                 continue
 
             missing = []
@@ -150,6 +158,9 @@ class PluginIOSXEChecks(BasePlugin):
                     ),
                 )
             )
+        if not candidates:
+            record_control(parser, "cisco.iosxe.macsec-links", ControlOutcome.NOT_APPLICABLE,
+                           "No active Layer-2 link has MACsec intent or an uplink/external role.")
 
     @staticmethod
     def _tokens_after(children: list[str], command: str) -> set[str]:
@@ -210,11 +221,20 @@ class PluginIOSXEChecks(BasePlugin):
         referenced_proposals = set()
         for policy in conf_parse.find_objects(r"^crypto ikev2 policy\s+"):
             referenced_proposals.update(self._tokens_after(self._children(policy), "proposal"))
+        evaluated = False
         for name in sorted(referenced_proposals):
+            evaluated = True
             proposal = proposals.get(name)
             if proposal is None:
+                record_control(parser, "cisco.iosxe.vpn-crypto", ControlOutcome.UNKNOWN,
+                               "The referenced IKEv2 proposal is not defined in the export.",
+                               instance=f"crypto ikev2 proposal {name}")
                 continue
             weaknesses = self._ikev2_weaknesses(proposal)
+            record_control(parser, "cisco.iosxe.vpn-crypto",
+                           ControlOutcome.FINDING if weaknesses else ControlOutcome.NO_FINDING,
+                           "The proposal has missing or weak parameters." if weaknesses
+                           else "The proposal meets the cryptographic baseline.", instance=proposal.text.strip())
             if weaknesses:
                 children = self._children(proposal)
                 encryption = self._tokens_after(children, "encryption")
@@ -250,6 +270,11 @@ class PluginIOSXEChecks(BasePlugin):
                 weaknesses.append("missing or weak hash")
             if not groups or groups & self._WEAK_DH_GROUPS:
                 weaknesses.append("missing or weak Diffie-Hellman group")
+            evaluated = True
+            record_control(parser, "cisco.iosxe.vpn-crypto",
+                           ControlOutcome.FINDING if weaknesses else ControlOutcome.NO_FINDING,
+                           "The policy has missing or weak parameters." if weaknesses
+                           else "The policy meets the cryptographic baseline.", instance=policy.text.strip())
             if weaknesses:
                 self._add_crypto_finding(
                     parser,
@@ -275,11 +300,19 @@ class PluginIOSXEChecks(BasePlugin):
                 referenced_transforms.update(match.group(1).split())
             referenced_transforms.update(self._tokens_after(self._children(obj), "set transform-set"))
         for name in sorted(referenced_transforms):
+            evaluated = True
             transform = transform_sets.get(name)
             if transform is None:
+                record_control(parser, "cisco.iosxe.vpn-crypto", ControlOutcome.UNKNOWN,
+                               "The referenced transform-set is not defined in the export.",
+                               instance=f"crypto ipsec transform-set {name}")
                 continue
             tokens = {token.lower() for token in transform.text.split()[4:]}
             weak = sorted(tokens & (self._WEAK_ENCRYPTION | self._WEAK_INTEGRITY))
+            record_control(parser, "cisco.iosxe.vpn-crypto",
+                           ControlOutcome.FINDING if weak else ControlOutcome.NO_FINDING,
+                           "The transform-set contains weak algorithms." if weak
+                           else "The transform-set contains no weak algorithm.", instance=transform.text.strip())
             if weak:
                 self._add_crypto_finding(
                     parser,
@@ -289,6 +322,9 @@ class PluginIOSXEChecks(BasePlugin):
                     [f"weak algorithms: {', '.join(weak)}"],
                     basis=FindingBasis.EXPLICIT_VALUE,
                 )
+        if not evaluated:
+            record_control(parser, "cisco.iosxe.vpn-crypto", ControlOutcome.NOT_APPLICABLE,
+                           "No referenced IKEv2 proposal, ISAKMP policy or referenced transform-set is configured.")
 
     def analyze(self, parser: BaseDeviceParser) -> None:
         self.check_macsec(parser)

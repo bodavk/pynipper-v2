@@ -106,7 +106,10 @@ def _two_sets(tmp_path, old_source, new_source, new_policy=None, device="ASA"):
 def test_fixed_findings_are_resolved_only_on_same_rules_and_policy(tmp_path):
     result = _two_sets(tmp_path, f"{CORPUS}/cisco_asa/vulnerable.conf", f"{CORPUS}/cisco_asa/secure.conf")
     assert result["same-analyzer"] is True
-    assert result["totals"]["resolved"] == 24 and result["totals"]["new"] == 0
+    # 24 findings disappear; SC-049 controls that are unknown in the secure export (masked key, no
+    # exported certificate, unqualified ASDM default) keep 4 of them from being called resolved.
+    assert result["totals"]["resolved"] == 20 and result["totals"]["new"] == 0
+    assert result["totals"]["no-longer-assessable"] == 4
     reverse = compare_batches(str(tmp_path / "new/out/batch-index.json"), str(tmp_path / "old/out/batch-index.json"))
     assert reverse["totals"]["new"] == 24 and reverse["totals"]["resolved"] == 0
 

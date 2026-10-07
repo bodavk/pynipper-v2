@@ -105,6 +105,9 @@ def test_f5_root_login(tmp_path, version, body, outcome):
     ("16.1.5", "sys sshd {\n    login disabled\n}\n", "not-applicable"),
     ("12.1.0", "sys sshd {\n    inactivity-timeout 600\n}\n", "unknown"),
     ("16.1.5", "", "unknown"),
+    # login omitted inside an exported sys sshd: documented default enabled (13.x-17.x).
+    ("16.1.5", "sys sshd {\n    allow { all }\n}\n", "finding"),
+    ("12.1.0", "sys sshd {\n    allow { all }\n}\n", "unknown"),
 ])
 def test_f5_ssh_source_restriction(tmp_path, version, body, outcome):
     assert _f5_outcome(tmp_path, "f5.bigip.ssh-source-restriction", body, version) == outcome
@@ -263,3 +266,15 @@ def test_gaia_snmp_community(tmp_path, body, outcome):
 ])
 def test_gaia_ssh_root_login(tmp_path, body, outcome):
     assert _gaia(tmp_path, "checkpoint.gaia.ssh-root-login", body) == outcome
+
+
+def test_f5_ssh_omitted_login_is_a_documented_default_finding(tmp_path):
+    from src.analyze.common.issue import FindingBasis
+    path = tmp_path / "bigip.conf"
+    path.write_text("#TMSH-VERSION: 16.1.5\nsys sshd {\n    allow { all }\n}\n", encoding="utf-8")
+    parser = F5BIGIPParser(str(path))
+    with contextlib.redirect_stdout(io.StringIO()):
+        findings = process_bigip_conf(parser)
+    [finding] = [f for f in findings.values() if f.rule_id == "f5.bigip.ssh.unrestricted_sources"]
+    assert finding.basis == FindingBasis.DOCUMENTED_DEFAULT
+    assert "'login' is not configured" in finding.observation

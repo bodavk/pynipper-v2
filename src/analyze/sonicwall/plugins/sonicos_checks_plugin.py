@@ -1,6 +1,7 @@
 """SonicOS 7 E-CLI management, policy, VPN, and operations checks."""
 
 from src.analyze.common.base_plugin import BasePlugin
+from src.analyze.common.controls import ControlOutcome as CO, record_control
 from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.policy_semantics import (
@@ -67,6 +68,8 @@ class PluginSonicOSChecks(BasePlugin):
     _WEAK_ENCRYPTION = {"des", "3des", "triple-des"}
     _WEAK_AUTHENTICATION = {"md5", "sha", "sha1", "sha-1"}
     _WEAK_DH = {"1", "2", "5", "group1", "group2", "group5"}
+    _INTERNAL_ZONES = {"lan", "mgmt", "vpn", "multicast"}
+    _NO_INTERFACES = "No interface record is exported; management-service exposure is not established."
 
     @staticmethod
     def _sonic(parser: BaseDeviceParser) -> SonicOSParser:
@@ -80,10 +83,42 @@ class PluginSonicOSChecks(BasePlugin):
         return any(phrase in getattr(item, "text", str(item)).casefold() for item in evidence)
 
     def check_management(self, parser: BaseDeviceParser) -> None:
+        if not self._sonic(parser).get_interfaces():
+            for control in ("sonicwall.sonicos.management-http", "sonicwall.sonicos.management-external-exposure"):
+                record_control(parser, control, CO.UNKNOWN, self._NO_INTERFACES)
         for interface in self._sonic(parser).get_interfaces():
+            instance = f"interface {interface.name}"
             if not interface.enabled:
+                for control in ("sonicwall.sonicos.management-http", "sonicwall.sonicos.management-external-exposure"):
+                    record_control(parser, control, CO.NOT_APPLICABLE, "The interface is shut down.", instance=instance)
                 continue
             evidence = tuple(item for item in interface.evidence)
+            # Only one 'management' statement per interface is a qualified grammar (SC-018).
+            ambiguous = sum(
+                1 for item in interface.evidence
+                if getattr(item, "text", str(item)).strip().casefold().startswith("management")
+            ) > 1
+            record_control(
+                parser, "sonicwall.sonicos.management-http",
+                CO.FINDING if "http" in interface.management else CO.UNKNOWN if ambiguous else CO.NO_FINDING,
+                "HTTP management is enabled." if "http" in interface.management
+                else "Several management statements; only the first is a qualified grammar." if ambiguous
+                else "HTTP management is not enabled.",
+                instance=instance,
+            )
+            exposed_services = sorted(set(interface.management) & {"https", "ssh", "snmp"})
+            zone = interface.zone.casefold()
+            if exposed_services and zone in self._EXTERNAL_ZONES:
+                outcome, reason = CO.FINDING, f"Management is enabled in external zone {interface.zone}."
+            elif ambiguous:
+                outcome, reason = CO.UNKNOWN, "Several management statements; only the first is a qualified grammar."
+            elif not exposed_services:
+                outcome, reason = CO.NO_FINDING, "No HTTPS, SSH or SNMP management is enabled."
+            elif zone in self._INTERNAL_ZONES:
+                outcome, reason = CO.NO_FINDING, f"Management is limited to built-in internal zone {interface.zone}."
+            else:
+                outcome, reason = CO.UNKNOWN, f"Zone '{interface.zone or 'unspecified'}' trust type is not resolved."
+            record_control(parser, "sonicwall.sonicos.management-external-exposure", outcome, reason, instance=instance)
             if "http" in interface.management:
                 self.add_issue(
                     Finding(
@@ -123,6 +158,25 @@ class PluginSonicOSChecks(BasePlugin):
         services = sonic.get_services()
 
         for administrator in sonic.get_administrators():
+            instance = f"administrator {administrator.name}"
+            record_control(
+                parser, "sonicwall.sonicos.admin-role-separation",
+                CO.FINDING if len(administrator.roles) > 1 else CO.NO_FINDING,
+                f"Administrative roles: {', '.join(administrator.roles)}.", instance=instance,
+            )
+            if administrator.effective_role in {"full-admin", "limited-admin"}:
+                record_control(
+                    parser, "sonicwall.sonicos.admin-mfa",
+                    CO.FINDING if administrator.otp_enabled is False
+                    else CO.NO_FINDING if administrator.otp_enabled else CO.UNKNOWN,
+                    "TOTP is disabled (explicit or documented 7.0-7.2 default)." if administrator.otp_enabled is False
+                    else "TOTP is required." if administrator.otp_enabled
+                    else "TOTP is not exported and the release default is not qualified.",
+                    instance=instance,
+                )
+            else:
+                record_control(parser, "sonicwall.sonicos.admin-mfa", CO.NOT_APPLICABLE,
+                               "The account is not a full or limited administrator.", instance=instance)
             if len(administrator.roles) > 1:
                 self.add_issue(Finding(
                     rule_id="sonicwall.sonicos.admin.conflicting_roles",
@@ -162,6 +216,23 @@ class PluginSonicOSChecks(BasePlugin):
 
         password = sonic.get_password_policy()
         password_evidence = tuple(item for item in password.evidence)
+        for key, value, fires in (
+            ("minimum-length", password.minimum_length,
+             password.minimum_length is not None and password.minimum_length < 12),
+            ("complexity", password.complexity,
+             password.complexity is not None
+             and password.complexity not in {"alpha-and-numeric-and-symbols", "alphanumeric-and-symbols"}),
+            ("constraint-scope", password.scopes,
+             password.scopes is not None
+             and not {"admin", "full-admin", "limited-admin"}.issubset(password.scopes)),
+        ):
+            record_control(
+                parser, "sonicwall.sonicos.password-policy",
+                CO.FINDING if fires else CO.UNKNOWN if value is None else CO.NO_FINDING,
+                f"{key}: {value} ({password.resolution_state})." if value is not None
+                else f"{key} is not exported or malformed and the release default is not qualified.",
+                instance=key,
+            )
         if password.minimum_length is not None and password.minimum_length < 12:
             self.add_issue(Finding(
                 rule_id="sonicwall.sonicos.password.minimum_length",
@@ -218,6 +289,56 @@ class PluginSonicOSChecks(BasePlugin):
         session = sonic.get_admin_session_policy()
         session_evidence = tuple(item for item in session.evidence)
         management_active = any(services.values())
+        interfaces_exported = bool(sonic.get_interfaces())
+        if not management_active:
+            for control in ("sonicwall.sonicos.admin-lockout", "sonicwall.sonicos.admin-idle-timeout"):
+                record_control(parser, control, CO.NOT_APPLICABLE if interfaces_exported else CO.UNKNOWN,
+                               "No enabled interface permits management." if interfaces_exported else self._NO_INTERFACES)
+        else:
+            weak_lockout = (
+                (session.failures_per_minute is not None and session.failures_per_minute > 5)
+                or (session.lockout_duration_minutes is not None and session.lockout_duration_minutes < 5)
+            )
+            if session.lockout_enabled is False:
+                outcome, reason = CO.FINDING, "User lockout is disabled."
+            elif session.lockout_enabled is None:
+                outcome, reason = CO.UNKNOWN, "User lockout is not exported and the release default is not qualified."
+            elif weak_lockout:
+                outcome, reason = CO.FINDING, "Lockout thresholds are weak."
+            elif session.failures_per_minute is None or session.lockout_duration_minutes is None:
+                outcome, reason = CO.UNKNOWN, "Lockout thresholds are not exported or malformed."
+            else:
+                outcome, reason = CO.NO_FINDING, (
+                    f"Lockout after {session.failures_per_minute} failures for {session.lockout_duration_minutes} minutes.")
+            record_control(parser, "sonicwall.sonicos.admin-lockout", outcome, reason, instance="lockout")
+            record_control(
+                parser, "sonicwall.sonicos.admin-lockout",
+                CO.FINDING if session.log_without_lockout is True
+                else CO.NO_FINDING if session.log_without_lockout is False else CO.UNKNOWN,
+                "log-without-lockout is enabled." if session.log_without_lockout is True
+                else "log-without-lockout is disabled." if session.log_without_lockout is False
+                else "log-without-lockout is not exported and the release default is not qualified.",
+                instance="log-without-lockout",
+            )
+            idle = session.idle_logout_minutes
+            record_control(
+                parser, "sonicwall.sonicos.admin-idle-timeout",
+                CO.UNKNOWN if idle is None or idle < 1 else CO.FINDING if idle > 5 else CO.NO_FINDING,
+                "Idle timeout is not exported, malformed or outside the qualified range." if idle is None or idle < 1
+                else f"Idle timeout is {idle} minutes ({session.resolution_state}).",
+            )
+        if not services["ssh"]:
+            for control in ("sonicwall.sonicos.cli-login-attempts", "sonicwall.sonicos.connection-banner"):
+                record_control(parser, control, CO.NOT_APPLICABLE if interfaces_exported else CO.UNKNOWN,
+                               "SSH management is not enabled." if interfaces_exported else self._NO_INTERFACES)
+        else:
+            attempts = session.max_cli_attempts
+            record_control(
+                parser, "sonicwall.sonicos.cli-login-attempts",
+                CO.UNKNOWN if attempts is None else CO.FINDING if attempts > 5 else CO.NO_FINDING,
+                "CLI attempt limit is not exported and the release default is not qualified." if attempts is None
+                else f"CLI attempt limit is {attempts}.",
+            )
         if management_active and session.lockout_enabled is False:
             self.add_issue(Finding(
                 rule_id="sonicwall.sonicos.admin.lockout_disabled",
@@ -299,6 +420,15 @@ class PluginSonicOSChecks(BasePlugin):
             ))
 
         banner = sonic.get_banner_policy()
+        if services["ssh"]:
+            record_control(
+                parser, "sonicwall.sonicos.connection-banner",
+                CO.FINDING if banner.connection_enabled is False
+                else CO.NO_FINDING if banner.connection_enabled else CO.UNKNOWN,
+                "No CLI connection banner is configured." if banner.connection_enabled is False
+                else "A CLI connection banner is configured." if banner.connection_enabled
+                else "The connection banner is not exported and the release default is not qualified.",
+            )
         if services["ssh"] and banner.connection_enabled is False:
             self.add_issue(Finding(
                 rule_id="sonicwall.sonicos.admin.connection_banner",
@@ -318,6 +448,28 @@ class PluginSonicOSChecks(BasePlugin):
 
         tls = sonic.get_management_tls_policy()
         tls_evidence = tuple(item for item in tls.evidence)
+        if not tls.applicable:
+            for control in ("sonicwall.sonicos.management-tls-version", "sonicwall.sonicos.management-certificate"):
+                record_control(parser, control, CO.NOT_APPLICABLE if interfaces_exported else CO.UNKNOWN,
+                               "HTTPS management is not enabled." if interfaces_exported else self._NO_INTERFACES)
+        else:
+            record_control(
+                parser, "sonicwall.sonicos.management-tls-version",
+                CO.FINDING if tls.minimum_version == "tls1.0"
+                else CO.NO_FINDING if tls.minimum_version == "tls1.1" else CO.UNKNOWN,
+                "'no tls-and-above' permits TLS 1.0." if tls.minimum_version == "tls1.0"
+                else "'tls-and-above' is enabled." if tls.minimum_version == "tls1.1"
+                else "tls-and-above is not exported and the release default is not qualified.",
+            )
+            record_control(
+                parser, "sonicwall.sonicos.management-certificate",
+                CO.FINDING if tls.certificate_type == "self-signed"
+                else CO.NO_FINDING if tls.certificate_type == "imported" else CO.UNKNOWN,
+                "The self-signed certificate is selected." if tls.certificate_type == "self-signed"
+                else "An imported certificate is selected (selection only; validity is not assessed)."
+                if tls.certificate_type == "imported"
+                else "Certificate selection is not exported and the release default is not qualified.",
+            )
         if tls.applicable and tls.minimum_version == "tls1.0":
             self.add_issue(Finding(
                 rule_id="sonicwall.sonicos.management.legacy_tls",
@@ -354,10 +506,23 @@ class PluginSonicOSChecks(BasePlugin):
         return value.casefold() in {"any", "all"}
 
     def check_access_rules(self, parser: BaseDeviceParser) -> None:
+        self._broad_allow_instances: set[str] = set()
+        if not self._sonic(parser).get_access_rules():
+            for control in ("sonicwall.sonicos.policy-scope", "sonicwall.sonicos.policy-logging",
+                            "sonicwall.sonicos.policy-order", "sonicwall.sonicos.policy-disabled-permissive"):
+                record_control(parser, control, CO.UNKNOWN,
+                               "No access-rule record is exported; the effective rule base is not established.")
         for rule in self._sonic(parser).get_access_rules():
+            instance = f"rule {rule.position} {rule.name}"
             if not rule.enabled or rule.action != "allow":
+                for control in ("sonicwall.sonicos.policy-scope", "sonicwall.sonicos.policy-logging"):
+                    record_control(parser, control, CO.NOT_APPLICABLE, "Disabled or non-allow rule.", instance=instance)
                 continue
             evidence = tuple(item for item in rule.evidence)
+            record_control(
+                parser, "sonicwall.sonicos.policy-logging", CO.NO_FINDING if rule.logging else CO.FINDING,
+                "Logging is enabled." if rule.logging else "Logging is disabled or not configured.", instance=instance,
+            )
             if all(
                 self._is_any(value)
                 for value in (
@@ -368,6 +533,9 @@ class PluginSonicOSChecks(BasePlugin):
                     rule.service,
                 )
             ) and rule.schedule.casefold() in {"", "any", "always-on"}:
+                self._broad_allow_instances.add(instance)
+                record_control(parser, "sonicwall.sonicos.policy-scope", CO.FINDING,
+                               "The rule allows any zone, source, destination and service.", instance=instance)
                 self.add_issue(
                     Finding(
                         rule_id="sonicwall.sonicos.policy.broad_allow",
@@ -406,7 +574,11 @@ class PluginSonicOSChecks(BasePlugin):
     def check_policy_effectiveness(self, parser: BaseDeviceParser) -> None:
         """Report only statically proven first-match policy relationships."""
         earlier_rules = []
+        unqualified_earlier = False
+        disabled_rules = 0
+        broad_allow_instances = getattr(self, "_broad_allow_instances", set())
         for rule in self._sonic(parser).get_access_rules():
+            instance = f"rule {rule.position} {rule.name}"
             evidence = tuple(item for item in rule.evidence) or (
                 f"access rule {rule.name}",
             )
@@ -420,6 +592,23 @@ class PluginSonicOSChecks(BasePlugin):
                 and not rule.unsupported_predicates
             )
             if not rule.enabled:
+                disabled_rules += 1
+                record_control(parser, "sonicwall.sonicos.policy-order", CO.NOT_APPLICABLE, "Disabled rule.",
+                               instance=instance)
+                record_control(
+                    parser, "sonicwall.sonicos.policy-disabled-permissive",
+                    CO.NOT_APPLICABLE if rule.action != "allow"
+                    else CO.FINDING if unrestricted
+                    else CO.UNKNOWN if rule.unsupported_predicates or not (
+                        rule.source_networks.complete and rule.destination_networks.complete and rule.services.complete)
+                    else CO.NO_FINDING,
+                    "Disabled non-allow rule." if rule.action != "allow"
+                    else "Disabled rule retains an unrestricted allow." if unrestricted
+                    else "Disabled allow rule selectors are not fully resolved." if rule.unsupported_predicates or not (
+                        rule.source_networks.complete and rule.destination_networks.complete and rule.services.complete)
+                    else "Disabled allow rule is restricted.",
+                    instance=instance,
+                )
                 if rule.action == "allow" and unrestricted:
                     self.add_issue(Finding(
                         rule_id="sonicwall.sonicos.policy.disabled_permissive_rule",
@@ -436,6 +625,22 @@ class PluginSonicOSChecks(BasePlugin):
                     ))
                 continue
 
+            if rule.action == "allow" and instance not in broad_allow_instances:
+                record_control(
+                    parser, "sonicwall.sonicos.policy-scope",
+                    CO.FINDING if rule.services.any and not unrestricted
+                    else CO.UNKNOWN if not rule.services.complete or unrestricted
+                    else CO.NO_FINDING,
+                    "The rule permits Any service." if rule.services.any and not unrestricted
+                    else "Service selector is not fully resolved." if not rule.services.complete
+                    else "Selectors resolve to unrestricted scope through objects; not reported by the wildcard check."
+                    if unrestricted
+                    else "Service selector is restricted and the rule is not fully wildcarded.",
+                    instance=instance,
+                )
+            elif rule.action == "allow" and rule.services.any and not unrestricted:
+                record_control(parser, "sonicwall.sonicos.policy-scope", CO.FINDING,
+                               "The rule permits Any service.", instance=instance)
             if rule.action == "allow" and rule.services.any and not unrestricted:
                 self.add_issue(Finding(
                     rule_id="sonicwall.sonicos.policy.broad_service",
@@ -452,22 +657,26 @@ class PluginSonicOSChecks(BasePlugin):
                 ))
 
             if not rule.proof_eligible:
+                record_control(parser, "sonicwall.sonicos.policy-order", CO.UNKNOWN,
+                               "Rule selectors, schedule or predicates are not fully resolved.", instance=instance)
+                unqualified_earlier = True
                 continue
+            undetermined = False
             for earlier in earlier_rules:
                 if earlier.family != rule.family:
                     continue
-                if not all(
-                    state == ProofState.PROVEN
-                    for state in (
-                        static_values_cover((earlier.from_zone,), (rule.from_zone,)),
-                        static_values_cover((earlier.to_zone,), (rule.to_zone,)),
-                        network_covers(earlier.source_networks, rule.source_networks),
-                        network_covers(
-                            earlier.destination_networks, rule.destination_networks
-                        ),
-                        service_covers(earlier.services, rule.services),
-                    )
-                ):
+                states = (
+                    static_values_cover((earlier.from_zone,), (rule.from_zone,)),
+                    static_values_cover((earlier.to_zone,), (rule.to_zone,)),
+                    network_covers(earlier.source_networks, rule.source_networks),
+                    network_covers(
+                        earlier.destination_networks, rule.destination_networks
+                    ),
+                    service_covers(earlier.services, rule.services),
+                )
+                if not all(state == ProofState.PROVEN for state in states):
+                    if ProofState.DISPROVEN not in states:
+                        undetermined = True
                     continue
                 same_action = earlier.action == rule.action
                 if same_action and earlier.behavior_signature != rule.behavior_signature:
@@ -493,13 +702,46 @@ class PluginSonicOSChecks(BasePlugin):
                     references=(SONICOS_POLICY_GUIDE, SONICOS_CLI_GUIDE),
                     basis=FindingBasis.EXPLICIT_VALUE,
                 ))
+                record_control(parser, "sonicwall.sonicos.policy-order", CO.FINDING,
+                               "Proven static shadow/redundancy, not observed nonuse.", instance=instance)
                 break
+            else:
+                record_control(
+                    parser, "sonicwall.sonicos.policy-order",
+                    CO.UNKNOWN if undetermined or unqualified_earlier else CO.NO_FINDING,
+                    "An earlier rule is unresolved or coverage is undetermined." if undetermined or unqualified_earlier
+                    else "Bounded static comparison with every earlier rule qualified.",
+                    instance=instance,
+                )
             earlier_rules.append(rule)
+        if not disabled_rules and self._sonic(parser).get_access_rules():
+            record_control(parser, "sonicwall.sonicos.policy-disabled-permissive", CO.NOT_APPLICABLE,
+                           "No disabled access rule is exported.")
 
     def check_vpn(self, parser: BaseDeviceParser) -> None:
+        if not self._sonic(parser).get_vpn_policies():
+            record_control(parser, "sonicwall.sonicos.vpn-crypto", CO.NOT_APPLICABLE, "No VPN policy is configured.")
         for policy in self._sonic(parser).get_vpn_policies():
+            instance = f"vpn policy {policy.name}"
             if not policy.enabled:
+                record_control(parser, "sonicwall.sonicos.vpn-crypto", CO.NOT_APPLICABLE, "Disabled VPN policy.",
+                               instance=instance)
                 continue
+            proposal = (policy.ike_encryption, policy.ike_authentication, policy.dh_group,
+                        policy.ipsec_encryption, policy.ipsec_authentication)
+            weak_proposal = any(
+                value in denied for value, denied in zip(proposal, (
+                    self._WEAK_ENCRYPTION, self._WEAK_AUTHENTICATION, self._WEAK_DH,
+                    self._WEAK_ENCRYPTION, self._WEAK_AUTHENTICATION))
+            )
+            record_control(
+                parser, "sonicwall.sonicos.vpn-crypto",
+                CO.FINDING if weak_proposal else CO.UNKNOWN if not all(proposal) else CO.NO_FINDING,
+                "The proposal includes a weak algorithm or DH group." if weak_proposal
+                else "A proposal field is not exported; the release default is not qualified." if not all(proposal)
+                else "All exported proposal fields avoid the listed weak algorithms.",
+                instance=instance,
+            )
             weak = []
             for label, value, denied in (
                 ("IKE encryption", policy.ike_encryption, self._WEAK_ENCRYPTION),
@@ -531,6 +773,27 @@ class PluginSonicOSChecks(BasePlugin):
     def check_operations(self, parser: BaseDeviceParser) -> None:
         sonic = self._sonic(parser)
         snmp_enabled = sonic.get_services()["snmp"]
+        if not snmp_enabled:
+            record_control(parser, "sonicwall.sonicos.snmpv3-security",
+                           CO.NOT_APPLICABLE if sonic.get_interfaces() else CO.UNKNOWN,
+                           "SNMP management is not enabled on an interface." if sonic.get_interfaces()
+                           else self._NO_INTERFACES)
+        else:
+            secure = sonic.has_secure_snmpv3_user()
+            record_control(parser, "sonicwall.sonicos.snmpv3-security", CO.NO_FINDING if secure else CO.FINDING,
+                           "An SNMPv3 SHA/AES user is configured." if secure
+                           else "SNMP is enabled without an SNMPv3 SHA/AES user.", instance="secure-user")
+            for user in sonic.get_snmpv3_users():
+                fires = (user.authentication in {"none", "md5"} or user.privacy in {"none", "des", "3des"})
+                strong = (user.authentication in {"sha", "sha256", "sha384", "sha512"}
+                          and user.privacy in {"aes", "aes128", "aes192", "aes256", "aes_cfb128"})
+                record_control(
+                    parser, "sonicwall.sonicos.snmpv3-security",
+                    CO.FINDING if fires else CO.NO_FINDING if strong else CO.UNKNOWN,
+                    f"Authentication '{user.authentication}', privacy '{user.privacy}'"
+                    + ("." if fires or strong else " (not a qualified algorithm)."),
+                    instance=f"snmpv3 user {user.name}",
+                )
         if snmp_enabled and not sonic.has_secure_snmpv3_user():
             self.add_issue(
                 Finding(
@@ -592,6 +855,12 @@ class PluginSonicOSChecks(BasePlugin):
                             basis=FindingBasis.EXPLICIT_VALUE,
                         )
                     )
+        record_control(
+            parser, "sonicwall.sonicos.remote-logging",
+            CO.NO_FINDING if sonic.get_syslog_destinations() else CO.FINDING,
+            "An enabled syslog destination is configured." if sonic.get_syslog_destinations()
+            else "No enabled syslog destination is configured.",
+        )
         if not sonic.get_syslog_destinations():
             self.add_issue(
                 Finding(
@@ -609,6 +878,18 @@ class PluginSonicOSChecks(BasePlugin):
                 )
             )
         ntp_servers = sonic.get_ntp_server_records()
+        record_control(parser, "sonicwall.sonicos.ntp-servers", CO.NO_FINDING if ntp_servers else CO.FINDING,
+                       "A custom NTP server is configured." if ntp_servers else "No custom NTP server is configured.")
+        if not ntp_servers:
+            record_control(parser, "sonicwall.sonicos.ntp-authentication", CO.NOT_APPLICABLE,
+                           "No custom NTP server is configured.")
+        for server in ntp_servers:
+            record_control(
+                parser, "sonicwall.sonicos.ntp-authentication", CO.NO_FINDING if server.authenticated else CO.FINDING,
+                "Matching trust/key numbers, algorithm and key material are configured." if server.authenticated
+                else "Authentication fields are incomplete or absent.",
+                instance=f"ntp server {server.address}",
+            )
         if not ntp_servers:
             self.add_issue(
                 Finding(
@@ -646,6 +927,14 @@ class PluginSonicOSChecks(BasePlugin):
                 )
         services = sonic.get_security_services()
         disabled = [name for name, state in services.items() if state is False]
+        for name, state in services.items():
+            record_control(
+                parser, "sonicwall.sonicos.security-services",
+                CO.FINDING if state is False else CO.NO_FINDING if state else CO.UNKNOWN,
+                "Explicitly disabled." if state is False else "Explicitly enabled (licensing and runtime not assessed)."
+                if state else "Not exported; default and licensing are not qualified.",
+                instance=name,
+            )
         if disabled:
             self.add_issue(
                 Finding(
@@ -664,9 +953,25 @@ class PluginSonicOSChecks(BasePlugin):
             )
         labels = {"intrusion-prevention": "intrusion prevention", "gateway-anti-virus": "gateway anti-virus",
                   "anti-spyware": "anti-spyware"}
+        if not sonic.get_zone_security_services():
+            record_control(parser, "sonicwall.sonicos.zone-security-services", CO.UNKNOWN,
+                           "No zone record is exported; zone security-service state is not established.")
         for zone in sonic.get_zone_security_services():
             off = [name for name, enabled in zone.services.items()
                    if enabled is False and services.get(name) is not False]
+            relevant = [name for name in labels if services.get(name) is not False]
+            if not zone.active_interfaces:
+                outcome, reason = CO.NOT_APPLICABLE, "The zone has no enabled interface."
+            elif off:
+                outcome, reason = CO.FINDING, "The zone explicitly disables " + ", ".join(off) + "."
+            elif not relevant:
+                outcome, reason = CO.NOT_APPLICABLE, "All zone services are disabled globally (reported globally)."
+            elif all(zone.services.get(name) is True for name in relevant):
+                outcome, reason = CO.NO_FINDING, "The zone explicitly enables the globally available services."
+            else:
+                outcome, reason = CO.UNKNOWN, "A zone service switch is omitted; the zone default is not qualified."
+            record_control(parser, "sonicwall.sonicos.zone-security-services", outcome, reason,
+                           instance=f"zone {zone.name}")
             if not off or not zone.active_interfaces:
                 continue
             self.add_issue(Finding(
@@ -685,6 +990,22 @@ class PluginSonicOSChecks(BasePlugin):
                 references=(SONICOS_CLI_GUIDE,),
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
+        dependencies = (services["gateway-anti-virus"], services["cloud-gateway-anti-virus"])
+        if services["capture-atp"] is True:
+            record_control(
+                parser, "sonicwall.sonicos.capture-atp-dependencies",
+                CO.FINDING if False in dependencies else CO.NO_FINDING if all(dependencies) else CO.UNKNOWN,
+                "A Gateway Anti-Virus dependency is explicitly disabled." if False in dependencies
+                else "Both Gateway Anti-Virus dependencies are enabled." if all(dependencies)
+                else "A Gateway Anti-Virus dependency is not exported.",
+            )
+        else:
+            record_control(
+                parser, "sonicwall.sonicos.capture-atp-dependencies",
+                CO.NOT_APPLICABLE if services["capture-atp"] is False else CO.UNKNOWN,
+                "Capture ATP is disabled." if services["capture-atp"] is False
+                else "Capture ATP state is not exported.",
+            )
         if services["capture-atp"] is True and (
             services["gateway-anti-virus"] is False
             or services["cloud-gateway-anti-virus"] is False

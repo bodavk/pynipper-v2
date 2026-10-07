@@ -1,4 +1,5 @@
 from src.analyze.common.base_plugin import BasePlugin
+from src.analyze.common.controls import ControlOutcome, record_control
 from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.policy_semantics import ProofState, network_covers, service_covers
@@ -8,6 +9,10 @@ from src.devices.juniper.screenos import JuniperScreenOSParser
 JUNIPER_SCREENOS_DOCUMENTATION = (
     "https://www.juniper.net/documentation/product/us/en/screenos/6.3.0/"
 )
+_MANAGEMENT_CONTROLS = {
+    "telnet": "juniper.screenos.management-telnet",
+    "http": "juniper.screenos.management-http",
+}
 
 
 class PluginScreenOSChecks(BasePlugin):
@@ -64,6 +69,8 @@ class PluginScreenOSChecks(BasePlugin):
                     (evidence,) if evidence else (),
                 )
             )
+            record_control(parser, _MANAGEMENT_CONTROLS[protocol], ControlOutcome.FINDING,
+                           f"{protocol.upper()} management is enabled globally.", instance="global")
         for interface in screenos.interfaces.values():
             if interface.disabled:
                 continue
@@ -78,6 +85,29 @@ class PluginScreenOSChecks(BasePlugin):
                         tuple(item for item in interface.evidence),
                     )
                 )
+                record_control(parser, _MANAGEMENT_CONTROLS[protocol], ControlOutcome.FINDING,
+                               f"{protocol.upper()} management is enabled on the interface.",
+                               instance=f"interface {interface.name}")
+            for protocol in sorted({"telnet", "http"} - interface.management_methods):
+                if interface.management_stated:
+                    record_control(parser, _MANAGEMENT_CONTROLS[protocol], ControlOutcome.NO_FINDING,
+                                   f"The interface's exported manage statements do not enable {protocol.upper()}.",
+                                   instance=f"interface {interface.name}")
+                else:
+                    record_control(parser, _MANAGEMENT_CONTROLS[protocol], ControlOutcome.UNKNOWN,
+                                   "The interface has no exported manage statement and the ScreenOS default "
+                                   "management services are not verified for this release.",
+                                   instance=f"interface {interface.name}")
+        active_interfaces = [item for item in screenos.interfaces.values() if not item.disabled]
+        for protocol, control_id in _MANAGEMENT_CONTROLS.items():
+            if protocol in screenos.global_management or active_interfaces:
+                continue
+            if screenos.interfaces:
+                record_control(parser, control_id, ControlOutcome.NOT_APPLICABLE,
+                               "Every exported interface is disabled and no global management is enabled.")
+            else:
+                record_control(parser, control_id, ControlOutcome.UNKNOWN,
+                               "No interface configuration is exported.")
 
     @staticmethod
     def _all_any(values: list[str]) -> bool:
@@ -93,6 +123,9 @@ class PluginScreenOSChecks(BasePlugin):
                 and self._all_any(policy.services)
             ):
                 continue
+            record_control(parser, "juniper.screenos.policy-scope", ControlOutcome.FINDING,
+                           "The enabled permit policy uses literal Any source, destination and service.",
+                           instance=f"policy {policy.policy_id}")
             self.add_issue(
                 Finding(
                     rule_id="juniper.screenos.policy.broad_permit",
@@ -112,11 +145,34 @@ class PluginScreenOSChecks(BasePlugin):
     def check_policy_effectiveness(self, parser: BaseDeviceParser) -> None:
         screenos = self._screenos(parser)
         prior_by_zone_pair = {}
+        seen = {"scope": False, "order": False, "disabled": False}
         for policy in screenos.get_policy_semantics():
+            instance = f"policy {policy.policy_id}"
+            selectors = (policy.source_networks, policy.destination_networks, policy.services)
             evidence = tuple(item for item in policy.evidence) or (
                 f"policy id {policy.policy_id}",
             )
             if not policy.enabled:
+                seen["disabled"] = True
+                broad_disabled = policy.action in {"permit", "accept"} and all(item.any for item in selectors)
+                if broad_disabled and policy.unsupported_predicates:
+                    record_control(parser, "juniper.screenos.disabled-permissive-policies", ControlOutcome.UNKNOWN,
+                                   "The disabled Any/Any/Any permit carries unmodeled predicates: "
+                                   + ", ".join(policy.unsupported_predicates) + ".", instance=instance)
+                elif not broad_disabled:
+                    if policy.action not in {"permit", "accept"}:
+                        record_control(parser, "juniper.screenos.disabled-permissive-policies",
+                                       ControlOutcome.NO_FINDING, "The disabled policy does not permit traffic.",
+                                       instance=instance)
+                    elif any(item.complete and not item.any for item in selectors):
+                        record_control(parser, "juniper.screenos.disabled-permissive-policies",
+                                       ControlOutcome.NO_FINDING,
+                                       "The disabled permit policy is narrower than Any/Any/Any.", instance=instance)
+                    else:
+                        record_control(parser, "juniper.screenos.disabled-permissive-policies",
+                                       ControlOutcome.UNKNOWN,
+                                       "Unresolved objects prevent deciding whether the disabled permit is Any/Any/Any.",
+                                       instance=instance)
                 if (
                     policy.action in {"permit", "accept"}
                     and policy.source_networks.any
@@ -124,6 +180,8 @@ class PluginScreenOSChecks(BasePlugin):
                     and policy.services.any
                     and not policy.unsupported_predicates
                 ):
+                    record_control(parser, "juniper.screenos.disabled-permissive-policies", ControlOutcome.FINDING,
+                                   "A disabled Any/Any/Any permit policy is retained.", instance=instance)
                     self.add_issue(Finding(
                         rule_id="juniper.screenos.policy.disabled_permissive_rule",
                         device=parser.device_type,
@@ -139,11 +197,31 @@ class PluginScreenOSChecks(BasePlugin):
                     ))
                 continue
 
+            if policy.action in {"permit", "accept"}:
+                seen["scope"] = True
+                if policy.services.any and policy.source_networks.any and policy.destination_networks.any:
+                    raw = screenos.policies.get(policy.policy_id)
+                    if raw is None or not (
+                        self._all_any(raw.sources) and self._all_any(raw.destinations) and self._all_any(raw.services)
+                    ):
+                        record_control(parser, "juniper.screenos.policy-scope", ControlOutcome.UNKNOWN,
+                                       "Source, destination and service resolve to Any through a group or alias, "
+                                       "but the broad-permit check compares literal names only.", instance=instance)
+                elif not policy.services.any:
+                    if policy.services.complete:
+                        record_control(parser, "juniper.screenos.policy-scope", ControlOutcome.NO_FINDING,
+                                       "The permit policy is limited to resolved services.", instance=instance)
+                    else:
+                        record_control(parser, "juniper.screenos.policy-scope", ControlOutcome.UNKNOWN,
+                                       "Service objects are unresolved: "
+                                       + ", ".join(policy.services.unresolved[:5]) + ".", instance=instance)
             if (
                 policy.action in {"permit", "accept"}
                 and policy.services.any
                 and not (policy.source_networks.any and policy.destination_networks.any)
             ):
+                record_control(parser, "juniper.screenos.policy-scope", ControlOutcome.FINDING,
+                               "The permit policy allows Any service within its address scope.", instance=instance)
                 self.add_issue(Finding(
                     rule_id="juniper.screenos.policy.broad_service",
                     device=parser.device_type,
@@ -158,26 +236,33 @@ class PluginScreenOSChecks(BasePlugin):
                     basis=FindingBasis.EXPLICIT_VALUE,
                 ))
 
+            seen["order"] = True
             if (
                 policy.action not in {"permit", "accept", "deny", "reject"}
                 or policy.unsupported_predicates
             ):
+                record_control(parser, "juniper.screenos.policy-order", ControlOutcome.UNKNOWN,
+                               f"Action '{policy.action or 'unset'}' or predicates "
+                               f"{', '.join(policy.unsupported_predicates) or 'none'} are not modeled for order proof.",
+                               instance=instance)
                 continue
             key = (policy.from_zone.casefold(), policy.to_zone.casefold())
             earlier_policies = prior_by_zone_pair.setdefault(key, [])
+            undecided = False
+            fired = False
             for earlier in earlier_policies:
-                if not all(
-                    state == ProofState.PROVEN
-                    for state in (
-                        network_covers(
-                            earlier.source_networks, policy.source_networks
-                        ),
-                        network_covers(
-                            earlier.destination_networks, policy.destination_networks
-                        ),
-                        service_covers(earlier.services, policy.services),
-                    )
-                ):
+                states = (
+                    network_covers(
+                        earlier.source_networks, policy.source_networks
+                    ),
+                    network_covers(
+                        earlier.destination_networks, policy.destination_networks
+                    ),
+                    service_covers(earlier.services, policy.services),
+                )
+                if not all(state == ProofState.PROVEN for state in states):
+                    if ProofState.DISPROVEN not in states:
+                        undecided = True
                     continue
                 same_action = earlier.action == policy.action
                 if same_action and earlier.behavior_signature != policy.behavior_signature:
@@ -199,8 +284,26 @@ class PluginScreenOSChecks(BasePlugin):
                     references=(JUNIPER_SCREENOS_DOCUMENTATION,),
                     basis=FindingBasis.EXPLICIT_VALUE,
                 ))
+                record_control(parser, "juniper.screenos.policy-order", ControlOutcome.FINDING,
+                               f"Fully covered by earlier policy ID {earlier.policy_id}.", instance=instance)
+                fired = True
                 break
+            if not fired:
+                record_control(
+                    parser, "juniper.screenos.policy-order",
+                    ControlOutcome.UNKNOWN if undecided else ControlOutcome.NO_FINDING,
+                    "Coverage by an earlier policy in the zone pair could not be decided for unresolved objects."
+                    if undecided else "No earlier policy in the zone pair fully covers this policy.",
+                    instance=instance,
+                )
             earlier_policies.append(policy)
+        for name, control_id, reason in (
+            ("scope", "juniper.screenos.policy-scope", "No enabled permit policy is configured."),
+            ("order", "juniper.screenos.policy-order", "No enabled policy is configured."),
+            ("disabled", "juniper.screenos.disabled-permissive-policies", "No disabled policy is configured."),
+        ):
+            if not seen[name]:
+                record_control(parser, control_id, ControlOutcome.NOT_APPLICABLE, reason)
 
     def analyze(self, parser: BaseDeviceParser) -> None:
         self.check_insecure_services(parser)

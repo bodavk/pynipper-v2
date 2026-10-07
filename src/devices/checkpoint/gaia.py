@@ -202,6 +202,24 @@ class CheckPointGaiaParser(BaseDeviceParser):
                 clients[key] = (words[3], self._evidence(command))
         return list(clients.values())
 
+    def get_allowed_client_networks(self) -> list[tuple[str, str, ConfigEvidence]]:
+        """`add allowed-client network ipv4-address|ipv6-address <ip> mask-length <n>` minus deletions.
+
+        Returns (address, mask-length, evidence); mask-length is "" when not stated (SC-049).
+        """
+        networks: dict[str, tuple[str, str, ConfigEvidence]] = {}
+        for command in self.commands:
+            words = command.words
+            if words[1:3] != ("allowed-client", "network") or len(words) < 5:
+                continue
+            key = " ".join(words[3:5])
+            if words[0] == "delete":
+                networks.pop(key, None)
+            elif words[0] == "add":
+                mask = words[words.index("mask-length") + 1] if "mask-length" in words[:-1] else ""
+                networks[key] = (words[4], mask, self._evidence(command))
+        return list(networks.values())
+
     def get_inactivity_timeout(self) -> Optional[GaiaSetting]:
         """`set inactivity-timeout <minutes>` (Clish; default 10)."""
         return self._setting("set", "inactivity-timeout")

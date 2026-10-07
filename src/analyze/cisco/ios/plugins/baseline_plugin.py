@@ -283,6 +283,7 @@ class PluginIOSBaseline(BasePlugin):
         lines = self._global_lines(parser)
         aaa_enabled = self._effective_toggle(lines, r"aaa new-model", r"no aaa new-model")
         if not aaa_enabled:
+            record_control(parser, "cisco.ios.aaa-baseline", CO.FINDING, "'aaa new-model' is not in effect.")
             self.add_issue(
                 self._finding(
                     parser,
@@ -298,6 +299,9 @@ class PluginIOSBaseline(BasePlugin):
             )
             return
         if not any(re.fullmatch(r"aaa authentication login\s+\S+\s+.+", line) for line in lines):
+            record_control(parser, "cisco.ios.aaa-baseline", CO.FINDING,
+                           "AAA is enabled but no login authentication method list is configured.",
+                           instance="login authentication")
             self.add_issue(
                 self._finding(
                     parser,
@@ -311,7 +315,13 @@ class PluginIOSBaseline(BasePlugin):
                     basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
+        else:
+            record_control(parser, "cisco.ios.aaa-baseline", CO.NO_FINDING,
+                           "AAA is enabled with a login authentication method list.", instance="login authentication")
         if not any(re.fullmatch(r"aaa accounting (?:exec|commands)\s+.+", line) for line in lines):
+            record_control(parser, "cisco.ios.aaa-baseline", CO.FINDING,
+                           "AAA is enabled but no EXEC or command accounting method is configured.",
+                           instance="accounting")
             self.add_issue(
                 self._finding(
                     parser,
@@ -325,6 +335,9 @@ class PluginIOSBaseline(BasePlugin):
                     basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
+        else:
+            record_control(parser, "cisco.ios.aaa-baseline", CO.NO_FINDING,
+                           "AAA is enabled with an EXEC or command accounting method.", instance="accounting")
 
     def check_management_lines(self, parser: BaseDeviceParser) -> None:
         ios = self._ios(parser)
@@ -361,7 +374,25 @@ class PluginIOSBaseline(BasePlugin):
                 return line.login_list in login_lists
             return False
 
-        for timeout in ios.get_effective_line_timeouts():
+        timeouts = ios.get_effective_line_timeouts()
+        if not timeouts:
+            record_control(parser, "cisco.ios.line-timeout", CO.UNKNOWN,
+                           "No console, AUX, TTY or VTY line configuration was supplied.")
+        for timeout in timeouts:
+            if timeout.active is False:
+                record_control(parser, "cisco.ios.line-timeout", CO.NOT_APPLICABLE,
+                               "The line does not accept sessions.", instance=timeout.line)
+            elif timeout.active is not True:
+                record_control(parser, "cisco.ios.line-timeout", CO.UNKNOWN,
+                               "Whether the line accepts sessions is not determined.", instance=timeout.line)
+            elif not timeout.timeout_configured:
+                record_control(parser, "cisco.ios.line-timeout", CO.NO_FINDING,
+                               "No exec-timeout is set on the line, so the ten-minute default applies.",
+                               instance=timeout.line)
+            elif (timeout.timeout_parse_error or timeout.timeout_minutes is None
+                  or timeout.timeout_seconds is None):
+                record_control(parser, "cisco.ios.line-timeout", CO.UNKNOWN,
+                               "The exec-timeout value could not be parsed.", instance=timeout.line)
             if (
                 timeout.active is not True
                 or not timeout.timeout_configured
@@ -373,6 +404,8 @@ class PluginIOSBaseline(BasePlugin):
             evidence = tuple(item for item in timeout.evidence)
             total_seconds = timeout.timeout_minutes * 60 + timeout.timeout_seconds
             if total_seconds == 0:
+                record_control(parser, "cisco.ios.line-timeout", CO.FINDING,
+                               "The line uses an unlimited exec-timeout.", instance=timeout.line)
                 rule_scope = "auxiliary" if timeout.line_type == "aux" else timeout.line_type
                 self.add_issue(self._finding(
                     parser,
@@ -386,6 +419,8 @@ class PluginIOSBaseline(BasePlugin):
                     basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             elif total_seconds > 600:
+                record_control(parser, "cisco.ios.line-timeout", CO.FINDING,
+                               "The line exec-timeout exceeds ten minutes.", instance=timeout.line)
                 self.add_issue(self._finding(
                     parser,
                     "cisco.ios.line.session_timeout_excessive",
@@ -397,6 +432,9 @@ class PluginIOSBaseline(BasePlugin):
                     evidence,
                     basis=FindingBasis.EXPLICIT_VALUE,
                 ))
+            else:
+                record_control(parser, "cisco.ios.line-timeout", CO.NO_FINDING,
+                               "The line exec-timeout is finite and at most ten minutes.", instance=timeout.line)
 
         # SC-044 IOS-03: Terminal Services CR, 'transport input all' was the default
         # before 15.4(3)M4, so trains up to 15.3 accept Telnet when the line is absent.
@@ -406,6 +444,8 @@ class PluginIOSBaseline(BasePlugin):
         if not vty_lines:
             record_control(parser, "cisco.ios.vty-transport", CO.UNKNOWN,
                            "No VTY line configuration was supplied; inbound transport cannot be judged.")
+            record_control(parser, "cisco.ios.vty-output-transport", CO.UNKNOWN,
+                           "No VTY line configuration was supplied; outbound transport cannot be judged.")
         for line in vty_lines:
             evidence = tuple(item for item in line.evidence)
             if line.transports is None or any(
@@ -445,6 +485,8 @@ class PluginIOSBaseline(BasePlugin):
             if line.output_transports and any(
                 item in {"telnet", "rlogin", "all"} for item in line.output_transports
             ):
+                record_control(parser, "cisco.ios.vty-output-transport", CO.FINDING,
+                               "The VTY line explicitly permits an insecure outbound transport.", instance=line.line)
                 self.add_issue(
                     self._finding(
                         parser,
@@ -458,12 +500,22 @@ class PluginIOSBaseline(BasePlugin):
                         basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
+            else:
+                record_control(parser, "cisco.ios.vty-output-transport", CO.NO_FINDING,
+                               "The VTY line does not permit Telnet, rlogin or all as outbound transport.",
+                               instance=line.line)
 
         self.check_effective_vty_aaa(parser)
 
-        for console in ios.get_management_lines("console"):
+        consoles = ios.get_management_lines("console")
+        if not consoles:
+            record_control(parser, "cisco.ios.console-authentication", CO.UNKNOWN,
+                           "No console line configuration was supplied.")
+        for console in consoles:
             evidence = tuple(item for item in console.evidence)
             if not authentication_resolves(console):
+                record_control(parser, "cisco.ios.console-authentication", CO.FINDING,
+                               "The console line lacks a resolvable local or AAA login binding.", instance=console.line)
                 self.add_issue(
                     self._finding(
                         parser,
@@ -477,8 +529,14 @@ class PluginIOSBaseline(BasePlugin):
                         basis=FindingBasis.REQUIRED_SETTING_MISSING,
                     )
                 )
+            else:
+                record_control(parser, "cisco.ios.console-authentication", CO.NO_FINDING,
+                               "The console line has a resolvable local or AAA login binding.", instance=console.line)
 
-        for auxiliary in ios.get_management_lines("aux"):
+        auxiliaries = ios.get_management_lines("aux")
+        if not auxiliaries:
+            record_control(parser, "cisco.ios.aux-line", CO.NOT_APPLICABLE, "No AUX line is present in the export.")
+        for auxiliary in auxiliaries:
             evidence = tuple(item for item in auxiliary.evidence)
             fully_disabled = (
                 auxiliary.exec_enabled is False
@@ -486,7 +544,12 @@ class PluginIOSBaseline(BasePlugin):
                 and auxiliary.output_transports == ("none",)
             )
             if fully_disabled:
+                record_control(parser, "cisco.ios.aux-line", CO.NO_FINDING,
+                               "The AUX line combines 'no exec' with inbound and outbound transport none.",
+                               instance=auxiliary.line)
                 continue
+            record_control(parser, "cisco.ios.aux-line", CO.FINDING,
+                           "The AUX line is not fully disabled.", instance=auxiliary.line)
             self.add_issue(
                 self._finding(
                     parser,
@@ -557,8 +620,17 @@ class PluginIOSBaseline(BasePlugin):
                 return False
             return True
 
-        for line in ios.get_effective_vty_aaa():
+        vty_aaa_controls = ("cisco.ios.vty-authentication", "cisco.ios.vty-authorization",
+                            "cisco.ios.vty-accounting", "cisco.ios.vty-aaa-server-groups")
+        bindings = ios.get_effective_vty_aaa()
+        if not bindings:
+            for control in vty_aaa_controls:
+                record_control(parser, control, CO.UNKNOWN, "No VTY line configuration was supplied.")
+        for line in bindings:
             if not line.active:
+                for control in vty_aaa_controls:
+                    record_control(parser, control, CO.NOT_APPLICABLE, "The VTY line does not accept sessions.",
+                                   instance=line.line)
                 continue
             evidence = tuple(item for item in line.evidence)
             login = methods.get(("login_authentication", line.login_list, None))
@@ -567,6 +639,8 @@ class PluginIOSBaseline(BasePlugin):
                 or aaa_enabled and line.login_kind == "aaa" and valid(login, authentication=True)
             )
             if not authenticated:
+                record_control(parser, "cisco.ios.vty-authentication", CO.FINDING,
+                               "The VTY line lacks a resolvable local or AAA login binding.", instance=line.line)
                 reason = (
                     f"references undefined AAA login list '{line.login_list}'"
                     if line.login_kind == "aaa" and login is None
@@ -581,8 +655,15 @@ class PluginIOSBaseline(BasePlugin):
                     Severity.HIGH, evidence or (line.line,),
                     basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
+            else:
+                record_control(parser, "cisco.ios.vty-authentication", CO.NO_FINDING,
+                               "The VTY line has a resolvable local or AAA login binding.", instance=line.line)
 
             if not aaa_enabled:
+                for control in vty_aaa_controls[1:]:
+                    record_control(parser, control, CO.NOT_APPLICABLE,
+                                   "AAA new-model is not in effect (reported by cisco.ios.aaa-baseline).",
+                                   instance=line.line)
                 continue
             exec_name = line.exec_authorization_list or "default"
             command_name = line.command_authorization_list or "default"
@@ -594,6 +675,8 @@ class PluginIOSBaseline(BasePlugin):
             if not valid(command_method):
                 missing.append("privilege-15 command authorization")
             if missing:
+                record_control(parser, "cisco.ios.vty-authorization", CO.FINDING,
+                               "EXEC or privilege-15 command authorization is not resolved.", instance=line.line)
                 self.add_issue(self._finding(
                     parser, "cisco.ios.vty.authorization",
                     "VTY administrative authorization is incomplete",
@@ -611,6 +694,8 @@ class PluginIOSBaseline(BasePlugin):
                 )
             ]
             if bypass:
+                record_control(parser, "cisco.ios.vty-authorization", CO.FINDING,
+                               "A bound authorization list contains 'none' or 'if-authenticated'.", instance=line.line)
                 self.add_issue(self._finding(
                     parser, "cisco.ios.vty.authorization_bypass",
                     "VTY authorization has an explicit bypass method",
@@ -622,6 +707,10 @@ class PluginIOSBaseline(BasePlugin):
                     (CISCO_IOS_AUTHORIZATION_GUIDE,),
                     basis=FindingBasis.EXPLICIT_VALUE,
                 ))
+            if not missing and not bypass:
+                record_control(parser, "cisco.ios.vty-authorization", CO.NO_FINDING,
+                               "EXEC and privilege-15 command authorization resolve without a bypass method.",
+                               instance=line.line)
 
             selected_accounting = []
             missing_explicit = []
@@ -641,6 +730,9 @@ class PluginIOSBaseline(BasePlugin):
             if missing_explicit or (accounting and not any(
                 item.record_type != "none" and valid(item) for item in selected_accounting
             ) and not disabled_accounting):
+                record_control(parser, "cisco.ios.vty-accounting", CO.FINDING,
+                               "No effective EXEC or privilege-15 command accounting list applies to the line.",
+                               instance=line.line)
                 self.add_issue(self._finding(
                     parser, "cisco.ios.vty.accounting_unbound",
                     "Administrative accounting list is not effective on VTY",
@@ -657,6 +749,8 @@ class PluginIOSBaseline(BasePlugin):
                     basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
             if disabled_accounting:
+                record_control(parser, "cisco.ios.vty-accounting", CO.FINDING,
+                               "A selected accounting list has record type 'none'.", instance=line.line)
                 self.add_issue(self._finding(
                     parser, "cisco.ios.vty.accounting_disabled",
                     "VTY accounting is explicitly disabled",
@@ -669,6 +763,14 @@ class PluginIOSBaseline(BasePlugin):
                     basis=FindingBasis.EXPLICIT_VALUE,
                 ))
 
+            # A FINDING recorded above for this line takes precedence over these outcomes.
+            if accounting or missing_explicit:
+                record_control(parser, "cisco.ios.vty-accounting", CO.NO_FINDING,
+                               "An effective accounting list applies to the line.", instance=line.line)
+            else:
+                record_control(parser, "cisco.ios.vty-accounting", CO.NOT_APPLICABLE,
+                               "No AAA accounting list is declared (reported by cisco.ios.aaa-baseline).",
+                               instance=line.line)
             bound_lists = tuple(
                 item for item in (login, exec_method, command_method, *selected_accounting)
                 if item is not None
@@ -678,6 +780,20 @@ class PluginIOSBaseline(BasePlugin):
                 if group.casefold() not in {"radius", "tacacs+"}
                 and (group not in groups or not any(record.members for record in groups[group]))
             })
+            named_groups = {
+                group for item in bound_lists for group in referenced_groups(item.methods)
+                if group.casefold() not in {"radius", "tacacs+"}
+            }
+            if unusable:
+                record_control(parser, "cisco.ios.vty-aaa-server-groups", CO.FINDING,
+                               "A bound AAA list references an undefined or empty server group.", instance=line.line)
+            elif named_groups:
+                record_control(parser, "cisco.ios.vty-aaa-server-groups", CO.NO_FINDING,
+                               "Every named server group in the bound AAA lists is defined with members.",
+                               instance=line.line)
+            else:
+                record_control(parser, "cisco.ios.vty-aaa-server-groups", CO.NOT_APPLICABLE,
+                               "The bound AAA lists reference no named server group.", instance=line.line)
             if unusable:
                 self.add_issue(self._finding(
                     parser, "cisco.ios.vty.aaa_server_group_unusable",
@@ -695,6 +811,8 @@ class PluginIOSBaseline(BasePlugin):
     def check_ssh_policy(self, parser: BaseDeviceParser) -> None:
         ios = self._ios(parser)
         if ios.get_ssh_state().value != "enabled":
+            for control in ("cisco.ios.ssh-algorithms", "cisco.ios.ssh-host-key"):
+                record_control(parser, control, CO.NOT_APPLICABLE, "The SSH server is not enabled.")
             return
         weak_algorithms = {
             "encryption": {"des", "3des", "3des-cbc", "aes128-cbc", "aes192-cbc", "aes256-cbc"},
@@ -708,6 +826,9 @@ class PluginIOSBaseline(BasePlugin):
             if policy.algorithms is None:
                 continue
             selected = sorted(set(policy.algorithms) & weak_algorithms[policy.category])
+            record_control(parser, "cisco.ios.ssh-algorithms", CO.FINDING if selected else CO.NO_FINDING,
+                           "The explicit algorithm list includes a weak algorithm." if selected
+                           else "The explicit algorithm list contains no weak algorithm.", instance=policy.category)
             if selected:
                 weak.append(f"{policy.category}: {', '.join(selected)}")
                 evidence.extend(item for item in policy.evidence)
@@ -752,7 +873,25 @@ class PluginIOSBaseline(BasePlugin):
                     (CISCO_IOS_SSH_ALGORITHM_GUIDE, CISCO_CAT9200_SSH_1712),
                     basis=FindingBasis.DOCUMENTED_DEFAULT,
                 ))
+        sha1_defaults = bool(ios.is_iosxe() and train and (16, 0) <= train < (17, 10))
+        for category in ("encryption", "mac", "kex", "hostkey"):
+            if category in configured:
+                continue
+            if sha1_defaults and category in {"kex", "mac"}:
+                record_control(parser, "cisco.ios.ssh-algorithms", CO.FINDING,
+                               "No explicit list is configured and the release default list includes SHA-1.",
+                               instance=category)
+            else:
+                record_control(parser, "cisco.ios.ssh-algorithms", CO.UNKNOWN,
+                               "No explicit list is configured and the default list is not qualified for this release.",
+                               instance=category)
         key = ios.get_ssh_rsa_key_modulus()
+        if key.configured and key.value is not None:
+            record_control(parser, "cisco.ios.ssh-host-key", CO.FINDING if key.value < 2048 else CO.NO_FINDING,
+                           f"The recorded RSA key-generation command specifies a {key.value}-bit modulus.")
+        else:
+            record_control(parser, "cisco.ios.ssh-host-key", CO.UNKNOWN,
+                           "The export does not record a parseable RSA host-key modulus.")
         if key.configured and key.value is not None and key.value < 2048:
             self.add_issue(
                 self._finding(
@@ -772,9 +911,26 @@ class PluginIOSBaseline(BasePlugin):
     def check_acl_effectiveness(self, parser: BaseDeviceParser) -> None:
         """Report only same-attachment first-match relationships proven statically."""
         earlier_by_scope = {}
-        for rule in self._ios(parser).get_attached_acl_semantics():
+        unqualified_scopes = set()
+        rules = self._ios(parser).get_attached_acl_semantics()
+        if not rules:
+            record_control(parser, "cisco.ios.acl-order", CO.NOT_APPLICABLE, "No ACL is attached.")
+        for rule in rules:
+            instance = f"{rule.scope}/{rule.name}/entry:{rule.position}"
             if not rule.proof_eligible:
+                unqualified_scopes.add(rule.scope.casefold())
+                record_control(parser, "cisco.ios.acl-order", CO.UNKNOWN,
+                               "The entry uses predicates outside the bounded static comparison.", instance=instance)
                 continue
+            # A FINDING recorded below for this entry takes precedence.
+            if rule.scope.casefold() in unqualified_scopes:
+                record_control(parser, "cisco.ios.acl-order", CO.UNKNOWN,
+                               "An earlier entry in this attachment is outside the bounded static comparison.",
+                               instance=instance)
+            else:
+                record_control(parser, "cisco.ios.acl-order", CO.NO_FINDING,
+                               "Bounded static comparison with earlier entries in the same attachment qualified.",
+                               instance=instance)
             earlier_rules = earlier_by_scope.setdefault(rule.scope.casefold(), [])
             for earlier in earlier_rules:
                 if earlier.family != rule.family or not all(
@@ -791,6 +947,8 @@ class PluginIOSBaseline(BasePlugin):
                 same_action = earlier.action == rule.action
                 if same_action and earlier.behavior_signature != rule.behavior_signature:
                     continue
+                record_control(parser, "cisco.ios.acl-order", CO.FINDING,
+                               "Proven static shadow/redundancy, not observed nonuse.", instance=instance)
                 self.add_issue(self._finding(
                     parser,
                     (
@@ -812,8 +970,28 @@ class PluginIOSBaseline(BasePlugin):
 
     def check_credentials(self, parser: BaseDeviceParser) -> None:
         policy = credential_policy_from_context(parser.assessment_context)
-        for credential in (*parser.get_credential_metadata(), *self._ios(parser).get_additional_credential_metadata()):
+        credentials = (*parser.get_credential_metadata(), *self._ios(parser).get_additional_credential_metadata())
+        if not credentials:
+            record_control(parser, "cisco.ios.credential-storage", CO.NOT_APPLICABLE,
+                           "No stored credential is configured.")
+        reported_contexts = {"local_user", "enable", "radius_key", "line_password", *_TYPE6_KEY_CONTEXTS}
+        for credential in credentials:
             result = evaluate_credential(credential, policy)
+            credential_key = f"{credential.context} {credential.account}"
+            if (credential.default_assessment == DefaultCredentialAssessment.MATCH
+                    and credential.storage_type == "0"):
+                record_control(parser, "cisco.ios.credential-storage", CO.FINDING,
+                               "The credential matches the known-default list.", instance=credential_key)
+            if result.unsafe_storage and credential.context in reported_contexts:
+                record_control(parser, "cisco.ios.credential-storage", CO.FINDING,
+                               "The credential uses plaintext, empty, reversible or legacy storage.",
+                               instance=credential_key)
+            elif result.unsafe_storage or result.storage_state.value == "unknown":
+                record_control(parser, "cisco.ios.credential-storage", CO.UNKNOWN,
+                               "The credential storage type is not classified.", instance=credential_key)
+            else:
+                record_control(parser, "cisco.ios.credential-storage", CO.NO_FINDING,
+                               "The credential uses approved storage.", instance=credential_key)
             if credential.default_assessment == DefaultCredentialAssessment.MATCH and credential.storage_type == "0":
                 self.add_issue(self._finding(
                     parser,
@@ -931,9 +1109,13 @@ class PluginIOSBaseline(BasePlugin):
         views, groups, users = self._ios(parser).get_snmpv3_relationships()
         view_map = {view.name.casefold(): view for view in views}
         group_map = {group.name.casefold(): group for group in groups}
+        if not users:
+            record_control(parser, "cisco.ios.snmpv3-users", CO.NOT_APPLICABLE, "No SNMPv3 user is configured.")
         for user in users:
             evidence = tuple(item for item in user.evidence)
             if not user.group_resolved or (user.read_view and not user.read_view_resolved):
+                record_control(parser, "cisco.ios.snmpv3-users", CO.FINDING,
+                               "The SNMPv3 user references an unresolved group or view.", instance=user.name)
                 unresolved = (
                     f"group '{user.group}'"
                     if not user.group_resolved
@@ -1015,6 +1197,11 @@ class PluginIOSBaseline(BasePlugin):
                 access_gaps.append("the default or an unrestricted read view")
             if group and group.write_view:
                 access_gaps.append(f"write view '{group.write_view}'")
+            gaps = bool(protection_gaps or weak or access_gaps)
+            record_control(parser, "cisco.ios.snmpv3-users", CO.FINDING if gaps else CO.NO_FINDING,
+                           "The SNMPv3 user lacks authPriv, uses a weak algorithm or has broad access scope." if gaps
+                           else "The SNMPv3 user uses authPriv with strong algorithms and a restricted scope.",
+                           instance=user.name)
             if access_gaps:
                 self.add_issue(
                     self._finding(
@@ -1043,6 +1230,8 @@ class PluginIOSBaseline(BasePlugin):
         if not hosts:
             record_control(parser, "cisco.ios.remote-logging", CO.FINDING,
                            "No active remote syslog destination is configured.")
+            for control in ("cisco.ios.syslog-transport", "cisco.ios.syslog-severity"):
+                record_control(parser, control, CO.NOT_APPLICABLE, "No remote syslog destination is configured.")
             self.add_issue(
                 self._finding(
                     parser,
@@ -1062,6 +1251,9 @@ class PluginIOSBaseline(BasePlugin):
         # SC-032: ESM command reference, 'transport (Optional) Method of transport to be
         # used. UDP is the default.' Only BEEP with TLS (or 'transport tls') protects it.
         cleartext = [line for line in hosts if not re.search(r"\btransport\s+(?:beep\b.*\btls\b|tls\b)", line)]
+        record_control(parser, "cisco.ios.syslog-transport", CO.FINDING if cleartext else CO.NO_FINDING,
+                       f"{len(cleartext)} remote syslog destination(s) without TLS." if cleartext
+                       else "Every remote syslog destination uses TLS.", instance="syslog hosts")
         if cleartext:
             explicit = [line for line in cleartext if re.search(r"\btransport\s+(?:udp|tcp|beep)\b", line)]
             self.add_issue(Finding(
@@ -1086,6 +1278,9 @@ class PluginIOSBaseline(BasePlugin):
         }
         value = trap.split()[-1].lower() if trap else ""
         numeric = int(value) if value.isdigit() else levels.get(value)
+        record_control(parser, "cisco.ios.syslog-severity",
+                       CO.FINDING if numeric is None or numeric < 6 else CO.NO_FINDING,
+                       f"The remote logging threshold is '{value or 'not configured'}'.")
         if numeric is None or numeric < 6:
             self.add_issue(
                 self._finding(
@@ -1105,6 +1300,8 @@ class PluginIOSBaseline(BasePlugin):
         state = self._ios(parser).get_configuration_management()
         evidence = tuple(item for item in state.evidence)
         if not state.change_logging:
+            record_control(parser, "cisco.ios.config-change-logging", CO.FINDING,
+                           "Configuration-change logging is not enabled.")
             self.add_issue(self._finding(
                 parser,
                 "cisco.ios.configuration.change_logging",
@@ -1119,6 +1316,8 @@ class PluginIOSBaseline(BasePlugin):
             ))
         else:
             if not state.hide_keys:
+                record_control(parser, "cisco.ios.config-change-logging", CO.FINDING,
+                               "Configuration-change logging is enabled without 'hidekeys'.")
                 self.add_issue(self._finding(
                     parser,
                     "cisco.ios.configuration.change_logging_secrets",
@@ -1132,6 +1331,8 @@ class PluginIOSBaseline(BasePlugin):
                     basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
             if not state.notify_syslog:
+                record_control(parser, "cisco.ios.config-change-logging", CO.FINDING,
+                               "Configuration-change logging is enabled without 'notify syslog'.")
                 self.add_issue(self._finding(
                     parser,
                     "cisco.ios.configuration.change_notification",
@@ -1145,8 +1346,13 @@ class PluginIOSBaseline(BasePlugin):
                     basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
 
+        # A FINDING recorded above takes precedence over this outcome.
+        record_control(parser, "cisco.ios.config-change-logging", CO.NO_FINDING,
+                       "Configuration-change logging is enabled with 'hidekeys' and 'notify syslog'.")
         archive_complete = bool(state.destination) and state.schedule_state == "effective"
         if state.archive_configured and not archive_complete:
+            record_control(parser, "cisco.ios.config-archive", CO.FINDING,
+                           "The configured archive has no effective destination or trigger.")
             gaps = []
             if not state.destination:
                 gaps.append("no effective archive destination")
@@ -1168,6 +1374,8 @@ class PluginIOSBaseline(BasePlugin):
             parser.assessment_context.configuration_backup_scope == "on-device-required"
             and not archive_complete
         ):
+            record_control(parser, "cisco.ios.config-archive", CO.FINDING,
+                           "The assessment policy requires an on-device archive and none is complete.")
             self.add_issue(self._finding(
                 parser,
                 "cisco.ios.configuration.archive_required",
@@ -1181,6 +1389,8 @@ class PluginIOSBaseline(BasePlugin):
                 basis=FindingBasis.REQUIRED_SETTING_MISSING,
             ))
         if state.destination and state.transport_security == "insecure":
+            record_control(parser, "cisco.ios.config-archive", CO.FINDING,
+                           f"The archive destination uses '{state.protocol}' transport.")
             self.add_issue(self._finding(
                 parser,
                 "cisco.ios.configuration.archive_transport",
@@ -1193,6 +1403,16 @@ class PluginIOSBaseline(BasePlugin):
                 (CISCO_IOS_ARCHIVE_GUIDE,),
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
+        # A FINDING recorded above takes precedence over these outcomes.
+        if state.destination and state.transport_security == "unknown":
+            record_control(parser, "cisco.ios.config-archive", CO.UNKNOWN,
+                           f"The archive destination transport '{state.protocol}' is not classified.")
+        elif state.archive_configured or state.destination:
+            record_control(parser, "cisco.ios.config-archive", CO.NO_FINDING,
+                           "The archive has an effective destination and trigger over a protected transport.")
+        else:
+            record_control(parser, "cisco.ios.config-archive", CO.NOT_APPLICABLE,
+                           "No configuration archive is configured and the assessment policy does not require one.")
 
     def check_ntp(self, parser: BaseDeviceParser) -> None:
         associations = self._ios(parser).get_ntp_associations()
@@ -1210,9 +1430,12 @@ class PluginIOSBaseline(BasePlugin):
                     basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
+            record_control(parser, "cisco.ios.ntp-servers", CO.FINDING, "No NTP server or peer is configured.")
             record_control(parser, "cisco.ios.ntp-authentication", CO.NOT_APPLICABLE,
                            "No NTP server or peer is configured.")
             return
+        record_control(parser, "cisco.ios.ntp-servers", CO.NO_FINDING,
+                       f"{len(associations)} NTP server or peer association(s) configured.")
         for association in associations:
             ntp_instance = f"{association.role} {association.address} vrf {association.vrf}"
             if association.authentication_state == "authenticated":
@@ -1243,6 +1466,8 @@ class PluginIOSBaseline(BasePlugin):
     def check_banner(self, parser: BaseDeviceParser) -> None:
         lines = self._global_lines(parser)
         if not any(re.match(r"banner (?:login|motd)\s+", line) for line in lines):
+            record_control(parser, "cisco.ios.login-banner", CO.FINDING,
+                           "No login or message-of-the-day banner is configured.")
             self.add_issue(
                 self._finding(
                     parser,
@@ -1256,10 +1481,16 @@ class PluginIOSBaseline(BasePlugin):
                     basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 )
             )
+        else:
+            record_control(parser, "cisco.ios.login-banner", CO.NO_FINDING,
+                           "A login or message-of-the-day banner is configured.")
 
     def check_unnecessary_services(self, parser: BaseDeviceParser) -> None:
         ios = self._ios(parser)
         services = ios.get_legacy_services()
+        record_control(parser, "cisco.ios.legacy-services", CO.FINDING if services else CO.NO_FINDING,
+                       "A legacy service is explicitly enabled." if services
+                       else "No legacy service is explicitly enabled.", instance="explicit services")
         if services:
             names = sorted({name for name, _ in services})
             self.add_issue(
@@ -1276,6 +1507,19 @@ class PluginIOSBaseline(BasePlugin):
                 )
             )
         defaults = ios.get_legacy_default_services()
+        train = ios.get_train()
+        if defaults:
+            record_control(parser, "cisco.ios.legacy-services", CO.FINDING,
+                           "A legacy service is enabled by default in this release and not disabled.",
+                           instance="release-default services")
+        elif train is None or train in {(12, 1), (16, 6)}:
+            record_control(parser, "cisco.ios.legacy-services", CO.UNKNOWN,
+                           "The finger or small-server default changes within this train and is not qualified.",
+                           instance="release-default services")
+        else:
+            record_control(parser, "cisco.ios.legacy-services", CO.NO_FINDING,
+                           "This release does not enable finger or the small servers by default.",
+                           instance="release-default services")
         if defaults:
             self.add_issue(Finding(
                 rule_id="cisco.ios.services.legacy_default",
@@ -1293,6 +1537,9 @@ class PluginIOSBaseline(BasePlugin):
             ))
         servers = ios.get_file_and_shell_servers()
         shells = [evidence for kind, evidence in servers if kind in {"rsh", "rcp"}]
+        record_control(parser, "cisco.ios.file-shell-servers", CO.FINDING if shells else CO.NO_FINDING,
+                       "The rsh or rcp server is enabled." if shells else "The rsh and rcp servers are not enabled.",
+                       instance="rsh/rcp")
         if shells:
             self.add_issue(Finding(
                 rule_id="cisco.ios.services.remote_shell",
@@ -1308,6 +1555,9 @@ class PluginIOSBaseline(BasePlugin):
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
         tftp = [evidence for kind, evidence in servers if kind == "tftp"]
+        record_control(parser, "cisco.ios.file-shell-servers", CO.FINDING if tftp else CO.NO_FINDING,
+                       "A 'tftp-server' is configured." if tftp else "No 'tftp-server' is configured.",
+                       instance="tftp-server")
         if tftp:
             self.add_issue(Finding(
                 rule_id="cisco.ios.services.tftp_server",
@@ -1323,6 +1573,8 @@ class PluginIOSBaseline(BasePlugin):
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
         gnmi = ios.get_gnmi_insecure_server()
+        record_control(parser, "cisco.ios.gnmi-tls", CO.FINDING if gnmi else CO.NO_FINDING,
+                       "The insecure gNMI server is enabled." if gnmi else "The insecure gNMI server is not enabled.")
         if gnmi:
             self.add_issue(Finding(
                 rule_id="cisco.ios.management.insecure_protocol",
@@ -1372,6 +1624,16 @@ class PluginIOSBaseline(BasePlugin):
         """SC-013: L2TP dial-in on a router with no IPsec configuration at all."""
         ios = self._ios(parser)
         groups = ios.get_l2tp_dialin_groups()
+        if not groups:
+            record_control(parser, "cisco.ios.l2tp-ipsec", CO.NOT_APPLICABLE, "No VPDN group accepts L2TP dial-in.")
+        elif ios.has_ipsec_configuration():
+            record_control(parser, "cisco.ios.l2tp-ipsec", CO.UNKNOWN,
+                           "IPsec configuration is present; whether it protects the L2TP sessions is not evaluated.")
+        else:
+            for group in groups:
+                record_control(parser, "cisco.ios.l2tp-ipsec", CO.FINDING,
+                               "The VPDN group accepts L2TP dial-in and the router has no IPsec configuration.",
+                               instance=group.group)
         if groups and ios.has_ipsec_configuration():
             record_manual_review(parser, "L2TP dial-in with IPsec configuration present",
                                  "Whether the L2TP sessions are protected by the configured IPsec policy is not evaluated.")
@@ -1398,7 +1660,12 @@ class PluginIOSBaseline(BasePlugin):
 
     def check_ppp_pap(self, parser: BaseDeviceParser) -> None:
         """SC-013: PAP sends passwords in clear text across the PPP link (Cisco PAP guide)."""
-        for record in self._ios(parser).get_ppp_pap_interfaces():
+        records = self._ios(parser).get_ppp_pap_interfaces()
+        if not records:
+            record_control(parser, "cisco.ios.ppp-pap", CO.NO_FINDING, "No active PPP link accepts or sends PAP.")
+        for record in records:
+            record_control(parser, "cisco.ios.ppp-pap", CO.FINDING, "The PPP link accepts or sends PAP.",
+                           instance=record.interface)
             parts = []
             if record.methods:
                 position = ("as the first method" if record.methods[0] == "pap"
@@ -1426,6 +1693,9 @@ class PluginIOSBaseline(BasePlugin):
         """Explicit settings Cisco's IOS XE security-warnings reference flags as insecure."""
         ios = self._ios(parser)
         for record in ios.get_logging_tls_profiles():
+            record_control(parser, "cisco.ios.syslog-transport", CO.FINDING,
+                           "The bound syslog TLS profile permits TLS 1.0/1.1 or CBC-SHA1 suites.",
+                           instance=f"tls-profile {record.profile}")
             weak = ", ".join(record.weak_versions + record.weak_ciphers)
             self.add_issue(self._finding(
                 parser, "cisco.ios.logging.remote_weak_tls",
@@ -1438,7 +1708,26 @@ class PluginIOSBaseline(BasePlugin):
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
         if ios.is_iosxe():
-            for association in ios.get_ntp_associations():
+            associations = ios.get_ntp_associations()
+            if not associations:
+                record_control(parser, "cisco.ios.ntp-key-algorithm", CO.NOT_APPLICABLE,
+                               "No NTP server or peer is configured.")
+            for association in associations:
+                ntp_instance = f"{association.role} {association.address} vrf {association.vrf}"
+                if association.authentication_state != "authenticated":
+                    record_control(parser, "cisco.ios.ntp-key-algorithm", CO.NOT_APPLICABLE,
+                                   "The association is not authenticated (reported by cisco.ios.ntp-authentication).",
+                                   instance=ntp_instance)
+                elif association.algorithm == "md5":
+                    record_control(parser, "cisco.ios.ntp-key-algorithm", CO.FINDING,
+                                   "The association is authenticated with an MD5 key.", instance=ntp_instance)
+                elif association.algorithm:
+                    record_control(parser, "cisco.ios.ntp-key-algorithm", CO.NO_FINDING,
+                                   f"The association is authenticated with a '{association.algorithm}' key.",
+                                   instance=ntp_instance)
+                else:
+                    record_control(parser, "cisco.ios.ntp-key-algorithm", CO.UNKNOWN,
+                                   "The key algorithm is not recorded.", instance=ntp_instance)
                 if association.authentication_state != "authenticated" or association.algorithm != "md5":
                     continue
                 self.add_issue(self._finding(
@@ -1450,6 +1739,9 @@ class PluginIOSBaseline(BasePlugin):
                     Severity.LOW, association.evidence, (CISCO_XE_SECURITY_WARNINGS,),
                     basis=FindingBasis.EXPLICIT_VALUE,
                 ))
+        else:
+            record_control(parser, "cisco.ios.ntp-key-algorithm", CO.NOT_APPLICABLE,
+                           "The IOS XE NTP key-algorithm check does not apply to classic IOS trains.")
         if ios.is_iosxe():
             servers = ios.get_aaa_servers_without_tls()
             if servers:
@@ -1466,6 +1758,11 @@ class PluginIOSBaseline(BasePlugin):
                     basis=FindingBasis.EXPLICIT_VALUE,
                 ))
         found = ios.get_xe_insecure_feature_lines()
+        for command, control in (("router odr", "cisco.ios.on-demand-routing"),
+                                 ("secure-webauth-disable", "cisco.ios.webauth-https"),
+                                 ("key-hash md5", "cisco.ios.ssh-pubkey-hash")):
+            record_control(parser, control, CO.FINDING if command in found else CO.NO_FINDING,
+                           f"'{command}' is in effect." if command in found else f"'{command}' is not in effect.")
         specs = {
             "router odr": ("cisco.ios.routing.odr_enabled", "On-Demand Routing (ODR) is enabled",
                            "ODR accepts routes learned from unauthenticated, unencrypted CDP messages, so a neighbour can inject routes.",
@@ -1503,6 +1800,7 @@ class PluginIOSBaseline(BasePlugin):
         ios = self._ios(parser)
         aaa = has("aaa new-model")
         if not has("login block-for"):
+            record_control(parser, "cisco.ios.login-lockout", CO.FINDING, "'login block-for' is not configured.")
             self.add_issue(self._finding(
                 parser, "cisco.ios.authentication.login_lockout",
                 "Login attempts are not rate limited",
@@ -1513,6 +1811,8 @@ class PluginIOSBaseline(BasePlugin):
                 (CISCO_XE_SECURITY_WARNINGS,),
                 basis=FindingBasis.REQUIRED_SETTING_MISSING,
             ))
+        else:
+            record_control(parser, "cisco.ios.login-lockout", CO.NO_FINDING, "'login block-for' is configured.")
         http_enabled = ConfigurationState.ENABLED in (ios.get_http_server_state(), ios.get_https_server_state())
         snmp = has("snmp-server community", "snmp-server group", "snmp-server user")
         logging_host = has("logging host") or any(re.fullmatch(r"logging \d+(?:\.\d+){3}", line) for line in folded)
@@ -1577,12 +1877,25 @@ class PluginIOSBaseline(BasePlugin):
     def check_programmability_api_acls(self, parser: BaseDeviceParser) -> None:
         """SC-026: attached NETCONF/RESTCONF ACLs that provably admit every source."""
         ios = self._ios(parser)
-        for api in ios.get_programmability_apis():
+        apis = ios.get_programmability_apis()
+        if not apis:
+            record_control(parser, "cisco.ios.programmability-acl", CO.NOT_APPLICABLE,
+                           "No NETCONF or RESTCONF service is active.")
+        for api in apis:
             for family, name in (("ipv4", api.ipv4_acl), ("ipv6", api.ipv6_acl)):
+                api_instance = f"{api.service} {family}"
                 if not name:
+                    record_control(parser, "cisco.ios.programmability-acl", CO.NOT_APPLICABLE,
+                                   "No service ACL is attached for this address family.", instance=api_instance)
                     continue
                 acl = (ios.get_management_ipv4_acl(name, allow_extended=True)
                        if family == "ipv4" else ios.get_management_ipv6_acl(name))
+                if acl.state == "restrictive":
+                    record_control(parser, "cisco.ios.programmability-acl", CO.NO_FINDING,
+                                   "The attached service ACL does not permit every source.", instance=api_instance)
+                elif acl.state != "permit-all":
+                    record_control(parser, "cisco.ios.programmability-acl", CO.UNKNOWN,
+                                   f"The attached service ACL is {acl.state}.", instance=api_instance)
                 if acl.state != "permit-all":
                     continue
                 if api.service == "RESTCONF":
@@ -1594,7 +1907,12 @@ class PluginIOSBaseline(BasePlugin):
                         if shared.state != "permit-all":
                             # A restrictive WebUI ACL may protect the HTTPS process.
                             # Unresolved/unsupported shared ACLs also prevent proof.
+                            record_control(parser, "cisco.ios.programmability-acl",
+                                           CO.NO_FINDING if shared.state == "restrictive" else CO.UNKNOWN,
+                                           f"The shared web-server ACL is {shared.state}.", instance=api_instance)
                             continue
+                record_control(parser, "cisco.ios.programmability-acl", CO.FINDING,
+                               "The attached service ACL permits every source.", instance=api_instance)
                 service = api.service.casefold()
                 family_label = "IPv4" if family == "ipv4" else "IPv6"
                 rule_id = (f"cisco.ios.management.{service}_unrestricted_sources"
@@ -1616,10 +1934,28 @@ class PluginIOSBaseline(BasePlugin):
                 ))
 
     def check_https_public_certificate(self, parser: BaseDeviceParser) -> None:
-        binding = self._ios(parser).get_https_selected_public_certificate()
+        ios = self._ios(parser)
+        binding = ios.get_https_selected_public_certificate()
         if binding is None:
+            if ios.get_https_server_state() != ConfigurationState.ENABLED:
+                record_control(parser, "cisco.ios.https-certificate", CO.NOT_APPLICABLE,
+                               "The HTTPS server is not enabled.")
+            else:
+                record_control(parser, "cisco.ios.https-certificate", CO.UNKNOWN,
+                               "No explicitly selected trustpoint with exactly one exported identity certificate.")
             return
         result = binding.assessment
+        for aspect, state, bad, good in (
+            ("validity", result.validity_state, {"expired", "not-yet-valid"}, {"valid-at-assessment-time"}),
+            ("identity", result.identity_state, {"mismatch"}, {"match"}),
+            ("algorithm", result.algorithm_state, {"weak"}, {"acceptable"}),
+            ("trust", result.trust_state,
+             {"verification-failed"} if result.identity_state == "match"
+             and result.validity_state == "valid-at-assessment-time" else set(), {"trusted"}),
+        ):
+            record_control(parser, "cisco.ios.https-certificate",
+                           CO.FINDING if state in bad else CO.NO_FINDING if state in good else CO.UNKNOWN,
+                           f"Certificate {aspect} state is '{state}'.", instance=aspect)
         metadata = binding.metadata
         evidence = tuple(item for item in binding.evidence)
         if result.validity_state in {"expired", "not-yet-valid"}:
@@ -1667,10 +2003,17 @@ class PluginIOSBaseline(BasePlugin):
 
     def check_boot_config_retrieval(self, parser: BaseDeviceParser) -> None:
         if parser.assessment_context.device_lifecycle != "commissioned":
+            record_control(parser, "cisco.ios.boot-provisioning", CO.NOT_APPLICABLE,
+                           "The assessment policy does not declare the device commissioned.")
             return
+        record_control(parser, "cisco.ios.boot-provisioning", CO.NO_FINDING,
+                       "No boot or CNS configuration retrieval over clear text is configured.")
         for retrieval in self._ios(parser).get_explicit_boot_config_retrievals():
             if retrieval.protocol != "tftp":
                 continue
+            record_control(parser, "cisco.ios.boot-provisioning", CO.FINDING,
+                           f"Boot {retrieval.kind} configuration is fetched over TFTP.",
+                           instance=f"boot {retrieval.kind}")
             self.add_issue(self._finding(
                 parser,
                 "cisco.ios.services.tftp_boot_config",
@@ -1687,6 +2030,9 @@ class PluginIOSBaseline(BasePlugin):
         for retrieval in self._ios(parser).get_cns_config_retrievals():
             if retrieval.protocol != "http":
                 continue
+            record_control(parser, "cisco.ios.boot-provisioning", CO.FINDING,
+                           f"The {retrieval.kind} CNS agent retrieves configuration over HTTP.",
+                           instance=f"cns {retrieval.kind}")
             self.add_issue(self._finding(
                 parser,
                 "cisco.ios.services.cns_config_cleartext",
@@ -1704,6 +2050,10 @@ class PluginIOSBaseline(BasePlugin):
     def check_interface_protections(self, parser: BaseDeviceParser) -> None:
         lines = self._global_lines(parser)
         train = self._ios(parser).get_train()
+        record_control(parser, "cisco.ios.ip-source-route",
+                       CO.NO_FINDING if "no ip source-route" in lines else CO.FINDING,
+                       "'no ip source-route' is configured." if "no ip source-route" in lines
+                       else "'no ip source-route' is absent; source routing is enabled by default.")
         if "no ip source-route" not in lines:
             # SC-044 IOS-06: IP Addressing CR, Command Default "Enabled"; the IOS XE
             # hardening guide states it is enabled in all IOS XE releases.
@@ -1722,10 +2072,12 @@ class PluginIOSBaseline(BasePlugin):
                 )
             )
         proxy_arp_disabled = self._effective_toggle(lines, r"ip arp proxy disable", r"no ip arp proxy disable")
+        routed_interfaces = 0
         for interface in parser.get_native_config().find_objects(r"^interface\s+"):
             children = self._children(interface)
             if "shutdown" in children or not any(line.startswith("ip address ") for line in children):
                 continue
+            routed_interfaces += 1
             missing = []
             if "no ip redirects" not in children:
                 missing.append("no ip redirects")
@@ -1735,6 +2087,10 @@ class PluginIOSBaseline(BasePlugin):
             # dropped by default only from 12.0.
             if train and train < (12, 0) and "no ip directed-broadcast" not in children:
                 missing.append("no ip directed-broadcast")
+            record_control(parser, "cisco.ios.interface-ip-hardening", CO.FINDING if missing else CO.NO_FINDING,
+                           f"The interface lacks {', '.join(missing)}." if missing
+                           else "The interface disables redirects and proxy ARP.",
+                           instance=interface.text.strip())
             if missing:
                 self.add_issue(
                     self._finding(
@@ -1750,6 +2106,9 @@ class PluginIOSBaseline(BasePlugin):
                         basis=FindingBasis.DOCUMENTED_DEFAULT,
                     )
                 )
+        if not routed_interfaces:
+            record_control(parser, "cisco.ios.interface-ip-hardening", CO.NOT_APPLICABLE,
+                           "No active interface has an IPv4 address.")
 
     def check_control_plane(self, parser: BaseDeviceParser) -> None:
         policies = [
@@ -1757,6 +2116,8 @@ class PluginIOSBaseline(BasePlugin):
             if policy.direction == "input"
         ]
         if not policies:
+            record_control(parser, "cisco.ios.control-plane-policing", CO.FINDING,
+                           "No input service policy is attached to the control plane.")
             self.add_issue(
                 self._finding(
                     parser,
@@ -1776,12 +2137,18 @@ class PluginIOSBaseline(BasePlugin):
         for policy in policies:
             evidence = tuple(item for item in policy.evidence)
             scope = policy.scope.replace("-", " ")
+            copp_instance = f"{policy.scope} {policy.name}"
             if policy.protection_state == "platform-managed":
+                record_control(parser, "cisco.ios.control-plane-policing", CO.UNKNOWN,
+                               "The platform manages the attached policy; its classes and rates are not exported.",
+                               instance=copp_instance)
                 # Several Catalyst IOS-XE families expose the system-generated
                 # classes operationally even when the static export contains
                 # only this well-known attachment. Rate adequacy remains unknown.
                 continue
             if not policy.policy_resolved:
+                record_control(parser, "cisco.ios.control-plane-policing", CO.FINDING,
+                               "The attached policy map is undefined.", instance=copp_instance)
                 self.add_issue(self._finding(
                     parser,
                     "cisco.ios.control_plane.policy_reference",
@@ -1796,6 +2163,8 @@ class PluginIOSBaseline(BasePlugin):
                 ))
                 continue
             if policy.protection_state == "empty-policy":
+                record_control(parser, "cisco.ios.control-plane-policing", CO.FINDING,
+                               "The attached policy map has no classes.", instance=copp_instance)
                 self.add_issue(self._finding(
                     parser,
                     "cisco.ios.control_plane.policy_empty",
@@ -1813,6 +2182,8 @@ class PluginIOSBaseline(BasePlugin):
             for policy_class in policy.classes:
                 if policy_class.selector_resolution in {"resolved", "implicit-all"}:
                     continue
+                record_control(parser, "cisco.ios.control-plane-policing", CO.FINDING,
+                               "A class selector in the attached policy is unresolved.", instance=copp_instance)
                 self.add_issue(self._finding(
                     parser,
                     "cisco.ios.control_plane.class_reference",
@@ -1830,7 +2201,13 @@ class PluginIOSBaseline(BasePlugin):
                 item for item in policy.classes
                 if item.selector_resolution in {"resolved", "implicit-all"}
             ]
+            # A FINDING recorded for this policy takes precedence over this outcome.
+            record_control(parser, "cisco.ios.control-plane-policing", CO.NO_FINDING,
+                           "The attached policy has resolved classes with police or drop actions.",
+                           instance=copp_instance)
             if policy.protection_state == "no-enforcement" and resolved_classes:
+                record_control(parser, "cisco.ios.control-plane-policing", CO.FINDING,
+                               "The attached policy has no police or drop action.", instance=copp_instance)
                 self.add_issue(self._finding(
                     parser,
                     "cisco.ios.control_plane.policy_no_enforcement",
@@ -1863,14 +2240,23 @@ class PluginIOSBaseline(BasePlugin):
             if group.protocol == "tacacs+" and group.name in used_groups:
                 members.update(member.casefold() for member in group.members)
         if not used_all and not members:
+            record_control(parser, "cisco.ios.tacacs-keys", CO.NOT_APPLICABLE,
+                           "No AAA method list uses a TACACS+ server.")
             return
         global_key, servers = ios.get_tacacs_servers()
         if global_key:
+            record_control(parser, "cisco.ios.tacacs-keys", CO.NO_FINDING,
+                           "A global 'tacacs-server key' applies to every TACACS+ server.")
             return
+        evaluated = False
         for name, address, has_key, evidence in servers:
-            if has_key:
-                continue
             if not used_all and name.casefold() not in members and address.casefold() not in members:
+                continue
+            evaluated = True
+            record_control(parser, "cisco.ios.tacacs-keys", CO.NO_FINDING if has_key else CO.FINDING,
+                           "The used TACACS+ server defines a shared key." if has_key
+                           else "The used TACACS+ server has no shared key.", instance=name)
+            if has_key:
                 continue
             self.add_issue(Finding(
                 rule_id="cisco.ios.aaa.tacacs_key_missing",
@@ -1886,6 +2272,9 @@ class PluginIOSBaseline(BasePlugin):
                 references=(CISCO_IOS_TACACS_GUIDE, RFC_8907),
                 basis=FindingBasis.REQUIRED_SETTING_MISSING,
             ))
+        if not evaluated:
+            record_control(parser, "cisco.ios.tacacs-keys", CO.NOT_APPLICABLE,
+                           "No defined TACACS+ server is used by an AAA method list.")
 
     def check_ldap_transport(self, parser: BaseDeviceParser) -> None:
         """SC-031: LDAP servers used by AAA method lists without 'mode secure' (TLS)."""
@@ -1941,7 +2330,15 @@ class PluginIOSBaseline(BasePlugin):
 
     def check_fhrp_authentication(self, parser: BaseDeviceParser) -> None:
         """SC-028: HSRP/VRRPv2/GLBP groups without MD5 authentication."""
-        for group in self._ios(parser).get_fhrp_groups():
+        groups = self._ios(parser).get_fhrp_groups()
+        if not groups:
+            record_control(parser, "cisco.ios.fhrp-authentication", CO.NOT_APPLICABLE,
+                           "No HSRP, VRRPv2 or GLBP group is configured on an active interface.")
+        for group in groups:
+            record_control(parser, "cisco.ios.fhrp-authentication",
+                           CO.NO_FINDING if group["auth"] == "md5" else CO.FINDING,
+                           f"The group uses '{group['auth']}' authentication.",
+                           instance=f"{group['interface']} {group['protocol']} {group['group']}")
             if group["auth"] == "md5":
                 continue
             name = group["protocol"].upper()
@@ -1965,6 +2362,11 @@ class PluginIOSBaseline(BasePlugin):
     def check_ntp_access(self, parser: BaseDeviceParser) -> None:
         """SC-033: NTP runs without any access group, so anyone may query or peer."""
         exposed, evidence = self._ios(parser).get_ntp_service_exposure()
+        record_control(parser, "cisco.ios.ntp-access",
+                       CO.FINDING if exposed else CO.NO_FINDING if evidence else CO.NOT_APPLICABLE,
+                       "NTP runs without an 'ntp access-group'." if exposed
+                       else "NTP access groups are configured." if evidence
+                       else "No NTP server, peer or master is configured.")
         if not exposed:
             return
         self.add_issue(Finding(
@@ -1985,8 +2387,22 @@ class PluginIOSBaseline(BasePlugin):
         """SC-027: explicit legacy TLS versions or weak cipher suites on the HTTPS server."""
         settings = self._ios(parser).get_http_tls_settings()
         if not settings["https"]:
+            record_control(parser, "cisco.ios.https-tls", CO.NOT_APPLICABLE, "The HTTPS server is not enabled.")
             return
         version = str(settings.get("tls_version", ""))
+        record_control(parser, "cisco.ios.https-tls",
+                       CO.FINDING if version.casefold() in {"tlsv1.0", "tlsv1.1"}
+                       else CO.NO_FINDING if version else CO.UNKNOWN,
+                       f"'ip http tls-version {version}' is configured." if version
+                       else "No 'ip http tls-version' is configured and the release default is not qualified.",
+                       instance="tls-version")
+        record_control(parser, "cisco.ios.https-tls",
+                       CO.FINDING if settings.get("weak_suites")
+                       else CO.NO_FINDING if "suite_evidence" in settings else CO.UNKNOWN,
+                       "The configured cipher suites include a weak suite." if settings.get("weak_suites")
+                       else "The configured cipher suites contain no weak suite." if "suite_evidence" in settings
+                       else "No 'ip http secure-ciphersuite' is configured and the release default is not qualified.",
+                       instance="ciphersuite")
         if version.casefold() in {"tlsv1.0", "tlsv1.1"}:
             self.add_issue(Finding(
                 rule_id="cisco.ios.tls.minimum_version",
@@ -2019,8 +2435,13 @@ class PluginIOSBaseline(BasePlugin):
 
     def check_snmp_notifications(self, parser: BaseDeviceParser) -> None:
         """SC-037: SNMPv1/v2c trap or inform targets send the community in clear text."""
-        legacy = [evidence for _, version, evidence in self._ios(parser).get_snmp_notification_hosts()
-                  if version in {"1", "2c"}]
+        hosts = self._ios(parser).get_snmp_notification_hosts()
+        legacy = [evidence for _, version, evidence in hosts if version in {"1", "2c"}]
+        record_control(parser, "cisco.ios.snmp-notifications",
+                       CO.FINDING if legacy else CO.NO_FINDING if hosts else CO.NOT_APPLICABLE,
+                       "A notification target uses SNMPv1/v2c." if legacy
+                       else "Every notification target uses SNMPv3." if hosts
+                       else "No SNMP notification target is configured.")
         if not legacy:
             return
         self.add_issue(Finding(
@@ -2042,7 +2463,13 @@ class PluginIOSBaseline(BasePlugin):
         labels = {"ftp_client": "FTP client password ('ip ftp password')",
                   "http_client": "HTTP client password ('ip http client password')",
                   "url": "password embedded in a URL"}
-        for kind, evidence in self._ios(parser).get_embedded_credentials():
+        embedded = self._ios(parser).get_embedded_credentials()
+        if not embedded:
+            record_control(parser, "cisco.ios.embedded-credentials", CO.NO_FINDING,
+                           "No FTP/HTTP client password or URL credential is configured.")
+        for kind, evidence in embedded:
+            record_control(parser, "cisco.ios.embedded-credentials", CO.FINDING,
+                           f"A clear-text {kind.replace('_', ' ')} credential is configured.", instance=kind)
             self.add_issue(Finding(
                 rule_id=f"cisco.ios.credentials.{kind}_storage",
                 device=parser.device_type,
@@ -2060,6 +2487,9 @@ class PluginIOSBaseline(BasePlugin):
     def check_ike_aggressive_mode(self, parser: BaseDeviceParser) -> None:
         """SC-034: IKEv1 aggressive mode accepted for pre-shared-key peers."""
         accepted, evidence = self._ios(parser).get_ikev1_aggressive_mode()
+        record_control(parser, "cisco.ios.ike-aggressive-mode", CO.FINDING if accepted else CO.NO_FINDING,
+                       "IKEv1 pre-shared keys exist and aggressive mode is not disabled." if accepted
+                       else "Aggressive mode is disabled or no IKEv1 pre-shared key is configured.")
         if not accepted:
             return
         self.add_issue(Finding(
@@ -2085,7 +2515,12 @@ class PluginIOSBaseline(BasePlugin):
         # 768-bit DH group 1. Classic IOS only: the IOS-XE plugin already treats
         # missing parameters as weak.
         classic = not ios.is_iosxe() and ios.get_train() is not None
-        for policy in native.find_objects(r"^crypto (?:isakmp|ikev1) policy\s+"):
+        isakmp_policies = native.find_objects(r"^crypto (?:isakmp|ikev1) policy\s+")
+        transform_sets = native.find_objects(r"^crypto ipsec transform-set\s+")
+        if not isakmp_policies and not transform_sets:
+            record_control(parser, "cisco.ios.vpn-crypto", CO.NOT_APPLICABLE,
+                           "No ISAKMP policy or IPsec transform-set is configured.")
+        for policy in isakmp_policies:
             children = self._children(policy)
             weak = [
                 line for line in children
@@ -2099,6 +2534,16 @@ class PluginIOSBaseline(BasePlugin):
                     defaults.append("encryption absent: default 56-bit DES")
                 if not any(line.startswith("group ") for line in children):
                     defaults.append("group absent: default DH group 1 (768-bit)")
+            explicit = all(any(line.startswith(f"{name} ") for line in children)
+                           for name in ("encryption", "hash", "group"))
+            record_control(
+                parser, "cisco.ios.vpn-crypto",
+                CO.FINDING if defaults or weak else CO.NO_FINDING if explicit else CO.UNKNOWN,
+                "The policy uses or defaults to legacy algorithms." if defaults or weak
+                else "The policy explicitly selects strong encryption, hash and DH group." if explicit
+                else "The policy omits a parameter whose default is not evaluated for this release.",
+                instance=policy.text.strip(),
+            )
             if defaults:
                 self.add_issue(
                     self._finding(
@@ -2129,8 +2574,11 @@ class PluginIOSBaseline(BasePlugin):
                         basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
-        for transform in native.find_objects(r"^crypto ipsec transform-set\s+"):
+        for transform in transform_sets:
             weak = [token for token in transform.text.lower().split() if token in {"esp-des", "esp-3des", "esp-md5-hmac", "esp-sha-hmac"}]
+            record_control(parser, "cisco.ios.vpn-crypto", CO.FINDING if weak else CO.NO_FINDING,
+                           "The transform-set contains legacy algorithms." if weak
+                           else "The transform-set contains no legacy algorithm.", instance=transform.text.strip())
             if weak:
                 self.add_issue(
                     self._finding(
@@ -2163,6 +2611,9 @@ class PluginIOSBaseline(BasePlugin):
         train = ios.get_train()
 
         services = ios.get_default_enabled_services()
+        record_control(parser, "cisco.ios.legacy-services", CO.FINDING if services else CO.NO_FINDING,
+                       "A default-on service (PAD, BOOTP or MOP) is left enabled." if services
+                       else "PAD, BOOTP and MOP are disabled.", instance="default-on services")
         if services:
             self.add_issue(Finding(
                 rule_id="cisco.ios.services.default_enabled",
@@ -2182,6 +2633,10 @@ class PluginIOSBaseline(BasePlugin):
         lookup = self._effective_toggle(folded, r"ip domain[ -]lookup(?: .*)?", r"no ip domain[ -]lookup")
         if not any(re.fullmatch(r"(?:no )?ip domain[ -]lookup(?: .*)?", line) for line in folded):
             lookup = True  # IOS-12: IP Addressing CR i3, DNS lookup is enabled by default
+        record_control(parser, "cisco.ios.dns-lookup",
+                       CO.UNKNOWN if not train else CO.FINDING if lookup else CO.NO_FINDING,
+                       "The release train is not identified." if not train
+                       else "DNS lookup is enabled." if lookup else "'no ip domain lookup' is configured.")
         if lookup and train:
             self.add_issue(Finding(
                 rule_id="cisco.ios.services.dns_lookup",
@@ -2197,6 +2652,12 @@ class PluginIOSBaseline(BasePlugin):
                 basis=FindingBasis.DOCUMENTED_DEFAULT,
             ))
 
+        keepalives = self._effective_toggle(folded, r"service tcp-keepalives-in", r"no service tcp-keepalives-in")
+        record_control(parser, "cisco.ios.tcp-keepalives",
+                       CO.UNKNOWN if not train else CO.NO_FINDING if keepalives else CO.FINDING,
+                       "The release train is not identified." if not train
+                       else "'service tcp-keepalives-in' is configured." if keepalives
+                       else "'service tcp-keepalives-in' is absent; the default is disabled.")
         if train and not self._effective_toggle(folded, r"service tcp-keepalives-in", r"no service tcp-keepalives-in"):
             self.add_issue(Finding(
                 rule_id="cisco.ios.services.tcp_keepalives",
@@ -2218,6 +2679,13 @@ class PluginIOSBaseline(BasePlugin):
         console = [item for item in credentials
                    if item.context == "line_password" and item.account.casefold().startswith("line con")]
         aaa = self._effective_toggle(lines, r"aaa new-model", r"no aaa new-model")
+        enable_configured = any(item.context == "enable" for item in credentials)
+        record_control(parser, "cisco.ios.enable-secret",
+                       CO.NOT_APPLICABLE if aaa else CO.FINDING if console and not enable_configured else CO.NO_FINDING,
+                       "AAA new-model governs privileged access." if aaa
+                       else "No enable credential and the console password acts as the enable password."
+                       if console and not enable_configured
+                       else "An enable credential is configured or no console password can act as one.")
         if console and not aaa and not any(item.context == "enable" for item in credentials):
             self.add_issue(Finding(
                 rule_id="cisco.ios.credentials.enable_missing",
@@ -2238,6 +2706,13 @@ class PluginIOSBaseline(BasePlugin):
         # and DH group 2) apply when no policy is configured. Introduced in 12.4(20)T,
         # so only trains from 15.x are decided.
         ikev1 = self._ikev1_in_use(parser)
+        if (ikev1 and not parser.get_native_config().find_objects(r"^crypto (?:isakmp|ikev1) policy\s+")
+                and "no crypto isakmp default policy" not in folded):
+            qualified = bool(train and (train >= (15, 0) or ios.is_iosxe()))
+            record_control(parser, "cisco.ios.vpn-crypto", CO.FINDING if qualified else CO.UNKNOWN,
+                           "IKEv1 relies on the built-in default ISAKMP policies." if qualified
+                           else "IKEv1 has no explicit policy and the default policies are not qualified for this release.",
+                           instance="default ISAKMP policies")
         if (ikev1 and train and (train >= (15, 0) or ios.is_iosxe())
                 and not parser.get_native_config().find_objects(r"^crypto (?:isakmp|ikev1) policy\s+")
                 and "no crypto isakmp default policy" not in folded):
@@ -2258,6 +2733,19 @@ class PluginIOSBaseline(BasePlugin):
         # IOS-25: FlexVPN guide, IKEv2 smart defaults apply when no proposal is
         # configured and are not shown in 'show running-config'.
         native = parser.get_native_config()
+        if native.find_objects(r"^crypto ikev2 profile\s+"):
+            if (not native.find_objects(r"^crypto ikev2 proposal\s+")
+                    and "no crypto ikev2 proposal default" not in folded):
+                record_control(parser, "cisco.ios.vpn-crypto", CO.FINDING,
+                               "An IKEv2 profile uses the built-in default proposal.", instance="IKEv2 proposals")
+            elif parser.device_type == "IOS_XE":
+                record_control(parser, "cisco.ios.vpn-crypto", CO.NOT_APPLICABLE,
+                               "Explicit IKEv2 proposals are evaluated by cisco.iosxe.vpn-crypto.",
+                               instance="IKEv2 proposals")
+            else:
+                record_control(parser, "cisco.ios.vpn-crypto", CO.UNKNOWN,
+                               "Explicit IKEv2 proposal contents are not evaluated by this check.",
+                               instance="IKEv2 proposals")
         if (native.find_objects(r"^crypto ikev2 profile\s+")
                 and not native.find_objects(r"^crypto ikev2 proposal\s+")
                 and "no crypto ikev2 proposal default" not in folded):
@@ -2280,6 +2768,9 @@ class PluginIOSBaseline(BasePlugin):
         if parser.device_type in {"IOS_SWITCH", "IOS_CATALYST"}:
             modes = [line for line in folded if line.startswith("vtp mode ")]
             mode = modes[-1].split()[2] if modes else "server"
+            record_control(parser, "cisco.ios.vtp-mode",
+                           CO.NO_FINDING if mode in {"transparent", "off"} else CO.FINDING,
+                           f"VTP mode is {mode}" + ("." if modes else " (documented default)."))
             if mode not in {"transparent", "off"}:
                 self.add_issue(self._finding(
                     parser,
@@ -2297,6 +2788,9 @@ class PluginIOSBaseline(BasePlugin):
 
         # IOS-30: IOS-XE 26.1.1+ writes 'system mode insecure' to keep deprecated features.
         insecure = [line for line in lines if re.fullmatch(r"system mode insecure", line.strip(), re.I)]
+        record_control(parser, "cisco.ios.insecure-mode", CO.FINDING if insecure else CO.NO_FINDING,
+                       "'system mode insecure' is configured." if insecure
+                       else "'system mode insecure' is not configured.")
         if insecure:
             self.add_issue(self._finding(
                 parser,
@@ -2319,8 +2813,21 @@ class PluginIOSBaseline(BasePlugin):
         as_path_filters = ios.get_bgp_as_path_filter_effects()
         key_lifetimes = ios.get_routing_key_lifetime_states()
 
+        lifetime_recorded = []
+
         def report_unusable_key_lifetime(scope: str, key_reference: str, evidence: tuple[str, ...]) -> None:
             lifetime = key_lifetimes.get(key_reference.casefold()) if key_reference else None
+            if lifetime is None and key_reference and not key_lifetimes:
+                lifetime_recorded.append(scope)
+                record_control(parser, "cisco.ios.routing-key-lifetime", CO.UNKNOWN,
+                               "Key lifetimes are assessed only with an explicit assessment time and a UTC clock.",
+                               instance=scope)
+            if lifetime is not None:
+                lifetime_recorded.append(scope)
+                record_control(parser, "cisco.ios.routing-key-lifetime",
+                               CO.FINDING if lifetime[0] == "unusable"
+                               else CO.NO_FINDING if lifetime[0] == "usable" else CO.UNKNOWN,
+                               f"Key chain '{key_reference}' lifetime state is '{lifetime[0]}'.", instance=scope)
             if lifetime is None or lifetime[0] != "unusable":
                 return
             self.add_issue(self._finding(
@@ -2336,11 +2843,35 @@ class PluginIOSBaseline(BasePlugin):
                 (CISCO_IOS_KEY_LIFETIME_GUIDE,),
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
-        for peer in ios.get_bgp_neighbors():
+        peers = ios.get_bgp_neighbors()
+        if not peers:
+            for control in ("cisco.ios.bgp-authentication", "cisco.ios.bgp-external-policy"):
+                record_control(parser, control, CO.NOT_APPLICABLE, "No BGP neighbor is configured.")
+        for peer in peers:
+            scope = f"neighbor {peer.address} in {peer.address_family}, VRF {peer.vrf}"
+            if not peer.active or peer.inheritance_unknown:
+                for control in ("cisco.ios.bgp-authentication", "cisco.ios.bgp-external-policy"):
+                    record_control(parser, control,
+                                   CO.NOT_APPLICABLE if not peer.active else CO.UNKNOWN,
+                                   "The neighbor is not active in this address family." if not peer.active
+                                   else "Peer templates or inheritance are not expanded.", instance=scope)
             if not peer.active or peer.inheritance_unknown:
                 continue
-            scope = f"neighbor {peer.address} in {peer.address_family}, VRF {peer.vrf}"
             evidence = tuple(item for item in peer.evidence)
+            record_control(parser, "cisco.ios.bgp-authentication",
+                           CO.FINDING if peer.authentication_state in {"unauthenticated", "unresolved"}
+                           else CO.NO_FINDING if peer.authentication_state == "authenticated" else CO.UNKNOWN,
+                           f"Neighbor authentication state is '{peer.authentication_state}'.", instance=scope)
+            if peer.peer_role != "external":
+                record_control(parser, "cisco.ios.bgp-external-policy",
+                               CO.NOT_APPLICABLE if peer.peer_role == "internal" else CO.UNKNOWN,
+                               "The neighbor is internal." if peer.peer_role == "internal"
+                               else "The neighbor role (internal or external) is not resolved.", instance=scope)
+            else:
+                # A FINDING recorded below for this neighbor takes precedence.
+                record_control(parser, "cisco.ios.bgp-external-policy", CO.NO_FINDING,
+                               "Inbound and outbound route policies and a maximum-prefix limit are configured.",
+                               instance=scope)
             if peer.authentication_state in {"unauthenticated", "unresolved"}:
                 detail = "has no authentication" if peer.authentication_state == "unauthenticated" else "has an unresolved authentication reference"
                 self.add_issue(self._finding(
@@ -2382,6 +2913,8 @@ class PluginIOSBaseline(BasePlugin):
                             "filter-list": CISCO_IOS_AS_PATH_GUIDE,
                         }[kind]
                         if effect is None:
+                            record_control(parser, "cisco.ios.bgp-external-policy", CO.FINDING,
+                                           f"The attached {kind} '{name}' is undefined.", instance=scope)
                             self.add_issue(self._finding(
                                 parser,
                                 f"cisco.ios.routing.bgp.missing_{kind.replace('-', '_')}",
@@ -2395,6 +2928,8 @@ class PluginIOSBaseline(BasePlugin):
                                 basis=FindingBasis.REQUIRED_SETTING_MISSING,
                             ))
                         elif effect[0] == "permit-all" and len(bindings) == 1:
+                            record_control(parser, "cisco.ios.bgp-external-policy", CO.FINDING,
+                                           f"The sole attached {kind} '{name}' permits every route.", instance=scope)
                             self.add_issue(self._finding(
                                 parser,
                                 f"cisco.ios.routing.bgp.permit_all_{kind.replace('-', '_')}",
@@ -2414,6 +2949,8 @@ class PluginIOSBaseline(BasePlugin):
             for direction, present in (("inbound", peer.inbound_policy), ("outbound", peer.outbound_policy)):
                 if present:
                     continue
+                record_control(parser, "cisco.ios.bgp-external-policy", CO.FINDING,
+                               f"No {direction} route policy is attached.", instance=scope)
                 self.add_issue(self._finding(
                     parser,
                     f"cisco.ios.routing.bgp.{direction}_policy",
@@ -2427,6 +2964,8 @@ class PluginIOSBaseline(BasePlugin):
                     basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
             if not peer.prefix_limit:
+                record_control(parser, "cisco.ios.bgp-external-policy", CO.FINDING,
+                               "No maximum-prefix limit is configured.", instance=scope)
                 self.add_issue(self._finding(
                     parser,
                     "cisco.ios.routing.bgp.prefix_limit",
@@ -2440,7 +2979,21 @@ class PluginIOSBaseline(BasePlugin):
                     basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
 
-        for interface in ios.get_ospf_interfaces():
+        ospf_interfaces = ios.get_ospf_interfaces()
+        if not ospf_interfaces:
+            record_control(parser, "cisco.ios.ospf-authentication", CO.NOT_APPLICABLE,
+                           "No interface takes part in OSPF.")
+        for interface in ospf_interfaces:
+            ospf_instance = f"process {interface.process_id} {interface.interface}"
+            if interface.shutdown or interface.passive:
+                record_control(parser, "cisco.ios.ospf-authentication", CO.NOT_APPLICABLE,
+                               "The interface is shut down or passive.", instance=ospf_instance)
+            else:
+                record_control(parser, "cisco.ios.ospf-authentication",
+                               CO.NO_FINDING if interface.authentication_state == "authenticated"
+                               else CO.UNKNOWN if interface.authentication_state == "unknown" else CO.FINDING,
+                               f"OSPF authentication state is '{interface.authentication_state}'.",
+                               instance=ospf_instance)
             if (not interface.shutdown and not interface.passive
                     and interface.authentication_state == "authenticated"):
                 report_unusable_key_lifetime(
@@ -2468,8 +3021,20 @@ class PluginIOSBaseline(BasePlugin):
                 basis=FindingBasis.EXPLICIT_VALUE if interface.authentication_state == "weak" else FindingBasis.REQUIRED_SETTING_MISSING,
             ))
 
-        for interface in ios.get_rip_interfaces():
+        rip_interfaces = ios.get_rip_interfaces()
+        if not rip_interfaces:
+            record_control(parser, "cisco.ios.rip-authentication", CO.NOT_APPLICABLE,
+                           "No interface takes part in RIP.")
+        for interface in rip_interfaces:
             state = interface.authentication_state
+            rip_instance = f"{interface.interface} {interface.network} vrf {interface.vrf}"
+            if interface.send_version == "1-included" and not interface.passive:
+                record_control(parser, "cisco.ios.rip-authentication", CO.FINDING,
+                               "The interface sends RIP version 1 updates.", instance=rip_instance)
+            record_control(parser, "cisco.ios.rip-authentication",
+                           CO.NO_FINDING if state == "configured-md5"
+                           else CO.UNKNOWN if state == "unknown" else CO.FINDING,
+                           f"RIP authentication state is '{state}'.", instance=rip_instance)
             if interface.send_version == "1-included" and not interface.passive:
                 send_scope = f"RIP network {interface.network} on {interface.interface}"
                 if interface.vrf != "default":
@@ -2531,7 +3096,18 @@ class PluginIOSBaseline(BasePlugin):
                        else FindingBasis.EXPLICIT_VALUE),
             ))
 
-        for admission in ios.get_isis_authentication():
+        isis_records = ios.get_isis_authentication()
+        if not isis_records:
+            record_control(parser, "cisco.ios.isis-authentication-mode", CO.NOT_APPLICABLE,
+                           "No IS-IS authentication is configured.")
+        for admission in isis_records:
+            record_control(parser, "cisco.ios.isis-authentication-mode",
+                           CO.NO_FINDING if admission.state == "configured-md5"
+                           else CO.FINDING if admission.state in {"send-only", "text-mode", "unresolved"}
+                           else CO.UNKNOWN,
+                           f"IS-IS authentication state is '{admission.state}'.",
+                           instance=(f"{admission.instance or 'default instance'} {admission.level} "
+                                     f"{admission.scope} {admission.interface}"))
             if admission.state == "configured-md5":
                 scope = (
                     f"IS-IS {admission.instance or 'default instance'} {admission.level} "
@@ -2577,10 +3153,21 @@ class PluginIOSBaseline(BasePlugin):
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
 
-        for interface in ios.get_eigrp_interfaces():
+        eigrp_interfaces = ios.get_eigrp_interfaces()
+        if not eigrp_interfaces:
+            record_control(parser, "cisco.ios.eigrp-authentication", CO.NOT_APPLICABLE,
+                           "No interface takes part in EIGRP.")
+        for interface in eigrp_interfaces:
+            eigrp_instance = f"AS {interface.autonomous_system} {interface.interface}"
             if not interface.active or interface.passive:
+                record_control(parser, "cisco.ios.eigrp-authentication", CO.NOT_APPLICABLE,
+                               "The interface is inactive or passive.", instance=eigrp_instance)
                 continue
             state = interface.authentication_state
+            record_control(parser, "cisco.ios.eigrp-authentication",
+                           CO.FINDING if state in {"unauthenticated", "unresolved"}
+                           else CO.UNKNOWN if state == "unknown" else CO.NO_FINDING,
+                           f"EIGRP authentication state is '{state}'.", instance=eigrp_instance)
             named = interface.named_instance
             scope = (
                 f"EIGRP AS {interface.autonomous_system} (named instance {named}) on {interface.interface}"
@@ -2619,19 +3206,28 @@ class PluginIOSBaseline(BasePlugin):
                 (CISCO_IOS_EIGRP_GUIDE,),
                 basis=FindingBasis.REQUIRED_SETTING_MISSING,
             ))
+        if not lifetime_recorded:
+            record_control(parser, "cisco.ios.routing-key-lifetime", CO.NOT_APPLICABLE,
+                           "No active authenticated routing adjacency binds a key chain with exported keys.")
 
     def check_discovery(self, parser: BaseDeviceParser) -> None:
         ios = self._ios(parser)
         if ios.get_version() == "?":
             return
+        external = 0
         for interface in ios.get_discovery_interfaces():
             if not interface.active or interface.role != "external":
                 continue
+            external += 1
             directions = [
                 direction for direction, enabled in (
                     ("transmit", interface.transmit), ("receive", interface.receive)
                 ) if enabled
             ]
+            record_control(parser, "cisco.ios.discovery-external", CO.FINDING if directions else CO.NO_FINDING,
+                           f"{interface.protocol.upper()} {', '.join(directions)} is enabled." if directions
+                           else f"{interface.protocol.upper()} is disabled.",
+                           instance=f"{interface.interface} {interface.protocol}")
             if not directions:
                 continue
             evidence = tuple(item for item in interface.evidence) + (
@@ -2658,18 +3254,32 @@ class PluginIOSBaseline(BasePlugin):
                     else FindingBasis.MISSING_EXPLICIT_SETTING
                 ),
             ))
+        if not external:
+            record_control(parser, "cisco.ios.discovery-external", CO.NOT_APPLICABLE,
+                           "No active interface is classified external by the assessment policy.")
 
     def check_switch_edge(self, parser: BaseDeviceParser) -> None:
         ios = self._ios(parser)
         if ios.get_version() == "?":
             return
+        edges = 0
         for interface in ios.get_switch_edge_interfaces():
             if not interface.active or interface.role != "access-edge" or interface.mode == "routed":
                 continue
+            edges += 1
             evidence = tuple(item for item in interface.evidence) + (
                 f"assessment policy: {interface.interface} role access-edge",
             )
+            unqualified = interface.mode not in {"trunk", "access", "switchport"} or (
+                interface.access_vlan is None and not (interface.dhcp_snooping and interface.arp_inspection))
+            # FINDING outcomes recorded below take precedence over this outcome.
+            record_control(parser, "cisco.ios.access-edge-l2", CO.UNKNOWN if unqualified else CO.NO_FINDING,
+                           "The effective switchport mode or access VLAN is not resolved." if unqualified
+                           else "The access edge is an untrusted access port with spoofing protections.",
+                           instance=interface.interface)
             if interface.mode == "trunk":
+                record_control(parser, "cisco.ios.access-edge-l2", CO.FINDING,
+                               "The access edge is configured as a trunk.", instance=interface.interface)
                 self.add_issue(self._finding(
                     parser, "cisco.ios.layer2.access_edge_trunk",
                     "Access-edge interface is configured as a trunk",
@@ -2683,6 +3293,9 @@ class PluginIOSBaseline(BasePlugin):
             if interface.mode not in {"access", "switchport"}:
                 continue
             if interface.dhcp_trusted or interface.arp_trusted:
+                record_control(parser, "cisco.ios.access-edge-l2", CO.FINDING,
+                               "The access edge is trusted by DHCP snooping or ARP inspection.",
+                               instance=interface.interface)
                 trusted = ", ".join(
                     name for name, enabled in (
                         ("DHCP snooping", interface.dhcp_trusted),
@@ -2707,6 +3320,8 @@ class PluginIOSBaseline(BasePlugin):
             for suffix, present, label, applicable in mechanisms:
                 if present or not applicable:
                     continue
+                record_control(parser, "cisco.ios.access-edge-l2", CO.FINDING,
+                               f"The access edge lacks {label}.", instance=interface.interface)
                 self.add_issue(self._finding(
                     parser, f"cisco.ios.layer2.access_edge.{suffix}",
                     f"Access-edge interface lacks {label}",
@@ -2717,6 +3332,9 @@ class PluginIOSBaseline(BasePlugin):
                     Severity.MEDIUM, evidence, (CISCO_IOS_ROUTING_HARDENING_GUIDE,),
                     basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
+        if not edges:
+            record_control(parser, "cisco.ios.access-edge-l2", CO.NOT_APPLICABLE,
+                           "No active switchport is classified access-edge by the assessment policy.")
 
     def check_ipv6_first_hop(self, parser: BaseDeviceParser) -> None:
         """SC-048: an assessed endpoint port explicitly trusted for IPv6 RAs or DHCPv6 server messages.
@@ -2744,11 +3362,18 @@ class PluginIOSBaseline(BasePlugin):
              "Attach a DHCPv6 guard policy with device-role client (the default) to this endpoint port; reserve "
              "device-role server and trusted-port for ports facing approved DHCPv6 servers or relays."),
         )
+        edges = 0
         for port in ios.get_ipv6_first_hop_ports():
             if not port.active or port.role != "access-edge" or port.mode not in {"access", "switchport"}:
                 continue
+            edges += 1
             for attribute, role_state, rule, title, feature, messages, impact, recommendation in checks:
                 attachment = getattr(port, attribute)
+                record_control(parser, "cisco.ios.access-edge-ipv6-trust",
+                               CO.FINDING if attachment.state in {role_state, "trusted-port"}
+                               else CO.UNKNOWN if attachment.state == "unknown" else CO.NO_FINDING,
+                               f"The {feature} attachment state is '{attachment.state}'.",
+                               instance=f"{port.interface} {feature}")
                 if attachment.state not in {role_state, "trusted-port"}:
                     continue
                 how = ("trusted-port, which disables policing" if attachment.state == "trusted-port"
@@ -2764,13 +3389,32 @@ class PluginIOSBaseline(BasePlugin):
                     (CISCO_IOS_IPV6_FHS_GUIDE, RFC_9099),
                     basis=FindingBasis.EXPLICIT_VALUE,
                 ))
+        if not edges:
+            record_control(parser, "cisco.ios.access-edge-ipv6-trust", CO.NOT_APPLICABLE,
+                           "No active switchport is classified access-edge by the assessment policy.")
 
     def check_access_admission(self, parser: BaseDeviceParser) -> None:
         ios = self._ios(parser)
+        edges = 0
         for port in ios.get_access_admission_interfaces():
             if (not port.active or port.role != "access-edge"
                     or port.mode not in {"access", "switchport"}):
                 continue
+            edges += 1
+            bypass = (port.port_control == "force-authorized"
+                      or port.port_control == "auto" and port.global_dot1x is False
+                      or port.port_control == "auto" and port.global_dot1x is True and port.open_access is True)
+            record_control(parser, "cisco.ios.access-edge-dot1x",
+                           CO.FINDING if bypass
+                           else CO.NOT_APPLICABLE if port.port_control is None
+                           else CO.UNKNOWN if port.port_control == "auto" and port.global_dot1x is None
+                           else CO.NO_FINDING,
+                           "The port bypasses or weakens 802.1X admission." if bypass
+                           else "802.1X port control is not configured on the port." if port.port_control is None
+                           else "The global 802.1X state is not set explicitly in the export."
+                           if port.port_control == "auto" and port.global_dot1x is None
+                           else "802.1X admission is enforced on the port.",
+                           instance=port.interface)
             evidence = tuple(item for item in port.evidence) + (
                 f"assessment policy: {port.interface} role access-edge",
             )
@@ -2805,13 +3449,24 @@ class PluginIOSBaseline(BasePlugin):
                     Severity.MEDIUM, evidence, (CISCO_IOS_OPEN_AUTH_GUIDE,),
                     basis=FindingBasis.EXPLICIT_VALUE,
                 ))
+        if not edges:
+            record_control(parser, "cisco.ios.access-edge-dot1x", CO.NOT_APPLICABLE,
+                           "No active switchport is classified access-edge by the assessment policy.")
 
     def check_bpdu_guard(self, parser: BaseDeviceParser) -> None:
         ios = self._ios(parser)
+        edges = 0
         for port in ios.get_bpdu_guard_policies():
             if (not port.active or port.role != "access-edge" or port.lag_member
                     or port.mode not in {"access", "switchport"}):
                 continue
+            edges += 1
+            ineffective = port.guard_enabled is False or (port.guard_enabled is True and port.filter_enabled is True)
+            record_control(parser, "cisco.ios.access-edge-bpdu-guard",
+                           CO.FINDING if ineffective else CO.NO_FINDING if port.guard_enabled else CO.UNKNOWN,
+                           f"BPDU guard state is '{port.guard_state}'" + (" with BPDU filtering." if
+                                                                          port.filter_enabled else "."),
+                           instance=port.interface)
             evidence = tuple(item for item in port.evidence) + (
                 f"assessment policy: {port.interface} role access-edge",
             )
@@ -2840,8 +3495,38 @@ class PluginIOSBaseline(BasePlugin):
                     Severity.MEDIUM, evidence, (CISCO_IOS_BPDU_GUARD_GUIDE,),
                     basis=FindingBasis.EXPLICIT_VALUE,
                 ))
+        if not edges:
+            record_control(parser, "cisco.ios.access-edge-bpdu-guard", CO.NOT_APPLICABLE,
+                           "No active non-LAG switchport is classified access-edge by the assessment policy.")
+
+    # Controls recorded by this plugin; all are unknown when the release is not identified.
+    BASELINE_CONTROLS = (
+        "cisco.ios.aaa-baseline", "cisco.ios.line-timeout", "cisco.ios.vty-output-transport",
+        "cisco.ios.console-authentication", "cisco.ios.aux-line", "cisco.ios.vty-authentication",
+        "cisco.ios.vty-authorization", "cisco.ios.vty-accounting", "cisco.ios.vty-aaa-server-groups",
+        "cisco.ios.ssh-algorithms", "cisco.ios.ssh-host-key", "cisco.ios.https-certificate", "cisco.ios.acl-order",
+        "cisco.ios.credential-storage", "cisco.ios.snmpv3-users", "cisco.ios.syslog-transport",
+        "cisco.ios.syslog-severity", "cisco.ios.config-change-logging", "cisco.ios.config-archive",
+        "cisco.ios.ntp-servers", "cisco.ios.login-banner", "cisco.ios.legacy-services",
+        "cisco.ios.file-shell-servers", "cisco.ios.gnmi-tls", "cisco.ios.programmability-acl",
+        "cisco.ios.l2tp-ipsec", "cisco.ios.ppp-pap", "cisco.ios.ntp-key-algorithm", "cisco.ios.on-demand-routing",
+        "cisco.ios.webauth-https", "cisco.ios.ssh-pubkey-hash", "cisco.ios.login-lockout",
+        "cisco.ios.ike-aggressive-mode", "cisco.ios.tacacs-keys", "cisco.ios.https-tls",
+        "cisco.ios.fhrp-authentication", "cisco.ios.ntp-access", "cisco.ios.snmp-notifications",
+        "cisco.ios.embedded-credentials", "cisco.ios.boot-provisioning", "cisco.ios.ip-source-route",
+        "cisco.ios.interface-ip-hardening", "cisco.ios.control-plane-policing", "cisco.ios.vpn-crypto", "cisco.ios.dns-lookup",
+        "cisco.ios.tcp-keepalives", "cisco.ios.enable-secret", "cisco.ios.vtp-mode", "cisco.ios.insecure-mode",
+        "cisco.ios.bgp-authentication", "cisco.ios.bgp-external-policy", "cisco.ios.ospf-authentication",
+        "cisco.ios.rip-authentication", "cisco.ios.isis-authentication-mode", "cisco.ios.eigrp-authentication",
+        "cisco.ios.routing-key-lifetime", "cisco.ios.discovery-external", "cisco.ios.access-edge-l2",
+        "cisco.ios.access-edge-ipv6-trust", "cisco.ios.access-edge-dot1x", "cisco.ios.access-edge-bpdu-guard",
+    )
+
     def analyze(self, parser: BaseDeviceParser) -> None:
         if not self._applicable(parser):
+            for control in self.BASELINE_CONTROLS:
+                record_control(parser, control, CO.UNKNOWN,
+                               "The software version is unknown; release defaults and syntax were not qualified.")
             for pattern in ("cleartext-admin-unrestricted", "writable-default-snmp"):
                 record_path_not_assessed(parser, pattern, "The software version is unknown; release defaults "
                                          "and syntax were not qualified.")

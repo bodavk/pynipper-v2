@@ -47,6 +47,16 @@ JUNIPER_IPSEC_GUIDE = (
 IETF_IKEV2_ALGORITHM_GUIDANCE = "https://www.rfc-editor.org/rfc/rfc8247.html"
 
 
+def _record_clean_or_absent(parser: JunOSParser, control: str, outcome: ControlOutcome, reason: str,
+                            instance: str = "device") -> None:
+    """SC-049: an absence-based outcome is unknown while apply-groups inheritance is not expanded."""
+    if parser.has_unexpanded_inheritance():
+        record_control(parser, control, ControlOutcome.UNKNOWN,
+                       reason + " apply-groups inheritance is not expanded.", instance=instance)
+    else:
+        record_control(parser, control, outcome, reason, instance=instance)
+
+
 class PluginJunOSChecks(BasePlugin):
     """Effective Junos services, attached firewall filters, and SSH root policy."""
 
@@ -59,6 +69,14 @@ class PluginJunOSChecks(BasePlugin):
     def check_management(self, parser: BaseDeviceParser) -> None:
         services = self._junos(parser).get_services()
         insecure = [protocol for protocol in ("telnet", "http") if services[protocol]]
+        for protocol in ("telnet", "http"):
+            if services[protocol]:
+                record_control(parser, "juniper.junos.cleartext-management", ControlOutcome.FINDING,
+                               f"{protocol} management is enabled.", instance=protocol)
+            else:
+                _record_clean_or_absent(self._junos(parser), "juniper.junos.cleartext-management",
+                                        ControlOutcome.NO_FINDING, f"{protocol} management is not configured.",
+                                        instance=protocol)
         for protocol in insecure:
             self.add_issue(
                 Finding(
@@ -100,7 +118,11 @@ class PluginJunOSChecks(BasePlugin):
             if term.active and term.attachments:
                 terms_by_filter[(term.family, term.filter_name)].append(term)
 
-        for terms in terms_by_filter.values():
+        if not terms_by_filter:
+            _record_clean_or_absent(self._junos(parser), "juniper.junos.filter-scope", ControlOutcome.NOT_APPLICABLE,
+                                    "No attached firewall filter term is configured.")
+        for (filter_family, filter_name), terms in terms_by_filter.items():
+            filter_instance = f"{filter_family} filter {filter_name}"
             terminal_seen = False
             for term in sorted(terms, key=lambda item: item.position):
                 if terminal_seen:
@@ -111,6 +133,8 @@ class PluginJunOSChecks(BasePlugin):
                 )
                 catch_all = self._is_catch_all(term)
                 if action == "accept" and catch_all:
+                    record_control(parser, "juniper.junos.filter-scope", ControlOutcome.FINDING,
+                                   f"Term '{term.term_name}' accepts all traffic.", instance=filter_instance)
                     self.add_issue(
                         Finding(
                             rule_id="juniper.junos.filter.broad_accept",
@@ -128,6 +152,8 @@ class PluginJunOSChecks(BasePlugin):
                     )
                 if catch_all and action in {"accept", "discard", "reject"}:
                     terminal_seen = True
+            _record_clean_or_absent(self._junos(parser), "juniper.junos.filter-scope", ControlOutcome.NO_FINDING,
+                                    "No reachable catch-all accept term.", instance=filter_instance)
 
     def check_ssh_root(self, parser: BaseDeviceParser) -> None:
         junos = self._junos(parser)
@@ -202,6 +228,17 @@ class PluginJunOSChecks(BasePlugin):
     def check_stateful_policies(self, parser: BaseDeviceParser) -> None:
         for policy in self._junos(parser).get_security_policies():
             if (
+                policy.active
+                and policy.action == "permit"
+                and not policy.inheritance_unknown
+                and policy.source_resolution == "wildcard"
+                and policy.destination_resolution == "wildcard"
+                and policy.application_resolution in {"wildcard", "default-any"}
+            ):
+                record_control(parser, "juniper.junos.policy-scope", ControlOutcome.FINDING,
+                               "The policy permits wildcard sources, destinations and applications.",
+                               instance=f"{policy.from_zone}->{policy.to_zone}:{policy.name}")
+            if (
                 not policy.active
                 or policy.action != "permit"
                 or policy.inheritance_unknown
@@ -242,10 +279,32 @@ class PluginJunOSChecks(BasePlugin):
             JUNIPER_ADDRESS_BOOK_GUIDE,
             JUNIPER_APPLICATION_GUIDE,
         )
-        for policy in self._junos(parser).get_security_policies():
+        policies = self._junos(parser).get_security_policies()
+        if not policies:
+            for control in ("juniper.junos.policy-scope", "juniper.junos.policy-order"):
+                _record_clean_or_absent(self._junos(parser), control, ControlOutcome.NOT_APPLICABLE,
+                                        "No SRX security policy is configured.")
+        unqualified_pairs: set[tuple[str, str]] = set()
+
+        def qualified(item) -> bool:
+            return (item.source_networks.complete and item.destination_networks.complete
+                    and item.services.complete)
+
+        for policy in policies:
             evidence = tuple(item for item in policy.evidence) or (
                 f"security policy {policy.name}",
             )
+            policy_instance = f"{policy.from_zone}->{policy.to_zone}:{policy.name}"
+            if not policy.active or policy.action != "permit":
+                record_control(parser, "juniper.junos.policy-scope", ControlOutcome.NOT_APPLICABLE,
+                               "The policy is inactive or does not permit traffic.", instance=policy_instance)
+            elif policy.inheritance_unknown or policy.services.any or not policy.services.complete:
+                record_control(parser, "juniper.junos.policy-scope", ControlOutcome.UNKNOWN,
+                               "apply-groups inheritance is not expanded or the application match is not fully resolved.",
+                               instance=policy_instance)
+            else:
+                record_control(parser, "juniper.junos.policy-scope", ControlOutcome.NO_FINDING,
+                               "The policy is restricted to resolved applications.", instance=policy_instance)
             if (
                 policy.active
                 and policy.action == "permit"
@@ -268,6 +327,8 @@ class PluginJunOSChecks(BasePlugin):
                     references=references,
                     basis=FindingBasis.EXPLICIT_VALUE,
                 ))
+                record_control(parser, "juniper.junos.policy-scope", ControlOutcome.FINDING,
+                               "The policy permits any application.", instance=policy_instance)
 
             if (
                 not policy.active
@@ -275,6 +336,12 @@ class PluginJunOSChecks(BasePlugin):
                 or policy.inheritance_unknown
                 or policy.unsupported_predicates
             ):
+                if policy.active:
+                    unqualified_pairs.add((policy.from_zone.casefold(), policy.to_zone.casefold()))
+                record_control(parser, "juniper.junos.policy-order",
+                               ControlOutcome.UNKNOWN if policy.active else ControlOutcome.NOT_APPLICABLE,
+                               "The policy action, predicates or inheritance are not supported for order proof."
+                               if policy.active else "The policy is inactive.", instance=policy_instance)
                 continue
             key = (policy.from_zone.casefold(), policy.to_zone.casefold())
             for earlier in prior_by_zone_pair[key]:
@@ -311,7 +378,17 @@ class PluginJunOSChecks(BasePlugin):
                     references=references,
                     basis=FindingBasis.EXPLICIT_VALUE,
                 ))
+                record_control(parser, "juniper.junos.policy-order", ControlOutcome.FINDING,
+                               "Proven static shadow/redundancy; this does not prove observed nonuse.",
+                               instance=policy_instance)
                 break
+            known = (key not in unqualified_pairs and qualified(policy)
+                     and all(qualified(earlier) for earlier in prior_by_zone_pair[key]))
+            record_control(parser, "juniper.junos.policy-order",
+                           ControlOutcome.NO_FINDING if known else ControlOutcome.UNKNOWN,
+                           "Bounded static comparison with earlier policies in the zone pair is qualified." if known
+                           else "Address, application or earlier-policy semantics are not fully resolved.",
+                           instance=policy_instance)
             prior_by_zone_pair[key].append(policy)
 
     def check_ipsec_vpns(self, parser: BaseDeviceParser) -> None:
@@ -320,13 +397,25 @@ class PluginJunOSChecks(BasePlugin):
         weak_encryption = {"des-cbc", "3des-cbc"}
         weak_authentication = {"md5", "sha1", "hmac-md5-96", "hmac-sha1-96"}
         weak_groups = {"group1", "group2", "group5", "group22", "group23", "group24"}
-        for vpn in junos.get_ipsec_vpns():
+        vpns = junos.get_ipsec_vpns()
+        if not vpns:
+            _record_clean_or_absent(junos, "juniper.junos.vpn-crypto", ControlOutcome.NOT_APPLICABLE,
+                                    "No attached or interface-bound IPsec VPN is configured.")
+        for vpn in vpns:
+            vpn_instance = f"vpn {vpn.name}"
             if not vpn.active:
+                record_control(parser, "juniper.junos.vpn-crypto", ControlOutcome.NOT_APPLICABLE,
+                               "The VPN is inactive or not attached.", instance=vpn_instance)
                 continue
             evidence = tuple(item for item in vpn.evidence) or (
                 f"security ipsec vpn {vpn.name}",
             )
             if vpn.resolution_state == "unresolved":
+                record_control(parser, "juniper.junos.vpn-crypto",
+                               ControlOutcome.UNKNOWN if inheritance_unknown else ControlOutcome.FINDING,
+                               "The proposal chain does not resolve"
+                               + ("; apply-groups inheritance is not expanded." if inheritance_unknown else "."),
+                               instance=vpn_instance)
                 if inheritance_unknown:
                     continue
                 self.add_issue(
@@ -364,6 +453,19 @@ class PluginJunOSChecks(BasePlugin):
                 weaknesses.append("authentication " + ", ".join(weak_auth))
             if weak_dh:
                 weaknesses.append("DH/PFS " + ", ".join(weak_dh))
+            if weaknesses:
+                record_control(parser, "juniper.junos.vpn-crypto", ControlOutcome.FINDING,
+                               "Weak: " + "; ".join(weaknesses) + ".", instance=vpn_instance)
+            elif vpn.resolution_state == "vendor-default":
+                record_control(parser, "juniper.junos.vpn-crypto", ControlOutcome.UNKNOWN,
+                               "A vendor proposal-set is used; its algorithms are not evaluated.", instance=vpn_instance)
+            elif not (vpn.ike_encryption and vpn.ike_dh_groups and vpn.ipsec_encryption) or inheritance_unknown:
+                record_control(parser, "juniper.junos.vpn-crypto", ControlOutcome.UNKNOWN,
+                               "An algorithm is omitted (release default not verified) or apply-groups inheritance "
+                               "is not expanded.", instance=vpn_instance)
+            else:
+                record_control(parser, "juniper.junos.vpn-crypto", ControlOutcome.NO_FINDING,
+                               "Explicit IKE and IPsec algorithms contain no weak value.", instance=vpn_instance)
             if not weaknesses:
                 continue
             self.add_issue(

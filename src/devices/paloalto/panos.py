@@ -239,6 +239,9 @@ class PanosPasswordPolicy:
     # (mgt-config users) is exported; "enabled": the section exists without <enabled>.
     # PAN-OS enforces complexity only when enabled, so both mean "not configured".
     omission: str | None = None
+    # "explicit", "absent" (element omitted) or "invalid" (malformed/duplicated).
+    history_state: str = ""
+    blocks_username_state: str = ""
 
 
 @dataclass(frozen=True)
@@ -588,6 +591,30 @@ class PaloAltoPANOSParser(BaseDeviceParser):
             if phash and crypt_matches("admin", phash):
                 return self._evidence("mgt-config users entry admin phash <redacted>", entry.find("phash"))
         return None
+
+    def get_default_admin_password_state(self) -> str:
+        """State of the built-in ``admin`` password check (SC-049).
+
+        ``default`` (factory hash), ``changed`` (supported crypt(3) hash that is not the
+        factory value), ``unsupported-hash``, ``no-hash`` or ``absent`` (no admin entry).
+        """
+        states = []
+        for entry in self._management_user_entries():
+            if (entry.get("name") or "") != "admin":
+                continue
+            phash = self._text(entry.find("phash")).strip('"')
+            if not phash:
+                states.append("no-hash")
+            elif crypt_matches("admin", phash):
+                return "default"
+            elif re.match(r"^\$(1|5|6)\$", phash):
+                states.append("changed")
+            else:
+                states.append("unsupported-hash")
+        if not states:
+            return "absent"
+        return "changed" if all(state == "changed" for state in states) else next(
+            state for state in states if state != "changed")
 
     def _authentication_profile_entries(self) -> dict[str, list[ET.Element]]:
         profiles: dict[str, list[ET.Element]] = {}
@@ -1822,6 +1849,11 @@ class PaloAltoPANOSParser(BaseDeviceParser):
         history_count = number("password-history-count")
         if history_count is not None and not 0 <= history_count <= 50:
             history_count = None
+
+        def field_state(name: str, value) -> str:
+            if not node.findall(name):
+                return "absent"
+            return "explicit" if value is not None else "invalid"
         enabled_omitted = not node.findall("enabled") and not self.panorama_inheritance_unknown
         return PanosPasswordPolicy(
             enabled=yes_no("enabled"),
@@ -1841,6 +1873,8 @@ class PaloAltoPANOSParser(BaseDeviceParser):
                 and not self.panorama_inheritance_unknown else KnowledgeState.UNKNOWN,
                 "Only explicit valid password-complexity fields are assessed; omitted, malformed or inherited fields remain unknown."),
             omission="enabled" if enabled_omitted else None,
+            history_state=field_state("password-history-count", history_count),
+            blocks_username_state=field_state("block-username-inclusion", yes_no("block-username-inclusion")),
         )
 
     def get_export_scope_knowledge(self, domain: str, scope: str) -> ExportScopeKnowledge:

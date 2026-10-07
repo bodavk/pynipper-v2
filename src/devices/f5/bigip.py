@@ -373,6 +373,7 @@ class F5BIGIPParser(BaseDeviceParser):
         self._snmp_traps: list[tuple[str, str, ConfigEvidence]] = []
         self._virtual_endpoints: dict[str, dict] = {}
         self._monitor_basic_auth: list[ConfigEvidence] = []
+        self._http_monitors = 0
         self._self_ips: dict[str, F5SelfIP] = {}
         self._parse(_tokens(content))
         self._native = (
@@ -434,6 +435,7 @@ class F5BIGIPParser(BaseDeviceParser):
             elif len(header) == 4 and header[:3] == ["net", "ipsec", "ike-peer"]:
                 self._read_ike_peer(header[3], header_line, tokens[body_start:cursor - 1])
             elif len(header) == 4 and header[:2] == ["ltm", "monitor"] and header[2] in {"http", "https"}:
+                self._http_monitors += 1
                 for position, item in enumerate(tokens[body_start:cursor - 1]):
                     if item.text == "send" and position + 1 < cursor - 1 - body_start:
                         value = tokens[body_start + position + 1].text
@@ -1041,6 +1043,68 @@ class F5BIGIPParser(BaseDeviceParser):
     def get_monitor_basic_auth(self) -> tuple[ConfigEvidence, ...]:
         """HTTP/HTTPS monitors whose send string carries an ``Authorization: Basic`` header."""
         return tuple(self._monitor_basic_auth)
+
+    def get_http_monitor_count(self) -> int:
+        """Number of exported ``ltm monitor http|https`` objects (SC-049)."""
+        return self._http_monitors
+
+    def has_ntp_section(self) -> bool:
+        """Whether the export contains a ``sys ntp`` object (SC-049)."""
+        return self._ntp_servers is not None
+
+    def get_client_ssl_profile(self, name: str) -> F5ClientSSLProfile | None:
+        """An exported ``ltm profile client-ssl`` object by full name."""
+        return self._client_ssl.get(name)
+
+    def get_client_ssl_bindings(self) -> tuple[tuple[F5Virtual, str, F5ClientSSLProfile | None], ...]:
+        """Enabled virtuals with each clientside profile that is an exported client-ssl profile or
+        the built-in ``clientssl`` (profile None when not exported) (SC-049)."""
+        return tuple(
+            (virtual, name, self._client_ssl.get(name))
+            for virtual in self._virtuals.values() if virtual.enabled is not False
+            for name in virtual.client_profiles
+            if name in self._client_ssl or name.rsplit("/", 1)[-1] == "clientssl"
+        )
+
+    def get_server_ssl_bindings(self) -> tuple[tuple[F5Virtual, str, str], ...]:
+        """Enabled virtuals with each serverside SSL profile (exported or built-in ``serverssl``) and its
+        ``peer-cert-mode`` resolved along exported ``defaults-from`` parents ('' when never set) (SC-049)."""
+        result = []
+        for virtual in self._virtuals.values():
+            if virtual.enabled is False:
+                continue
+            for name in virtual.server_profiles:
+                profile = self._server_ssl.get(name)
+                if profile is None and name.rsplit("/", 1)[-1] != "serverssl":
+                    continue
+                mode, current, seen = "", profile, set()
+                while current is not None and id(current) not in seen and not mode:
+                    seen.add(id(current))
+                    mode = current["peer_cert_mode"]
+                    current = self._server_ssl.get(current["parent"]) if current["parent"] else None
+                result.append((virtual, name, mode))
+        return tuple(result)
+
+    def get_cookie_persistence_bindings(self) -> tuple[tuple[F5Virtual, str, str, str], ...]:
+        """Enabled virtuals with each cookie persistence profile (exported or built-in ``cookie``):
+        (virtual, profile, resolved cookie-encryption or '', resolved method or '') (SC-049)."""
+        result = []
+        for virtual in self._virtuals.values():
+            if virtual.enabled is False:
+                continue
+            for name in virtual.persist:
+                profile = self._cookie_persistence.get(name)
+                if profile is None and name.rsplit("/", 1)[-1] != "cookie":
+                    continue
+                method, encryption, current, seen = "", "", profile, set()
+                while current is not None and id(current) not in seen:
+                    seen.add(id(current))
+                    if not method and current["method_set"]:
+                        method = current["method"]
+                    encryption = encryption or current["encryption"]
+                    current = self._cookie_persistence.get(current["parent"]) if current["parent"] else None
+                result.append((virtual, name, encryption, method))
+        return tuple(result)
 
     def get_virtual_endpoints(self) -> tuple[F5VirtualEndpoint, ...]:
         """Enabled virtual servers with parser-resolved IP protocol and evidence."""

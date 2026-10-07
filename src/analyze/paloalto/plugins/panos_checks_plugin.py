@@ -2,6 +2,7 @@
 
 from src.analyze.common.base_plugin import BasePlugin
 from src.analyze.common.controls import ControlOutcome, record_control
+from src.analyze.common.input_scope import _EXPLICIT_RULES as _TEMPLATE_EXPLICIT_RULES
 from src.devices.common.models import KnowledgeState
 from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.analyze.common.attack_paths import mark_evaluated, record_deny_defeated, record_path_not_assessed
@@ -95,6 +96,7 @@ class PluginPANOSChecks(BasePlugin):
     """Evaluate only attached local-firewall state that the XML proves."""
 
     _UNTRUSTED_ZONES = {"untrust", "external", "internet", "public", "wan"}
+    _EXTERNAL_AUTH_METHODS = frozenset({"radius", "tacacs-plus", "ldap", "kerberos", "saml-idp", "cloud"})
     _TERMINAL_ACTIONS = {
         "allow", "deny", "drop", "reset-both", "reset-client", "reset-server"
     }
@@ -112,6 +114,31 @@ class PluginPANOSChecks(BasePlugin):
     @staticmethod
     def _all_any(values: tuple[str, ...]) -> bool:
         return bool(values) and all(value.casefold() == "any" for value in values)
+
+    @staticmethod
+    def _record(parser, control: str, outcome: ControlOutcome, reason: str, *, rule: str = "",
+                instance: str = "device") -> None:
+        """Record a control outcome; a finding withheld for an unrendered template is unknown."""
+        if (outcome == ControlOutcome.FINDING and rule and getattr(parser, "template_unresolved", False)
+                and rule not in _TEMPLATE_EXPLICIT_RULES.get(parser.device_type, frozenset())):
+            outcome = ControlOutcome.UNKNOWN
+            reason = "Unrendered template; this finding is withheld because the template may omit settings."
+        record_control(parser, control, outcome, reason, instance=instance)
+
+    @staticmethod
+    def _setting_outcome(panos: PaloAltoPANOSParser, fired: bool, *states: str) -> tuple[ControlOutcome, str]:
+        """Outcome for an explicit-value check over bounded management settings."""
+        if fired:
+            return ControlOutcome.FINDING, "An explicit value is outside the baseline."
+        if any(state in {"invalid", "unknown-inherited"} for state in states):
+            return ControlOutcome.UNKNOWN, "A value is malformed, out of range or inherited."
+        if "absent" in states and not panos.management_exported():
+            return ControlOutcome.UNKNOWN, "The device management configuration is not exported."
+        if "absent" in states:
+            # The check grades explicit values only; no cited vendor source fixes the
+            # release default, so an omitted value is an unqualified default.
+            return ControlOutcome.UNKNOWN, "A setting is omitted and its release default is not verified; only explicit values are graded."
+        return ControlOutcome.NO_FINDING, "Explicit values meet the baseline."
 
     def check_management(self, parser: BaseDeviceParser) -> None:
         panos = self._panos(parser)
@@ -158,6 +185,33 @@ class PluginPANOSChecks(BasePlugin):
                         basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
+
+        secure_control = "paloalto.panos.management-source-restriction"
+        secure_services = [service for service in services if service.protocol.casefold() in {"ssh", "https"}]
+        if not secure_services:
+            profiles = {(item.scope, item.name) for item in panos.get_management_profiles()}
+            if panos.panorama_inheritance_unknown:
+                self._record(parser, secure_control, ControlOutcome.UNKNOWN,
+                             "Panorama template inheritance is unresolved; inherited management services are unknown.")
+            elif not panos.management_exported():
+                self._record(parser, secure_control, ControlOutcome.UNKNOWN,
+                             "Device management configuration is not exported.")
+            elif any(interface.enabled and interface.management_profile
+                     and (interface.device_scope, interface.management_profile) not in profiles
+                     for interface in panos.get_interfaces()):
+                self._record(parser, secure_control, ControlOutcome.UNKNOWN,
+                             "An interface references a management profile that is not exported.")
+            else:
+                self._record(parser, secure_control, ControlOutcome.NO_FINDING,
+                             "No attached Interface Management profile or MGT service explicitly enables SSH or HTTPS.")
+        for service in secure_services:
+            exposed = not service.permitted_sources and (
+                (service.zone or "").casefold() in self._UNTRUSTED_ZONES or service.interface == "MGT")
+            self._record(parser, secure_control, ControlOutcome.FINDING if exposed else ControlOutcome.NO_FINDING,
+                         "SSH/HTTPS management on MGT or an untrusted zone has no permitted IP addresses." if exposed else
+                         "Permitted IP addresses are configured, or the service is not on MGT or an untrusted zone.",
+                         rule="paloalto.panos.management.unrestricted_secure_service",
+                         instance=f"{service.scope}/{service.interface}/{service.protocol.casefold()}")
 
         unrestricted: dict[tuple, list[str]] = {}
         for service in services:
@@ -211,7 +265,37 @@ class PluginPANOSChecks(BasePlugin):
                 references=(PANOS_INITIAL_CONFIGURATION,),
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
+        default_control = "paloalto.panos.default-admin-password"
+        default_state = panos.get_default_admin_password_state()
+        if default_admin is not None:
+            self._record(parser, default_control, ControlOutcome.FINDING,
+                         "The built-in admin account uses the factory password.",
+                         rule="paloalto.panos.credentials.known_default_value", instance="management/admin:admin")
+        elif default_state == "changed":
+            self._record(parser, default_control, ControlOutcome.NO_FINDING,
+                         "The built-in admin password hash is not the factory value.", instance="management/admin:admin")
+        elif default_state == "absent" and panos.management_exported() and not panos.panorama_inheritance_unknown:
+            self._record(parser, default_control, ControlOutcome.NOT_APPLICABLE,
+                         "The exported administrator list has no built-in admin account.")
+        else:
+            self._record(parser, default_control, ControlOutcome.UNKNOWN,
+                         "The built-in admin account or its password hash is not exported, inherited or uses an unsupported hash format.")
         users = panos.get_normalized_config().users.items
+        auth_control = "paloalto.panos.centralized-authentication"
+        if not users:
+            self._record(parser, auth_control, ControlOutcome.UNKNOWN, "No administrator account is exported.")
+        elif all(user.authentication == "local" for user in users):
+            self._record(parser, auth_control, ControlOutcome.FINDING,
+                         "Every administrator uses local authentication.",
+                         rule="paloalto.panos.admin.centralized_authentication")
+        elif any(policy.authentication_profile and policy.authentication_resolution == "known"
+                 and policy.authentication_method in self._EXTERNAL_AUTH_METHODS
+                 for policy in panos.get_administrator_policies()):
+            self._record(parser, auth_control, ControlOutcome.NO_FINDING,
+                         "At least one administrator is bound to a resolved external authentication profile.")
+        else:
+            self._record(parser, auth_control, ControlOutcome.UNKNOWN,
+                         "Administrator authentication profiles are unresolved, inherited or not proven to be external.")
         if users and all(user.authentication == "local" for user in users):
             self.add_issue(
                 Finding(
@@ -251,12 +335,19 @@ class PluginPANOSChecks(BasePlugin):
                            "Authentication binding is unexported, ambiguous or inherited; it is not a proven missing control.",
                            instance=instance + "/authentication")
 
+        admin_controls = ("paloalto.panos.login-banner-acknowledgement", "paloalto.panos.admin-idle-timeout",
+                          "paloalto.panos.admin-lockout", "paloalto.panos.admin-session-limit")
         if panos.panorama_inheritance_unknown:
             record_control(parser, "paloalto.panos.login-banner", ControlOutcome.UNKNOWN,
                            "Administrative settings may be inherited from Panorama.")
+            for admin_control in admin_controls:
+                record_control(parser, admin_control, ControlOutcome.UNKNOWN,
+                               "Administrative settings may be inherited from Panorama.")
         elif not panos.get_administrative_settings():
             record_control(parser, "paloalto.panos.login-banner", ControlOutcome.UNKNOWN,
                            "No device configuration is exported.")
+            for admin_control in admin_controls:
+                record_control(parser, admin_control, ControlOutcome.UNKNOWN, "No device configuration is exported.")
         if not panos.panorama_inheritance_unknown:
             for settings in panos.get_administrative_settings():
                 evidence = self._evidence(settings.evidence)
@@ -268,6 +359,32 @@ class PluginPANOSChecks(BasePlugin):
                     record_control(parser, "paloalto.panos.administrator-policy", ControlOutcome.UNKNOWN,
                                    "Global authentication profile/sequence is unexported or ambiguous.",
                                    instance=settings.device_scope + "/authentication")
+                self._record(parser, "paloalto.panos.login-banner-acknowledgement",
+                             ControlOutcome.NOT_APPLICABLE if not settings.login_banner_configured else
+                             ControlOutcome.NO_FINDING if settings.acknowledge_login_banner is True else ControlOutcome.FINDING,
+                             "No login banner is configured." if not settings.login_banner_configured else
+                             "Administrators must acknowledge the login banner." if settings.acknowledge_login_banner is True else
+                             "Login banner acknowledgement is disabled or not configured.",
+                             rule="paloalto.panos.admin.login_banner_acknowledgement", instance=settings.device_scope)
+                idle_fired = (settings.idle_timeout_state == "explicit" and settings.idle_timeout_minutes is not None
+                              and (settings.idle_timeout_minutes == 0 or settings.idle_timeout_minutes > 10))
+                outcome, reason = self._setting_outcome(panos, idle_fired, settings.idle_timeout_state)
+                self._record(parser, "paloalto.panos.admin-idle-timeout", outcome, reason,
+                             rule="paloalto.panos.admin.idle_timeout", instance=settings.device_scope)
+                attempts_fired = (settings.failed_attempts_state == "explicit" and settings.failed_attempts is not None
+                                  and (settings.failed_attempts == 0 or settings.failed_attempts > 5))
+                lockout_fired = (settings.failed_attempts_state == "explicit" and settings.failed_attempts is not None
+                                 and settings.failed_attempts > 0 and settings.lockout_state == "explicit"
+                                 and settings.lockout_minutes is not None and 0 < settings.lockout_minutes < 30)
+                outcome, reason = self._setting_outcome(panos, attempts_fired or lockout_fired,
+                                                        settings.failed_attempts_state, settings.lockout_state)
+                self._record(parser, "paloalto.panos.admin-lockout", outcome, reason,
+                             rule="paloalto.panos.admin.login_attempts" if attempts_fired else "paloalto.panos.admin.lockout_time",
+                             instance=settings.device_scope)
+                sessions_fired = settings.max_session_count_state == "explicit" and settings.max_session_count == 0
+                outcome, reason = self._setting_outcome(panos, sessions_fired, settings.max_session_count_state)
+                self._record(parser, "paloalto.panos.admin-session-limit", outcome, reason,
+                             rule="paloalto.panos.admin.concurrent_sessions", instance=settings.device_scope)
                 if not settings.login_banner_configured:
                     self.add_issue(
                         Finding(
@@ -463,10 +580,20 @@ class PluginPANOSChecks(BasePlugin):
         if panos.panorama_inheritance_unknown:
             record_control(parser, "paloalto.panos.ntp-authentication", ControlOutcome.UNKNOWN,
                            "NTP settings may be inherited from Panorama.")
+            for platform_control in ("paloalto.panos.ntp-servers", "paloalto.panos.ntp-key-algorithm",
+                                     "paloalto.panos.dns-servers", "paloalto.panos.snmpv3-users"):
+                record_control(parser, platform_control, ControlOutcome.UNKNOWN,
+                               "Platform settings may be inherited from Panorama.")
             return
         associations = panos.get_ntp_associations()
+        self._record(parser, "paloalto.panos.ntp-servers",
+                     ControlOutcome.FINDING if not associations else ControlOutcome.NO_FINDING,
+                     "No NTP server is configured." if not associations else "At least one NTP server is configured.",
+                     rule="paloalto.panos.ntp.servers")
         if not associations:
             record_control(parser, "paloalto.panos.ntp-authentication", ControlOutcome.NOT_APPLICABLE,
+                           "No NTP server is configured.")
+            record_control(parser, "paloalto.panos.ntp-key-algorithm", ControlOutcome.NOT_APPLICABLE,
                            "No NTP server is configured.")
             self.add_issue(
                 Finding(
@@ -522,6 +649,20 @@ class PluginPANOSChecks(BasePlugin):
                     and association.authentication == "symmetric-key"
                     and association.algorithm in {"md5", "sha1"}
                 )
+                legacy = association.authentication == "symmetric-key" and association.algorithm in {"md5", "sha1"}
+                self._record(
+                    parser, "paloalto.panos.ntp-key-algorithm",
+                    ControlOutcome.FINDING if weak else
+                    ControlOutcome.UNKNOWN if association.authentication == "unknown" or (legacy and modern_algorithms is None) else
+                    ControlOutcome.NOT_APPLICABLE if association.authentication == "none" or not association.algorithm else
+                    ControlOutcome.NO_FINDING,
+                    "Association uses autokey or MD5/SHA-1 on a release that supports SHA-2." if weak else
+                    "Authentication syntax is unsupported." if association.authentication == "unknown" else
+                    "The release is unidentified, so SHA-2 NTP support is unqualified." if legacy and modern_algorithms is None else
+                    "Association has no complete symmetric-key algorithm (see ntp-authentication)."
+                    if association.authentication == "none" or not association.algorithm else
+                    "Association uses SHA-2, or MD5/SHA-1 on a release without SHA-2 NTP support.",
+                    rule="paloalto.panos.ntp.weak_algorithm", instance=f"{association.device_scope}/{association.role}")
                 if weak:
                     self.add_issue(
                         Finding(
@@ -538,7 +679,12 @@ class PluginPANOSChecks(BasePlugin):
                             basis=FindingBasis.EXPLICIT_VALUE,
                         )
                     )
-        if not panos.get_dns_servers():
+        dns_servers = panos.get_dns_servers()
+        self._record(parser, "paloalto.panos.dns-servers",
+                     ControlOutcome.FINDING if not dns_servers else ControlOutcome.NO_FINDING,
+                     "No management-plane DNS server is configured." if not dns_servers else
+                     "A management-plane DNS server is configured.", rule="paloalto.panos.dns.servers")
+        if not dns_servers:
             self.add_issue(
                 Finding(
                     rule_id="paloalto.panos.dns.servers",
@@ -558,6 +704,18 @@ class PluginPANOSChecks(BasePlugin):
             service.protocol.casefold() == "snmp"
             for service in panos.get_normalized_config().management_services.items
         )
+        snmp_control = "paloalto.panos.snmpv3-users"
+        if not snmp_enabled:
+            self._record(parser, snmp_control,
+                         ControlOutcome.NOT_APPLICABLE if panos.management_exported() else ControlOutcome.UNKNOWN,
+                         "SNMP is not enabled on any management service." if panos.management_exported() else
+                         "Device management configuration is not exported.")
+        else:
+            secure_user = panos.has_secure_snmpv3_user()
+            self._record(parser, snmp_control, ControlOutcome.NO_FINDING if secure_user else ControlOutcome.FINDING,
+                         "A SHA/AES SNMPv3 user is configured." if secure_user else
+                         "SNMP is enabled without a SHA/AES SNMPv3 user.",
+                         rule="paloalto.panos.snmp.secure_user_missing")
         if snmp_enabled and not panos.has_secure_snmpv3_user():
             self.add_issue(
                 Finding(
@@ -608,6 +766,22 @@ class PluginPANOSChecks(BasePlugin):
                     weak.append(f"{user.authentication.upper()} authentication")
                 if user.privacy in {"des", "3des"}:
                     weak.append(f"{user.privacy.upper()} privacy")
+                user_instance = f"{user.device_scope}/snmpv3-user:{user.name}"
+                if missing or weak:
+                    self._record(parser, snmp_control, ControlOutcome.FINDING,
+                                 "SNMPv3 user lacks protection or uses a weak algorithm.",
+                                 rule="paloalto.panos.snmp.v3_protection" if missing else "paloalto.panos.snmp.v3_weak_algorithm",
+                                 instance=user_instance)
+                elif user.authentication in {"sha", "sha1", "sha-1"} and snmp_release is None:
+                    record_control(parser, snmp_control, ControlOutcome.UNKNOWN,
+                                   "The release is unidentified, so whether SHA-1 is weak is unqualified.", instance=user_instance)
+                elif (user.authentication in {"sha", "sha1", "sha-1", "sha-224", "sha-256", "sha-384", "sha-512"}
+                      and user.privacy in {"aes", "aes-128", "aes-192", "aes-256"}):
+                    record_control(parser, snmp_control, ControlOutcome.NO_FINDING,
+                                   "SNMPv3 user uses supported authentication and AES privacy.", instance=user_instance)
+                else:
+                    record_control(parser, snmp_control, ControlOutcome.UNKNOWN,
+                                   "SNMPv3 protocol is omitted (release default unqualified) or unsupported.", instance=user_instance)
                 if weak:
                     self.add_issue(
                         Finding(
@@ -627,8 +801,11 @@ class PluginPANOSChecks(BasePlugin):
 
     def check_management_tls(self, parser: BaseDeviceParser) -> None:
         panos = self._panos(parser)
+        cert_control = "paloalto.panos.management-certificate"
         if panos.panorama_inheritance_unknown:
             record_control(parser, "paloalto.panos.management-tls", ControlOutcome.UNKNOWN,
+                           "Panorama management TLS inheritance is unresolved.")
+            record_control(parser, cert_control, ControlOutcome.UNKNOWN,
                            "Panorama management TLS inheritance is unresolved.")
             return
         profiles = {
@@ -652,15 +829,24 @@ class PluginPANOSChecks(BasePlugin):
         tls_settings = panos.get_management_tls()
         if not tls_settings:
             record_control(parser, "paloalto.panos.management-tls", ControlOutcome.UNKNOWN, "Management TLS scope is unexported.")
+            record_control(parser, cert_control, ControlOutcome.UNKNOWN, "Management TLS scope is unexported.")
         for setting in tls_settings:
+            presence = setting.device_scope + "/certificate"
             if setting.device_scope not in https_scopes:
                 record_control(parser, "paloalto.panos.management-tls", ControlOutcome.UNKNOWN,
                                "No explicit active management HTTPS attachment is supplied; service completeness is unqualified.", instance=setting.device_scope)
+                record_control(parser, cert_control, ControlOutcome.UNKNOWN,
+                               "No explicit active management HTTPS attachment is supplied; service completeness is unqualified.", instance=presence)
                 continue
             evidence = self._evidence(setting.evidence)
             if setting.tls_mode == "tlsv1.3_only":
                 record_control(parser, "paloalto.panos.management-tls", ControlOutcome.NO_FINDING,
                                "Explicit TLS 1.3-only mode; certificate and runtime state are separate.", instance=setting.device_scope)
+                self._record(parser, cert_control,
+                             ControlOutcome.NO_FINDING if setting.certificate else ControlOutcome.FINDING,
+                             "A management server certificate is selected." if setting.certificate else
+                             "TLS 1.3-only management has no explicit server certificate.",
+                             rule="paloalto.panos.management.certificate_missing", instance=presence)
                 if not setting.certificate:
                     self.add_issue(
                         Finding(
@@ -681,6 +867,9 @@ class PluginPANOSChecks(BasePlugin):
             if not setting.profile:
                 record_control(parser, "paloalto.panos.management-tls", ControlOutcome.FINDING,
                                "HTTPS management is enabled and no SSL/TLS service profile is configured.", instance=setting.device_scope)
+                record_control(parser, cert_control, ControlOutcome.UNKNOWN,
+                               "No SSL/TLS service profile is attached; the platform-default certificate is not in the export.",
+                               instance=presence)
                 self.add_issue(
                     Finding(
                         rule_id="paloalto.panos.management.tls_profile_missing",
@@ -704,6 +893,8 @@ class PluginPANOSChecks(BasePlugin):
             if profile is None:
                 record_control(parser, "paloalto.panos.management-tls", ControlOutcome.UNKNOWN,
                                "Referenced management TLS profile is unexported or unresolved.", instance=setting.device_scope)
+                record_control(parser, cert_control, ControlOutcome.UNKNOWN,
+                               "Referenced management TLS profile is unexported or unresolved.", instance=presence)
                 self.add_issue(
                     Finding(
                         rule_id="paloalto.panos.management.tls_profile_unresolved",
@@ -721,6 +912,10 @@ class PluginPANOSChecks(BasePlugin):
                 )
                 continue
             profile_evidence = evidence + self._evidence(profile.evidence)
+            self._record(parser, cert_control, ControlOutcome.NO_FINDING if profile.certificate else ControlOutcome.FINDING,
+                         "The attached SSL/TLS profile selects a server certificate." if profile.certificate else
+                         "The attached SSL/TLS profile selects no server certificate.",
+                         rule="paloalto.panos.management.certificate_missing", instance=presence)
             if not profile.certificate:
                 self.add_issue(
                     Finding(
@@ -783,6 +978,33 @@ class PluginPANOSChecks(BasePlugin):
 
         for binding in panos.get_management_certificate_bindings():
             evidence = self._evidence(binding.evidence)
+            bound = f"{binding.device_scope}/certificate:{binding.certificate}"
+            if binding.resolution == "unresolved":
+                self._record(parser, cert_control, ControlOutcome.FINDING, "The certificate object is not in the export.",
+                             rule="paloalto.panos.management.certificate_unresolved", instance=bound + "/resolution")
+            elif binding.public_material_state == "malformed":
+                self._record(parser, cert_control, ControlOutcome.FINDING, "The certificate material is malformed.",
+                             rule="paloalto.panos.management.certificate_material_malformed", instance=bound + "/material")
+            elif binding.assessment is None:
+                record_control(parser, cert_control, ControlOutcome.UNKNOWN,
+                               "Certificate public material is not exported or cannot be parsed.", instance=bound + "/material")
+            if binding.assessment is not None:
+                result = binding.assessment
+                trusted_context = result.identity_state == "match" and result.validity_state == "valid-at-assessment-time"
+                for aspect, state, bad, good, aspect_rule in (
+                    ("validity", result.validity_state, {"expired", "not-yet-valid"}, {"valid-at-assessment-time"},
+                     "paloalto.panos.management.certificate_validity"),
+                    ("identity", result.identity_state, {"mismatch"}, {"match"},
+                     "paloalto.panos.management.certificate_identity"),
+                    ("algorithm", result.algorithm_state, {"weak"}, {"acceptable"},
+                     "paloalto.panos.management.certificate_algorithm"),
+                    ("trust", result.trust_state, {"verification-failed"} if trusted_context else set(), {"trusted"},
+                     "paloalto.panos.management.certificate_trust"),
+                ):
+                    self._record(parser, cert_control,
+                                 ControlOutcome.FINDING if state in bad else
+                                 ControlOutcome.NO_FINDING if state in good else ControlOutcome.UNKNOWN,
+                                 f"Certificate {aspect} state is '{state}'.", rule=aspect_rule, instance=bound + "/" + aspect)
             if binding.resolution == "unresolved":
                 self.add_issue(
                     Finding(
@@ -892,6 +1114,10 @@ class PluginPANOSChecks(BasePlugin):
         panos = self._panos(parser)
         if panos.panorama_inheritance_unknown:
             record_control(parser, "paloalto.panos.threat-updates", ControlOutcome.UNKNOWN, "Panorama threat-update inheritance is unresolved.")
+            record_control(parser, "paloalto.panos.update-server-verification", ControlOutcome.UNKNOWN,
+                           "Panorama system-setting inheritance is unresolved.")
+            record_control(parser, "paloalto.panos.system-log-forwarding", ControlOutcome.UNKNOWN,
+                           "Panorama log-setting inheritance is unresolved.")
             return
         threat_schedules = [
             schedule for schedule in panos.get_update_schedules()
@@ -943,7 +1169,20 @@ class PluginPANOSChecks(BasePlugin):
                 references=(PANOS_UPDATE_GUIDE,),
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
-        for scope, value, evidence in panos.get_update_server_verification():
+        verification = panos.get_update_server_verification()
+        if not verification:
+            self._record(parser, "paloalto.panos.update-server-verification",
+                         ControlOutcome.UNKNOWN,
+                         "server-verification is omitted; no cited vendor default exists, so only an explicit value is graded."
+                         if panos.management_exported() else "Device system configuration is not exported.")
+        for scope, value, evidence in verification:
+            self._record(parser, "paloalto.panos.update-server-verification",
+                         ControlOutcome.FINDING if value == "no" else
+                         ControlOutcome.NO_FINDING if value == "yes" else ControlOutcome.UNKNOWN,
+                         "Update server identity verification is disabled." if value == "no" else
+                         "Update server identity verification is enabled." if value == "yes" else
+                         "server-verification has an unsupported value.",
+                         rule="paloalto.panos.update.server_unverified", instance=scope)
             if value != "no":
                 continue
             self.add_issue(Finding(
@@ -959,7 +1198,12 @@ class PluginPANOSChecks(BasePlugin):
                 references=(PANOS_UPDATE_GUIDE,),
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
-        if not panos.get_system_log_forwarding_destinations():
+        system_destinations = panos.get_system_log_forwarding_destinations()
+        self._record(parser, "paloalto.panos.system-log-forwarding",
+                     ControlOutcome.FINDING if not system_destinations else ControlOutcome.NO_FINDING,
+                     "No system log match entry forwards to a syslog server." if not system_destinations else
+                     "System events are forwarded to a syslog server.", rule="paloalto.panos.logging.system_forwarding")
+        if not system_destinations:
             self.add_issue(
                 Finding(
                     rule_id="paloalto.panos.logging.system_forwarding",
@@ -992,7 +1236,26 @@ class PluginPANOSChecks(BasePlugin):
         ) and rule.schedule.casefold() in {"none", "any"}
 
     def check_default_security_rules(self, parser: BaseDeviceParser) -> None:
-        for rule in self._panos(parser).get_default_security_rules():
+        panos = self._panos(parser)
+        defaults = panos.get_default_security_rules()
+        control = "paloalto.panos.interzone-default-deny"
+        if not defaults:
+            if panos.panorama_inheritance_unknown:
+                record_control(parser, control, ControlOutcome.UNKNOWN,
+                               "The interzone-default rule may be inherited from Panorama.")
+            elif not panos.get_security_rules():
+                record_control(parser, control, ControlOutcome.UNKNOWN, "The security rulebase is not exported.")
+            else:
+                record_control(parser, control, ControlOutcome.UNKNOWN,
+                               "No interzone-default override is exported; the implicit platform default is not synthesized (SC-007).")
+        for rule in defaults:
+            self._record(parser, control,
+                         ControlOutcome.UNKNOWN if rule.resolution_state != "known" else
+                         ControlOutcome.FINDING if rule.action == "allow" else ControlOutcome.NO_FINDING,
+                         "The interzone-default override is inherited or malformed." if rule.resolution_state != "known" else
+                         f"The interzone-default override action is '{rule.action}'.",
+                         rule="paloalto.panos.policy.interzone_default_allow",
+                         instance=f"{rule.device_scope}/{rule.scope}/interzone-default")
             if rule.resolution_state != "known" or rule.action != "allow":
                 continue
             self.add_issue(Finding(
@@ -1020,6 +1283,8 @@ class PluginPANOSChecks(BasePlugin):
                            "Security policy/inspection scope is unexported; completeness is unqualified.")
             record_control(parser, "paloalto.panos.policy-logging", ControlOutcome.UNKNOWN,
                            "Security policy is unexported; completeness is unqualified.")
+            record_control(parser, "paloalto.panos.policy-scope", ControlOutcome.UNKNOWN,
+                           "Security policy is unexported; completeness is unqualified.")
         elif not any(rule.enabled and rule.action == "allow" for rule in rules):
             record_control(parser, "paloalto.panos.policy-logging", ControlOutcome.NOT_APPLICABLE,
                            "No enabled allow rule is configured.")
@@ -1033,7 +1298,14 @@ class PluginPANOSChecks(BasePlugin):
         }
         for rule in rules:
             evidence = self._evidence(rule.evidence)
+            scope_instance = f"{rule.device_scope}/{rule.scope}/{rule.rulebase}/rule:{rule.name}"
             if not rule.enabled:
+                disabled_broad = rule.action == "allow" and self._broad(rule)
+                self._record(parser, "paloalto.panos.policy-scope",
+                             ControlOutcome.FINDING if disabled_broad else ControlOutcome.NOT_APPLICABLE,
+                             "Disabled unrestricted allow rule remains in the policy." if disabled_broad else
+                             "Security rule is disabled.",
+                             rule="paloalto.panos.policy.disabled_permissive_rule", instance=scope_instance)
                 if rule.action == "allow" and self._broad(rule):
                     self.add_issue(
                         Finding(
@@ -1052,7 +1324,18 @@ class PluginPANOSChecks(BasePlugin):
                     )
                 continue
             if rule.action != "allow":
+                record_control(parser, "paloalto.panos.policy-scope", ControlOutcome.NOT_APPLICABLE,
+                               "Security rule does not allow traffic.", instance=scope_instance)
                 continue
+            broad = self._broad(rule)
+            broad_service = not broad and self._all_any(rule.applications) and self._all_any(rule.services)
+            self._record(parser, "paloalto.panos.policy-scope",
+                         ControlOutcome.FINDING if broad or broad_service else ControlOutcome.NO_FINDING,
+                         "Allow rule is unrestricted." if broad else
+                         "Allow rule permits every application and service." if broad_service else
+                         "Allow rule restricts its match criteria.",
+                         rule="paloalto.panos.policy.broad_allow" if broad else "paloalto.panos.policy.broad_service",
+                         instance=scope_instance)
             if self._broad(rule):
                 self.add_issue(
                     Finding(
@@ -1402,11 +1685,30 @@ class PluginPANOSChecks(BasePlugin):
 
     def check_password_reuse_and_username(self, parser: BaseDeviceParser) -> None:
         panos = self._panos(parser)
+        control = "paloalto.panos.password-reuse"
         if panos.panorama_inheritance_unknown:
+            record_control(parser, control, ControlOutcome.UNKNOWN, "Unresolved Panorama management-policy inheritance.")
             return
         policy = panos.get_password_policy()
         if policy.enabled is not True:
+            known_off = policy.enabled is False or policy.omission is not None
+            record_control(parser, control, ControlOutcome.NOT_APPLICABLE if known_off else ControlOutcome.UNKNOWN,
+                           "Password complexity is not enabled (see password-complexity)." if known_off else
+                           "The password-complexity section is not exported or its enabled flag is malformed.")
             return
+        for label, fired, state, rule in (
+            ("history", policy.history_count == 0, policy.history_state, "paloalto.panos.credentials.password_history_disabled"),
+            ("username", policy.blocks_username is False, policy.blocks_username_state,
+             "paloalto.panos.credentials.username_inclusion_allowed"),
+        ):
+            self._record(parser, control,
+                         ControlOutcome.FINDING if fired else
+                         ControlOutcome.NO_FINDING if state == "explicit" else ControlOutcome.UNKNOWN,
+                         f"The explicit {label} setting is insecure." if fired else
+                         f"The explicit {label} setting is secure." if state == "explicit" else
+                         f"The {label} setting is malformed." if state == "invalid" else
+                         f"The {label} setting is omitted and its release default is not verified; only explicit values are graded.",
+                         rule=rule, instance="management/" + label)
         evidence = self._evidence(policy.evidence)
         if policy.history_count == 0:
             self.add_issue(
@@ -1463,13 +1765,48 @@ class PluginPANOSChecks(BasePlugin):
     def check_zone_protection(self, parser: BaseDeviceParser) -> None:
         """Only explicit external-interface SYN flood disablement is graded."""
         panos = self._panos(parser)
+        control = "paloalto.panos.zone-protection"
         if panos.panorama_inheritance_unknown or panos.template_unresolved:
+            record_control(parser, control, ControlOutcome.UNKNOWN,
+                           "Zone configuration may be inherited from Panorama or comes from an unrendered template.")
             return
-        for zone in panos.get_zone_protections():
+        zones = panos.get_zone_protections()
+        if not zones:
+            record_control(parser, control, ControlOutcome.UNKNOWN, "No security zone is exported.")
+        for zone in zones:
             external = tuple(
                 interface for interface in zone.interfaces
                 if panos.assessment_context.role_for_interface(interface) == "external"
             )
+            zone_instance = f"{zone.device_scope}/{zone.vsys}/zone:{zone.zone}"
+            if not external:
+                roles_known = all(panos.assessment_context.role_for_interface(interface) != "unknown"
+                                  for interface in zone.interfaces)
+                record_control(parser, control, ControlOutcome.NOT_APPLICABLE if roles_known else ControlOutcome.UNKNOWN,
+                               "The zone has no interface classified external." if roles_known else
+                               "Interface roles are not declared, so whether the zone is external is unknown.",
+                               instance=zone_instance)
+            elif zone.resolution_state != "resolved":
+                record_control(parser, control,
+                               ControlOutcome.NOT_APPLICABLE if zone.resolution_state == "unbound" else ControlOutcome.UNKNOWN,
+                               "No zone-protection profile is attached to the external zone." if zone.resolution_state == "unbound"
+                               else "The attached zone-protection profile is not in the export.", instance=zone_instance)
+            else:
+                record_control(parser, control, ControlOutcome.FINDING if zone.allowed_scans else ControlOutcome.NO_FINDING,
+                               "The attached profile allows reconnaissance scans." if zone.allowed_scans else
+                               "The attached profile does not allow reconnaissance scans.", instance=zone_instance + "/scan")
+                flood_disabled = zone.syn_flood_state == "disabled" or bool(zone.disabled_other_floods)
+                record_control(parser, control,
+                               ControlOutcome.UNKNOWN if zone.dos_alternative_possible else
+                               ControlOutcome.FINDING if flood_disabled else
+                               ControlOutcome.NO_FINDING if zone.syn_flood_state == "enabled" else ControlOutcome.UNKNOWN,
+                               "A DoS protect rule may provide flood protection; profile flood settings are not graded."
+                               if zone.dos_alternative_possible else
+                               "The attached profile explicitly disables flood protection." if flood_disabled else
+                               "SYN flood protection is explicitly enabled and no other flood type is explicitly disabled."
+                               if zone.syn_flood_state == "enabled" else
+                               "SYN flood protection is omitted or malformed; its release default is not verified.",
+                               instance=zone_instance + "/flood")
             if not external or zone.resolution_state != "resolved":
                 continue
             if zone.allowed_scans:
@@ -1545,9 +1882,27 @@ class PluginPANOSChecks(BasePlugin):
         """SC-061: CIS PAN-OS follow-ups (User-ID on external zones, hygiene)."""
         panos = self._panos(parser)
         context = panos.assessment_context
-        for vsys, zone, interfaces, evidence in panos.get_user_id_zones():
+        user_id_zones = panos.get_user_id_zones()
+        uid_control = "paloalto.panos.user-id-zones"
+        if not user_id_zones:
+            if panos.panorama_inheritance_unknown:
+                record_control(parser, uid_control, ControlOutcome.UNKNOWN, "Zones may be inherited from Panorama.")
+            elif not panos.get_zone_protections():
+                record_control(parser, uid_control, ControlOutcome.UNKNOWN, "No security zone is exported.")
+            else:
+                record_control(parser, uid_control, ControlOutcome.NOT_APPLICABLE, "No exported zone enables User-ID.")
+        for vsys, zone, interfaces, evidence in user_id_zones:
             external = [i for i in interfaces if context.role_for_interface(i) == "external"
                         or context.role_for_interface(i.split(".")[0]) == "external"]
+            roles_known = all(context.role_for_interface(i) != "unknown"
+                              or context.role_for_interface(i.split(".")[0]) != "unknown" for i in interfaces)
+            self._record(parser, uid_control,
+                         ControlOutcome.FINDING if external else
+                         ControlOutcome.NO_FINDING if roles_known else ControlOutcome.UNKNOWN,
+                         "User-ID is enabled on a zone with an external interface." if external else
+                         "User-ID is enabled only on zones without external interfaces." if roles_known else
+                         "Interface roles are not declared, so whether the User-ID zone is external is unknown.",
+                         rule="paloalto.panos.user_id.untrusted_zone", instance=f"{vsys}/zone:{zone}")
             if not external:
                 continue
             self.add_issue(Finding(
@@ -1593,7 +1948,34 @@ class PluginPANOSChecks(BasePlugin):
         """CIS Palo Alto 6.4: anti-spyware profiles in use should sinkhole malicious DNS queries."""
         panos = self._panos(parser)
         reported: set[tuple[str, str]] = set()
-        for inspection in panos.get_security_inspection():
+        control = "paloalto.panos.dns-sinkhole"
+        inspections = panos.get_security_inspection()
+        for inspection in inspections:
+            if inspection.resolution_state in {"unresolved", "unknown-inherited"}:
+                record_control(parser, control, ControlOutcome.UNKNOWN,
+                               "The rule's profile group is not exported, so its anti-spyware profile is unknown.",
+                               instance=f"{inspection.rule_scope}/rule:{inspection.rule_name}")
+            for profile in inspection.profiles:
+                if profile.profile_type != "spyware":
+                    continue
+                self._record(parser, control,
+                             ControlOutcome.UNKNOWN if profile.resolution_state != "resolved" else
+                             ControlOutcome.FINDING if profile.dns_sinkhole in {"absent", "not-sinkhole"} else
+                             ControlOutcome.NO_FINDING if profile.dns_sinkhole == "sinkhole" else ControlOutcome.UNKNOWN,
+                             "The anti-spyware profile is built-in, unresolved or inherited." if profile.resolution_state != "resolved" else
+                             "DNS signature lists do not sinkhole or have no action configured."
+                             if profile.dns_sinkhole in {"absent", "not-sinkhole"} else
+                             "Every DNS signature list sinkholes." if profile.dns_sinkhole == "sinkhole" else
+                             "DNS signature lists use the vendor default or a malformed action.",
+                             rule="paloalto.panos.profile.dns_sinkhole",
+                             instance=f"{profile.definition_scope or 'unresolved'}/spyware:{profile.name}")
+        if not any(profile.profile_type == "spyware" for inspection in inspections for profile in inspection.profiles) \
+                and not any(inspection.resolution_state in {"unresolved", "unknown-inherited"} for inspection in inspections):
+            record_control(parser, control,
+                           ControlOutcome.NOT_APPLICABLE if panos.get_security_rules() else ControlOutcome.UNKNOWN,
+                           "No enabled allow rule uses an anti-spyware profile." if panos.get_security_rules() else
+                           "Security policy is unexported; completeness is unqualified.")
+        for inspection in inspections:
             for profile in inspection.profiles:
                 key = (profile.definition_scope, profile.name)
                 if (profile.profile_type != "spyware" or profile.resolution_state != "resolved"

@@ -407,6 +407,7 @@ class PluginFortiOSBaseline(BasePlugin):
         }
         admin_controls = ("fortinet.fortios.admin-trusted-hosts", "fortinet.fortios.admin-mfa")
         evaluated_admin = False
+        unresolved_admin = False
         for scope, username, settings, path in fortios.iter_administrators():
             if not self._enabled(settings):
                 continue
@@ -417,6 +418,7 @@ class PluginFortiOSBaseline(BasePlugin):
             evaluated_admin = True
             if not privileged:
                 read_only = role is not None and role.privileged_state == "read-only"
+                unresolved_admin = unresolved_admin or not read_only
                 for control in admin_controls:
                     record_control(
                         parser, control,
@@ -522,6 +524,21 @@ class PluginFortiOSBaseline(BasePlugin):
 
             remote = self._text(settings.get("remote-auth"), "disable").lower() == "enable"
             peer = self._text(settings.get("peer-auth"), "disable").lower() == "enable"
+            if not remote:
+                record_control(parser, "fortinet.fortios.admin-remote-group", CO.NOT_APPLICABLE,
+                               "Administrator does not use remote authentication.", instance=admin_instance)
+            elif privileged:
+                bound = bool(self._text(settings.get("remote-group")))
+                record_control(parser, "fortinet.fortios.admin-remote-group", CO.NO_FINDING if bound else CO.FINDING,
+                               "Remote administrator is bound to a remote group." if bound
+                               else "Remote-authenticated privileged administrator has no remote-group.",
+                               instance=admin_instance)
+            elif role is not None and role.privileged_state == "read-only":
+                record_control(parser, "fortinet.fortios.admin-remote-group", CO.NOT_APPLICABLE,
+                               "Administrator is not privileged.", instance=admin_instance)
+            else:
+                record_control(parser, "fortinet.fortios.admin-remote-group", CO.UNKNOWN,
+                               "Administrator privilege could not be resolved from its profile.", instance=admin_instance)
             if privileged and remote and not self._text(settings.get("remote-group")):
                 self.add_issue(
                     self._finding(
@@ -569,12 +586,20 @@ class PluginFortiOSBaseline(BasePlugin):
 
         if not evaluated_admin:
             exported = any(True for _ in fortios.iter_administrators())
-            for control in admin_controls:
+            for control in admin_controls + ("fortinet.fortios.admin-remote-group", "fortinet.fortios.admin-centralized-auth"):
                 record_control(
                     parser, control, CO.NOT_APPLICABLE if exported else CO.UNKNOWN,
                     "All exported administrator accounts are disabled." if exported
                     else "No administrator accounts are exported; the default account cannot be judged.",
                 )
+        if evaluated_admin and not privileged_local:
+            record_control(parser, "fortinet.fortios.admin-centralized-auth",
+                           CO.UNKNOWN if unresolved_admin else CO.NOT_APPLICABLE,
+                           "An enabled administrator's privilege could not be resolved." if unresolved_admin
+                           else "No enabled privileged administrator authenticates only locally.")
+        elif privileged_local and not self._supports_default_inference(fortios):
+            record_control(parser, "fortinet.fortios.admin-centralized-auth", CO.UNKNOWN,
+                           "Local-only privileged authentication is assessed only on identified FortiOS 7.x releases.")
         if self._supports_default_inference(fortios) and privileged_local:
             remote_privileged = any(
                 self._enabled(settings)
@@ -584,6 +609,10 @@ class PluginFortiOSBaseline(BasePlugin):
                 and bool(self._text(settings.get("remote-group")))
                 for scope, username, settings, _ in fortios.iter_administrators()
             )
+            record_control(parser, "fortinet.fortios.admin-centralized-auth",
+                           CO.NO_FINDING if remote_privileged else CO.FINDING,
+                           "An enabled privileged administrator is bound to remote authentication with a remote group."
+                           if remote_privileged else "No enabled privileged administrator is bound to remote authentication.")
             if not remote_privileged:
                 self.add_issue(
                     self._finding(
@@ -805,7 +834,32 @@ class PluginFortiOSBaseline(BasePlugin):
             for _, _, settings, _ in fortios.iter_interfaces()
         )
         globals_ = list(fortios.iter_scoped_sections("system global"))
+        release = self._release(fortios)
+        access = {
+            value.lower()
+            for _, _, settings, _ in fortios.iter_interfaces()
+            if self._enabled(settings)
+            for value in self._values(settings, "allowaccess")
+        }
+        if not globals_:
+            for control in ("fortinet.fortios.management-tls", "fortinet.fortios.management-ssh-crypto"):
+                record_control(parser, control, CO.UNKNOWN, "No system global section is exported.")
         for scope, settings, path in globals_:
+            # Release defaults are graded by check_release_defaults from 6.4.14; earlier or
+            # unidentified releases leave an omitted switch unknown.
+            unqualified = release is None or release < (6, 4, 14)
+            tls_unknown = ("https" in access and unqualified
+                           and ("ssl-static-key-ciphers" not in settings or not settings.get("admin-https-ssl-versions")))
+            record_control(parser, "fortinet.fortios.management-tls", CO.UNKNOWN if tls_unknown else CO.NO_FINDING,
+                           "HTTPS administration relies on omitted TLS settings whose defaults are not qualified for this release."
+                           if tls_unknown else "No legacy TLS version, static-key cipher, disabled strong-crypto or small DH group is enabled explicitly or by a verified default.",
+                           instance=scope)
+            ssh_unknown = ("ssh" in access and unqualified
+                           and any(field not in settings for field in ("ssh-cbc-cipher", "ssh-hmac-md5", "ssh-kex-sha1")))
+            record_control(parser, "fortinet.fortios.management-ssh-crypto", CO.UNKNOWN if ssh_unknown else CO.NO_FINDING,
+                           "SSH administration relies on omitted legacy-algorithm switches whose defaults are not qualified for this release."
+                           if ssh_unknown else "No legacy SSH protocol or weak algorithm is enabled explicitly or by a verified release default; omitted 7.0.2+ algorithm lists are not graded.",
+                           instance=scope)
             explicit_weak = {
                 "strong-crypto": "disable",
                 "ssl-static-key-ciphers": "enable",
@@ -817,6 +871,9 @@ class PluginFortiOSBaseline(BasePlugin):
             for field, weak_value in explicit_weak.items():
                 if self._text(settings.get(field)).lower() != weak_value:
                     continue
+                record_control(parser, "fortinet.fortios.management-tls" if field in {"strong-crypto", "ssl-static-key-ciphers"}
+                               else "fortinet.fortios.management-ssh-crypto", CO.FINDING,
+                               f"{field} is explicitly set to {weak_value}.", instance=scope)
                 self.add_issue(
                     self._finding(
                         parser,
@@ -833,6 +890,8 @@ class PluginFortiOSBaseline(BasePlugin):
                 )
             dh_params = self._text(settings.get("dh-params"))
             if dh_params.isdigit() and int(dh_params) < 2048:
+                record_control(parser, "fortinet.fortios.management-tls", CO.FINDING,
+                               f"dh-params is {dh_params} bits.", instance=scope)
                 self.add_issue(
                     self._finding(
                         parser,
@@ -851,6 +910,8 @@ class PluginFortiOSBaseline(BasePlugin):
                 configured = {value.lower() for value in self._values(settings, field)}
                 weak = sorted(configured.intersection(weak_values))
                 if weak:
+                    record_control(parser, "fortinet.fortios.management-ssh-crypto", CO.FINDING,
+                                   f"{field} explicitly includes weak values.", instance=scope)
                     self.add_issue(
                         self._finding(
                             parser,
@@ -866,12 +927,29 @@ class PluginFortiOSBaseline(BasePlugin):
                         )
                     )
 
+        selected = [
+            self._text(settings.get("admin-server-cert"))
+            for _, settings, _ in globals_
+            if self._text(settings.get("admin-server-cert"))
+        ]
+        if not https_enabled:
+            record_control(parser, "fortinet.fortios.https-certificate-selection", CO.NOT_APPLICABLE,
+                           "No enabled interface allows HTTPS administration.")
+        elif not self._supports_default_inference(fortios):
+            custom = bool(selected) and all(value != "Fortinet_GUI_Server" for value in selected)
+            record_control(parser, "fortinet.fortios.https-certificate-selection", CO.NO_FINDING if custom else CO.UNKNOWN,
+                           "A non-factory admin-server-cert is selected." if custom
+                           else "The admin-server-cert default is assessed only on identified FortiOS 7.x releases.")
         if https_enabled and self._supports_default_inference(fortios):
             certificates = [
                 self._text(settings.get("admin-server-cert"))
                 for _, settings, _ in globals_
                 if self._text(settings.get("admin-server-cert"))
             ]
+            factory = not certificates or any(value == "Fortinet_GUI_Server" for value in certificates)
+            record_control(parser, "fortinet.fortios.https-certificate-selection", CO.FINDING if factory else CO.NO_FINDING,
+                           "HTTPS administration uses the factory certificate explicitly or by default." if factory
+                           else "A non-factory admin-server-cert is selected.")
             if not certificates or any(value == "Fortinet_GUI_Server" for value in certificates):
                 self.add_issue(
                     self._finding(
@@ -895,19 +973,30 @@ class PluginFortiOSBaseline(BasePlugin):
             and "https" in {value.casefold() for value in self._values(settings, "allowaccess")}
             for _, _, settings, _ in fortios.iter_interfaces()
         ):
+            record_control(parser, "fortinet.fortios.https-certificate", CO.NOT_APPLICABLE,
+                           "No enabled interface allows HTTPS administration.")
             return
         references = (
             FORTINET_GLOBAL_REFERENCE,
             FORTINET_LOCAL_CERTIFICATE_REFERENCE,
             FORTINET_CA_CERTIFICATE_REFERENCE,
         )
-        for binding in fortios.get_management_certificate_bindings():
+        bindings = fortios.get_management_certificate_bindings()
+        if not bindings:
+            record_control(parser, "fortinet.fortios.https-certificate", CO.NOT_APPLICABLE,
+                           "No custom admin-server-cert is selected; the factory selection is graded separately.")
+        for binding in bindings:
             evidence = tuple(item for item in binding.evidence) or (
                 f"admin-server-cert {binding.certificate}",
             )
             if binding.reference_state == "unavailable":
+                record_control(parser, "fortinet.fortios.https-certificate", CO.UNKNOWN,
+                               "No local-certificate inventory is exported to resolve the selected certificate.",
+                               instance=binding.scope)
                 continue
             if binding.reference_state != "resolved":
+                record_control(parser, "fortinet.fortios.https-certificate", CO.FINDING,
+                               "The selected certificate reference is unresolved.", instance=binding.scope)
                 self.add_issue(self._finding(
                     parser,
                     "fortinet.fortios.https.certificate_unresolved",
@@ -922,6 +1011,8 @@ class PluginFortiOSBaseline(BasePlugin):
                 ))
                 continue
             if binding.public_material_state == "malformed":
+                record_control(parser, "fortinet.fortios.https-certificate", CO.FINDING,
+                               "The selected certificate material is malformed.", instance=binding.scope)
                 self.add_issue(self._finding(
                     parser,
                     "fortinet.fortios.https.certificate_material_malformed",
@@ -936,10 +1027,21 @@ class PluginFortiOSBaseline(BasePlugin):
                 ))
                 continue
             if binding.assessment is None or binding.metadata is None:
+                record_control(parser, "fortinet.fortios.https-certificate", CO.UNKNOWN,
+                               "The selected certificate has no exported public material.", instance=binding.scope)
                 continue
 
             assessment = binding.assessment
             metadata = binding.metadata
+            for aspect, state, bad, good in (
+                ("validity", assessment.validity_state, {"expired", "not-yet-valid"}, {"valid-at-assessment-time"}),
+                ("identity", assessment.identity_state, {"mismatch"}, {"match"}),
+                ("algorithm", assessment.algorithm_state, {"weak"}, {"acceptable"}),
+                ("trust", assessment.trust_state, {"verification-failed"}, {"trusted"}),
+            ):
+                record_control(parser, "fortinet.fortios.https-certificate",
+                               CO.FINDING if state in bad else CO.NO_FINDING if state in good else CO.UNKNOWN,
+                               f"Certificate {aspect} state is '{state}'.", instance=f"{binding.scope}/{aspect}")
             if assessment.validity_state in {"expired", "not-yet-valid"}:
                 self.add_issue(self._finding(
                     parser,
@@ -1007,7 +1109,10 @@ class PluginFortiOSBaseline(BasePlugin):
             if self._text(settings.get("status"), "disable").lower() == "disable"
         }
         if "global" in agent_disabled_scopes:
+            record_control(parser, "fortinet.fortios.snmp-trap-version", CO.NOT_APPLICABLE, "The SNMP agent is disabled.")
             return
+        record_control(parser, "fortinet.fortios.snmp-trap-version", CO.NOT_APPLICABLE,
+                       "No enabled SNMP community is configured.")
         polled_scopes = {
             scope
             for scope, name, settings, path in fortios.iter_interfaces()
@@ -1016,16 +1121,24 @@ class PluginFortiOSBaseline(BasePlugin):
         }
         for scope, section, path in fortios.iter_scoped_sections("system snmp community"):
             if scope in agent_disabled_scopes or scope in polled_scopes:
+                for key, settings in section.items():
+                    if isinstance(settings, dict) and self._enabled(settings) and scope in polled_scopes:
+                        record_control(parser, "fortinet.fortios.snmp-trap-version", CO.NOT_APPLICABLE,
+                                       "The community's scope allows SNMP polling; it is graded by the SNMP community control.",
+                                       instance=f"{scope}/{key}")
                 continue
             for key, settings in section.items():
                 if not isinstance(settings, dict) or not self._enabled(settings):
                     continue
+                trap_instance = f"{scope}/{key}"
                 versions = [
                     label
                     for label, field in (("v1", "trap-v1-status"), ("v2c", "trap-v2c-status"))
                     if self._text(settings.get(field), "enable").lower() == "enable"
                 ]
                 if not versions:
+                    record_control(parser, "fortinet.fortios.snmp-trap-version", CO.NO_FINDING,
+                                   "SNMPv1/v2c traps are explicitly disabled on the community.", instance=trap_instance)
                     continue
                 targets = 0
                 for table, host_mask in (("hosts", "255.255.255.255"), ("hosts6", None)):
@@ -1049,7 +1162,11 @@ class PluginFortiOSBaseline(BasePlugin):
                             continue
                         targets += 1
                 if not targets:
+                    record_control(parser, "fortinet.fortios.snmp-trap-version", CO.NO_FINDING,
+                                   "The community has no single-host trap target.", instance=trap_instance)
                     continue
+                record_control(parser, "fortinet.fortios.snmp-trap-version", CO.FINDING,
+                               "The community sends SNMPv1/v2c traps to host targets.", instance=trap_instance)
                 secret = self._text(settings.get("name"))
                 community_evidence = tuple(
                     replace(item, text=item.text.replace(secret, "<redacted>") if secret else item.text)
@@ -1089,12 +1206,15 @@ class PluginFortiOSBaseline(BasePlugin):
         }
         if "global" in agent_disabled_scopes:
             record_control(parser, "fortinet.fortios.snmp-community", CO.NOT_APPLICABLE, "The SNMP agent is disabled.")
+            record_control(parser, "fortinet.fortios.snmpv3-users", CO.NOT_APPLICABLE, "The SNMP agent is disabled.")
             return
         snmp_interfaces = [
             item for item in snmp_interfaces if item[0] not in agent_disabled_scopes
         ]
         if not snmp_interfaces:
             record_control(parser, "fortinet.fortios.snmp-community", CO.NOT_APPLICABLE,
+                           "No enabled interface allows SNMP access.")
+            record_control(parser, "fortinet.fortios.snmpv3-users", CO.NOT_APPLICABLE,
                            "No enabled interface allows SNMP access.")
             return
         legacy_community = False
@@ -1147,6 +1267,9 @@ class PluginFortiOSBaseline(BasePlugin):
                     and privacy not in {"des"}
                     and has_credentials
                 )
+                record_control(parser, "fortinet.fortios.snmpv3-users", CO.NO_FINDING if secure else CO.FINDING,
+                               "Enabled SNMPv3 user uses authPriv with SHA/AES and complete credentials." if secure
+                               else "Enabled SNMPv3 user protection is incomplete.", instance=f"user:{scope}/{username}")
                 if secure:
                     secure_users.add(scope)
                     continue
@@ -1169,6 +1292,11 @@ class PluginFortiOSBaseline(BasePlugin):
             applicable_scopes = {scope, "global"}
             if scope == "root":
                 applicable_scopes.add("root")
+            record_control(parser, "fortinet.fortios.snmpv3-users",
+                           CO.NO_FINDING if secure_users.intersection(applicable_scopes) else CO.FINDING,
+                           "An applicable authPriv SNMPv3 user exists." if secure_users.intersection(applicable_scopes)
+                           else "The interface permits SNMP but no applicable authPriv user exists.",
+                           instance=f"interface:{scope}/{interface}")
             if not secure_users.intersection(applicable_scopes):
                 self.add_issue(
                     self._finding(
@@ -1192,9 +1320,15 @@ class PluginFortiOSBaseline(BasePlugin):
             if self._supports_default_inference(fortios):
                 record_control(parser, "fortinet.fortios.ntp-authentication", CO.NOT_APPLICABLE,
                                "NTP synchronization is not configured; no custom server is in use.")
+                record_control(parser, "fortinet.fortios.ntp-key-algorithm", CO.NOT_APPLICABLE,
+                               "NTP synchronization is not configured; no custom server is in use.")
+                record_control(parser, "fortinet.fortios.ntp-sync", CO.FINDING,
+                               "No system ntp section; NTP synchronization is not configured.")
             else:
-                record_control(parser, "fortinet.fortios.ntp-authentication", CO.UNKNOWN,
-                               "No system ntp section and the release is unqualified for defaults.")
+                for control in ("fortinet.fortios.ntp-authentication", "fortinet.fortios.ntp-key-algorithm",
+                                "fortinet.fortios.ntp-sync"):
+                    record_control(parser, control, CO.UNKNOWN,
+                                   "No system ntp section and the release is unqualified for defaults.")
         if self._supports_default_inference(fortios) and not sections:
             self.add_issue(
                 self._finding(
@@ -1228,10 +1362,18 @@ class PluginFortiOSBaseline(BasePlugin):
                 )
                 record_control(parser, "fortinet.fortios.ntp-authentication", CO.NOT_APPLICABLE,
                                "NTP synchronization is disabled.", instance=scope)
+                record_control(parser, "fortinet.fortios.ntp-key-algorithm", CO.NOT_APPLICABLE,
+                               "NTP synchronization is disabled.", instance=scope)
+                record_control(parser, "fortinet.fortios.ntp-sync", CO.FINDING,
+                               "NTP synchronization is disabled explicitly or by omission.", instance=scope)
                 continue
             if self._text(settings.get("type"), "fortiguard").lower() != "custom":
                 record_control(parser, "fortinet.fortios.ntp-authentication", CO.NOT_APPLICABLE,
                                "FortiGuard NTP is used; custom-server authentication does not apply.", instance=scope)
+                record_control(parser, "fortinet.fortios.ntp-key-algorithm", CO.NOT_APPLICABLE,
+                               "FortiGuard NTP is used; custom-server authentication does not apply.", instance=scope)
+                record_control(parser, "fortinet.fortios.ntp-sync", CO.NO_FINDING,
+                               "NTP synchronization is enabled with FortiGuard servers.", instance=scope)
                 continue
             servers = settings.get("ntpserver")
             enabled_servers = []
@@ -1243,6 +1385,10 @@ class PluginFortiOSBaseline(BasePlugin):
                 ]
             if not enabled_servers:
                 record_control(parser, "fortinet.fortios.ntp-authentication", CO.NOT_APPLICABLE,
+                               "Custom NTP mode has no enabled server.", instance=scope)
+                record_control(parser, "fortinet.fortios.ntp-key-algorithm", CO.NOT_APPLICABLE,
+                               "Custom NTP mode has no enabled server.", instance=scope)
+                record_control(parser, "fortinet.fortios.ntp-sync", CO.FINDING,
                                "Custom NTP mode has no enabled server.", instance=scope)
                 self.add_issue(
                     self._finding(
@@ -1258,6 +1404,9 @@ class PluginFortiOSBaseline(BasePlugin):
                         basis=FindingBasis.REQUIRED_SETTING_MISSING,
                     )
                 )
+            if enabled_servers:
+                record_control(parser, "fortinet.fortios.ntp-sync", CO.NO_FINDING,
+                               "NTP synchronization is enabled with enabled custom servers.", instance=scope)
             for name, server in enabled_servers:
                 authentication = self._text(server.get("authentication"), "disable").lower()
                 key_type = self._text(
@@ -1290,6 +1439,20 @@ class PluginFortiOSBaseline(BasePlugin):
                             basis=FindingBasis.EXPLICIT_VALUE if server.get("authentication") is not None and authentication != "enable" else FindingBasis.REQUIRED_SETTING_MISSING,
                         )
                     )
+                if authentication != "enable" or not has_key:
+                    record_control(parser, "fortinet.fortios.ntp-key-algorithm", CO.NOT_APPLICABLE,
+                                   "Server authentication is not in use; graded by the NTP authentication control.",
+                                   instance=f"{scope}/{name}")
+                elif key_type in {"md5", "sha1"}:
+                    record_control(parser, "fortinet.fortios.ntp-key-algorithm", CO.FINDING,
+                                   f"Authenticated server uses {key_type}.", instance=f"{scope}/{name}")
+                elif not key_type:
+                    record_control(parser, "fortinet.fortios.ntp-key-algorithm", CO.UNKNOWN,
+                                   "key-type is omitted and its default is not qualified for this release.",
+                                   instance=f"{scope}/{name}")
+                else:
+                    record_control(parser, "fortinet.fortios.ntp-key-algorithm", CO.NO_FINDING,
+                                   f"Authenticated server uses {key_type}.", instance=f"{scope}/{name}")
                 if authentication == "enable" and has_key and key_type in {"md5", "sha1"}:
                     self.add_issue(
                         self._finding(
@@ -2403,7 +2566,34 @@ class PluginFortiOSBaseline(BasePlugin):
             )
 
     def check_api_identities(self, parser: BaseDeviceParser) -> None:
-        for identity in self._fortios(parser).get_api_identities():
+        fortios = self._fortios(parser)
+        api_settings = {
+            (scope, str(name)): settings
+            for scope, section, _ in fortios.iter_scoped_sections("system api-user")
+            for name, settings in section.items() if isinstance(settings, dict)
+        }
+        record_control(parser, "fortinet.fortios.api-trusted-hosts", CO.NOT_APPLICABLE,
+                       "No API account is exported.")
+        for identity in fortios.get_api_identities():
+            api_instance = f"{identity.role.scope}/{identity.role.administrator}"
+            if identity.role.privileged_state == "read-only":
+                record_control(parser, "fortinet.fortios.api-trusted-hosts", CO.NOT_APPLICABLE,
+                               "The API account has no write privileges.", instance=api_instance)
+            elif identity.role.privileged_state != "privileged":
+                record_control(parser, "fortinet.fortios.api-trusted-hosts", CO.UNKNOWN,
+                               "The API account's privilege could not be resolved from its profile.", instance=api_instance)
+            elif identity.broad_families:
+                record_control(parser, "fortinet.fortios.api-trusted-hosts", CO.FINDING,
+                               "Explicit trusted hosts cover every source in " + ", ".join(identity.broad_families) + ".",
+                               instance=api_instance)
+            else:
+                hosts = api_settings.get((identity.role.scope, identity.role.administrator), {}).get("trusthost")
+                entries = [values for values in hosts.values()] if isinstance(hosts, dict) else []
+                record_control(
+                    parser, "fortinet.fortios.api-trusted-hosts", CO.NO_FINDING if entries else CO.UNKNOWN,
+                    "Explicit trusted hosts do not cover every source; omitted-family defaults are not graded." if entries
+                    else "No trusted host is configured and the API trusthost default is not qualified.",
+                    instance=api_instance)
             if identity.role.privileged_state != "privileged" or not identity.broad_families:
                 continue
             self.add_issue(Finding(
@@ -2939,8 +3129,19 @@ class PluginFortiOSBaseline(BasePlugin):
         """SC-044 FOS-01/02/03/04/05/07/13: global defaults that differ by release."""
         fortios = self._fortios(parser)
         release = self._release(fortios)
+        globals_ = list(fortios.iter_scoped_sections("system global"))
+        if not globals_ and not (release and release >= (7, 2, 4)):
+            record_control(parser, "fortinet.fortios.maintainer-account", CO.UNKNOWN, "No system global section is exported.")
         if not release or release < (6, 4, 14):
+            for scope, settings, _ in globals_:
+                disabled = self._text(settings.get("admin-maintainer")).lower() == "disable"
+                record_control(parser, "fortinet.fortios.maintainer-account", CO.NO_FINDING if disabled else CO.UNKNOWN,
+                               "admin-maintainer is explicitly disabled." if disabled
+                               else "The admin-maintainer default is verified only from FortiOS 6.4.14.", instance=scope)
             return  # oldest release with verified Default cells
+        if release >= (7, 2, 4):
+            record_control(parser, "fortinet.fortios.maintainer-account", CO.NOT_APPLICABLE,
+                           "FortiOS 7.2.4 and later removed the maintainer account.")
         access = set()
         for _, _, settings, _ in fortios.iter_interfaces():
             if self._enabled(settings):
@@ -2948,6 +3149,8 @@ class PluginFortiOSBaseline(BasePlugin):
         label = ".".join(map(str, release))
         for scope, settings, path in fortios.iter_scoped_sections("system global"):
             if "https" in access and (6, 4, 14) <= release < (7, 0, 0) and not settings.get("admin-https-ssl-versions"):
+                record_control(parser, "fortinet.fortios.management-tls", CO.FINDING,
+                               "admin-https-ssl-versions is omitted; the release default includes TLS 1.1.", instance=scope)
                 self.add_issue(self._finding(
                     parser, "fortinet.fortios.tls.minimum_version",
                     "Administrative HTTPS accepts TLS 1.1 by default",
@@ -2960,6 +3163,8 @@ class PluginFortiOSBaseline(BasePlugin):
                     basis=FindingBasis.DOCUMENTED_DEFAULT,
                 ))
             if "https" in access and "ssl-static-key-ciphers" not in settings:
+                record_control(parser, "fortinet.fortios.management-tls", CO.FINDING,
+                               "ssl-static-key-ciphers is omitted; the documented default is enable.", instance=scope)
                 self.add_issue(self._finding(
                     parser, "fortinet.fortios.crypto.ssl_static_key_ciphers",
                     "Static-key TLS ciphers are allowed by default",
@@ -2976,6 +3181,8 @@ class PluginFortiOSBaseline(BasePlugin):
                                     ("ssh-kex-sha1", "SHA-1 key exchange")):
                     if field in settings:
                         continue
+                    record_control(parser, "fortinet.fortios.management-ssh-crypto", CO.FINDING,
+                                   f"{field} is omitted; the release default is enable.", instance=scope)
                     self.add_issue(self._finding(
                         parser, f"fortinet.fortios.crypto.{field.replace('-', '_')}",
                         f"SSH administration allows {what} by default",
@@ -2989,8 +3196,13 @@ class PluginFortiOSBaseline(BasePlugin):
                     ))
             # Fortinet removed the account in 7.2.4, even if an old line
             # survives in an upgraded/exported configuration.
+            if release < (7, 2, 4) and str(settings.get("admin-maintainer", "enable")).lower() == "disable":
+                record_control(parser, "fortinet.fortios.maintainer-account", CO.NO_FINDING,
+                               "admin-maintainer is explicitly disabled.", instance=scope)
             if release < (7, 2, 4) and str(settings.get("admin-maintainer", "enable")).lower() != "disable":
                 explicit = "admin-maintainer" in settings
+                record_control(parser, "fortinet.fortios.maintainer-account", CO.FINDING,
+                               "The maintainer account is enabled explicitly or by the release default.", instance=scope)
                 self.add_issue(self._finding(
                     parser, "fortinet.fortios.admin.maintainer_account",
                     "Console maintainer account is enabled",
@@ -3034,14 +3246,34 @@ class PluginFortiOSBaseline(BasePlugin):
         """
         fortios = self._fortios(parser)
         numbers = [int(item) for item in re.findall(r"\d+", fortios.get_version())[:3]]
-        if len(numbers) < 3 or tuple(numbers) < (7, 6, 1):
+        if len(numbers) < 3:
+            record_control(parser, "fortinet.fortios.admin-password-hash", CO.UNKNOWN,
+                           "The FortiOS release is not identified.")
             return
+        if tuple(numbers) < (7, 6, 1):
+            record_control(parser, "fortinet.fortios.admin-password-hash", CO.NOT_APPLICABLE,
+                           "PBKDF2 administrator password storage starts with FortiOS 7.6.1.")
+            return
+        record_control(parser, "fortinet.fortios.admin-password-hash", CO.NOT_APPLICABLE,
+                       "No administrator with a stored local password hash is exported.")
         for scope, username, settings, path in fortios.iter_administrators():
             words = self._values(settings, "password")
+            hash_instance = f"{scope}/{username}"
+            if not words:
+                record_control(parser, "fortinet.fortios.admin-password-hash", CO.NOT_APPLICABLE,
+                               "No local password hash is stored.", instance=hash_instance)
+            elif len(words) >= 2 and words[0] == "ENC" and words[1].startswith("PB2"):
+                record_control(parser, "fortinet.fortios.admin-password-hash", CO.NO_FINDING,
+                               "The password is stored as a PBKDF2 hash.", instance=hash_instance)
+            elif not (len(words) >= 2 and words[0] == "ENC" and words[1].startswith("SH2")):
+                record_control(parser, "fortinet.fortios.admin-password-hash", CO.UNKNOWN,
+                               "The stored password format is not classified.", instance=hash_instance)
             # Fortinet documents SH2 as the pre-PBKDF2 SHA256 format. Other
             # prefixes (including older AK1) are not classified by this source.
             if len(words) < 2 or words[0] != "ENC" or not words[1].startswith("SH2"):
                 continue
+            record_control(parser, "fortinet.fortios.admin-password-hash", CO.FINDING,
+                           "The password is stored with the older SH2 hash.", instance=hash_instance)
             self.add_issue(self._finding(
                 parser,
                 "fortinet.fortios.credentials.admin_hash_storage",

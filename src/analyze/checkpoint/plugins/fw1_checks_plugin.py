@@ -1,8 +1,9 @@
 from src.analyze.common.base_plugin import BasePlugin
+from src.analyze.common.controls import ControlOutcome as CO, record_control
 from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.models import ConfigurationState, KnowledgeState
-from src.devices.checkpoint.fw1 import CheckPointFW1Parser
+from src.devices.checkpoint.fw1 import CheckPointFW1Parser, CheckPointRule
 
 
 CHECKPOINT_ACCESS_BEST_PRACTICES = (
@@ -10,6 +11,11 @@ CHECKPOINT_ACCESS_BEST_PRACTICES = (
     "CP_R82_SecurityManagement_AdminGuide/Content/Topics-SECMG/"
     "Best-Practices-for-Access-Control-Rules.htm"
 )
+
+
+def fw1_rule_instance(rule: CheckPointRule) -> str:
+    """SC-049 per-rule instance key shared by the FW1 plugins."""
+    return f"{rule.layer} #{rule.position} {rule.name}"
 
 
 class PluginCheckPointChecks(BasePlugin):
@@ -40,13 +46,17 @@ class PluginCheckPointChecks(BasePlugin):
                 for layer in parser.get_policy_layers()
                 if "application" in f"{layer.name} {layer.kind or ''}".casefold()
             }
+            # Normalized policies follow get_policy_rules() order one to one.
+            instance_keys = [fw1_rule_instance(rule) for rule in parser.get_policy_rules()]
         else:
             last_by_layer = {}
             application_layers = set()
+            instance_keys = []
         policies = parser.get_normalized_config().policies
         if policies.state != KnowledgeState.KNOWN:
             return
-        for policy in policies.items:
+        for index, policy in enumerate(policies.items):
+            instance = instance_keys[index] if index < len(instance_keys) else None
             if policy.state != ConfigurationState.ENABLED:
                 continue
             if policy.action.casefold() not in {"accept", "allow"}:
@@ -67,6 +77,10 @@ class PluginCheckPointChecks(BasePlugin):
             ):
                 # Application Control layers may intentionally use an explicit
                 # Any/Any/Any accept cleanup matching an accept implicit action.
+                if instance is not None:
+                    record_control(parser, "checkpoint.fw1.accept-scope", CO.NO_FINDING,
+                                   "Explicit Any/Any/Any accept cleanup rule of an Application Control layer.",
+                                   instance=instance)
                 continue
             tracking = policy.tracking or "not configured"
             install_on = ", ".join(policy.install_on) or "unspecified targets"
@@ -87,6 +101,9 @@ class PluginCheckPointChecks(BasePlugin):
                     basis=FindingBasis.EXPLICIT_VALUE,
                 )
             )
+            if instance is not None:
+                record_control(parser, "checkpoint.fw1.accept-scope", CO.FINDING,
+                               "Enabled accept rule with Any source, destination and service.", instance=instance)
 
     def analyze(self, parser: BaseDeviceParser) -> None:
         self.check_broad_filter_rules(parser)

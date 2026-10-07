@@ -94,11 +94,17 @@ class PluginHTTP(BasePlugin):
     def get_cisco_ios_http_auth(self, parser: BaseDeviceParser):
         ios = self._ios_parser(parser)
         if ios.get_http_server_state() != ConfigurationState.ENABLED:
+            record_control(parser, "cisco.ios.http-authentication", ControlOutcome.NOT_APPLICABLE,
+                           "The clear-text HTTP server is not explicitly enabled.")
             return None
         authentication = ios.get_http_authentication()
         method = authentication.split()[0].lower() if authentication else ""
         if method in self._SUPPORTED_AUTHENTICATION:
+            record_control(parser, "cisco.ios.http-authentication", ControlOutcome.NO_FINDING,
+                           f"'ip http authentication {method}' is configured.")
             return None
+        record_control(parser, "cisco.ios.http-authentication", ControlOutcome.FINDING,
+                       "No supported per-user 'ip http authentication' method is configured.")
 
         # SC-044 IOS-16: HTTP guide, 'enable' is the default method when no
         # 'ip http authentication' is configured.
@@ -133,8 +139,18 @@ class PluginHTTP(BasePlugin):
             ("HTTPS", ios.get_https_server_state()),
         ) if state == ConfigurationState.ENABLED]
         name = ios.get_http_access_class()
+        if not enabled:
+            record_control(parser, "cisco.ios.web-acl-sources", ControlOutcome.NOT_APPLICABLE,
+                           "Neither the HTTP nor the HTTPS server is enabled.")
+        elif not name:
+            record_control(parser, "cisco.ios.web-acl-sources", ControlOutcome.NOT_APPLICABLE,
+                           "No 'ip http access-class' ACL is attached.", instance="IPv4")
         if enabled and name:
             acl = ios.get_management_ipv4_acl(name)
+            record_control(parser, "cisco.ios.web-acl-sources",
+                           ControlOutcome.FINDING if acl.state == "permit-all"
+                           else ControlOutcome.NO_FINDING if acl.state == "restrictive" else ControlOutcome.UNKNOWN,
+                           f"The attached IPv4 ACL is {acl.state}.", instance="IPv4")
             if acl.state == "permit-all":
                 self.add_issue(Finding(
                     rule_id="cisco.ios.http.unrestricted_sources",
@@ -151,8 +167,16 @@ class PluginHTTP(BasePlugin):
                 ))
         if enabled and ios.device_type == "IOS_XE":
             name6 = ios.get_http_ipv6_access_class()
+            if not name6:
+                record_control(parser, "cisco.ios.web-acl-sources", ControlOutcome.NOT_APPLICABLE,
+                               "No 'ip http access-class ipv6' ACL is attached.", instance="IPv6")
             if name6:
                 acl6 = ios.get_management_ipv6_acl(name6)
+                record_control(parser, "cisco.ios.web-acl-sources",
+                               ControlOutcome.FINDING if acl6.state == "permit-all"
+                               else ControlOutcome.NO_FINDING if acl6.state == "restrictive"
+                               else ControlOutcome.UNKNOWN,
+                               f"The attached IPv6 ACL is {acl6.state}.", instance="IPv6")
                 if acl6.state == "permit-all":
                     self.add_issue(Finding(
                         rule_id="cisco.ios.http.ipv6_unrestricted_sources",

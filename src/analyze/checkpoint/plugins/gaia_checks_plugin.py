@@ -170,6 +170,13 @@ class PluginCheckPointGaiaChecks(BasePlugin):
                        Severity.LOW, ((nonuse.evidence,) if nonuse else ("no set password-controls deny-on-nonuse enable",)),
                        (PASSWORD_POLICY, PASSWORD_POLICY_R8030),
                        FindingBasis.EXPLICIT_VALUE if nonuse else FindingBasis.DOCUMENTED_DEFAULT)
+            record_control(parser, "checkpoint.gaia.unused-account-lockout", CO.FINDING,
+                           "deny-on-nonuse is off." if nonuse else "deny-on-nonuse is omitted; it is off by default.")
+        elif nonuse.value == "on":
+            record_control(parser, "checkpoint.gaia.unused-account-lockout", CO.NO_FINDING, "deny-on-nonuse is on.")
+        else:
+            record_control(parser, "checkpoint.gaia.unused-account-lockout", CO.UNKNOWN,
+                           "The deny-on-nonuse value is malformed.")
         if parser.get_password_control("min-password-length") is None:
             self._emit(parser, "password_policy.minimum_length", "Minimum password length is short",
                        "'min-password-length' is not in the export; the documented default is 6 characters.",
@@ -194,15 +201,50 @@ class PluginCheckPointGaiaChecks(BasePlugin):
                        "An attacker on the synchronisation network can read or forge cluster state messages.",
                        "Run 'set cluster member ccpenc on' on every member and keep the sync network isolated.",
                        Severity.MEDIUM, (ccp.evidence,), (CLUSTERXL_R8030,), FindingBasis.EXPLICIT_VALUE)
-        for address, protocol, evidence in parser.get_remote_syslog():
+            record_control(parser, "checkpoint.gaia.ccp-encryption", CO.FINDING, "ccpenc is off.")
+        elif ccp and ccp.value.lower() == "on":
+            record_control(parser, "checkpoint.gaia.ccp-encryption", CO.NO_FINDING, "ccpenc is on.")
+        elif ccp:
+            record_control(parser, "checkpoint.gaia.ccp-encryption", CO.UNKNOWN, "The ccpenc value is malformed.")
+        else:
+            record_control(parser, "checkpoint.gaia.ccp-encryption", CO.UNKNOWN,
+                           "'set cluster member ccpenc' is not exported; ClusterXL membership and the release "
+                           "default are not established by the Clish export.")
+        remote_syslog = parser.get_remote_syslog()
+        if not remote_syslog:
+            record_control(parser, "checkpoint.gaia.remote-syslog-transport", CO.NOT_APPLICABLE,
+                           "No remote syslog server is configured.")
+        for address, protocol, evidence in remote_syslog:
+            if protocol == "tcp":
+                record_control(parser, "checkpoint.gaia.remote-syslog-transport", CO.NO_FINDING,
+                               "The server uses TCP.", instance=address)
+            elif protocol not in {"", "udp"}:
+                record_control(parser, "checkpoint.gaia.remote-syslog-transport", CO.UNKNOWN,
+                               "The syslog protocol value is malformed.", instance=address)
             if protocol in {"", "udp"}:
+                record_control(parser, "checkpoint.gaia.remote-syslog-transport", CO.FINDING,
+                               "The server uses UDP" + (" (the documented default)." if not protocol else "."),
+                               instance=address)
                 self._emit(parser, "syslog.remote_udp", "Remote syslog uses UDP",
                            f"Remote syslog server {address} uses UDP" + (" (the documented default)." if not protocol else "."),
                            "UDP syslog can be lost silently or spoofed, and is unencrypted.",
                            "Use 'protocol tcp' (R81.20+) or forward logs through the management server, over a protected path.",
                            Severity.LOW, (evidence,), (SYSLOG_R8120,),
                            FindingBasis.DOCUMENTED_DEFAULT if not protocol else FindingBasis.EXPLICIT_VALUE)
-        for target, evidence in parser.get_allowed_clients():
+        clients = parser.get_allowed_clients()
+        open_networks = [address for address, mask, _ in parser.get_allowed_client_networks() if mask == "0"]
+        control = "checkpoint.gaia.allowed-clients"
+        if any(target in {"any-host", "any"} for target, _ in clients):
+            record_control(parser, control, CO.FINDING, "allowed-client host any-host is configured.")
+        elif not clients:
+            record_control(parser, control, CO.UNKNOWN,
+                           "No allowed-client entry is exported; the Gaia default is not verified.")
+        elif open_networks:
+            record_control(parser, control, CO.UNKNOWN,
+                           "An allowed-client network with mask length 0 is not evaluated by the check.")
+        else:
+            record_control(parser, control, CO.NO_FINDING, "Allowed clients are specific hosts or networks.")
+        for target, evidence in clients:
             if target in {"any-host", "any"}:
                 self._emit(parser, "management.unrestricted_allowed_client", "Gaia management accepts any client host",
                            "'allowed-client host any-host' lets any address connect to the Gaia Portal, SSH and other management services.",
@@ -212,7 +254,24 @@ class PluginCheckPointGaiaChecks(BasePlugin):
 
     def _check_user_shells(self, parser: CheckPointGaiaParser) -> None:
         """SC-030: users whose login shell is bash (Expert mode) instead of Clish."""
-        for user in parser.get_local_users():
+        control = "checkpoint.gaia.user-shell"
+        users = parser.get_local_users()
+        if not users:
+            record_control(parser, control, CO.NOT_APPLICABLE, "No local user is exported.")
+        for user in users:
+            if user.name == "root":
+                record_control(parser, control, CO.NOT_APPLICABLE,
+                               "root is excluded; it always uses the Expert shell.", instance=user.name)
+            elif user.shell in {"/bin/bash", "bash"}:
+                record_control(parser, control, CO.FINDING, "The login shell is bash.", instance=user.name)
+            elif user.shell is None:
+                record_control(parser, control, CO.NO_FINDING,
+                               "The shell is omitted; new Gaia users get Clish (/etc/cli.sh).", instance=user.name)
+            elif user.shell in {"/etc/cli.sh", "/sbin/nologin", "/bin/false"}:
+                record_control(parser, control, CO.NO_FINDING, f"The login shell is {user.shell}.", instance=user.name)
+            else:
+                record_control(parser, control, CO.UNKNOWN, "The login shell value is not recognized.",
+                               instance=user.name)
             if user.shell not in {"/bin/bash", "bash"} or user.name == "root":
                 continue
             evidence = tuple(item for item in user.evidence if " shell " in f" {item.text} ") or user.evidence
@@ -234,6 +293,11 @@ class PluginCheckPointGaiaChecks(BasePlugin):
     def _check_snmp(self, parser: CheckPointGaiaParser) -> None:
         agent = parser.get_snmp_agent()
         if not agent or agent.value != "on":
+            outcome, reason = ((CO.UNKNOWN, "The SNMP agent value is malformed.")
+                               if agent is not None and agent.value != "off"
+                               else (CO.NOT_APPLICABLE, "The SNMP agent is not enabled."))
+            for control in ("checkpoint.gaia.snmp-version", "checkpoint.gaia.snmpv3-privacy"):
+                record_control(parser, control, outcome, reason)
             return
         version = parser.get_snmp_agent_version()
         communities = parser.get_snmp_communities()
@@ -256,7 +320,25 @@ class PluginCheckPointGaiaChecks(BasePlugin):
                        "Community strings travel in clear text and give no per-user authentication.",
                        "Set 'set snmp agent-version v3-Only' and use SNMPv3 users with authPriv.",
                        Severity.MEDIUM, (agent.evidence, version.evidence), (SNMP,), FindingBasis.EXPLICIT_VALUE)
-        for user in parser.get_snmp_users():
+            record_control(parser, "checkpoint.gaia.snmp-version", CO.FINDING,
+                           "agent-version any with a community configured.")
+        elif not communities:
+            record_control(parser, "checkpoint.gaia.snmp-version", CO.NO_FINDING,
+                           "No SNMP community is configured, so community-based SNMP is not accepted.")
+        elif version is None:
+            record_control(parser, "checkpoint.gaia.snmp-version", CO.UNKNOWN,
+                           "agent-version is not exported and its default is not verified.")
+        elif version.value.casefold() == "v3-only":
+            record_control(parser, "checkpoint.gaia.snmp-version", CO.NO_FINDING, "agent-version is v3-Only.")
+        else:
+            record_control(parser, "checkpoint.gaia.snmp-version", CO.UNKNOWN, "The agent-version value is malformed.")
+        snmp_users = parser.get_snmp_users()
+        if not snmp_users:
+            record_control(parser, "checkpoint.gaia.snmpv3-privacy", CO.NOT_APPLICABLE, "No SNMPv3 user is configured.")
+        for user in snmp_users:
+            record_control(parser, "checkpoint.gaia.snmpv3-privacy",
+                           CO.NO_FINDING if user.security_level.casefold() == "authpriv" else CO.FINDING,
+                           f"security-level is {user.security_level}.", instance=user.name)
             if user.security_level.casefold() != "authpriv":
                 self._emit(parser, "snmp.v3_security", "SNMPv3 user without encryption",
                            f"SNMPv3 user '{user.name}' uses security-level {user.security_level}.",
@@ -281,6 +363,14 @@ class PluginCheckPointGaiaChecks(BasePlugin):
                        "A compromised old password can be set again.",
                        "Run 'set password-controls history-checking on'.",
                        Severity.LOW, (history.evidence,), (PASSWORD_POLICY,), FindingBasis.EXPLICIT_VALUE)
+            record_control(parser, "checkpoint.gaia.password-history", CO.FINDING, "history-checking is off.")
+        elif history is None or history.value == "on":
+            record_control(parser, "checkpoint.gaia.password-history", CO.NO_FINDING,
+                           "history-checking is on." if history
+                           else "history-checking is omitted; it is on by default.")
+        else:
+            record_control(parser, "checkpoint.gaia.password-history", CO.UNKNOWN,
+                           "The history-checking value is malformed.")
         complexity = parser.get_password_control("complexity")
         if complexity and complexity.value == "1":
             self._emit(parser, "password_policy.complexity", "Password complexity is at the lowest level",
@@ -288,6 +378,13 @@ class PluginCheckPointGaiaChecks(BasePlugin):
                        "Simple passwords are easier to guess.",
                        "Set complexity 2 or higher, or rely on a long minimum length.",
                        Severity.LOW, (complexity.evidence,), (PASSWORD_POLICY,), FindingBasis.EXPLICIT_VALUE)
+            record_control(parser, "checkpoint.gaia.password-complexity", CO.FINDING, "complexity is 1.")
+        elif complexity is None or complexity.value in {"2", "3", "4"}:
+            record_control(parser, "checkpoint.gaia.password-complexity", CO.NO_FINDING,
+                           f"complexity is {complexity.value}." if complexity
+                           else "complexity is omitted; the default is 2.")
+        else:
+            record_control(parser, "checkpoint.gaia.password-complexity", CO.UNKNOWN, "The complexity value is malformed.")
         length = parser.get_password_control("min-password-length")
         if length and length.value.isdigit() and int(length.value) < 8:
             self._emit(parser, "password_policy.minimum_length", "Minimum password length is short",

@@ -5,6 +5,8 @@ import re
 
 from src.analyze.common.risky_services import RISKY_SERVICE_NAMES, is_risky_port
 from src.analyze.common.base_plugin import BasePlugin
+from src.analyze.common.controls import ControlOutcome as CO, record_control
+from src.analyze.checkpoint.plugins.fw1_checks_plugin import fw1_rule_instance
 from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.devices.common.policy_semantics import (
     ProofState,
@@ -56,6 +58,16 @@ CHECKPOINT_MANAGEMENT_GUIDE = (
     "https://sc1.checkpoint.com/documents/R82/WebAdminGuides/EN/"
     "CP_R82_SecurityManagement_AdminGuide/CP_R82_SecurityManagement_AdminGuide.pdf"
 )
+
+
+# SC-049 controls recorded by this plugin (accept-scope is shared with PluginCheckPointChecks).
+FW1_CONTROLS = (
+    "checkpoint.fw1.layer-cleanup", "checkpoint.fw1.stealth-rule", "checkpoint.fw1.accept-scope",
+    "checkpoint.fw1.risky-service-exposure", "checkpoint.fw1.accept-negation", "checkpoint.fw1.install-scope",
+    "checkpoint.fw1.accept-tracking", "checkpoint.fw1.rule-expiry", "checkpoint.fw1.disabled-accept-rules",
+    "checkpoint.fw1.policy-order", "checkpoint.fw1.object-references",
+)
+_TIME_FORMATS = ("%d-%b-%Y", "%d/%m/%Y", "%m/%d/%Y")
 
 
 class PluginCheckPointBaseline(BasePlugin):
@@ -189,11 +201,24 @@ class PluginCheckPointBaseline(BasePlugin):
                 risky.add(record.name)
         return tuple(sorted(risky, key=str.casefold))
 
+    def _unresolved_services(
+        self,
+        rule: CheckPointRule,
+        services: dict[str, CheckPointService],
+    ) -> tuple[str, ...]:
+        """Service names whose ports the risky-service check could not see (SC-049)."""
+        return tuple(sorted(
+            name for name in self._expand(rule.services, services)
+            if name not in services and name not in RISKY_SERVICE_NAMES and name not in self._BUILT_INS
+        ))
+
     def check_cleanup_rules(self, parser: BaseDeviceParser) -> None:
         checkpoint = self._checkpoint(parser)
         for layer in checkpoint.get_policy_layers():
             active = [rule for rule in layer.rules if rule.enabled]
             if not active:
+                record_control(parser, "checkpoint.fw1.layer-cleanup", CO.NOT_APPLICABLE,
+                               "The layer has no enabled rule.", instance=layer.name)
                 continue
             last = active[-1]
             explicit_cleanup = (
@@ -235,6 +260,9 @@ class PluginCheckPointBaseline(BasePlugin):
                         ),
                     )
                 )
+                record_control(parser, "checkpoint.fw1.layer-cleanup", CO.FINDING,
+                               "The last enabled rule is not an Any/Any/Any cleanup matching the layer action.",
+                               instance=layer.name)
                 continue
             if not self._tracked(last):
                 self.add_issue(
@@ -251,6 +279,12 @@ class PluginCheckPointBaseline(BasePlugin):
                         basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
+                record_control(parser, "checkpoint.fw1.layer-cleanup", CO.FINDING,
+                               "The explicit cleanup rule is not tracked.", instance=layer.name)
+            else:
+                record_control(parser, "checkpoint.fw1.layer-cleanup", CO.NO_FINDING,
+                               f"The layer ends with tracked cleanup rule '{last.name}' ({last.action}).",
+                               instance=layer.name)
 
     def check_stealth_rules(self, parser: BaseDeviceParser) -> None:
         checkpoint = self._checkpoint(parser)
@@ -262,11 +296,22 @@ class PluginCheckPointBaseline(BasePlugin):
             if item.firewall or item.kind in {"gateway", "gateway-cluster", "cluster-member"}
         }
         if not gateways:
+            record_control(
+                parser, "checkpoint.fw1.stealth-rule", CO.UNKNOWN,
+                "No objects export was located, so the gateway objects are unknown."
+                if not checkpoint.files.get("objects") else
+                "The objects export lists no gateway object; a policy export does not establish the gateway inventory.",
+                instance="policy",
+            )
             return
         for layer in checkpoint.get_policy_layers():
             if self._is_application_layer(layer) or self._is_inline_layer(layer):
+                record_control(parser, "checkpoint.fw1.stealth-rule", CO.NOT_APPLICABLE,
+                               "Stealth rules belong in network layers; this is an application or inline layer.",
+                               instance=layer.name)
                 continue
             found = False
+            stealth = None
             for rule in layer.rules:
                 destinations = self._expand(rule.destinations, object_index)
                 if (
@@ -278,7 +323,11 @@ class PluginCheckPointBaseline(BasePlugin):
                     and not rule.destination_negated
                 ):
                     found = True
+                    stealth = rule
                     break
+            if found:
+                record_control(parser, "checkpoint.fw1.stealth-rule", CO.NO_FINDING,
+                               f"Rule '{stealth.name}' drops Any traffic to gateway objects.", instance=layer.name)
             if not found and layer.rules:
                 self.add_issue(
                     self._finding(
@@ -294,11 +343,18 @@ class PluginCheckPointBaseline(BasePlugin):
                         basis=FindingBasis.REQUIRED_SETTING_MISSING,
                     )
                 )
+                record_control(parser, "checkpoint.fw1.stealth-rule", CO.FINDING,
+                               "No enabled Any-to-gateway drop rule in this network layer.", instance=layer.name)
 
     def check_rule_hygiene(self, parser: BaseDeviceParser) -> None:
         checkpoint = self._checkpoint(parser)
+        disabled_accept = enabled_rule = False
         for rule in checkpoint.get_policy_rules():
+            instance = fw1_rule_instance(rule)
             if not rule.enabled and rule.action in self._ACCEPT:
+                disabled_accept = True
+                record_control(parser, "checkpoint.fw1.disabled-accept-rules", CO.FINDING,
+                               f"Disabled {rule.action} rule.", instance=instance)
                 self.add_issue(
                     self._finding(
                         parser,
@@ -315,8 +371,22 @@ class PluginCheckPointBaseline(BasePlugin):
                 )
             if not rule.enabled:
                 continue
+            enabled_rule = True
             expired = self._expired_date(rule.time)
+            if expired is None:
+                values = [value for value in rule.time if value.strip().casefold() not in self._ANY]
+                parsed = [value for value in values if self._parses_as_date(value)]
+                if values and not parsed:
+                    record_control(parser, "checkpoint.fw1.rule-expiry", CO.UNKNOWN,
+                                   "The rule references a time object whose dates are not evaluated.",
+                                   instance=instance)
+                else:
+                    record_control(parser, "checkpoint.fw1.rule-expiry", CO.NO_FINDING,
+                                   "The rule's time constraint dates are not in the past." if parsed
+                                   else "The rule has no time constraint.", instance=instance)
             if expired is not None:
+                record_control(parser, "checkpoint.fw1.rule-expiry", CO.FINDING,
+                               f"Expired date {expired.isoformat()}.", instance=instance)
                 self.add_issue(
                     self._finding(
                         parser,
@@ -331,6 +401,28 @@ class PluginCheckPointBaseline(BasePlugin):
                         basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
+        if not disabled_accept:
+            record_control(parser, "checkpoint.fw1.disabled-accept-rules", CO.NO_FINDING,
+                           "No disabled accept rule is in the exported rulebase.", instance="policy")
+        if not enabled_rule:
+            record_control(parser, "checkpoint.fw1.rule-expiry", CO.NOT_APPLICABLE,
+                           "The exported rulebase has no enabled rule.", instance="policy")
+
+    @staticmethod
+    def _parses_as_date(value: str) -> bool:
+        candidate = value.strip().replace("Z", "+00:00")
+        try:
+            datetime.fromisoformat(candidate)
+            return True
+        except ValueError:
+            pass
+        for format_ in _TIME_FORMATS:
+            try:
+                datetime.strptime(candidate, format_)
+                return True
+            except ValueError:
+                continue
+        return False
 
     @staticmethod
     def _expired_date(values: tuple[str, ...]) -> date | None:
@@ -355,9 +447,12 @@ class PluginCheckPointBaseline(BasePlugin):
     def check_rule_scope_and_tracking(self, parser: BaseDeviceParser) -> None:
         checkpoint = self._checkpoint(parser)
         services = self._index(checkpoint.get_service_objects())
+        any_accept = any_sensitive = False
         for rule in checkpoint.get_policy_rules():
             if not rule.enabled or rule.action not in self._ACCEPT:
                 continue
+            any_accept = True
+            instance = fw1_rule_instance(rule)
             wildcard_count = sum(
                 (
                     self._all_any(rule.sources),
@@ -375,6 +470,57 @@ class PluginCheckPointBaseline(BasePlugin):
                 negated.append("destination")
             if rule.service_negated:
                 negated.append("service")
+            broad_source = self._all_any(rule.sources) or rule.source_negated
+            unresolved = self._unresolved_services(rule, services) if broad_source and not risky else ()
+
+            # SC-049: fully broad accept/allow rules are recorded by PluginCheckPointChecks.
+            if partially_broad:
+                record_control(parser, "checkpoint.fw1.accept-scope", CO.FINDING,
+                               f"{wildcard_count} of source, destination and service are Any.", instance=instance)
+            elif fully_broad and rule.action == "encrypt":
+                record_control(parser, "checkpoint.fw1.accept-scope", CO.UNKNOWN,
+                               "Any/Any/Any encrypt rule; its VPN community scope is not evaluated.", instance=instance)
+            elif not fully_broad:
+                record_control(parser, "checkpoint.fw1.accept-scope", CO.NO_FINDING,
+                               "At most one of source, destination and service is Any.", instance=instance)
+            if risky and broad_source:
+                record_control(parser, "checkpoint.fw1.risky-service-exposure", CO.FINDING,
+                               f"Broadly sourced risky service(s): {', '.join(risky)}.", instance=instance)
+            elif not broad_source:
+                record_control(parser, "checkpoint.fw1.risky-service-exposure", CO.NO_FINDING,
+                               "The rule source is restricted.", instance=instance)
+            elif unresolved:
+                record_control(parser, "checkpoint.fw1.risky-service-exposure", CO.UNKNOWN,
+                               f"Service(s) not in the exported service objects: {', '.join(unresolved)}.",
+                               instance=instance)
+            else:
+                record_control(parser, "checkpoint.fw1.risky-service-exposure", CO.NO_FINDING,
+                               "No service of this broadly sourced rule is in the risky-service catalogue"
+                               + ("; its Any service is assessed by checkpoint.fw1.accept-scope." if self._all_any(rule.services) else "."),
+                               instance=instance)
+            record_control(parser, "checkpoint.fw1.accept-negation",
+                           CO.FINDING if negated else CO.NO_FINDING,
+                           f"Negated field(s): {', '.join(negated)}." if negated else "No match field is negated.",
+                           instance=instance)
+            install_any = any(value.casefold() == "any" for value in rule.install_on)
+            record_control(parser, "checkpoint.fw1.install-scope",
+                           CO.FINDING if install_any else CO.NO_FINDING,
+                           "Install On contains Any." if install_any else
+                           (f"Install On is {', '.join(rule.install_on)}." if rule.install_on
+                            else "Install On is not set in the exported rule (not Any)."),
+                           instance=instance)
+            sensitive = bool(fully_broad or partially_broad or risky or negated)
+            if sensitive:
+                any_sensitive = True
+                tracked = self._tracked(rule)
+                record_control(parser, "checkpoint.fw1.accept-tracking",
+                               CO.NO_FINDING if tracked else CO.FINDING,
+                               f"Track is '{rule.tracking or 'not configured'}'.", instance=instance)
+            elif unresolved and not self._tracked(rule):
+                any_sensitive = True
+                record_control(parser, "checkpoint.fw1.accept-tracking", CO.UNKNOWN,
+                               "An untracked broadly sourced rule uses services that are not exported; "
+                               "whether they are risky is unknown.", instance=instance)
 
             if partially_broad:
                 self.add_issue(
@@ -451,6 +597,14 @@ class PluginCheckPointBaseline(BasePlugin):
                         basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
+        if not any_accept:
+            for control in ("checkpoint.fw1.accept-scope", "checkpoint.fw1.risky-service-exposure",
+                            "checkpoint.fw1.accept-negation", "checkpoint.fw1.install-scope"):
+                record_control(parser, control, CO.NOT_APPLICABLE,
+                               "The exported rulebase has no enabled accept rule.", instance="policy")
+        if not any_sensitive:
+            record_control(parser, "checkpoint.fw1.accept-tracking", CO.NOT_APPLICABLE,
+                           "No enabled accept rule is broad, risky or negated.", instance="policy")
 
     @classmethod
     def _install_covers(cls, prior: tuple[str, ...], current: tuple[str, ...]) -> bool:
@@ -474,17 +628,25 @@ class PluginCheckPointBaseline(BasePlugin):
 
     def check_shadowing(self, parser: BaseDeviceParser) -> None:
         checkpoint = self._checkpoint(parser)
+        enabled_rule = False
         for layer in checkpoint.get_policy_layers():
             previous: list[CheckPointRule] = []
             for rule in layer.rules:
                 if not rule.enabled:
                     continue
+                enabled_rule = True
+                instance = fw1_rule_instance(rule)
                 if rule.action not in self._ACCEPT | self._DROP:
+                    record_control(parser, "checkpoint.fw1.policy-order", CO.UNKNOWN,
+                                   f"Rule action '{rule.action}' is not compared.", instance=instance)
                     previous.append(rule)
                     continue
                 if rule.source_negated or rule.destination_negated or rule.service_negated:
+                    record_control(parser, "checkpoint.fw1.policy-order", CO.UNKNOWN,
+                                   "Rules with negated fields are not compared.", instance=instance)
                     previous.append(rule)
                     continue
+                covered = False
                 current_dimensions = (
                     checkpoint.resolve_network_semantics(rule.sources),
                     checkpoint.resolve_network_semantics(rule.destinations),
@@ -538,18 +700,34 @@ class PluginCheckPointBaseline(BasePlugin):
                             basis=FindingBasis.EXPLICIT_VALUE,
                         )
                     )
+                    covered = True
+                    record_control(parser, "checkpoint.fw1.policy-order", CO.FINDING,
+                                   f"Fully covered by earlier rule '{earlier.name}'.", instance=instance)
                     break
+                if not covered:
+                    # SC-017: implied rules and Global Properties are not in the export.
+                    record_control(parser, "checkpoint.fw1.policy-order", CO.UNKNOWN,
+                                   "No earlier exported rule covers this rule; implied rules from Global "
+                                   "Properties are not in the export.", instance=instance)
                 previous.append(rule)
+        if not enabled_rule:
+            record_control(parser, "checkpoint.fw1.policy-order", CO.NOT_APPLICABLE,
+                           "The exported rulebase has no enabled rule.", instance="policy")
 
     def check_references(self, parser: BaseDeviceParser) -> None:
         checkpoint = self._checkpoint(parser)
+        control = "checkpoint.fw1.object-references"
         if not checkpoint.files.get("objects"):
+            record_control(parser, control, CO.UNKNOWN,
+                           "No objects export was located; references cannot be resolved.", instance="policy")
             return
         objects = checkpoint.get_policy_objects()
         services = checkpoint.get_service_objects()
         object_index = self._index(objects)
         service_index = self._index(services)
         if not object_index and not service_index:
+            record_control(parser, control, CO.UNKNOWN,
+                           "No network or service object could be parsed from the objects export.", instance="policy")
             return
 
         for rule in checkpoint.get_policy_rules():
@@ -590,6 +768,18 @@ class PluginCheckPointBaseline(BasePlugin):
                         basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
+                record_control(parser, control, CO.FINDING, f"Unresolved: {', '.join(unresolved)}.",
+                               instance=fw1_rule_instance(rule))
+            elif object_index and service_index:
+                record_control(parser, control, CO.NO_FINDING,
+                               "Every rule reference resolves to an exported or built-in object.",
+                               instance=fw1_rule_instance(rule))
+            else:
+                record_control(parser, control, CO.UNKNOWN,
+                               "The objects export has no parsed "
+                               + ("network" if not object_index else "service")
+                               + " objects, so those references were not checked.",
+                               instance=fw1_rule_instance(rule))
 
         for kind, records, index in (
             ("network", objects, object_index),
@@ -603,6 +793,9 @@ class PluginCheckPointBaseline(BasePlugin):
                     and member.casefold() not in self._BUILT_INS
                 ]
                 if not missing:
+                    if record.members:
+                        record_control(parser, control, CO.NO_FINDING, "Every group member resolves.",
+                                       instance=f"{kind} group {record.name}")
                     continue
                 self.add_issue(
                     self._finding(
@@ -618,10 +811,19 @@ class PluginCheckPointBaseline(BasePlugin):
                         basis=FindingBasis.EXPLICIT_VALUE,
                     )
                 )
+                record_control(parser, control, CO.FINDING, f"Missing member(s): {', '.join(missing)}.",
+                               instance=f"{kind} group {record.name}")
 
     def analyze(self, parser: BaseDeviceParser) -> None:
         checkpoint = self._checkpoint(parser)
         if not checkpoint.get_policy_rules():
+            reason = (
+                "No rules.C or rulebases export was located."
+                if "rules" not in checkpoint.parsed_data and "rulebases" not in checkpoint.parsed_data
+                else "No rule could be parsed from the rule export."
+            )
+            for control in FW1_CONTROLS:
+                record_control(parser, control, CO.UNKNOWN, reason, instance="policy")
             return
         self.check_cleanup_rules(parser)
         self.check_stealth_rules(parser)

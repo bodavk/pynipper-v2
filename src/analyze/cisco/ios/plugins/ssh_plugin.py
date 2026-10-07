@@ -68,10 +68,17 @@ class PluginSSH(BasePlugin):
     def get_cisco_ios_ssh_retries(self, parser: BaseDeviceParser):
         ios = self._ios_parser(parser)
         if ios.get_ssh_state() != ConfigurationState.ENABLED:
+            record_control(parser, "cisco.ios.ssh-limits", ControlOutcome.NOT_APPLICABLE,
+                           "The SSH server is not enabled.")
             return None
         retries = ios.get_ssh_authentication_retries()
         if retries.value is not None and 0 < retries.value <= self.MAX_AUTHENTICATION_RETRIES:
+            record_control(parser, "cisco.ios.ssh-limits", ControlOutcome.NO_FINDING,
+                           f"The effective authentication retry limit is {retries.value}.",
+                           instance="authentication-retries")
             return None
+        record_control(parser, "cisco.ios.ssh-limits", ControlOutcome.FINDING,
+                       "The authentication retry limit is unsafe or unparseable.", instance="authentication-retries")
 
         observation = (
             f"The SSH authentication-retries value could not be parsed: {retries.parse_error}."
@@ -98,7 +105,11 @@ class PluginSSH(BasePlugin):
             return None
         timeout = ios.get_ssh_timeout()
         if timeout.value is not None and 0 < timeout.value <= self.MAX_NEGOTIATION_TIMEOUT_SECONDS:
+            record_control(parser, "cisco.ios.ssh-limits", ControlOutcome.NO_FINDING,
+                           f"The effective negotiation timeout is {timeout.value} seconds.", instance="time-out")
             return None
+        record_control(parser, "cisco.ios.ssh-limits", ControlOutcome.FINDING,
+                       "The negotiation timeout is unsafe or unparseable.", instance="time-out")
 
         observation = (
             f"The SSH time-out value could not be parsed: {timeout.parse_error}."
@@ -126,7 +137,11 @@ class PluginSSH(BasePlugin):
         ssh_profiles = [profile for profile in ios.get_vty_profiles() if profile.permits_ssh]
         unrestricted = [profile for profile in ssh_profiles if not profile.has_inbound_access_class]
         if ssh_profiles and not unrestricted:
+            record_control(parser, "cisco.ios.ssh-source-restriction", ControlOutcome.NO_FINDING,
+                           "Every SSH-enabled VTY range has an inbound access-class.", instance="vty access-class")
             return None
+        record_control(parser, "cisco.ios.ssh-source-restriction", ControlOutcome.FINDING,
+                       "An SSH-enabled VTY range has no inbound access-class.", instance="vty access-class")
 
         evidence = tuple(profile.line for profile in unrestricted) or ("No SSH-enabled VTY access-class found",)
         return Finding(
@@ -145,6 +160,9 @@ class PluginSSH(BasePlugin):
 
     def analyze(self, parser: BaseDeviceParser) -> None:
         ios = self._ios_parser(parser)
+        if ios.get_ssh_state() != ConfigurationState.ENABLED:
+            record_control(parser, "cisco.ios.ssh-source-restriction", ControlOutcome.NOT_APPLICABLE,
+                           "The SSH server is not enabled.")
         if ios.get_ssh_state() == ConfigurationState.ENABLED:
             for profile in ios.get_management_acl_vty_profiles():
                 if not profile.permits_ssh:
@@ -155,6 +173,11 @@ class PluginSSH(BasePlugin):
                         continue
                     acl = (ios.get_management_ipv4_acl(name, allow_extended=True)
                            if family == "IPv4" else ios.get_management_ipv6_acl(name))
+                    record_control(parser, "cisco.ios.ssh-source-restriction",
+                                   ControlOutcome.FINDING if acl.state == "permit-all"
+                                   else ControlOutcome.NO_FINDING if acl.state == "restrictive"
+                                   else ControlOutcome.UNKNOWN,
+                                   f"The attached {family} ACL is {acl.state}.", instance=f"{profile.line} {family}")
                     if acl.state != "permit-all":
                         continue
                     self.add_issue(Finding(

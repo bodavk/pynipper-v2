@@ -1702,6 +1702,10 @@ class AristaEOSParser(CiscoIOSParser):
             records.append((name, state, tuple(evidence)))
         return records
 
+    def has_isis_instance(self) -> bool:
+        """Whether any ``router isis`` instance is configured (SC-049 applicability)."""
+        return any(True for _ in self._top_blocks(r"router\s+isis\s+\S+.*"))
+
     def get_isis_text_authentication(self) -> list[ConfigEvidence]:
         """SC-005: explicit IS-IS clear-text authentication (router or interface level).
 
@@ -1948,7 +1952,7 @@ class AristaEOSParser(CiscoIOSParser):
         )
 
     def get_snmpv3_relationships(
-        self,
+        self, *, include_disabled_agent: bool = False,
     ) -> tuple[list[AristaSNMPView], list[AristaSNMPGroup], list[AristaSNMPUser]]:
         view_entries: dict[tuple[str, str], tuple[str, ConfigEvidence]] = {}
         groups: dict[str, AristaSNMPGroup] = {}
@@ -2098,7 +2102,9 @@ class AristaEOSParser(CiscoIOSParser):
                 source_restricted="default" in source_acls,
                 evidence=(evidence,) + (group.evidence if group else ()),
             ))
-        return views, list(groups.values()), users if self.get_snmp_default_vrf_enabled() else []
+        return views, list(groups.values()), (
+            users if include_disabled_agent or self.get_snmp_default_vrf_enabled() else []
+        )
 
     def get_logging_destinations(self) -> list[LoggingDestination]:
         destinations = {}

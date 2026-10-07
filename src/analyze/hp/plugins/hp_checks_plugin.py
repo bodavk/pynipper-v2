@@ -1,6 +1,7 @@
 """Effective-state ArubaOS-Switch/HP ProCurve hardening checks."""
 
 from src.analyze.common.base_plugin import BasePlugin
+from src.analyze.common.controls import ControlOutcome as CO, record_control
 from src.analyze.common.issue import Finding, FindingBasis, Severity
 from src.devices.common.base_parser import BaseDeviceParser
 from src.devices.common.models import ConfigurationState
@@ -82,6 +83,17 @@ class PluginHPChecks(BasePlugin):
             ("http", "hp.procurve.management.http", "Clear-text WebAgent is enabled"),
         ):
             feature = states[protocol]
+            record_control(
+                parser, "hp.procurve.cleartext-management",
+                CO.FINDING if feature.state == ConfigurationState.ENABLED
+                else CO.NO_FINDING if feature.state == ConfigurationState.DISABLED else CO.UNKNOWN,
+                f"{protocol.upper()} management is enabled (explicit or documented release default)."
+                if feature.state == ConfigurationState.ENABLED
+                else f"{protocol.upper()} management is explicitly disabled."
+                if feature.state == ConfigurationState.DISABLED
+                else f"{protocol.upper()} state: {feature.detail or 'release default not qualified'}.",
+                instance=protocol,
+            )
             if feature.state != ConfigurationState.ENABLED:
                 continue
             self.add_issue(
@@ -112,7 +124,24 @@ class PluginHPChecks(BasePlugin):
             for protocol in ("ssh", "https")
             if states[protocol].state == ConfigurationState.ENABLED
         ]
-        if exposed_secure and not hp.has_authorized_managers():
+        managers = hp.has_authorized_managers()
+        if exposed_secure:
+            record_control(
+                parser, "hp.procurve.management-source-restriction",
+                CO.NO_FINDING if managers else CO.FINDING,
+                "Enabled SSH/HTTPS management is limited by active authorized managers." if managers
+                else "Enabled SSH/HTTPS management has no active authorized-manager restriction.",
+            )
+        elif all(states[name].state == ConfigurationState.DISABLED for name in ("ssh", "https")):
+            record_control(parser, "hp.procurve.management-source-restriction", CO.NOT_APPLICABLE,
+                           "SSH and HTTPS management are disabled.")
+        elif managers:
+            record_control(parser, "hp.procurve.management-source-restriction", CO.NO_FINDING,
+                           "Active authorized managers restrict management sources.")
+        else:
+            record_control(parser, "hp.procurve.management-source-restriction", CO.UNKNOWN,
+                           "SSH/HTTPS state is not qualified for this release and no authorized managers are configured.")
+        if exposed_secure and not managers:
             self.add_issue(
                 Finding(
                     rule_id="hp.procurve.management.source_restriction",
@@ -136,8 +165,22 @@ class PluginHPChecks(BasePlugin):
     def check_snmp(self, parser: BaseDeviceParser) -> None:
         hp = self._hp(parser)
         communities = hp.get_snmp_communities()
-        for community in communities:
+        if not communities:
+            record_control(parser, "hp.procurve.snmp-community", CO.NOT_APPLICABLE,
+                           "No SNMP community is configured.")
+            record_control(parser, "hp.procurve.snmpv3-secure-user", CO.NOT_APPLICABLE,
+                           "No community-based SNMP access is configured.")
+        for number, community in enumerate(communities, 1):
             evidence = tuple(item for item in community.evidence)
+            default_name = community.name.casefold() in {"public", "private"}
+            broad = community.access == "manager" or not community.restricted
+            record_control(
+                parser, "hp.procurve.snmp-community",
+                CO.FINDING if default_name or broad else CO.NO_FINDING,
+                ("Community uses a default name and/or has manager or unrestricted access."
+                 if default_name or broad else "Community is non-default, operator-level and restricted."),
+                instance=f"community #{number}",
+            )
             if community.name.casefold() in {"public", "private"}:
                 self.add_issue(
                     Finding(
@@ -181,6 +224,12 @@ class PluginHPChecks(BasePlugin):
                 if user.authentication in {"sha", "sha256", "sha384", "sha512"}
                 and user.privacy in {"aes", "aes128", "aes192", "aes256"}
             ]
+            record_control(
+                parser, "hp.procurve.snmpv3-secure-user",
+                CO.NO_FINDING if strong_users else CO.FINDING,
+                "An SNMPv3 user with SHA authentication and AES privacy is configured." if strong_users
+                else "Community SNMP is active without an SNMPv3 SHA/AES user.",
+            )
             if not strong_users:
                 self.add_issue(
                     Finding(
@@ -199,9 +248,38 @@ class PluginHPChecks(BasePlugin):
                 )
 
         if hp.get_snmpv3_agent_state() is False:
+            for control in ("hp.procurve.snmpv3-user-protection", "hp.procurve.snmpv3-source-restriction"):
+                record_control(parser, control, CO.NOT_APPLICABLE, "The SNMPv3 agent is explicitly disabled.")
             return
+        if not hp.get_snmpv3_users():
+            for control in ("hp.procurve.snmpv3-user-protection", "hp.procurve.snmpv3-source-restriction"):
+                record_control(parser, control, CO.NOT_APPLICABLE, "No SNMPv3 user is configured.")
         for user in hp.get_snmpv3_users():
             evidence = tuple(item for item in user.evidence)
+            instance = f"snmpv3 user {user.name}"
+            undetermined = {"unknown", "default-unknown"}
+            protection_fires = (
+                user.authentication == "none" or user.privacy == "none"
+                or user.authentication == "md5" or user.privacy == "des"
+            )
+            record_control(
+                parser, "hp.procurve.snmpv3-user-protection",
+                CO.FINDING if protection_fires
+                else CO.UNKNOWN if user.authentication in undetermined or user.privacy in undetermined
+                else CO.NO_FINDING,
+                f"Authentication '{user.authentication}', privacy '{user.privacy}'"
+                + (" (algorithm omitted or unrecognized; release default not qualified)."
+                   if not protection_fires and (user.authentication in undetermined or user.privacy in undetermined)
+                   else "."),
+                instance=instance,
+            )
+            record_control(
+                parser, "hp.procurve.snmpv3-source-restriction",
+                CO.NO_FINDING if hp.has_authorized_managers() else CO.FINDING,
+                "Active authorized managers restrict SNMPv3 sources." if hp.has_authorized_managers()
+                else "No active authorized-manager restriction.",
+                instance=instance,
+            )
             missing = []
             if user.authentication == "none":
                 missing.append("authentication")
@@ -265,6 +343,12 @@ class PluginHPChecks(BasePlugin):
         hp = self._hp(parser)
         ssh = hp.get_service_states()["ssh"]
         if ssh.state != ConfigurationState.ENABLED:
+            record_control(
+                parser, "hp.procurve.ssh-algorithms",
+                CO.NOT_APPLICABLE if ssh.state == ConfigurationState.DISABLED else CO.UNKNOWN,
+                "SSH is disabled." if ssh.state == ConfigurationState.DISABLED
+                else "SSH state is not qualified for this release.",
+            )
             return
         algorithms = hp.get_ssh_algorithms()
         weak = {
@@ -275,7 +359,22 @@ class PluginHPChecks(BasePlugin):
             and set(algorithms[kind]) & values
         }
         if not weak:
+            unqualified = [
+                kind for kind in self._WEAK_SSH
+                if not isinstance(algorithms[f"{kind}_state"], HPFeature)
+                or algorithms[f"{kind}_state"].state == ConfigurationState.UNKNOWN
+                or (not hp.has_supported_default_release()
+                    and not self._weak_ssh_explicitly_removed(kind, algorithms[f"{kind}_state"]))
+            ]
+            record_control(
+                parser, "hp.procurve.ssh-algorithms", CO.UNKNOWN if unqualified else CO.NO_FINDING,
+("The effective SSH " + ", ".join(unqualified) + " list is not qualified: no documented release default"
+                 " and the listed legacy algorithms are not all explicitly removed.")
+                if unqualified else "The effective SSH cipher, KEX and MAC lists contain no listed legacy algorithm.",
+            )
             return
+        record_control(parser, "hp.procurve.ssh-algorithms", CO.FINDING,
+                       "The effective SSH suite includes legacy algorithms.")
         summary = "; ".join(f"{kind}: {', '.join(values)}" for kind, values in weak.items())
         evidence = list(self._evidence(ssh))
         for kind in weak:
@@ -305,9 +404,33 @@ class PluginHPChecks(BasePlugin):
             )
         )
 
+    @classmethod
+    def _weak_ssh_explicitly_removed(cls, kind: str, state: HPFeature) -> bool:
+        """True when the last command for every listed legacy algorithm of this kind removes it."""
+        last: dict[str, bool] = {}
+        for item in state.evidence:
+            tokens = item.text.casefold().split()
+            if tokens and tokens[-1] in cls._WEAK_SSH[kind]:
+                last[tokens[-1]] = tokens[0] == "no"
+        return all(last.get(value) for value in cls._WEAK_SSH[kind])
+
     def check_operational_baseline(self, parser: BaseDeviceParser) -> None:
         hp = self._hp(parser)
         states = hp.get_service_states()
+        service_enabled = any(feature.state == ConfigurationState.ENABLED for feature in states.values())
+        remote = hp.get_remote_authentication()
+        if remote:
+            record_control(parser, "hp.procurve.centralized-authentication", CO.NO_FINDING,
+                           "Management login uses " + ", ".join(remote) + ".")
+        elif service_enabled:
+            record_control(parser, "hp.procurve.centralized-authentication", CO.FINDING,
+                           "An enabled management service has no RADIUS or TACACS authentication method.")
+        elif all(feature.state == ConfigurationState.DISABLED for feature in states.values()):
+            record_control(parser, "hp.procurve.centralized-authentication", CO.NOT_APPLICABLE,
+                           "Telnet, SSH, HTTP and HTTPS management are disabled.")
+        else:
+            record_control(parser, "hp.procurve.centralized-authentication", CO.UNKNOWN,
+                           "Management-service state is not qualified for this release.")
         if any(
             feature.state == ConfigurationState.ENABLED
             for feature in states.values()
@@ -345,6 +468,29 @@ class PluginHPChecks(BasePlugin):
             for policy in policies
         )
         manager = credentials["manager"]
+        if local_is_applicable:
+            record_control(
+                parser, "hp.procurve.manager-credential",
+                CO.FINDING if manager.state == ConfigurationState.DISABLED
+                else CO.NO_FINDING if manager.state == ConfigurationState.ENABLED else CO.UNKNOWN,
+                "Local authentication is effective and the manager credential is absent."
+                if manager.state == ConfigurationState.DISABLED
+                else "Local authentication is effective and a manager credential is configured."
+                if manager.state == ConfigurationState.ENABLED
+                else "Credentials are not included in the export (no include-credentials).",
+            )
+        elif any(
+            policy.applicable is not False and (
+                policy.resolution_state in {"unknown-release", "invalid"}
+                or (policy.applicable is None and "local" in {policy.primary, policy.secondary})
+            )
+            for policy in policies
+        ):
+            record_control(parser, "hp.procurve.manager-credential", CO.UNKNOWN,
+                           "Administrative authentication methods or channel state are not qualified.")
+        else:
+            record_control(parser, "hp.procurve.manager-credential", CO.NOT_APPLICABLE,
+                           "No applicable administrative channel uses local authentication.")
         if local_is_applicable and manager.state == ConfigurationState.DISABLED:
             operator = credentials["operator"]
             observation = "Local authentication is effective for an administrative channel, but manager password protection is explicitly absent."
@@ -374,6 +520,18 @@ class PluginHPChecks(BasePlugin):
             ))
 
         for policy in policies:
+            authorized = "authorized" in {policy.primary, policy.secondary}
+            record_control(
+                parser, "hp.procurve.admin-authentication-methods",
+                CO.FINDING if policy.applicable is True and authorized
+                else CO.NOT_APPLICABLE if policy.applicable is False
+                else CO.UNKNOWN if policy.applicable is None or policy.resolution_state in {"unknown-release", "invalid"}
+                else CO.NO_FINDING,
+                f"Methods '{policy.primary} {policy.secondary}' ({policy.resolution_state})"
+                + ("; channel disabled." if policy.applicable is False
+                   else "; channel state not qualified." if policy.applicable is None else "."),
+                instance=f"{policy.channel} {policy.access_level}",
+            )
             if policy.applicable is not True or "authorized" not in {policy.primary, policy.secondary}:
                 continue
             self.add_issue(Finding(
@@ -394,6 +552,14 @@ class PluginHPChecks(BasePlugin):
             ))
 
         banner = hp.get_login_banner_policy()
+        banner_fires = banner.state == ConfigurationState.DISABLED and banner.resolution_state != "unknown-release"
+        record_control(
+            parser, "hp.procurve.login-banner",
+            CO.FINDING if banner_fires else CO.NO_FINDING if banner.state == ConfigurationState.ENABLED else CO.UNKNOWN,
+            "No effective 'banner motd' is configured." if banner_fires
+            else "A 'banner motd' notice is configured." if banner.state == ConfigurationState.ENABLED
+            else f"Banner state not qualified ({banner.resolution_state}).",
+        )
         if banner.state == ConfigurationState.DISABLED and banner.resolution_state != "unknown-release":
             self.add_issue(Finding(
                 rule_id="hp.procurve.admin.login_banner",
@@ -410,6 +576,17 @@ class PluginHPChecks(BasePlugin):
             ))
 
         for session in hp.get_administrative_session_policies():
+            if session.applicable is False:
+                outcome, reason = CO.NOT_APPLICABLE, "The management channel is disabled."
+            elif session.applicable is None:
+                outcome, reason = CO.UNKNOWN, "The management channel state is not qualified for this release."
+            elif session.resolution_state in {"invalid", "unknown-release"} or session.timeout_seconds is None:
+                outcome, reason = CO.UNKNOWN, f"Idle timeout is not qualified ({session.resolution_state})."
+            elif 0 < session.timeout_seconds <= 600:
+                outcome, reason = CO.NO_FINDING, f"Idle timeout is {session.timeout_seconds} seconds ({session.resolution_state})."
+            else:
+                outcome, reason = CO.FINDING, f"Idle timeout is {session.timeout_seconds or 'disabled'} ({session.resolution_state})."
+            record_control(parser, "hp.procurve.idle-timeout", outcome, reason, instance=session.channel)
             if (
                 session.applicable is not True
                 or session.resolution_state in {"invalid", "unknown-release"}
@@ -457,6 +634,16 @@ class PluginHPChecks(BasePlugin):
     def check_advanced_baseline(self, parser: BaseDeviceParser) -> None:
         hp = self._hp(parser)
         remote_authentication = hp.get_remote_authentication()
+        if remote_authentication:
+            accounting = hp.has_management_accounting()
+            record_control(
+                parser, "hp.procurve.management-accounting", CO.NO_FINDING if accounting else CO.FINDING,
+                "An active AAA accounting target is configured." if accounting
+                else "Centralized authentication is used without an active AAA accounting target.",
+            )
+        else:
+            record_control(parser, "hp.procurve.management-accounting", CO.NOT_APPLICABLE,
+                           "Management login does not use RADIUS or TACACS.")
         if remote_authentication and not hp.has_management_accounting():
             self.add_issue(
                 Finding(
@@ -475,6 +662,21 @@ class PluginHPChecks(BasePlugin):
             )
 
         password_control = hp.get_password_configuration_control()
+        if hp.get_users():
+            record_control(
+                parser, "hp.procurve.password-complexity",
+                CO.FINDING if password_control.state == ConfigurationState.DISABLED
+                else CO.NO_FINDING if password_control.state == ConfigurationState.ENABLED else CO.UNKNOWN,
+                "Password configuration-control is disabled." if password_control.state == ConfigurationState.DISABLED
+                else "Password configuration-control is enabled." if password_control.state == ConfigurationState.ENABLED
+                else password_control.detail or "Password configuration-control is not qualified for this release.",
+            )
+        elif any(item.state == ConfigurationState.UNKNOWN for item in hp.get_local_administrator_credentials()):
+            record_control(parser, "hp.procurve.password-complexity", CO.UNKNOWN,
+                           "Local credentials are not included in the export (no include-credentials).")
+        else:
+            record_control(parser, "hp.procurve.password-complexity", CO.NOT_APPLICABLE,
+                           "No local manager or operator credential is configured.")
         if hp.get_users() and password_control.state == ConfigurationState.DISABLED:
             self.add_issue(
                 Finding(
@@ -496,6 +698,27 @@ class PluginHPChecks(BasePlugin):
             )
 
         configured_vlans = set(hp.get_configured_vlans()) - {1}
+        if not configured_vlans:
+            record_control(parser, "hp.procurve.dhcp-snooping", CO.NOT_APPLICABLE,
+                           "No non-default VLAN is configured.")
+        elif not hp.has_supported_default_release():
+            snooped = set(hp.get_dhcp_snooping_vlans())
+            for vlan in sorted(configured_vlans):
+                record_control(
+                    parser, "hp.procurve.dhcp-snooping", CO.NO_FINDING if vlan in snooped else CO.UNKNOWN,
+                    "DHCP snooping is explicitly enabled for this VLAN." if vlan in snooped
+                    else "The release is outside the qualified AOS-S default table.",
+                    instance=f"vlan {vlan}",
+                )
+        else:
+            snooped = set(hp.get_dhcp_snooping_vlans())
+            for vlan in sorted(configured_vlans):
+                record_control(
+                    parser, "hp.procurve.dhcp-snooping", CO.NO_FINDING if vlan in snooped else CO.FINDING,
+                    "DHCP snooping is enabled for this VLAN." if vlan in snooped
+                    else "DHCP snooping is not configured for this VLAN.",
+                    instance=f"vlan {vlan}",
+                )
         if (
             configured_vlans
             and hp.has_supported_default_release()
@@ -523,6 +746,23 @@ class PluginHPChecks(BasePlugin):
     def check_edge_protections(self, parser: BaseDeviceParser) -> None:
         hp = self._hp(parser)
         ports = hp.get_port_protections() if hp.has_supported_layer2_release() else ()
+        edge_controls = (
+            "hp.procurve.access-edge-vlan-trust", "hp.procurve.access-edge-dot1x",
+            "hp.procurve.access-edge-bpdu-protection", "hp.procurve.access-edge-spoofing-protection",
+        )
+        edge_roles = any(role == "access-edge" for _, role in parser.assessment_context.interface_roles)
+        if not edge_roles:
+            for control in edge_controls:
+                record_control(parser, control, CO.NOT_APPLICABLE,
+                               "No port is classified access-edge by the assessment policy.")
+        elif not hp.has_supported_layer2_release():
+            for control in edge_controls:
+                record_control(parser, control, CO.UNKNOWN,
+                               "The release is outside the qualified AOS-S 16.10/16.11 Layer-2 grammar.")
+        elif not any(port.active and port.role == "access-edge" for port in ports):
+            for control in edge_controls:
+                record_control(parser, control, CO.NOT_APPLICABLE,
+                               "No active port is classified access-edge by the assessment policy.")
         for port in ports:
             if not port.active or port.role != "access-edge":
                 continue
@@ -530,6 +770,12 @@ class PluginHPChecks(BasePlugin):
                 f"assessment policy: port {port.port} role access-edge",
             )
             if port.tagged:
+                record_control(parser, "hp.procurve.access-edge-vlan-trust", CO.FINDING,
+                               "The access-edge port has tagged VLAN membership.", instance=f"port {port.port}")
+                for control in edge_controls[1:]:
+                    record_control(parser, control, CO.UNKNOWN,
+                                   "The port carries tagged VLANs; per-port access-edge protections were not evaluated.",
+                                   instance=f"port {port.port}")
                 self.add_issue(Finding(
                     rule_id="hp.procurve.layer2.access_edge_trunk",
                     device=parser.device_type,
@@ -550,6 +796,43 @@ class PluginHPChecks(BasePlugin):
                     ("ARP protection", port.arp_trusted),
                 ) if enabled
             ]
+            record_control(
+                parser, "hp.procurve.access-edge-vlan-trust", CO.FINDING if trusted else CO.NO_FINDING,
+                ("The port is trusted for " + ", ".join(trusted) + ".") if trusted
+                else "Untagged membership only and no DHCP-snooping/ARP trust.",
+                instance=f"port {port.port}",
+            )
+            record_control(
+                parser, "hp.procurve.access-edge-dot1x",
+                CO.FINDING if port.dot1x_control == "authorized"
+                else CO.NOT_APPLICABLE if port.dot1x_control is None else CO.NO_FINDING,
+                "No 802.1X authenticator port control is configured on this port." if port.dot1x_control is None
+                else f"802.1X authenticator control is '{port.dot1x_control}'.",
+                instance=f"port {port.port}",
+            )
+            record_control(
+                parser, "hp.procurve.access-edge-bpdu-protection",
+                CO.FINDING if port.bpdu_protection is False or (port.bpdu_protection is True and port.bpdu_filter is True)
+                else CO.NO_FINDING,
+                "BPDU protection is explicitly disabled." if port.bpdu_protection is False
+                else "BPDU protection is combined with BPDU filtering." if port.bpdu_protection and port.bpdu_filter
+                else "BPDU protection is enabled without filtering." if port.bpdu_protection
+                else "BPDU protection is not configured for this port (omitted); the check reports only explicit disablement or filter bypass.",
+                instance=f"port {port.port}",
+            )
+            lacking = [
+                label for label, present, applies in (
+                    ("Dynamic ARP protection", port.arp_protected, bool(port.vlans)),
+                    ("Dynamic IP Lockdown", port.source_lockdown, True),
+                    ("port security", port.port_security, True),
+                ) if applies and not present
+            ]
+            record_control(
+                parser, "hp.procurve.access-edge-spoofing-protection", CO.FINDING if lacking else CO.NO_FINDING,
+                ("The port lacks " + ", ".join(lacking) + ".") if lacking
+                else "ARP protection, IP lockdown and port security are configured.",
+                instance=f"port {port.port}",
+            )
             if trusted:
                 self.add_issue(Finding(
                     rule_id="hp.procurve.layer2.access_edge_trust",
@@ -630,6 +913,29 @@ class PluginHPChecks(BasePlugin):
         hp = self._hp(parser)
         logging = hp.get_remote_logging_policy()
         destinations = hp.get_logging_destinations()
+        record_control(
+            parser, "hp.procurve.remote-logging", CO.NO_FINDING if destinations else CO.FINDING,
+            "An active remote syslog destination is configured." if destinations
+            else "No active remote syslog destination is configured.",
+        )
+        if not destinations:
+            record_control(parser, "hp.procurve.remote-event-logging", CO.NOT_APPLICABLE,
+                           "No active remote syslog destination is configured.")
+        elif not hp.has_supported_administrative_release():
+            record_control(parser, "hp.procurve.remote-event-logging", CO.UNKNOWN,
+                           "The release is outside the qualified AOS-S 16.10/16.11 logging defaults.")
+        elif logging.event_enabled is False:
+            record_control(parser, "hp.procurve.remote-event-logging", CO.FINDING,
+                           "'no debug event' suppresses Event Log forwarding.")
+        elif logging.severity_state == "explicit" and logging.severity == "major":
+            record_control(parser, "hp.procurve.remote-event-logging", CO.FINDING,
+                           "The explicit 'major' severity filter excludes error events.")
+        elif logging.severity_state == "invalid" or logging.event_enabled is None:
+            record_control(parser, "hp.procurve.remote-event-logging", CO.UNKNOWN,
+                           "The Event Log forwarding state or severity filter is not recognized.")
+        else:
+            record_control(parser, "hp.procurve.remote-event-logging", CO.NO_FINDING,
+                           f"Event Log forwarding is enabled with severity filter {logging.severity or 'not set'}.")
         if not destinations:
             self.add_issue(
                 Finding(
@@ -692,6 +998,25 @@ class PluginHPChecks(BasePlugin):
                     basis=FindingBasis.EXPLICIT_VALUE,
                 ))
         associations = hp.get_sntp_associations()
+        record_control(
+            parser, "hp.procurve.ntp-servers", CO.NO_FINDING if associations else CO.FINDING,
+            "An SNTP server is configured." if associations else "No active SNTP server is configured.",
+        )
+        if not associations:
+            record_control(parser, "hp.procurve.ntp-authentication", CO.NOT_APPLICABLE,
+                           "No SNTP server is configured.")
+        elif not hp.has_supported_sntp_release():
+            record_control(parser, "hp.procurve.ntp-authentication", CO.UNKNOWN,
+                           "The release is outside the qualified AOS-S 16.10/16.11 SNTP defaults.")
+        else:
+            for association in associations:
+                record_control(
+                    parser, "hp.procurve.ntp-authentication",
+                    CO.FINDING if association.authentication_state in {"unauthenticated", "unresolved"}
+                    else CO.NO_FINDING if association.authentication_state == "authenticated" else CO.UNKNOWN,
+                    f"SNTP authentication state: {association.authentication_state}.",
+                    instance=f"sntp server {association.address}",
+                )
         if not associations:
             self.add_issue(
                 Finding(

@@ -3277,6 +3277,18 @@ class JunOSParser(BaseDeviceParser):
                 ))
         return records
 
+    def get_signalling_protocol_instances(self) -> tuple[tuple[str, str], ...]:
+        """(protocol, routing-instance) pairs where LDP, RSVP or MSDP has active configuration."""
+        found: set[tuple[str, str]] = set()
+        for statement in self.statements:
+            if not statement.active:
+                continue
+            for protocol in ("ldp", "rsvp", "msdp"):
+                scoped = self._routing_scope(statement.path, protocol)
+                if scoped is not None:
+                    found.add((protocol, scoped[0]))
+        return tuple(sorted(found))
+
     def get_bfd_sessions(self) -> list[tuple[str, str, tuple[ConfigEvidence, ...]]]:
         """``bfd-liveness-detection`` blocks and their authentication state.
 

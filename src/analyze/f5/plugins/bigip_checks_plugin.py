@@ -88,18 +88,27 @@ class PluginF5BIGIPChecks(BasePlugin):
         if not isinstance(parser, F5BIGIPParser):
             raise TypeError("PluginF5BIGIPChecks requires an F5BIGIPParser")
         self._lockdown_names: set[str] = set()  # self IPs that received a port-lockdown finding
+        self._fired_at: dict[str, set[str]] = {}  # rule ID -> instance keys that fired (SC-049)
         setting = parser.get_setting
         ssh_login = setting("sys sshd", "login")
         ssh_active = ssh_login is not None and ssh_login.value == "enabled"
         ssh_allow = setting("sys sshd", "allow")
-        if ssh_active and ssh_allow and ssh_allow.value == "unrestricted":
+        # An omitted 'login' inside an exported sys sshd block is the documented default
+        # 'enabled' (tmsh sys sshd reference, v13-v17); outside that range it stays ungraded.
+        release = parser.get_release()
+        ssh_default_on = (ssh_login is None and parser.has_object("sys sshd")
+                          and release is not None and (13, 0, 0) <= release < (18, 0, 0))
+        if (ssh_active or ssh_default_on) and ssh_allow and ssh_allow.value == "unrestricted":
             self._emit(parser, ssh_allow, rule_id="f5.bigip.ssh.unrestricted_sources",
                        title="SSH permits unrestricted management sources",
-                       observation="The explicitly enabled SSH service has an unrestricted source allow setting.",
+                       observation=("The explicitly enabled SSH service has an unrestricted source allow setting."
+                                    if ssh_active else
+                                    "SSH 'login' is not configured, so the documented default 'enabled' applies, and the "
+                                    "source allow setting is explicitly unrestricted."),
                        impact="More hosts can attempt administrative SSH authentication.",
                        recommendation="Restrict SSH to authorized management addresses.",
                        severity=Severity.HIGH, reference=SSHD,
-                       basis=FindingBasis.EXPLICIT_VALUE)
+                       basis=FindingBasis.EXPLICIT_VALUE if ssh_active else FindingBasis.DOCUMENTED_DEFAULT)
         ssh_timeout = setting("sys sshd", "inactivity-timeout")
         if ssh_active and ssh_timeout and ssh_timeout.value == 0:
             self._emit(parser, ssh_timeout, rule_id="f5.bigip.ssh.idle_timeout_disabled",
@@ -194,6 +203,7 @@ class PluginF5BIGIPChecks(BasePlugin):
                        basis=FindingBasis.EXPLICIT_VALUE)
         for credential in parser.get_local_user_credentials():
             if credential.known_default:
+                self._mark("f5.bigip.credentials.known_default_value", credential.name)
                 self.add_issue(Finding(
                     rule_id="f5.bigip.credentials.known_default_value",
                     device=parser.device_type,
@@ -210,6 +220,7 @@ class PluginF5BIGIPChecks(BasePlugin):
                 ))
             if credential.storage != "plaintext":
                 continue
+            self._mark("f5.bigip.credentials.local_plaintext", credential.name)
             self.add_issue(Finding(
                 rule_id="f5.bigip.credentials.local_plaintext",
                 device=parser.device_type,
@@ -309,6 +320,7 @@ class PluginF5BIGIPChecks(BasePlugin):
                        severity=Severity.MEDIUM, reference=SYSLOG,
                        basis=FindingBasis.REQUIRED_SETTING_MISSING)
         for virtual, profile in parser.get_bound_cleartext_client_ssl():
+            self._mark("f5.bigip.ltm.clientssl_cleartext_enabled", f"{virtual.name}|{profile.name}")
             self.add_issue(Finding(
                 rule_id="f5.bigip.ltm.clientssl_cleartext_enabled",
                 device=parser.device_type,
@@ -324,6 +336,7 @@ class PluginF5BIGIPChecks(BasePlugin):
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
         self._record_controls(parser)
+        self._record_completion(parser)
 
     def _record_controls(self, parser: F5BIGIPParser) -> None:
         """SC-049 fifth batch: one outcome per control (per self IP) after the checks ran."""
@@ -384,7 +397,7 @@ class PluginF5BIGIPChecks(BasePlugin):
             record_control(parser, control, CO.NO_FINDING, "SSH is limited to listed source addresses.")
         elif allow is not None and allow.value == "unrestricted":
             record_control(parser, control, CO.UNKNOWN,
-                           "SSH allow is unrestricted but the login state is omitted; the check grades it only when login is explicitly enabled.")
+                           "SSH allow is unrestricted and login is omitted; the login default is documented only for 13.x-17.x.")
         else:
             record_control(parser, control, CO.UNKNOWN,
                            "The SSH allow value is malformed or its default is not verified for this release.")
@@ -453,6 +466,471 @@ class PluginF5BIGIPChecks(BasePlugin):
             record_control(parser, control, CO.NOT_APPLICABLE, "Authentication source is local.")
         else:
             record_control(parser, control, CO.UNKNOWN, "No auth remote-user block is exported.")
+
+    def _mark(self, rule_id: str, instance: str) -> None:
+        """Remember which instance a per-object rule fired for (SC-049 control outcomes)."""
+        self._fired_at.setdefault(rule_id, set()).add(instance)
+
+    def _record_fired(self, parser: F5BIGIPParser, control: str, rule_ids: tuple[str, ...], reason: str) -> set[str]:
+        keys = set().union(*(self._fired_at.get(rule_id, set()) for rule_id in rule_ids))
+        for key in sorted(keys):
+            record_control(parser, control, CO.FINDING, reason, instance=key)
+        return keys
+
+    def _record_completion(self, parser: F5BIGIPParser) -> None:
+        """SC-049 completion: outcomes for the remaining F5 controls on every decision path."""
+        fired = {issue.rule_id for issue in self.issues}
+        setting = parser.get_setting
+        release = parser.get_release()
+        documented = release is not None and (13, 0, 0) <= release < (18, 0, 0)  # tmsh reference v13-v17
+
+        def malformed(item: F5Setting | None) -> bool:
+            return item is not None and item.value is None
+
+        self._record_management_controls(parser, fired, setting, release, documented, malformed)
+        self._record_account_controls(parser, fired, setting, release, documented, malformed)
+        self._record_service_controls(parser, fired)
+        self._record_traffic_controls(parser, fired, release)
+
+    def _record_management_controls(self, parser, fired, setting, release, documented, malformed) -> None:
+        login = setting("sys sshd", "login")
+        sshd = parser.has_object("sys sshd")
+
+        control = "f5.bigip.ssh-idle-timeout"
+        timeout = setting("sys sshd", "inactivity-timeout")
+        if "f5.bigip.ssh.idle_timeout_disabled" in fired:
+            record_control(parser, control, CO.FINDING, "The SSH inactivity timeout is zero or omitted (documented default 0).")
+        elif not sshd:
+            record_control(parser, control, CO.UNKNOWN, "No sys sshd block is exported.")
+        elif malformed(login) or malformed(timeout):
+            record_control(parser, control, CO.UNKNOWN, "The sys sshd login or inactivity-timeout value is malformed.")
+        elif login is not None and login.value == "disabled":
+            record_control(parser, control, CO.NOT_APPLICABLE, "SSH login is disabled.")
+        elif timeout is not None and timeout.value > 0:
+            record_control(parser, control, CO.NO_FINDING, "The SSH inactivity timeout is finite.")
+        elif timeout is not None:
+            record_control(parser, control, CO.UNKNOWN,
+                           "inactivity-timeout is explicitly 0 while login is omitted; the check grades an explicit "
+                           "zero only with an explicit 'login enabled'.")
+        else:
+            record_control(parser, control, CO.UNKNOWN,
+                           "inactivity-timeout is omitted and its default is documented only for 13.x-17.x.")
+
+        control = "f5.bigip.console-idle-timeout"
+        console = setting("sys global-settings", "console-inactivity-timeout")
+        if "f5.bigip.console.idle_timeout_disabled" in fired:
+            record_control(parser, control, CO.FINDING, "The console inactivity timeout is zero or omitted (documented default 0).")
+        elif malformed(console):
+            record_control(parser, control, CO.UNKNOWN, "The console-inactivity-timeout value is malformed.")
+        elif console is not None:
+            record_control(parser, control, CO.NO_FINDING, "The console inactivity timeout is finite.")
+        elif not parser.has_object("sys global-settings"):
+            record_control(parser, control, CO.UNKNOWN, "No sys global-settings block is exported.")
+        else:
+            record_control(parser, control, CO.UNKNOWN,
+                           "console-inactivity-timeout is omitted and its default is documented only for 13.x-17.x.")
+
+        control = "f5.bigip.cli-audit"
+        audit = setting("cli global-settings", "audit")
+        if "f5.bigip.cli.audit_disabled" in fired:
+            record_control(parser, control, CO.FINDING, "tmsh command auditing is disabled.")
+        elif malformed(audit):
+            record_control(parser, control, CO.UNKNOWN, "The cli global-settings audit value is malformed.")
+        elif audit is not None:
+            record_control(parser, control, CO.NO_FINDING, "tmsh command auditing is enabled.")
+        elif not parser.has_object("cli global-settings"):
+            record_control(parser, control, CO.UNKNOWN, "No cli global-settings block is exported.")
+        elif documented:
+            record_control(parser, control, CO.NO_FINDING,
+                           "audit is omitted; the tmsh cli global-settings reference documents the default enabled.")
+        else:
+            record_control(parser, control, CO.UNKNOWN, "audit is omitted and its default is not verified for this release.")
+
+        httpd_off = (lambda allow: allow is not None and allow.value == "none")(setting("sys httpd", "allow"))
+        control = "f5.bigip.httpd-tls-protocol"
+        protocol = setting("sys httpd", "ssl-protocol")
+        if "f5.bigip.http.legacy_tls_protocol" in fired:
+            record_control(parser, control, CO.FINDING, "The configuration utility accepts SSLv3, TLS 1.0 or TLS 1.1.")
+        elif httpd_off:
+            record_control(parser, control, CO.NOT_APPLICABLE, "The configuration utility allows no source (allow none).")
+        elif malformed(protocol):
+            record_control(parser, control, CO.UNKNOWN, "The ssl-protocol value is malformed or unsupported.")
+        elif protocol is not None:
+            record_control(parser, control, CO.NO_FINDING, "ssl-protocol enables no protocol older than TLS 1.2.")
+        elif not parser.has_object("sys httpd"):
+            record_control(parser, control, CO.UNKNOWN, "No sys httpd block is exported.")
+        else:
+            record_control(parser, control, CO.UNKNOWN, "ssl-protocol is omitted and its default is not verified for this release.")
+
+        control = "f5.bigip.httpd-cipher-suite"
+        suites = setting("sys httpd", "ssl-ciphersuite")
+        if "f5.bigip.http.weak_cipher_suite" in fired:
+            record_control(parser, control, CO.FINDING, "The configuration utility offers 3DES or other weak suites.")
+        elif httpd_off:
+            record_control(parser, control, CO.NOT_APPLICABLE, "The configuration utility allows no source (allow none).")
+        elif malformed(suites):
+            record_control(parser, control, CO.UNKNOWN, "The ssl-ciphersuite value is malformed.")
+        elif suites is not None:
+            if weak_literal_cipher_suites(str(suites.value)) is None:
+                record_control(parser, control, CO.UNKNOWN,
+                               "ssl-ciphersuite uses keywords or operators whose effective list is not evaluated.")
+            else:
+                record_control(parser, control, CO.NO_FINDING, "ssl-ciphersuite lists no weak suite.")
+        elif not parser.has_object("sys httpd"):
+            record_control(parser, control, CO.UNKNOWN, "No sys httpd block is exported.")
+        else:
+            record_control(parser, control, CO.UNKNOWN,
+                           "ssl-ciphersuite is omitted and its default is documented only for 13.x-17.x.")
+
+        control = "f5.bigip.ssh-algorithms"
+        include = setting("sys sshd", "include")
+        if "f5.bigip.ssh.weak_algorithms" in fired:
+            record_control(parser, control, CO.FINDING, "sys sshd include allows weak SSH algorithms.")
+        elif not sshd:
+            record_control(parser, control, CO.UNKNOWN, "No sys sshd block is exported.")
+        elif malformed(login) or malformed(include):
+            record_control(parser, control, CO.UNKNOWN, "The sys sshd login or include value is malformed.")
+        elif login is not None and login.value == "disabled":
+            record_control(parser, control, CO.NOT_APPLICABLE, "SSH login is disabled.")
+        elif include is not None and all(re.search(directive + r"\s+\S+", str(include.value), re.IGNORECASE)
+                                         for directive in ("ciphers", "macs", "kexalgorithms")):
+            record_control(parser, control, CO.NO_FINDING, "Ciphers, MACs and KexAlgorithms are restricted to strong algorithms.")
+        else:
+            record_control(parser, control, CO.UNKNOWN,
+                           "Ciphers, MACs or KexAlgorithms are not all set in sys sshd include; the release's default "
+                           "algorithm sets are not verified.")
+
+    def _record_account_controls(self, parser, fired, setting, release, documented, malformed) -> None:
+        policy = "auth password-policy"
+        enforcement = setting(policy, "policy-enforcement")
+        if enforcement is not None:
+            enforced = None if enforcement.value is None else enforcement.value == "enabled"
+        else:
+            # PASSWORD_POLICY_14: enabled by default from 14.0.0, disabled before.
+            enforced = None if release is None else release >= (14, 0, 0)
+        for control, rule_id, field, finding, default_ok, gap in (
+            ("f5.bigip.password-minimum-length", "f5.bigip.password_policy.minimum_length_disabled", "minimum-length",
+             "The enforced password policy sets minimum-length 0.",
+             "minimum-length is omitted; the tmsh auth password-policy reference documents the default 6.",
+             "minimum-length is 0 while policy-enforcement is at its 14.0+ default; the check grades it only with "
+             "explicit enforcement."),
+            ("f5.bigip.password-history", "f5.bigip.password_policy.history_disabled", "password-memory",
+             "The enforced password policy remembers no previous password.", None,
+             "password-memory is 0 or omitted (default 0) while policy-enforcement is at its 14.0+ default; the check "
+             "grades it only with explicit enforcement."),
+        ):
+            value = setting(policy, field)
+            if rule_id in fired:
+                record_control(parser, control, CO.FINDING, finding)
+            elif not parser.has_object(policy):
+                record_control(parser, control, CO.UNKNOWN, "No auth password-policy block is exported.")
+            elif malformed(enforcement) or malformed(value):
+                record_control(parser, control, CO.UNKNOWN, f"The policy-enforcement or {field} value is malformed.")
+            elif enforced is None:
+                record_control(parser, control, CO.UNKNOWN, "policy-enforcement is omitted and the release is not identified.")
+            elif not enforced:
+                record_control(parser, control, CO.NOT_APPLICABLE,
+                               "Password policy enforcement is disabled (explicitly or by the pre-14.0 default).")
+            elif value is not None and value.value > 0:
+                record_control(parser, control, CO.NO_FINDING, f"{field} is {value.value}.")
+            elif value is None and default_ok and documented:
+                record_control(parser, control, CO.NO_FINDING, default_ok)
+            elif value is None and default_ok:
+                record_control(parser, control, CO.UNKNOWN, f"{field} is omitted and its default is not verified for this release.")
+            else:
+                record_control(parser, control, CO.UNKNOWN, gap)
+
+        source = setting("auth source", "type")
+        remote = source is not None and source.value not in {None, "local"}
+        for control, rule_id, finding in (
+            ("f5.bigip.remote-auth-fallback", "f5.bigip.auth.remote_fallback_local",
+             "Remote authentication falls back to local accounts."),
+            ("f5.bigip.remote-auth-servers", "f5.bigip.auth.active_remote_servers_none",
+             "Every provider of the active remote authentication source sets servers none."),
+        ):
+            if rule_id in fired:
+                record_control(parser, control, CO.FINDING, finding)
+            elif not parser.has_object("auth source"):
+                record_control(parser, control, CO.UNKNOWN, "No auth source block is exported.")
+            elif malformed(source):
+                record_control(parser, control, CO.UNKNOWN, "The auth source type value is malformed.")
+            elif not remote:
+                record_control(parser, control, CO.NOT_APPLICABLE,
+                               "The authentication source is local (explicit or the documented default).")
+            elif control == "f5.bigip.remote-auth-fallback":
+                fallback = setting("auth source", "fallback")
+                if malformed(fallback):
+                    record_control(parser, control, CO.UNKNOWN, "The auth source fallback value is malformed.")
+                else:
+                    record_control(parser, control, CO.NO_FINDING,
+                                   "fallback is false" + (" (omitted: documented default false)." if fallback is None else "."))
+            elif source.value not in {"radius", "ldap", "tacacs", "cert-ldap"}:
+                record_control(parser, control, CO.UNKNOWN, f"Provider servers are not evaluated for auth source type {source.value}.")
+            else:
+                profiles = parser.get_remote_auth_profiles(str(source.value))
+                if not profiles:
+                    record_control(parser, control, CO.UNKNOWN, f"No auth {source.value} provider object is exported.")
+                elif any(profile.servers_state == "configured" for profile in profiles):
+                    record_control(parser, control, CO.NO_FINDING, "A provider of the active source lists servers.")
+                else:
+                    record_control(parser, control, CO.UNKNOWN,
+                                   "The provider servers value is missing or malformed (tmsh requires servers).")
+
+        control = "f5.bigip.local-credentials"
+        keys = self._record_fired(parser, control, ("f5.bigip.credentials.known_default_value",
+                                                    "f5.bigip.credentials.local_plaintext"),
+                                  "The local password is a factory default or stored in plaintext.")
+        credentials = parser.get_local_user_credentials()
+        if not credentials:
+            record_control(parser, control, CO.UNKNOWN, "No local user password is exported.")
+        for credential in credentials:
+            if credential.name in keys:
+                continue
+            if credential.storage == "encrypted":
+                record_control(parser, control, CO.NO_FINDING, "The password is stored as a hash that is not a factory default.",
+                               instance=credential.name)
+            else:
+                record_control(parser, control, CO.UNKNOWN, "The password value is masked in the export.",
+                               instance=credential.name)
+
+    def _record_service_controls(self, parser, fired) -> None:
+        control = "f5.bigip.monitor-credentials"
+        if "f5.bigip.credentials.monitor_storage" in fired:
+            record_control(parser, control, CO.FINDING, "A health monitor send string carries Basic credentials.")
+        elif parser.get_http_monitor_count():
+            record_control(parser, control, CO.NO_FINDING, "No HTTP/HTTPS monitor send string carries Basic credentials.")
+        else:
+            record_control(parser, control, CO.NOT_APPLICABLE, "No HTTP/HTTPS monitor is configured.")
+
+        snmp = parser.has_object("sys snmp")
+        agent = parser.get_snmp_agent()
+        reachable = agent is not None and agent.client_scope in {"unrestricted", "restricted"}
+        communities = parser.get_snmp_communities()
+        traps = parser.get_snmp_traps()
+        control = "f5.bigip.snmp-legacy-version"
+        if "f5.bigip.snmp.legacy_version" in fired:
+            record_control(parser, control, CO.FINDING, "SNMPv1/v2c communities are reachable or traps use v1/v2c.")
+        elif not snmp:
+            record_control(parser, control, CO.UNKNOWN, "No sys snmp block is exported.")
+        elif agent is not None and agent.client_scope == "unknown":
+            record_control(parser, control, CO.UNKNOWN, "The SNMP allowed-addresses value is malformed.")
+        elif reachable and communities and any(
+                state == "enable" for state, _ in parser.get_snmp_legacy_versions().values()):
+            record_control(parser, control, CO.UNKNOWN,
+                           "snmpv1/snmpv2c are omitted and their default is documented only for 13.x-17.x.")
+        elif any(version != "3" for _, version, _ in traps):
+            record_control(parser, control, CO.UNKNOWN, "A trap target omits its version or uses an unrecognized one.")
+        elif (reachable and communities) or traps:
+            record_control(parser, control, CO.NO_FINDING, "SNMPv1/v2c are disabled for reachable communities and traps use v3.")
+        else:
+            record_control(parser, control, CO.NOT_APPLICABLE,
+                           "No community is reachable from non-local clients and no trap target is configured.")
+
+        control = "f5.bigip.snmpv3-users"
+        keys = self._record_fired(parser, control, ("f5.bigip.snmp.v3_security", "f5.bigip.snmp.v3_weak_algorithm"),
+                                  "The SNMPv3 user lacks auth-privacy or uses MD5/DES.")
+        users = parser.get_snmp_users()
+        if not snmp:
+            record_control(parser, control, CO.UNKNOWN, "No sys snmp block is exported.")
+        elif agent is not None and agent.client_scope == "unknown":
+            record_control(parser, control, CO.UNKNOWN, "The SNMP allowed-addresses value is malformed.")
+        elif not reachable:
+            record_control(parser, control, CO.NOT_APPLICABLE, "SNMP clients are limited to the local host.")
+        elif not users:
+            record_control(parser, control, CO.NOT_APPLICABLE, "No SNMPv3 user is configured.")
+        else:
+            for user in users:
+                if user.name in keys:
+                    continue
+                if (user.security_level == "auth-privacy" and user.auth_protocol.startswith("sha")
+                        and user.privacy_protocol.startswith("aes")):
+                    record_control(parser, control, CO.NO_FINDING, "auth-privacy with SHA and AES.", instance=user.name)
+                else:
+                    record_control(parser, control, CO.UNKNOWN,
+                                   "security-level, auth-protocol or privacy-protocol is omitted or unrecognized.",
+                                   instance=user.name)
+
+        control = "f5.bigip.ntp-authentication"
+        keys = self._record_fired(parser, control, ("f5.bigip.ntp.unauthenticated_server",),
+                                  "The NTP server is used without authentication.")
+        servers = parser.get_ntp_servers()
+        if not parser.has_ntp_section():
+            record_control(parser, control, CO.UNKNOWN, "No sys ntp block is exported.")
+        elif not servers:
+            record_control(parser, control, CO.NOT_APPLICABLE, "No NTP server is configured.")
+        for server in servers:
+            key = f"{server.source}:{server.address}"
+            if key not in keys:
+                record_control(parser, control, CO.UNKNOWN,
+                               "The server references a trusted key whose material is outside the export.", instance=key)
+
+        modules = parser.get_provisioned_modules()
+        control = "f5.bigip.afm-default-action"
+        if "f5.bigip.afm.default_accept" in fired:
+            record_control(parser, control, CO.FINDING, "AFM accepts traffic that no rule matches.")
+        elif not modules:
+            record_control(parser, control, CO.UNKNOWN, "No sys provision object is exported.")
+        elif modules.get("afm", "none") == "none":
+            record_control(parser, control, CO.NOT_APPLICABLE, "AFM is not provisioned.")
+        elif parser.get_firewall_default_action()[0] in {"drop", "reject"}:
+            record_control(parser, control, CO.NO_FINDING, "The AFM default action drops or rejects unmatched traffic.")
+        else:
+            record_control(parser, control, CO.UNKNOWN, "The tm.fw.defaultaction value is not recognized.")
+
+        control = "f5.bigip.asm-enforcement"
+        keys = self._record_fired(parser, control, ("f5.bigip.asm.inactive_policy", "f5.bigip.asm.transparent_policy"),
+                                  "The bound ASM policy is inactive or transparent.")
+        bindings = parser.get_asm_bindings() if modules.get("asm", "none") != "none" else ()
+        if not modules:
+            record_control(parser, control, CO.UNKNOWN, "No sys provision object is exported.")
+        elif not bindings:
+            record_control(parser, control, CO.NOT_APPLICABLE,
+                           "ASM is not provisioned or no enabled virtual server enables an exported ASM policy.")
+        for virtual, _, asm in bindings:
+            key = f"{virtual.name}|{asm.name}"
+            if key in keys:
+                continue
+            if asm.active and asm.blocking_mode == "enabled":
+                record_control(parser, control, CO.NO_FINDING, "The ASM policy is active and blocking.", instance=key)
+            else:
+                record_control(parser, control, CO.UNKNOWN, "blocking-mode is omitted or unrecognized.", instance=key)
+
+        peers = parser.get_ike_peers()
+        for control, rule_id, finding in (
+            ("f5.bigip.ike-version", "f5.bigip.vpn.ikev1", "The IKE peer negotiates only IKEv1."),
+            ("f5.bigip.ike-aggressive-mode", "f5.bigip.vpn.ike_aggressive_mode",
+             "The IKE peer uses IKEv1 aggressive mode with a pre-shared key."),
+        ):
+            keys = self._record_fired(parser, control, (rule_id,), finding)
+            if not peers:
+                record_control(parser, control, CO.NOT_APPLICABLE, "No IPsec IKE peer is configured.")
+            for peer in peers:
+                if peer.name in keys:
+                    continue
+                if not peer.enabled:
+                    record_control(parser, control, CO.NOT_APPLICABLE, "The IKE peer is disabled.", instance=peer.name)
+                elif control == "f5.bigip.ike-version":
+                    if "v2" in peer.versions:
+                        record_control(parser, control, CO.NO_FINDING, "The IKE peer offers IKEv2.", instance=peer.name)
+                    else:
+                        record_control(parser, control, CO.UNKNOWN,
+                                       "The IKE version is not graded (unrecognized value or unidentified release).",
+                                       instance=peer.name)
+                elif ("v1" not in peer.versions or peer.mode == "main"
+                      or (peer.mode == "aggressive" and peer.auth_method not in {"pre-shared-key", "unknown"})):
+                    record_control(parser, control, CO.NO_FINDING,
+                                   "The IKE peer does not use IKEv1 aggressive mode with a pre-shared key.", instance=peer.name)
+                else:
+                    record_control(parser, control, CO.UNKNOWN,
+                                   "mode or phase1-auth-method is omitted or unrecognized; no default is documented.",
+                                   instance=peer.name)
+
+    def _record_traffic_controls(self, parser, fired, release) -> None:
+        client = parser.get_client_ssl_bindings()
+        control = "f5.bigip.clientssl-cleartext"
+        keys = self._record_fired(parser, control, ("f5.bigip.ltm.clientssl_cleartext_enabled",),
+                                  "The client SSL profile permits non-SSL traffic.")
+        if not client:
+            record_control(parser, control, CO.NOT_APPLICABLE, "No enabled virtual server attaches a client SSL profile.")
+        for virtual, name, profile in client:
+            key = f"{virtual.name}|{name}"
+            if key in keys:
+                continue
+            if profile is None:
+                record_control(parser, control, CO.NO_FINDING,
+                               "Built-in clientssl profile: documented default allow-non-ssl disabled.", instance=key)
+            elif profile.allow_non_ssl is False:
+                record_control(parser, control, CO.NO_FINDING, "allow-non-ssl is disabled.", instance=key)
+            elif profile.mode_enabled is False:
+                record_control(parser, control, CO.NOT_APPLICABLE, "SSL processing is disabled on this profile.", instance=key)
+            elif profile.allow_non_ssl is None and (
+                    not profile.parent or (profile.parent.rsplit("/", 1)[-1] == "clientssl"
+                                           and parser.get_client_ssl_profile(profile.parent) is None)):
+                record_control(parser, control, CO.NO_FINDING,
+                               "allow-non-ssl is omitted and inherited from the built-in default disabled.", instance=key)
+            else:
+                record_control(parser, control, CO.UNKNOWN,
+                               "allow-non-ssl or mode is inherited from an exported parent or omitted; not evaluated.",
+                               instance=key)
+
+        control = "f5.bigip.clientssl-tls"
+        keys = self._record_fired(parser, control, ("f5.bigip.ltm.clientssl_weak_cipher", "f5.bigip.ltm.clientssl_legacy_tls"),
+                                  "The client SSL profile offers weak ciphers or TLS 1.0/1.1.")
+        defaults = {f"{virtual.name}|{name}" for virtual, name, _, _ in parser.get_bound_default_cipher_profiles()}
+        if not client:
+            record_control(parser, control, CO.NOT_APPLICABLE, "No enabled virtual server attaches a client SSL profile.")
+        for virtual, name, _ in client:
+            key = f"{virtual.name}|{name}"
+            if key in keys:
+                continue
+            if key in defaults and release is not None:
+                record_control(parser, control, CO.NO_FINDING,
+                               "The built-in DEFAULT cipher string has no weak suite on this release and the profile "
+                               "disables TLS 1.0 and 1.1.", instance=key)
+            elif key in defaults:
+                record_control(parser, control, CO.UNKNOWN, "The DEFAULT cipher string is release dependent; release unknown.",
+                               instance=key)
+            else:
+                record_control(parser, control, CO.UNKNOWN,
+                               "A custom cipher string or group is evaluated only for explicit weak tokens.", instance=key)
+
+        control = "f5.bigip.cookie-encryption"
+        keys = self._record_fired(parser, control, ("f5.bigip.ltm.cookie_unencrypted",),
+                                  "The persistence cookie is not encrypted.")
+        cookies = parser.get_cookie_persistence_bindings()
+        if not cookies:
+            record_control(parser, control, CO.NOT_APPLICABLE, "No enabled virtual server uses cookie persistence.")
+        for virtual, name, encryption, method in cookies:
+            key = f"{virtual.name}|{name}"
+            if key in keys:
+                continue
+            if encryption in {"required", "preferred"}:
+                record_control(parser, control, CO.NO_FINDING, f"cookie-encryption is {encryption}.", instance=key)
+            elif (method or "insert") not in {"insert", "rewrite", "passive"}:
+                record_control(parser, control, CO.NOT_APPLICABLE,
+                               f"Cookie method {method} does not encode the pool member address.", instance=key)
+            else:
+                record_control(parser, control, CO.UNKNOWN,
+                               "cookie-encryption is inherited or unrecognized; not evaluated.", instance=key)
+
+        control = "f5.bigip.serverssl-validation"
+        keys = self._record_fired(parser, control, ("f5.bigip.ltm.serverssl_no_cert_validation",),
+                                  "The server SSL profile does not verify the pool member certificate.")
+        servers = parser.get_server_ssl_bindings()
+        if not servers:
+            record_control(parser, control, CO.NOT_APPLICABLE, "No enabled virtual server re-encrypts with a server SSL profile.")
+        for virtual, name, mode in servers:
+            key = f"{virtual.name}|{name}"
+            if key in keys:
+                continue
+            if mode == "require":
+                record_control(parser, control, CO.NO_FINDING, "peer-cert-mode is require.", instance=key)
+            else:
+                record_control(parser, control, CO.UNKNOWN, f"peer-cert-mode {mode} is not graded.", instance=key)
+
+        control = "f5.bigip.virtual-risky-services"
+        keys = self._record_fired(parser, control, ("f5.bigip.ltm.risky_service_exposure",),
+                                  "The virtual server publishes a catalogued risky service to any source.")
+        endpoints = parser.get_virtual_endpoints()
+        if not endpoints:
+            record_control(parser, control, CO.NOT_APPLICABLE, "No enabled virtual server publishes a destination.")
+        for endpoint in endpoints:
+            key = endpoint.virtual.name
+            if key in keys:
+                continue
+            number = (int(endpoint.port) if endpoint.port.isdigit()
+                      else CISCO_PORT_NAMES.get(endpoint.port.casefold()))
+            if endpoint.protocol == "unknown" or endpoint.source == "unknown":
+                record_control(parser, control, CO.UNKNOWN,
+                               "The IP protocol or source is omitted and its default is not verified for this release.",
+                               instance=key)
+            elif not _ANY_SOURCE.match(endpoint.source.casefold()):
+                record_control(parser, control, CO.NO_FINDING, "The source address is restricted.", instance=key)
+            elif number is None:
+                record_control(parser, control, CO.UNKNOWN, f"Port {endpoint.port} is not resolved.", instance=key)
+            else:
+                record_control(parser, control, CO.NO_FINDING, "The published port is not a catalogued risky service.",
+                               instance=key)
 
     def _default(self, parser: F5BIGIPParser, rule_id: str, title: str, observation: str, impact: str,
                  recommendation: str, severity: Severity, evidence: tuple, references: tuple) -> None:
@@ -560,6 +1038,7 @@ class PluginF5BIGIPChecks(BasePlugin):
             if release < (13, 1, 0):
                 weak.append("3DES (DEFAULT before 13.1.0)")
             if weak:
+                self._mark("f5.bigip.ltm.clientssl_weak_cipher", f"{virtual.name}|{profile}")
                 self._default(parser, "f5.bigip.ltm.clientssl_weak_cipher",
                               "Client SSL profile uses a DEFAULT cipher string that includes weak suites",
                               f"Enabled virtual server '{virtual.name}' uses Client SSL profile '{profile}', which resolves to the "
@@ -571,6 +1050,7 @@ class PluginF5BIGIPChecks(BasePlugin):
             lowered = {item.casefold() for item in options}
             if not {"no-tlsv1", "no-tlsv1.1"} <= lowered:
                 missing = [item for item in ("no-tlsv1", "no-tlsv1.1") if item not in lowered]
+                self._mark("f5.bigip.ltm.clientssl_legacy_tls", f"{virtual.name}|{profile}")
                 self._default(parser, "f5.bigip.ltm.clientssl_legacy_tls",
                               "Client SSL profile accepts TLS 1.0/1.1",
                               f"Enabled virtual server '{virtual.name}' uses Client SSL profile '{profile}' with the DEFAULT cipher "
@@ -595,6 +1075,7 @@ class PluginF5BIGIPChecks(BasePlugin):
         # F5-22: net ipsec ike-peer version defaults to v1.
         for peer in parser.get_ike_peers():
             if peer.enabled and peer.versions == ("v1",):
+                self._mark("f5.bigip.vpn.ikev1", peer.name)
                 self.add_issue(Finding(
                     rule_id="f5.bigip.vpn.ikev1", device=parser.device_type,
                     title="IPsec peer uses IKEv1",
@@ -718,6 +1199,7 @@ class PluginF5BIGIPChecks(BasePlugin):
             ))
         for user in parser.get_snmp_users():
             if user.security_level in {"no-auth-no-privacy", "auth-no-privacy"}:
+                self._mark("f5.bigip.snmp.v3_security", user.name)
                 self.add_issue(Finding(
                     rule_id="f5.bigip.snmp.v3_security",
                     device=parser.device_type,
@@ -732,6 +1214,7 @@ class PluginF5BIGIPChecks(BasePlugin):
                     basis=FindingBasis.EXPLICIT_VALUE,
                 ))
             elif user.auth_protocol == "md5" or user.privacy_protocol == "des":
+                self._mark("f5.bigip.snmp.v3_weak_algorithm", user.name)
                 self.add_issue(Finding(
                     rule_id="f5.bigip.snmp.v3_weak_algorithm",
                     device=parser.device_type,
@@ -765,6 +1248,7 @@ class PluginF5BIGIPChecks(BasePlugin):
                 detail = f"references key {server.key_id}, which no trustedkey statement trusts"
             else:
                 detail = "has no key in the include statement"
+            self._mark("f5.bigip.ntp.unauthenticated_server", f"{server.source}:{server.address}")
             self.add_issue(Finding(
                 rule_id="f5.bigip.ntp.unauthenticated_server",
                 device=parser.device_type,
@@ -812,6 +1296,7 @@ class PluginF5BIGIPChecks(BasePlugin):
         for virtual, ltm, asm in parser.get_asm_bindings():
             evidence = (virtual.evidence, ltm.evidence, asm.evidence)
             if not asm.active:
+                self._mark("f5.bigip.asm.inactive_policy", f"{virtual.name}|{asm.name}")
                 self.add_issue(Finding(
                     rule_id="f5.bigip.asm.inactive_policy",
                     device=parser.device_type,
@@ -826,6 +1311,7 @@ class PluginF5BIGIPChecks(BasePlugin):
                     basis=FindingBasis.DOCUMENTED_DEFAULT,
                 ))
             elif asm.blocking_mode == "disabled":
+                self._mark("f5.bigip.asm.transparent_policy", f"{virtual.name}|{asm.name}")
                 self.add_issue(Finding(
                     rule_id="f5.bigip.asm.transparent_policy",
                     device=parser.device_type,
@@ -880,6 +1366,7 @@ class PluginF5BIGIPChecks(BasePlugin):
             if (not peer.enabled or peer.mode != "aggressive" or peer.auth_method != "pre-shared-key"
                     or "v1" not in peer.versions):
                 continue
+            self._mark("f5.bigip.vpn.ike_aggressive_mode", peer.name)
             self.add_issue(Finding(
                 rule_id="f5.bigip.vpn.ike_aggressive_mode",
                 device=parser.device_type,
@@ -1038,6 +1525,7 @@ class PluginF5BIGIPChecks(BasePlugin):
     def _check_data_plane(self, parser: F5BIGIPParser) -> None:
         """SC-042: weak client-side ciphers and unencrypted persistence cookies on enabled virtuals."""
         for virtual, profile, weak in parser.get_bound_weak_client_ciphers():
+            self._mark("f5.bigip.ltm.clientssl_weak_cipher", f"{virtual.name}|{profile.name}")
             self.add_issue(Finding(
                 rule_id="f5.bigip.ltm.clientssl_weak_cipher",
                 device=parser.device_type,
@@ -1052,6 +1540,7 @@ class PluginF5BIGIPChecks(BasePlugin):
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
         for virtual, name, evidence in parser.get_unencrypted_cookie_persistence():
+            self._mark("f5.bigip.ltm.cookie_unencrypted", f"{virtual.name}|{name}")
             self.add_issue(Finding(
                 rule_id="f5.bigip.ltm.cookie_unencrypted",
                 device=parser.device_type,
@@ -1067,6 +1556,7 @@ class PluginF5BIGIPChecks(BasePlugin):
             ))
 
         for virtual, name, method in parser.get_default_unencrypted_cookie_persistence():
+            self._mark("f5.bigip.ltm.cookie_unencrypted", f"{virtual.name}|{name}")
             self.add_issue(Finding(
                 rule_id="f5.bigip.ltm.cookie_unencrypted",
                 device=parser.device_type,
@@ -1084,6 +1574,7 @@ class PluginF5BIGIPChecks(BasePlugin):
 
         for virtual, name, mode, evidence in parser.get_unverified_server_ssl():
             explicit = "<absent" not in evidence.text
+            self._mark("f5.bigip.ltm.serverssl_no_cert_validation", f"{virtual.name}|{name}")
             self.add_issue(Finding(
                 rule_id="f5.bigip.ltm.serverssl_no_cert_validation",
                 device=parser.device_type,
@@ -1148,6 +1639,7 @@ class PluginF5BIGIPChecks(BasePlugin):
                 )
             if not endpoint.source_explicit and release:
                 references.append(VIRTUAL_SOURCE_DEFAULT[release[0]])
+            self._mark("f5.bigip.ltm.risky_service_exposure", endpoint.virtual.name)
             self.add_issue(Finding(
                 rule_id="f5.bigip.ltm.risky_service_exposure",
                 device=parser.device_type,

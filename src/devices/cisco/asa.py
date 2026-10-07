@@ -1650,6 +1650,17 @@ class CiscoASAParser(BaseDeviceParser):
             return False, ()
         return True, tuple(enabled_lines[:2] + keys[:3])
 
+    def get_ikev1_aggressive_mode_state(self) -> str:
+        """SC-049: 'accepted', 'disabled' (am-disable with IKEv1 PSK termination) or 'not-applicable'."""
+        accepted, _ = self.get_ikev1_aggressive_mode()
+        if accepted:
+            return "accepted"
+        enabled = any(re.fullmatch(r"(?:crypto ikev1|crypto isakmp|isakmp) enable \S+", raw.strip().casefold())
+                      for raw in self._source_lines if not raw[:1].isspace())
+        keys = any(context == "tunnel_group_pre_shared_key" and "ikev2" not in account
+                   for context, account, _, _ in self._key_directive_records())
+        return "disabled" if enabled and keys else "not-applicable"
+
     def get_service_key_storage(self) -> list[tuple[str, str, str, ConfigEvidence]]:
         """Storage state of effective tunnel-group and AAA server keys, without values.
 

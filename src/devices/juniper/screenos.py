@@ -40,6 +40,8 @@ class ScreenOSInterface:
     manager_ips: list[str] = field(default_factory=list)
     disabled: bool = False
     evidence: list[ConfigEvidence] = field(default_factory=list)
+    # True once any ``set``/``unset interface <name> manage`` statement is seen.
+    management_stated: bool = False
 
 
 @dataclass
@@ -596,6 +598,7 @@ class JuniperScreenOSParser(BaseDeviceParser):
             else:
                 interface.addresses = [value for value in interface.addresses if value != " ".join(tokens[4:])]
         elif command == "manage":
+            interface.management_stated = True
             methods = [self._MANAGEMENT_ALIASES[item] for item in lowered[4:] if item in self._MANAGEMENT_ALIASES]
             if operation == "set":
                 interface.management_methods.update(methods)
@@ -1136,6 +1139,22 @@ class JuniperScreenOSParser(BaseDeviceParser):
                 evidence=(command.evidence,),
             )
         return list(credentials.values())
+
+    def get_unstated_management_interfaces(self) -> tuple[str, ...]:
+        """Enabled interfaces without any exported ``manage`` statement.
+
+        Their management services would come from a zone/release default that is
+        not verified (see docs/agent_notes/INSECURE_DEFAULTS_BY_RELEASE.md), so the
+        absence of an explicit service on them does not show it is disabled.
+        """
+
+        return tuple(
+            sorted(
+                name
+                for name, interface in self.interfaces.items()
+                if not interface.disabled and not interface.management_stated
+            )
+        )
 
     def get_services(self) -> dict:
         enabled = set(self.global_management)

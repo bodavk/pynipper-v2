@@ -204,6 +204,12 @@ class PluginASABaseline(BasePlugin):
     def check_management_sessions_and_ssh(self, parser: BaseDeviceParser) -> None:
         asa = self._asa(parser)
         console_timeout = asa.get_console_timeout()
+        record_control(parser, "cisco.asa.session-timeouts",
+                       ControlOutcome.FINDING if console_timeout.value == 0 else
+                       ControlOutcome.UNKNOWN if console_timeout.value is None else ControlOutcome.NO_FINDING,
+                       "The effective console timeout is 0 (disabled)." if console_timeout.value == 0 else
+                       "The console timeout value is invalid." if console_timeout.value is None else
+                       f"The effective console timeout is {console_timeout.value} minutes.", instance="console")
         if console_timeout.value == 0:
             evidence = (
                 (console_timeout.raw_line,)
@@ -224,8 +230,19 @@ class PluginASABaseline(BasePlugin):
             ))
 
         if not asa.get_management_grants("ssh"):
+            record_control(parser, "cisco.asa.session-timeouts", ControlOutcome.NOT_APPLICABLE,
+                           "No SSH management grant is configured.", instance="ssh")
+            record_control(parser, "cisco.asa.ssh-settings", ControlOutcome.NOT_APPLICABLE,
+                           "No SSH management grant is configured.")
             return
         ssh_timeout = asa.get_ssh_timeout()
+        ssh_timeout_long = ssh_timeout.configured and ssh_timeout.value is not None and ssh_timeout.value > 10
+        record_control(parser, "cisco.asa.session-timeouts",
+                       ControlOutcome.FINDING if ssh_timeout_long else
+                       ControlOutcome.UNKNOWN if ssh_timeout.value is None else ControlOutcome.NO_FINDING,
+                       "The explicit SSH idle timeout exceeds ten minutes." if ssh_timeout_long else
+                       "The SSH timeout value is invalid." if ssh_timeout.value is None else
+                       f"The effective SSH idle timeout is {ssh_timeout.value} minutes.", instance="ssh")
         if ssh_timeout.configured and ssh_timeout.value is not None and ssh_timeout.value > 10:
             self.add_issue(self._finding(
                 parser, "cisco.asa.ssh.idle_timeout_excessive",
@@ -237,6 +254,11 @@ class PluginASABaseline(BasePlugin):
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
         policy = asa.get_ssh_policy()
+        record_control(parser, "cisco.asa.ssh-settings",
+                       ControlOutcome.UNKNOWN if policy.version is None else
+                       ControlOutcome.NO_FINDING if policy.version == "2" else ControlOutcome.FINDING,
+                       "The SSH version is not explicit and the release default is not qualified." if policy.version is None else
+                       f"The {policy.version_source} SSH protocol state is '{policy.version}'.", instance="version")
         if policy.version is not None and policy.version != "2":
             self.add_issue(self._finding(
                 parser,
@@ -296,6 +318,20 @@ class PluginASABaseline(BasePlugin):
                 weak.append("integrity: " + ", ".join(selected))
         if policy.key_exchange in {"dh-group1-sha1", "dh-group14-sha1"}:
             weak.append("key exchange: " + policy.key_exchange)
+        omitted = [name for name, value in (("key exchange", policy.key_exchange), ("encryption", policy.encryption),
+                                            ("integrity", policy.integrity)) if value is None]
+        integrity_default_unqualified = (
+            release is not None and policy.integrity is None and release < (9, 12, 1)
+            and not (release >= (9, 4, 3) or (release[:2] == (9, 1) and release[2] >= 7)))
+        if defaults or weak:
+            outcome, reason = ControlOutcome.FINDING, "SSH offers weak explicit or documented-default algorithms."
+        elif release is None and omitted:
+            outcome, reason = ControlOutcome.UNKNOWN, f"Omitted SSH {', '.join(omitted)} default is not qualified without an identified release."
+        elif integrity_default_unqualified:
+            outcome, reason = ControlOutcome.UNKNOWN, "The SSH integrity default is not qualified for this release."
+        else:
+            outcome, reason = ControlOutcome.NO_FINDING, "Explicit and release-default SSH algorithms are not weak."
+        record_control(parser, "cisco.asa.ssh-settings", outcome, reason, instance="algorithms")
         if weak:
             self.add_issue(self._finding(
                 parser,
@@ -314,6 +350,10 @@ class PluginASABaseline(BasePlugin):
         policy = credential_policy_from_context(parser.assessment_context)
         for credential in self._asa(parser).get_local_credentials():
             result = evaluate_credential(credential, policy)
+            record_control(parser, "cisco.asa.stored-secrets",
+                           ControlOutcome.FINDING if result.unsafe_storage else ControlOutcome.NO_FINDING,
+                           f"Local user credential storage is '{result.storage_assessment.value}'.",
+                           instance=f"user {credential.account}")
             if not result.unsafe_storage:
                 continue
             self.add_issue(self._finding(
@@ -342,9 +382,17 @@ class PluginASABaseline(BasePlugin):
             elif line == "no http server enable":
                 enabled = False
         if not enabled:
+            for control in ("cisco.asa.http-source-restriction", "cisco.asa.https-certificate"):
+                record_control(parser, control, ControlOutcome.NOT_APPLICABLE, "The HTTP server is not enabled.")
+            record_control(parser, "cisco.asa.session-timeouts", ControlOutcome.NOT_APPLICABLE,
+                           "The HTTP server is not enabled.", instance="asdm")
             return
         grants = asa.get_management_grants("http")
         if not grants:
+            record_control(parser, "cisco.asa.http-source-restriction", ControlOutcome.FINDING,
+                           "The HTTP server is enabled without an HTTP management source grant.")
+            record_control(parser, "cisco.asa.session-timeouts", ControlOutcome.NOT_APPLICABLE,
+                           "No HTTP management grant is configured.", instance="asdm")
             self.add_issue(self._finding(
                 parser, "cisco.asa.management.http_sources",
                 "ASDM/HTTPS management has no explicit source grant",
@@ -356,6 +404,13 @@ class PluginASABaseline(BasePlugin):
             ))
         if grants:
             idle = asa.get_asdm_idle_policy()
+            explicit_idle = idle.resolution_state == "explicit" and idle.minutes is not None
+            record_control(parser, "cisco.asa.session-timeouts",
+                           (ControlOutcome.FINDING if idle.minutes > 10 else ControlOutcome.NO_FINDING) if explicit_idle
+                           else ControlOutcome.UNKNOWN,
+                           f"The explicit {idle.source} is {idle.minutes:g} minutes." if explicit_idle else
+                           f"ASDM idle timeout state is '{idle.resolution_state}'; the omitted default is not qualified.",
+                           instance="asdm")
             if idle.resolution_state == "explicit" and idle.minutes is not None and idle.minutes > 10:
                 self.add_issue(self._finding(
                     parser, "cisco.asa.asdm.idle_timeout_excessive",
@@ -368,6 +423,10 @@ class PluginASABaseline(BasePlugin):
                     basis=FindingBasis.EXPLICIT_VALUE,
                 ))
         for grant in grants:
+            record_control(parser, "cisco.asa.http-source-restriction",
+                           ControlOutcome.FINDING if grant.is_any_source else ControlOutcome.NO_FINDING,
+                           f"HTTP grant on '{grant.interface}' {'permits every source' if grant.is_any_source else 'is source restricted'}.",
+                           instance=grant.raw_line)
             if grant.is_any_source:
                 self.add_issue(self._finding(
                     parser, "cisco.asa.management.unrestricted_http",
@@ -380,6 +439,8 @@ class PluginASABaseline(BasePlugin):
                 ))
         certificate_bindings = asa.get_management_certificate_bindings()
         if not certificate_bindings:
+            record_control(parser, "cisco.asa.https-certificate", ControlOutcome.FINDING,
+                           "The HTTP server is enabled without an explicit SSL trustpoint assignment.")
             self.add_issue(self._finding(
                 parser, "cisco.asa.management.certificate",
                 "ASDM/HTTPS trustpoint is not explicitly assigned",
@@ -392,6 +453,31 @@ class PluginASABaseline(BasePlugin):
             return
         for binding in certificate_bindings:
             evidence = tuple(item for item in binding.evidence)
+            key = f"{binding.interface or 'default'}:{binding.trustpoint}"
+            structural = (
+                "The assigned trustpoint is not defined." if not binding.trustpoint_configured else
+                "The assigned trustpoint has no identity certificate." if binding.certificate_chain_present
+                and not binding.identity_certificate_present else
+                "The identity certificate material is malformed." if binding.public_material_state == "malformed" else None)
+            if structural:
+                record_control(parser, "cisco.asa.https-certificate", ControlOutcome.FINDING, structural, instance=key)
+            elif binding.assessment is None:
+                record_control(parser, "cisco.asa.https-certificate", ControlOutcome.UNKNOWN,
+                               "No assessable identity certificate is exported for the assigned trustpoint.", instance=key)
+            if binding.assessment is not None:
+                result = binding.assessment
+                for aspect, state, bad, good in (
+                    ("validity", result.validity_state, {"expired", "not-yet-valid"}, {"valid-at-assessment-time"}),
+                    ("identity", result.identity_state, {"mismatch"}, {"match"}),
+                    ("algorithm", result.algorithm_state, {"weak"}, {"acceptable"}),
+                    ("trust", result.trust_state,
+                     {"verification-failed"} if result.identity_state == "match"
+                     and result.validity_state == "valid-at-assessment-time" else set(), {"trusted"}),
+                ):
+                    record_control(parser, "cisco.asa.https-certificate",
+                                   ControlOutcome.FINDING if state in bad else
+                                   ControlOutcome.NO_FINDING if state in good else ControlOutcome.UNKNOWN,
+                                   f"Certificate {aspect} state is '{state}'.", instance=f"{key}/{aspect}")
             if not binding.trustpoint_configured:
                 self.add_issue(self._finding(
                     parser, "cisco.asa.management.certificate_unresolved",
@@ -493,7 +579,12 @@ class PluginASABaseline(BasePlugin):
             ))
             record_control(parser, "cisco.asa.ntp-authentication", ControlOutcome.NOT_APPLICABLE,
                            "No NTP server is configured.")
+            record_control(parser, "cisco.asa.ntp-servers", ControlOutcome.FINDING, "No NTP server is configured.")
+            record_control(parser, "cisco.asa.ntp-key-algorithm", ControlOutcome.NOT_APPLICABLE,
+                           "No NTP server is configured.")
             return
+        record_control(parser, "cisco.asa.ntp-servers", ControlOutcome.NO_FINDING,
+                       f"{len(associations)} NTP server(s) are configured.")
         release = asa._release_tuple(asa.get_version())
         for association in associations:
             evidence = tuple(item for item in association.evidence)
@@ -503,6 +594,17 @@ class PluginASABaseline(BasePlugin):
                 "NTP server is bound to a trusted authentication key."
                 if association.authentication_state == "authenticated"
                 else "NTP server lacks an effective trusted key binding.",
+                instance=f"server {association.address}",
+            )
+            weak_digest = release is not None and release >= (9, 13) and association.algorithm in {"md5", "sha1"}
+            record_control(
+                parser, "cisco.asa.ntp-key-algorithm",
+                ControlOutcome.NOT_APPLICABLE if association.authentication_state != "authenticated" else
+                ControlOutcome.UNKNOWN if release is None else
+                ControlOutcome.FINDING if weak_digest else ControlOutcome.NO_FINDING,
+                "NTP server is not authenticated." if association.authentication_state != "authenticated" else
+                "The release that decides stronger digest support is not identified." if release is None else
+                f"NTP key algorithm is '{association.algorithm}'.",
                 instance=f"server {association.address}",
             )
             if association.authentication_state != "authenticated":
@@ -534,6 +636,10 @@ class PluginASABaseline(BasePlugin):
     def check_threat_detection(self, parser: BaseDeviceParser) -> None:
         lines = self._lines(parser)
         enabled = "threat-detection basic-threat" in lines
+        disabled = "no threat-detection basic-threat" in lines or not enabled
+        record_control(parser, "cisco.asa.threat-detection",
+                       ControlOutcome.FINDING if disabled else ControlOutcome.NO_FINDING,
+                       "Basic threat detection is not enabled." if disabled else "Basic threat detection is enabled.")
         if "no threat-detection basic-threat" in lines or not enabled:
             self.add_issue(self._finding(
                 parser, "cisco.asa.threat_detection.basic", "Basic threat detection is disabled",
@@ -548,9 +654,20 @@ class PluginASABaseline(BasePlugin):
         asa = self._asa(parser)
         release = asa._release_tuple(asa.get_version())
         if release is None or release < (9, 1):
+            record_control(parser, "cisco.asa.connection-limits", ControlOutcome.UNKNOWN,
+                           "Connection-limit semantics are qualified only from ASA 9.1 on an identified release.")
             return
-        for policy in asa.get_connection_limit_policies():
+        policies = asa.get_connection_limit_policies()
+        if not policies:
+            record_control(parser, "cisco.asa.connection-limits", ControlOutcome.NOT_APPLICABLE,
+                           "No attached policy class sets connection limits.")
+        for policy in policies:
             unlimited = sorted(name for name, value in policy.limits if value == 0)
+            record_control(parser, "cisco.asa.connection-limits",
+                           ControlOutcome.FINDING if policy.invalid_values or unlimited else ControlOutcome.NO_FINDING,
+                           "Attached connection limits are invalid or unlimited." if policy.invalid_values or unlimited
+                           else "Attached connection limits are valid and bounded.",
+                           instance=f"{policy.policy_name}/{policy.class_name}")
             evidence = tuple(item for item in policy.evidence)
             scope = ", ".join(policy.attachment_scopes)
             if policy.invalid_values:
@@ -587,8 +704,15 @@ class PluginASABaseline(BasePlugin):
             for line in lines
             if (match := re.fullmatch(r"ip verify reverse-path interface\s+(\S+)", line))
         }
+        low_trust = False
         for interface in self._asa(parser).get_interfaces():
             name = interface["nameif"]
+            if interface["security_level"] <= 10:
+                low_trust = True
+                record_control(parser, "cisco.asa.reverse-path",
+                               ControlOutcome.NO_FINDING if name in protected else ControlOutcome.FINDING,
+                               "Reverse-path verification is enabled." if name in protected else
+                               "Low-trust interface has no reverse-path verification.", instance=name)
             if interface["security_level"] <= 10 and name not in protected:
                 self.add_issue(self._finding(
                     parser, "cisco.asa.interface.reverse_path", "Reverse-path verification is missing",
@@ -598,12 +722,17 @@ class PluginASABaseline(BasePlugin):
                     Severity.MEDIUM, (f"interface {name}",),
                     basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
+        if not low_trust:
+            record_control(parser, "cisco.asa.reverse-path", ControlOutcome.NOT_APPLICABLE,
+                           "No named interface has security level 10 or lower.")
 
     def check_vpn_crypto(self, parser: BaseDeviceParser) -> None:
         native = parser.get_native_config()
         blocks = native.find_objects(r"^crypto (?:ikev1|isakmp) policy\s+")
         blocks += native.find_objects(r"^crypto ikev2 policy\s+")
         _, release = self._asa(parser).get_release()
+        if not blocks:
+            record_control(parser, "cisco.asa.ike-policy", ControlOutcome.NOT_APPLICABLE, "No IKE policy is configured.")
         for block in blocks:
             children = [child.text.strip().lower() for child in block.children]
             weak = [
@@ -622,6 +751,16 @@ class PluginASABaseline(BasePlugin):
                     defaults.append("encryption absent: default 3des")
                 if not any(line.startswith("group ") for line in children):
                     defaults.append("group absent: default DH group 2")
+            ikev2 = block.text.strip().lower().startswith("crypto ikev2")
+            required = ("encryption ", "integrity ", "group ") if ikev2 else ("encryption ", "group ")
+            omitted = [item.strip() for item in required if not any(line.startswith(item) for line in children)]
+            record_control(
+                parser, "cisco.asa.ike-policy",
+                ControlOutcome.FINDING if defaults or weak else
+                ControlOutcome.UNKNOWN if omitted else ControlOutcome.NO_FINDING,
+                "IKE policy resolves to legacy explicit or documented-default values." if defaults or weak else
+                f"Omitted {', '.join(omitted)} default is not qualified for this release." if omitted else
+                "IKE policy sets explicit non-legacy values.", instance=block.text.strip())
             if defaults:
                 self.add_issue(self._finding(
                     parser, "cisco.asa.crypto.legacy_vpn", "VPN policy uses legacy cryptography",
@@ -646,6 +785,12 @@ class PluginASABaseline(BasePlugin):
         approved_groups = parser.assessment_context.approved_asa_ike_dh_groups
         if approved_groups:
             for alternative in self._asa(parser).get_active_ike_dh_groups():
+                outside = not (alternative.group in approved_groups or alternative.group in {"1", "2", "5", "14"})
+                record_control(parser, "cisco.asa.ike-policy",
+                               ControlOutcome.FINDING if outside else ControlOutcome.NO_FINDING,
+                               "Enabled DH group is outside the approved profile." if outside else
+                               "Enabled DH group is approved or covered by the legacy-group rule.",
+                               instance=f"{alternative.version} policy {alternative.priority} group {alternative.group}")
                 if (alternative.group in approved_groups
                         or alternative.group in {"1", "2", "5", "14"}):
                     continue  # Legacy groups have the existing finding; do not duplicate it.
@@ -660,7 +805,27 @@ class PluginASABaseline(BasePlugin):
                     (CISCO_ASA_IKE_POLICY_REFERENCE,),
                     basis=FindingBasis.EXPLICIT_VALUE,
                 ))
+        lines = self._lines(parser)
+        attached = any(re.fullmatch(r"crypto map \S+ interface \S+", line) for line in lines)
+        transform_recorded = False
+        if attached and any(re.fullmatch(r"crypto (?:dynamic-)?map \S+ \d+ set ikev2 ipsec-proposal .+", line) for line in lines):
+            transform_recorded = True
+            record_control(parser, "cisco.asa.ipsec-transforms", ControlOutcome.UNKNOWN,
+                           "IKEv2 IPsec proposals referenced by crypto maps are not evaluated.", instance="ikev2-proposals")
+        if attached and any(re.fullmatch(r"crypto (?:dynamic-)?map \S+ \d+ set pfs", line) for line in lines):
+            transform_recorded = True
+            record_control(parser, "cisco.asa.ipsec-transforms", ControlOutcome.UNKNOWN,
+                           "'set pfs' without a group uses a release default that is not qualified.", instance="pfs-default")
         for binding in self._asa(parser).get_active_ipsec_transform_bindings():
+            transform_recorded = True
+            legacy = binding.declaration is not None and any(
+                token in binding.declaration.lower().split() for token in ("esp-des", "esp-3des", "esp-md5-hmac", "esp-sha-hmac"))
+            record_control(parser, "cisco.asa.ipsec-transforms",
+                           ControlOutcome.FINDING if binding.declaration is None or legacy else ControlOutcome.NO_FINDING,
+                           "Attached transform-set is not defined." if binding.declaration is None else
+                           "Attached transform-set includes a legacy algorithm." if legacy else
+                           "Attached transform-set uses no legacy algorithm.",
+                           instance=f"{binding.interface}:{binding.transform_name}")
             if binding.declaration is None:
                 self.add_issue(self._finding(
                     parser, "cisco.asa.crypto.unresolved_transform", "Attached IPsec transform-set is unresolved",
@@ -682,6 +847,10 @@ class PluginASABaseline(BasePlugin):
                 ))
 
         for pfs in self._asa(parser).get_active_pfs_bindings():
+            transform_recorded = True
+            record_control(parser, "cisco.asa.ipsec-transforms",
+                           ControlOutcome.FINDING if pfs.group in {"1", "2", "5", "14"} else ControlOutcome.NO_FINDING,
+                           f"Explicit PFS group is {pfs.group}.", instance=f"pfs {pfs.interface} group {pfs.group}")
             if pfs.group not in {"1", "2", "5", "14"}:
                 continue
             self.add_issue(self._finding(
@@ -692,6 +861,9 @@ class PluginASABaseline(BasePlugin):
                 Severity.HIGH, tuple(pfs.evidence), (CISCO_ASA_CRYPTO_MAP_REFERENCE,),
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
+        if not transform_recorded:
+            record_control(parser, "cisco.asa.ipsec-transforms", ControlOutcome.NOT_APPLICABLE,
+                           "No attached crypto map references an IKEv1 transform-set or explicit PFS group.")
 
     def check_release_defaults(self, parser: BaseDeviceParser) -> None:
         """SC-044 ASA-01 and ASA-19: behaviour that applies unless the export turns it off."""
@@ -706,6 +878,12 @@ class PluginASABaseline(BasePlugin):
                 permit_vpn = False
             elif line == "sysopt connection permit-vpn":
                 permit_vpn = True
+        record_control(parser, "cisco.asa.vpn-acl-bypass",
+                       ControlOutcome.NOT_APPLICABLE if not vpn else
+                       ControlOutcome.FINDING if permit_vpn else ControlOutcome.NO_FINDING,
+                       "No VPN termination is configured." if not vpn else
+                       "VPN traffic bypasses interface ACLs (sysopt connection permit-vpn)." if permit_vpn else
+                       "'no sysopt connection permit-vpn' is configured.")
         if vpn and permit_vpn:
             explicit = "sysopt connection permit-vpn" in lines
             self.add_issue(self._finding(
@@ -725,6 +903,16 @@ class PluginASABaseline(BasePlugin):
             for line in lines
             if (match := re.fullmatch(r"icmp (?:permit|deny) .+ (\S+)", line))
         }
+        outside = [interface for interface in asa.get_interfaces() if interface["security_level"] == 0]
+        if not outside:
+            record_control(parser, "cisco.asa.outside-icmp", ControlOutcome.NOT_APPLICABLE,
+                           "No named interface has security level 0.")
+        for interface in outside:
+            restricted = interface["nameif"].casefold() in icmp_interfaces
+            record_control(parser, "cisco.asa.outside-icmp",
+                           ControlOutcome.NO_FINDING if restricted else ControlOutcome.FINDING,
+                           "ICMP rules are configured for the interface." if restricted else
+                           "No ICMP rule restricts ICMP to the interface.", instance=interface["nameif"])
         for interface in asa.get_interfaces():
             if interface["security_level"] != 0 or interface["nameif"].casefold() in icmp_interfaces:
                 continue
@@ -742,9 +930,25 @@ class PluginASABaseline(BasePlugin):
             ))
 
     def check_remote_access_authentication(self, parser: BaseDeviceParser) -> None:
+        control = "cisco.asa.ra-client-certificate"
         if not parser.assessment_context.asa_ra_require_client_certificate:
+            record_control(parser, control, ControlOutcome.NOT_APPLICABLE,
+                           "The assessment policy does not require remote-access client certificates.")
             return
-        for profile in self._asa(parser).get_selectable_webvpn_profiles():
+        release = self._asa(parser)._release_tuple(self._asa(parser).get_version())
+        if release is None or release < (9, 16):
+            record_control(parser, control, ControlOutcome.UNKNOWN,
+                           "Profile selection is qualified only from ASA 9.16 on an identified release.")
+        profiles = self._asa(parser).get_selectable_webvpn_profiles()
+        if release is not None and release >= (9, 16) and not profiles:
+            record_control(parser, control, ControlOutcome.NOT_APPLICABLE,
+                           "No remote-access profile is selectable on an enabled WebVPN listener.")
+        for profile in profiles:
+            record_control(parser, control,
+                           ControlOutcome.FINDING if profile.authentication == "aaa" else
+                           ControlOutcome.NO_FINDING if "certificate" in profile.authentication.split() else
+                           ControlOutcome.UNKNOWN,
+                           f"Profile authentication is '{profile.authentication}'.", instance=profile.name)
             if profile.authentication != "aaa":
                 continue
             self.add_issue(self._finding(
@@ -765,7 +969,11 @@ class PluginASABaseline(BasePlugin):
         lines = self._lines(parser)
         failover = "failover" in lines and "no failover" not in lines
         if not failover:
+            record_control(parser, "cisco.asa.failover-key", ControlOutcome.NOT_APPLICABLE, "Failover is not enabled.")
             return
+        keyed = any(re.fullmatch(r"failover key\s+.+", line) for line in lines)
+        record_control(parser, "cisco.asa.failover-key", ControlOutcome.NO_FINDING if keyed else ControlOutcome.FINDING,
+                       "A failover key is configured." if keyed else "Failover is enabled without a failover key.")
         if not any(re.fullmatch(r"failover key\s+.+", line) for line in lines):
             self.add_issue(self._finding(
                 parser, "cisco.asa.failover.authentication", "Failover link authentication is missing",
@@ -826,7 +1034,16 @@ class PluginASABaseline(BasePlugin):
 
     def check_aaa_transport(self, parser: BaseDeviceParser) -> None:
         """SC-031: bound TACACS+ hosts without a key and LDAP hosts binding in clear text."""
+        recorded = False
         for host in self._asa(parser).get_aaa_server_hosts():
+            if host["bound"] and host["protocol"] in {"tacacs+", "ldap"}:
+                recorded = True
+                insecure = (not host["key"]) if host["protocol"] == "tacacs+" else (
+                    not host["ldap_over_ssl"] and host["sasl"] in {None, "plain"})
+                record_control(parser, "cisco.asa.aaa-server-transport",
+                               ControlOutcome.FINDING if insecure else ControlOutcome.NO_FINDING,
+                               f"Bound {host['protocol']} host {'sends credentials unprotected' if insecure else 'protects credentials in transit'}.",
+                               instance=f"{host['group']} {host['address']}")
             if not host["bound"]:
                 continue
             if host["protocol"] == "tacacs+" and not host["key"]:
@@ -850,9 +1067,19 @@ class PluginASABaseline(BasePlugin):
                     Severity.HIGH, (host["evidence"],), (CISCO_ASA_LDAP_OVER_SSL_REFERENCE,),
                     basis=FindingBasis.REQUIRED_SETTING_MISSING,
                 ))
+        if not recorded:
+            record_control(parser, "cisco.asa.aaa-server-transport", ControlOutcome.NOT_APPLICABLE,
+                           "No bound TACACS+ or LDAP server host is configured.")
 
     def check_ike_aggressive_mode(self, parser: BaseDeviceParser) -> None:
         """SC-034: inbound IKEv1 aggressive mode accepted for pre-shared-key tunnel groups."""
+        state = self._asa(parser).get_ikev1_aggressive_mode_state()
+        record_control(parser, "cisco.asa.ike-aggressive-mode",
+                       ControlOutcome.FINDING if state == "accepted" else
+                       ControlOutcome.NO_FINDING if state == "disabled" else ControlOutcome.NOT_APPLICABLE,
+                       {"accepted": "IKEv1 PSK termination accepts aggressive mode (documented default).",
+                        "disabled": "IKEv1 aggressive mode is disabled."}.get(
+                           state, "No IKEv1 pre-shared-key termination is configured."))
         accepted, evidence = self._asa(parser).get_ikev1_aggressive_mode()
         if not accepted:
             return
@@ -875,6 +1102,13 @@ class PluginASABaseline(BasePlugin):
             "aaa_server_key": "AAA server shared key",
         }
         for context, account, state, evidence in self._asa(parser).get_service_key_storage():
+            record_control(parser, "cisco.asa.stored-secrets",
+                           ControlOutcome.FINDING if state == "cleartext" else
+                           ControlOutcome.NO_FINDING if state == "encrypted" else ControlOutcome.UNKNOWN,
+                           {"cleartext": "Key is stored in clear text.", "encrypted": "Key is AES-encrypted (type 8).",
+                            "masked": "Key is masked in this export; its storage is not visible."}.get(
+                               state, "Key value is empty or not parsed."),
+                           instance=f"{context} {account}")
             if state != "cleartext":
                 continue
             self.add_issue(self._finding(
@@ -901,10 +1135,17 @@ class PluginASABaseline(BasePlugin):
         # Authorization when management authentication uses a remote server group.
         remote_auth = [line for line in top if re.fullmatch(r"aaa authentication (ssh|telnet|http|enable|serial) console (\S+).*", line)
                        and line.split()[4] != "local"]
+        if not remote_auth:
+            record_control(parser, "cisco.asa.management-authorization", ControlOutcome.NOT_APPLICABLE,
+                           "Management authentication does not use a remote server group.")
         if remote_auth:
             missing = [label for label, prefix in (("command authorization", "aaa authorization command"),
                                                    ("exec authorization", "aaa authorization exec"))
                        if not has(prefix)]
+            record_control(parser, "cisco.asa.management-authorization",
+                           ControlOutcome.FINDING if missing else ControlOutcome.NO_FINDING,
+                           f"Not configured: {', '.join(missing)}." if missing else
+                           "Command and exec authorization are configured.")
             if missing:
                 self.add_issue(self._finding(
                     parser, "cisco.asa.aaa.management_authorization",
@@ -935,6 +1176,17 @@ class PluginASABaseline(BasePlugin):
                 secured = {c.split()[1] for c in children if re.match(r"neighbor \S+ password ", c, re.IGNORECASE)}
                 if neighbors - secured:
                     routing.append(("bgp", header))
+        flagged = {id(header) for _, header in routing}
+        routers = [header for header, _ in blocks
+                   if header.text.lower().startswith(("router ospf ", "router eigrp ", "router rip", "router bgp "))]
+        if not routers:
+            record_control(parser, "cisco.asa.routing-authentication", ControlOutcome.NOT_APPLICABLE,
+                           "No OSPF, EIGRP, RIP or BGP process is configured.")
+        for header in routers:
+            record_control(parser, "cisco.asa.routing-authentication",
+                           ControlOutcome.FINDING if id(header) in flagged else ControlOutcome.NO_FINDING,
+                           "Routing process lacks authentication." if id(header) in flagged else
+                           "Routing authentication is configured.", instance=header.text)
         for protocol, header in routing:
             self.add_issue(self._finding(
                 parser, f"cisco.asa.routing.{protocol}.authentication",
@@ -956,7 +1208,20 @@ class PluginASABaseline(BasePlugin):
             if "external" in roles and nameif:
                 level = next((c.split()[1] for c in children if c.lower().startswith("security-level ")), None)
                 external.append((name, nameif, level))
+        if not external:
+            record_control(parser, "cisco.asa.external-interfaces", ControlOutcome.NOT_APPLICABLE,
+                           "No named interface is classified external by the assessment policy.")
+        else:
+            record_control(parser, "cisco.asa.external-interfaces",
+                           ControlOutcome.FINDING if has("no dns-guard") else ControlOutcome.NO_FINDING,
+                           "'no dns-guard' is configured." if has("no dns-guard") else "DNS Guard is not disabled.",
+                           instance="dns-guard")
         for name, nameif, level in external:
+            dhcp = any(line == f"dhcpd enable {nameif.lower()}" for line in top)
+            record_control(parser, "cisco.asa.external-interfaces",
+                           ControlOutcome.FINDING if level not in (None, "0") or dhcp else ControlOutcome.NO_FINDING,
+                           f"External interface security level is {level or 'omitted'}; DHCP server {'enabled' if dhcp else 'not enabled'}.",
+                           instance=name)
             if level not in (None, "0"):
                 self.add_issue(self._finding(
                     parser, "cisco.asa.interface.external_security_level",
@@ -1024,6 +1289,9 @@ class PluginASABaseline(BasePlugin):
     def check_password_recovery(self, parser: BaseDeviceParser) -> None:
         """SC-057 (CIS ASA 9.x 1.1.4): password recovery through ROMMON."""
         enabled, evidence = self._asa(parser).get_password_recovery()
+        record_control(parser, "cisco.asa.password-recovery",
+                       ControlOutcome.FINDING if enabled else ControlOutcome.NO_FINDING,
+                       "Password recovery is enabled." if enabled else "'no service password-recovery' is configured.")
         if not enabled:
             return
         self.add_issue(self._finding(
@@ -1041,7 +1309,12 @@ class PluginASABaseline(BasePlugin):
     def check_url_credentials_and_updates(self, parser: BaseDeviceParser) -> None:
         """SC-036 URL credentials and Auto Update Server certificate verification."""
         asa = self._asa(parser)
-        for evidence in asa.get_url_credentials():
+        url_credentials = asa.get_url_credentials()
+        record_control(parser, "cisco.asa.stored-secrets",
+                       ControlOutcome.FINDING if url_credentials else ControlOutcome.NO_FINDING,
+                       f"{len(url_credentials)} URL(s) embed a password." if url_credentials else
+                       "No URL embeds a 'user:password@' credential.", instance="urls")
+        for evidence in url_credentials:
             self.add_issue(self._finding(
                 parser, "cisco.asa.credentials.url_storage",
                 "Password is embedded in a URL",
@@ -1052,7 +1325,22 @@ class PluginASABaseline(BasePlugin):
                 basis=FindingBasis.EXPLICIT_VALUE,
             ))
         _, release = asa.get_release()
-        for scheme, keyword, evidence in asa.get_auto_update_servers():
+        servers = asa.get_auto_update_servers()
+        if not servers:
+            record_control(parser, "cisco.asa.auto-update-authentication", ControlOutcome.NOT_APPLICABLE,
+                           "No Auto Update Server is configured.")
+        for scheme, keyword, evidence in servers:
+            unverified = (scheme == "http" or keyword == "no-verification"
+                          or (keyword is None and release is not None and release < (9, 2, 0)))
+            record_control(parser, "cisco.asa.auto-update-authentication",
+                           ControlOutcome.FINDING if unverified else
+                           ControlOutcome.UNKNOWN if scheme != "https" or (keyword is None and release is None) else
+                           ControlOutcome.NO_FINDING,
+                           "The Auto Update Server is not authenticated." if unverified else
+                           "The URL scheme or the release default for certificate verification is not qualified."
+                           if scheme != "https" or (keyword is None and release is None) else
+                           "HTTPS with certificate verification (explicit or the 9.2(1)+ default).",
+                           instance=evidence.text)
             if scheme == "http":
                 reason, basis = "uses plain HTTP, so updates are neither encrypted nor authenticated", FindingBasis.EXPLICIT_VALUE
             elif keyword == "no-verification":
@@ -1072,8 +1360,24 @@ class PluginASABaseline(BasePlugin):
                 basis=basis,
             ))
 
+    # Controls recorded by this plugin; all are unknown when the plugin cannot run.
+    BASELINE_CONTROLS = (
+        "cisco.asa.management-authentication", "cisco.asa.management-accounting", "cisco.asa.ntp-authentication",
+        "cisco.asa.session-timeouts", "cisco.asa.ssh-settings", "cisco.asa.stored-secrets",
+        "cisco.asa.http-source-restriction", "cisco.asa.https-certificate", "cisco.asa.ntp-servers",
+        "cisco.asa.ntp-key-algorithm", "cisco.asa.threat-detection", "cisco.asa.connection-limits",
+        "cisco.asa.reverse-path", "cisco.asa.ike-policy", "cisco.asa.ipsec-transforms",
+        "cisco.asa.vpn-acl-bypass", "cisco.asa.outside-icmp", "cisco.asa.ra-client-certificate",
+        "cisco.asa.failover-key", "cisco.asa.aaa-server-transport", "cisco.asa.ike-aggressive-mode",
+        "cisco.asa.management-authorization", "cisco.asa.routing-authentication", "cisco.asa.external-interfaces",
+        "cisco.asa.password-recovery", "cisco.asa.auto-update-authentication",
+    )
+
     def analyze(self, parser: BaseDeviceParser) -> None:
         if parser.device_type != "ASA" or self._asa(parser).get_version() == "?":
+            for control in self.BASELINE_CONTROLS:
+                record_control(parser, control, ControlOutcome.UNKNOWN,
+                               "No 'ASA Version' header; the baseline checks did not run.", instance="baseline")
             return
         self.check_aaa(parser)
         self.check_management_sessions_and_ssh(parser)
