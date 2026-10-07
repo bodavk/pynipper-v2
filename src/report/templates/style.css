@@ -116,6 +116,11 @@ table { border-collapse: collapse; width: 100%; }
 .index { margin-bottom: 8px; font-size: 0.92rem; }
 .evidence { font-size: 0.9rem; }
 .evidence td.line { white-space: nowrap; font-weight: 600; }
+.evidence-context { margin-top: 12px; }
+.evidence-context-lines { margin-top: 8px; padding: 10px; background: var(--code-bg); border-radius: 6px; }
+.evidence-context-lines > div { display: grid; grid-template-columns: 80px minmax(0, 1fr); gap: 8px; }
+.evidence-context-lines .line { color: var(--muted); font-size: 0.85rem; }
+.evidence-context-lines code { white-space: pre-wrap; }
 
 .finding {
     border: 1px solid var(--border);
@@ -153,6 +158,15 @@ table { border-collapse: collapse; width: 100%; }
 .related li { margin: 4px 0; }
 details { margin-top: 12px; }
 details summary { cursor: pointer; color: var(--accent); font-weight: 600; }
+.coverage-disclosure { margin-top: 0; }
+.coverage-disclosure > summary { list-style: none; }
+.coverage-disclosure > summary::-webkit-details-marker { display: none; }
+.coverage-disclosure > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 6px; }
+.coverage-disclosure > summary h2 { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0; }
+.coverage-toggle::before { content: "+"; }
+.coverage-disclosure[open] > summary .coverage-toggle::before { content: "\2212"; }
+.coverage-toggle { font-size: 1.5rem; line-height: 1; }
+.coverage-content { margin-top: 16px; }
 .refs { font-size: 0.85rem; overflow-wrap: anywhere; }
 .record { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; border-bottom: 1px solid var(--border); padding: 8px 0; }
 .record dt { font-weight: 600; }

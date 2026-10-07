@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- FortiOS finding evidence now includes scoped, sanitized configuration context
+  for administrators, policies and other parsed objects, rather than only their
+  opening line. Short contexts display inline; longer contexts are expandable.
+  Original evidence identities remain stable and JSON gains additive context.
+
+- HTML reports place assessment coverage last and collapse it by default behind
+  a keyboard-accessible +/− disclosure. All coverage details remain available;
+  JSON coverage and the existing print expansion behavior are unchanged.
+
 - Fix certificate-assessment crashes for Ed25519/Ed448 signatures, which have
   no separate signature hash object. FortiOS audits now handle these certificates
   both when selected for management HTTPS and elsewhere in exported inventory;

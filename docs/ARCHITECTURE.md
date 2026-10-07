@@ -84,6 +84,16 @@ Every normalized value or collection has a `KnowledgeState`: `KNOWN`, `UNKNOWN`,
 
 Known records should carry `ConfigEvidence` with source path, exact sanitized source text, and a positive line number where the format provides one. Secrets are redacted before evidence leaves the parser. Line numbers are physical input lines: Cisco parsers keep blank lines as comment placeholders for CiscoConfParse, PAN-OS records the start line of each XML element, and Check Point field mappings keep the line where their expression starts. Evidence for a multi-line value cites its first line and is limited to that line with a `<value continues to line N>` marker. Finding `references` are independent of configuration evidence and identify the vendor or benchmark source for the evaluated behavior.
 
+`ConfigEvidence` may additionally carry a typed `EvidenceContext`: parser-selected,
+sanitized statements for the same scoped object, explanatory notes and an explicit
+omitted-statement count. FortiOS supplies this context from parsed objects and its
+located evidence map, never arbitrary neighboring raw lines. Context can combine
+statements retained across edits and is labeled accordingly; it does not change
+finding identity, detection or absence/default qualification. Reports deduplicate
+contexts within each finding, expand short excerpts inline and collapse excerpts
+over eight statements. JSON adds context only when the parser supplies it. Other
+adapters retain their existing evidence until they provide a qualified context.
+
 Normalized adapters remain bounded by native evidence. IOS/IOS-XE, for example, reports explicit VTY and HTTP(S) endpoints, redacted local-user metadata, ordered interface state, effectively attached interface ACL/control-plane policy, syslog destinations and configured SSH cryptography. Unattached ACL definitions are excluded from effective policy inventory; device-model metadata and omitted service defaults remain unknown. FortiOS retains VDOM scope and includes both IPv4 and IPv6 transit-policy sections with explicit logging state. Junos keeps stateless firewall terms distinct from SRX zone-pair policies while exposing both through the common policy inventory. These reporting adapters do not replace the richer native records used by security checks.
 
 Line-oriented parsers first map physical lines to logical statements. `src/devices/common/source_lines.py` joins lines while a double-quoted value is open, so PEM keys and certificates, comments and quoted banner text are one statement. FortiOS and Junos display-set treat an unterminated value as a parse error; ScreenOS, AOS-S and SonicOS record a diagnostic and fall back to physical lines. Delimited banners are masked by the vendor parser: IOS/IOS-XE `banner <type> <delimiter>` bodies and EOS `banner login|motd` ... `EOF` blocks never reach command readers. The helper only groups lines; grammar and redaction remain vendor-owned.

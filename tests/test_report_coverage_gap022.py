@@ -1,4 +1,5 @@
 import json
+from html.parser import HTMLParser
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +15,7 @@ from src.devices.juniper.junos import JunOSParser
 from src.devices.paloalto.panos import PaloAltoPANOSParser
 from src.report.coverage import build_report_context
 from src.report.report import _generate_html_report, _generate_json_report
+from src.report import report as report_module
 
 
 def _ios(tmp_path, context=None):
@@ -179,6 +181,75 @@ def test_legacy_caller_without_coverage_gets_explicit_unassessed_message(tmp_pat
     html = output.read_text(encoding="utf-8")
     assert "Coverage metadata was not supplied" in html
     assert "does not mean every control passed" in html
+
+
+class _CoverageLayout(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.sections = []
+        self.navigation_links = []
+        self.disclosures = []
+        self.in_navigation = False
+
+    def handle_starttag(self, tag, attrs):
+        attributes = dict(attrs)
+        if tag == "nav":
+            self.in_navigation = True
+        elif tag == "section":
+            self.sections.append(attributes.get("id"))
+        elif tag == "a" and self.in_navigation:
+            self.navigation_links.append(attributes["href"])
+        elif tag == "details" and attributes.get("class") == "coverage-disclosure":
+            self.disclosures.append(attributes)
+
+    def handle_endtag(self, tag):
+        if tag == "nav":
+            self.in_navigation = False
+
+
+@pytest.mark.parametrize("with_inventory", [False, True])
+@pytest.mark.parametrize("with_credential_appendix", [False, True])
+def test_html_coverage_is_last_and_collapsed_with_optional_sections(
+    tmp_path, monkeypatch, with_inventory, with_credential_appendix,
+):
+    parser = _ios(tmp_path, AssessmentContext.from_mapping({
+        "report_inventory": ["interfaces"] if with_inventory else [],
+    }))
+    context = build_report_context(parser)
+    context["coverage"]["diagnostics"] = ["<scope-review>"]
+    data = {
+        "device-type": parser.device_type,
+        "hostname": parser.get_hostname(),
+        "assessment-policy": {
+            **parser.assessment_context.to_dict(),
+            "report-secret-evidence": with_credential_appendix,
+        },
+        **context,
+    }
+    # This layout test contains no unmasked credentials. ACL enforcement has its
+    # own tests; avoid making optional-section markup dependent on Windows ACLs.
+    monkeypatch.setattr(report_module, "_restrict_windows_acl", lambda _: True)
+    output = tmp_path / "coverage-layout.html"
+    _generate_html_report(str(output), {}, [], data)
+    html = output.read_text(encoding="utf-8")
+    layout = _CoverageLayout()
+    layout.feed(html)
+    assert layout.sections[-1] == "coverage"
+    assert layout.sections.count("coverage") == 1
+    assert ("configuration-inventory" in layout.sections) == with_inventory
+    assert ("secret-evidence" in layout.sections) == with_credential_appendix
+    assert layout.navigation_links[-1] == "#coverage"
+    assert len(layout.disclosures) == 1
+    assert "open" not in layout.disclosures[0]
+    coverage_html = html.split('<section id="coverage" class="panel">', 1)[1].split("</section>", 1)[0]
+    assert "Assessment coverage" in coverage_html
+    assert "Control outcomes" in coverage_html
+    assert "Coverage by configuration field" in coverage_html
+    assert "&lt;scope-review&gt;" in coverage_html
+    assert '<span class="coverage-toggle" aria-hidden="true">' in coverage_html
+    assert '.coverage-toggle::before { content: "+"; }' in html
+    assert '.coverage-disclosure[open] > summary .coverage-toggle::before' in html
+    assert "SUPERSECRET" not in html
 
 
 def test_software_advisory_summary_is_html_escaped(tmp_path):

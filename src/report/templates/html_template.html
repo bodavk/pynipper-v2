@@ -18,11 +18,11 @@
                     <a href="#summary">Summary</a>
                     {% if attack_paths %}<a href="#attack-paths">Attack paths</a>{% endif %}
                     <a href="#security-issues">Findings</a>
-                    <a href="#coverage">Coverage</a>
                     <a href="#about">About</a>
                     {% if configuration_inventory %}<a href="#configuration-inventory">Inventory</a>{% endif %}
                     <a href="#security-vulns">Advisories</a>
                     {% if report_secret_evidence %}<a href="#secret-evidence">Credential lines</a>{% endif %}
+                    <a href="#coverage">Coverage</a>
                 </nav>
             </div>
         </header>
@@ -181,6 +181,23 @@
                                     </tbody>
                                 </table>
                                 </div>
+                                {% for context in finding.evidence_contexts %}
+                                    {% if context.lines|length > 8 %}
+                                    <details class="evidence-context">
+                                        <summary>{{ context.title }} ({{ context.lines|length }} statements; expand to inspect)</summary>
+                                    {% else %}
+                                    <div class="evidence-context">
+                                        <h4>{{ context.title }}</h4>
+                                    {% endif %}
+                                        <div class="evidence-context-lines">
+                                        {% for statement in context.lines %}
+                                            <div><span class="line">{% if statement.line_number %}Line {{ statement.line_number }}{% else %}Derived{% endif %}</span><code class="pre">{{ statement.text }}</code></div>
+                                        {% endfor %}
+                                        </div>
+                                        {% for note in context.notes %}<p class="note">{{ note }}</p>{% endfor %}
+                                        {% if context.omitted_line_count %}<p class="note">{{ context.omitted_line_count }} additional statements omitted by the context size limit. Consult the supplied configuration for the remaining object settings.</p>{% endif %}
+                                    {% if context.lines|length > 8 %}</details>{% else %}</div>{% endif %}
+                                {% endfor %}
                             {% endif %}
                             {% if view.related %}
                                 <h4>Also check</h4>
@@ -212,74 +229,6 @@
                     {% endfor %}
                 {% else %}
                     <p>No security findings were emitted for the supplied configuration. This does not mean every control passed; review the assessment coverage below for unknown, unsupported, parse-error, or excluded scope.</p>
-                {% endif %}
-            </section>
-
-            <section id="coverage" class="panel">
-                <h2>Assessment coverage</h2>
-                <p>{{ coverage['scope-note'] }}</p>
-                {% if coverage_counts %}
-                    <p class="coverage-counts">
-                    {% for state, count in coverage_counts|dictsort %}<span class="chip state-{{ state }}">{{ state }}: {{ count }}</span> {% endfor %}
-                    </p>
-                {% endif %}
-                {% if coverage['fields'] %}
-                    <details>
-                        <summary>Coverage by configuration field</summary>
-                        <table class="table">
-                            <thead><tr><th scope="col">Field</th><th scope="col">Category</th><th scope="col">Knowledge state</th><th scope="col">Selection</th><th scope="col">Items</th><th scope="col">Detail</th></tr></thead>
-                            <tbody>
-                            {% for field in coverage['fields'] %}
-                                <tr>
-                                    <td>{{ field['name'] }}</td>
-                                    <td>{{ field['category'] }}</td>
-                                    <td>{{ field['knowledge-state'] }}</td>
-                                    <td>{{ field['audit-selection'] }}</td>
-                                    <td>{{ field['item-count'] if field['item-count'] is defined and field['item-count'] is not none else 'n/a' }}</td>
-                                    <td>{{ field['detail'] if field['detail'] is defined else '' }}</td>
-                                </tr>
-                            {% endfor %}
-                            </tbody>
-                        </table>
-                    </details>
-                {% endif %}
-                {% if coverage['controls'] is defined and coverage['controls']['results'] %}
-                    <h3>Control outcomes</h3>
-                    <p>{{ coverage['controls']['scope-note'] }}</p>
-                    <table class="table">
-                        <thead><tr><th scope="col">Control</th><th scope="col">Outcome</th><th scope="col">Reason</th><th scope="col">Rules</th></tr></thead>
-                        <tbody>
-                        {% for control in coverage['controls']['results'] %}
-                            <tr>
-                                <td>{{ control['title'] }}<br><small>{{ control['control-id'] }} v{{ control['control-version'] }}</small></td>
-                                <td><span class="chip state-{{ control['outcome'] }}">{{ control['outcome'] }}</span></td>
-                                <td>{{ control['reasons']|join(' ') }}
-                                    {% if control['unassessed-instances'] is defined %}
-                                    {% for instance in control['unassessed-instances'] %}
-                                    <br><small>{{ instance['instance-key'] }} — unassessed: {{ instance['reasons']|join(' ') }}</small>
-                                    {% endfor %}{% endif %}
-                                </td>
-                                <td><small>{{ control['rule-ids']|join(', ') }}</small></td>
-                            </tr>
-                        {% endfor %}
-                        </tbody>
-                    </table>
-                {% endif %}
-                {% if coverage['controls'] is defined and coverage['controls']['manual-review'] %}
-                    <h3>Configured features requiring manual review</h3>
-                    <ul>{% for item in coverage['controls']['manual-review'] %}<li><strong>{{ item['feature'] }}</strong>: {{ item['reason'] }}</li>{% endfor %}</ul>
-                {% endif %}
-                {% if coverage['diagnostics'] %}
-                    <h3>Parser scope diagnostics</h3>
-                    <ul>{% for diagnostic in coverage['diagnostics'] %}<li>{{ diagnostic }}</li>{% endfor %}</ul>
-                {% endif %}
-                {% if coverage['export-scopes'] is defined and coverage['export-scopes'] %}
-                    <h3>Export evidence scope</h3>
-                    <ul>{% for item in coverage['export-scopes'] %}<li>{{ item['scope'] }}/{{ item['domain'] }} — {{ item['knowledge-state'] }}: {{ item['reason'] }}</li>{% endfor %}</ul>
-                {% endif %}
-                {% if coverage['limitations'] is defined %}
-                    <h3>Assessment limitations</h3>
-                    <ul>{% for item in coverage['limitations'] %}<li>{{ item }}</li>{% endfor %}</ul>
                 {% endif %}
             </section>
 
@@ -417,6 +366,78 @@
                 {% endif %}
             </section>
             {% endif %}
+
+            <section id="coverage" class="panel">
+                <details class="coverage-disclosure">
+                    <summary><h2>Assessment coverage <span class="coverage-toggle" aria-hidden="true"></span></h2></summary>
+                    <div class="coverage-content">
+                        <p>{{ coverage['scope-note'] }}</p>
+                        {% if coverage_counts %}
+                            <p class="coverage-counts">
+                            {% for state, count in coverage_counts|dictsort %}<span class="chip state-{{ state }}">{{ state }}: {{ count }}</span> {% endfor %}
+                            </p>
+                        {% endif %}
+                        {% if coverage['fields'] %}
+                            <details>
+                                <summary>Coverage by configuration field</summary>
+                                <table class="table">
+                                    <thead><tr><th scope="col">Field</th><th scope="col">Category</th><th scope="col">Knowledge state</th><th scope="col">Selection</th><th scope="col">Items</th><th scope="col">Detail</th></tr></thead>
+                                    <tbody>
+                                    {% for field in coverage['fields'] %}
+                                        <tr>
+                                            <td>{{ field['name'] }}</td>
+                                            <td>{{ field['category'] }}</td>
+                                            <td>{{ field['knowledge-state'] }}</td>
+                                            <td>{{ field['audit-selection'] }}</td>
+                                            <td>{{ field['item-count'] if field['item-count'] is defined and field['item-count'] is not none else 'n/a' }}</td>
+                                            <td>{{ field['detail'] if field['detail'] is defined else '' }}</td>
+                                        </tr>
+                                    {% endfor %}
+                                    </tbody>
+                                </table>
+                            </details>
+                        {% endif %}
+                        {% if coverage['controls'] is defined and coverage['controls']['results'] %}
+                            <h3>Control outcomes</h3>
+                            <p>{{ coverage['controls']['scope-note'] }}</p>
+                            <table class="table">
+                                <thead><tr><th scope="col">Control</th><th scope="col">Outcome</th><th scope="col">Reason</th><th scope="col">Rules</th></tr></thead>
+                                <tbody>
+                                {% for control in coverage['controls']['results'] %}
+                                    <tr>
+                                        <td>{{ control['title'] }}<br><small>{{ control['control-id'] }} v{{ control['control-version'] }}</small></td>
+                                        <td><span class="chip state-{{ control['outcome'] }}">{{ control['outcome'] }}</span></td>
+                                        <td>{{ control['reasons']|join(' ') }}
+                                            {% if control['unassessed-instances'] is defined %}
+                                            {% for instance in control['unassessed-instances'] %}
+                                            <br><small>{{ instance['instance-key'] }} — unassessed: {{ instance['reasons']|join(' ') }}</small>
+                                            {% endfor %}{% endif %}
+                                        </td>
+                                        <td><small>{{ control['rule-ids']|join(', ') }}</small></td>
+                                    </tr>
+                                {% endfor %}
+                                </tbody>
+                            </table>
+                        {% endif %}
+                        {% if coverage['controls'] is defined and coverage['controls']['manual-review'] %}
+                            <h3>Configured features requiring manual review</h3>
+                            <ul>{% for item in coverage['controls']['manual-review'] %}<li><strong>{{ item['feature'] }}</strong>: {{ item['reason'] }}</li>{% endfor %}</ul>
+                        {% endif %}
+                        {% if coverage['diagnostics'] %}
+                            <h3>Parser scope diagnostics</h3>
+                            <ul>{% for diagnostic in coverage['diagnostics'] %}<li>{{ diagnostic }}</li>{% endfor %}</ul>
+                        {% endif %}
+                        {% if coverage['export-scopes'] is defined and coverage['export-scopes'] %}
+                            <h3>Export evidence scope</h3>
+                            <ul>{% for item in coverage['export-scopes'] %}<li>{{ item['scope'] }}/{{ item['domain'] }} — {{ item['knowledge-state'] }}: {{ item['reason'] }}</li>{% endfor %}</ul>
+                        {% endif %}
+                        {% if coverage['limitations'] is defined %}
+                            <h3>Assessment limitations</h3>
+                            <ul>{% for item in coverage['limitations'] %}<li>{{ item }}</li>{% endfor %}</ul>
+                        {% endif %}
+                    </div>
+                </details>
+            </section>
 
             <footer class="report-footer">
                 Generated by pynipper-v2 on {{ date }}. Static configuration analysis: an empty or short findings list is not proof that the device is secure.

@@ -1,6 +1,6 @@
 """FortiOS configuration parser and normalized model adapter."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import ipaddress
 from itertools import product
@@ -20,6 +20,7 @@ from src.devices.common.input_scope import contains_unresolved_template
 from src.devices.common.source_lines import group_double_quoted_lines, single_line_evidence
 from src.devices.common.models import (
     ConfigEvidence,
+    EvidenceContext,
     ConfigurationState,
     CryptoSetting,
     LocalUser,
@@ -892,7 +893,110 @@ class FortiOSParser(BaseDeviceParser):
 
     def _field_evidence(self, path: Tuple[str, ...]) -> Tuple[ConfigEvidence, ...]:
         item = self.evidence.get(path)
-        return (item,) if item is not None else ()
+        if item is None:
+            return ()
+        return (replace(item, context=self._evidence_context(path)),)
+
+    # Context is intentionally allowlisted: unrelated/free-form/unknown fields
+    # must not leak a secret merely because they neighbor a finding's evidence.
+    _CONTEXT_VALUE_FIELDS = frozenset({
+        "accprofile", "vdom", "status", "two-factor", "remote-auth", "remote-group",
+        "peer-auth", "wildcard", "allowaccess", "ip6-allowaccess", "ip", "ip6-address",
+        "ip6-mode", "interface", "srcintf", "dstintf", "srcaddr", "dstaddr", "service",
+        "action", "schedule", "logtraffic", "utm-status", "profile-type", "profile-group",
+        "av-profile", "webfilter-profile", "dnsfilter-profile", "ips-sensor",
+        "application-list", "ssl-ssh-profile", "inspection-mode", "nat", "server",
+        "mode", "enc-algorithm", "ssl-min-proto-version", "secure", "severity",
+        "admin-server-cert", "admin-https-ssl-versions", "admin-lockout-threshold",
+        "admin-lockout-duration", "admin-sport", "admin-port", "admintimeout",
+        "source-interface", "source-address", "source-address6", "source-address-negate",
+        "source-address6-negate", "reqclientcert", "default-portal", "auth", "client-cert",
+        "users", "groups", "portal", "type", "protocol", "port", "subnet", "ip6",
+        "start-ip", "end-ip", "tcp-portrange", "udp-portrange", "member", "proposal",
+        "dhgrp", "pfs", "replay", "ike-version", "authmethod", "auto-negotiate",
+        "transport-protocol", "radius-port", "server-identity-check", "tls-min-proto-version",
+        "ca-cert", "source-ip", "source-ip-interface", "interface-select-method", "vrf-select",
+    })
+    _CONTEXT_MAX_LINES = 200
+
+    def _evidence_context(self, path: Tuple[str, ...]) -> EvidenceContext | None:
+        """Show current scoped object statements, not arbitrary surrounding text.
+
+        Original source locations are retained. This is not a contiguous source
+        block: fields can survive repeated edits. Values of unapproved fields are
+        omitted even when ordinary single-field evidence could expose them.
+        """
+        node = self.config
+        object_path = ()
+        for part in path:
+            child = node.get(part) if isinstance(node, dict) else None
+            if not isinstance(child, dict):
+                break
+            node = child
+            object_path += (part,)
+        if not object_path or not isinstance(node, dict):
+            return None
+        # Scope containers and section-level inventories are not individual
+        # objects; never borrow neighboring entries as evidence context.
+        entries = []
+        for index in range(1, len(object_path) + 1):
+            header = self.evidence.get(object_path[:index])
+            if header is not None:
+                entries.append(header)
+        for field, value in node.items():
+            if isinstance(value, dict):
+                continue
+            if str(field).lower() in self._SECRET_FIELDS or re.search(
+                r"(?:secret|password|passwd|private-key|api-key|token)(?:-|$)", str(field), re.IGNORECASE
+            ):
+                # Preserve APIs that exclude credential declarations entirely.
+                # The original finding row, when relevant, remains redacted.
+                continue
+            item = self.evidence.get(object_path + (str(field),))
+            if item is None:
+                continue
+            visible = str(field) in self._CONTEXT_VALUE_FIELDS or re.fullmatch(
+                r"(?:trusthost|ip6-trusthost)(?:[1-9]|10)", str(field)
+            )
+            if str(field) == "name" and any(
+                part in {"firewall policy", "firewall policy6"} for part in object_path
+            ):
+                visible = True
+            if not visible:
+                words = item.text.split(None, 2)
+                text = " ".join(words[:2]) + " <value omitted from context>"
+                item = replace(item, text=text)
+            entries.append(item)
+            if visible and item.text.split(None, 1)[0].lower() in {"append", "unselect"}:
+                entries.append(ConfigEvidence(
+                    text=f"Effective {field}: " + " ".join(self._as_list(value)),
+                    source=self.config_filepath,
+                ))
+        if len(entries) <= 1:
+            return None
+        notes = [
+            "Parser-selected statements for this object; not a contiguous raw-file excerpt. "
+            "Superseded values, neighboring objects and credential fields are excluded; "
+            "unapproved field values are omitted."
+        ]
+        if "system admin" in object_path and object_path.index("system admin") == len(object_path) - 2:
+            for family, prefix in (("IPv4", "trusthost"), ("IPv6", "ip6-trusthost")):
+                if not any(str(field).startswith(prefix) for field in node):
+                    notes.append(f"{family} trusted-host settings are not configured in this administrator object.")
+        omitted = max(0, len(entries) - self._CONTEXT_MAX_LINES)
+        if omitted:
+            # Preserve the exact cited statement even in a bounded large object.
+            cited = self.evidence.get(path)
+            selected = entries[:self._CONTEXT_MAX_LINES]
+            if cited is not None:
+                match = next((entry for entry in entries if entry.line_number == cited.line_number), None)
+                if match is not None and match not in selected:
+                    selected[-1] = match
+            entries = selected
+        return EvidenceContext(
+            title="Configuration context: " + " / ".join(object_path),
+            lines=tuple(entries), notes=tuple(notes), omitted_line_count=omitted,
+        )
 
     def field_evidence(self, path: Tuple[str, ...]) -> Tuple[ConfigEvidence, ...]:
         """Return already-redacted evidence for a parsed field or object."""

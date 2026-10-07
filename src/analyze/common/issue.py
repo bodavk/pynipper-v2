@@ -5,7 +5,7 @@ from enum import Enum
 from pathlib import PurePath
 from typing import Iterable, Optional, Tuple, Union
 
-from src.devices.common.models import ConfigEvidence
+from src.devices.common.models import ConfigEvidence, EvidenceContext
 
 
 class Severity(str, Enum):
@@ -64,6 +64,7 @@ class EvidenceLocation:
     line_number: Optional[int] = None
     source: Optional[str] = None
     origin: Optional[str] = None
+    context: Optional[EvidenceContext] = None
 
     @classmethod
     def from_item(cls, item: Union[str, ConfigEvidence]) -> "EvidenceLocation":
@@ -73,16 +74,25 @@ class EvidenceLocation:
                 item.line_number,
                 PurePath(item.source).name or None,
                 "parser" if item.line_number is not None else None,
+                item.context,
             )
         return cls(item)
 
     def to_dict(self) -> dict:
-        return {
+        result = {
             "text": self.text,
             "line": self.line_number,
             "source": self.source,
             "line_origin": self.origin,
         }
+        if self.context is not None:
+            result["context"] = {
+                "title": self.context.title,
+                "lines": [self.from_item(line).to_dict() for line in self.context.lines],
+                "notes": list(self.context.notes),
+                "omitted-line-count": self.context.omitted_line_count,
+            }
+        return result
 
 
 class Finding:
@@ -155,10 +165,17 @@ class Finding:
                 number = locate_line(location.text)
                 if number is not None:
                     location = EvidenceLocation(
-                        location.text, number, location.source or source_name, "source-match"
+                        location.text, number, location.source or source_name, "source-match", location.context
                     )
             located.append(location)
         self.evidence_locations = tuple(located)
+
+    @property
+    def evidence_contexts(self) -> Tuple[EvidenceContext, ...]:
+        """Distinct excerpts for presentation; original finding identity is unchanged."""
+        return tuple(dict.fromkeys(
+            item.context for item in self.evidence_locations if item.context is not None
+        ))
 
     @property
     def ease(self) -> str:

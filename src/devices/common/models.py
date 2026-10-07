@@ -79,6 +79,7 @@ class ConfigEvidence:
     text: str
     source: str
     line_number: Optional[int] = None
+    context: Optional["EvidenceContext"] = None
 
     def __post_init__(self):
         if not self.text.strip():
@@ -87,6 +88,24 @@ class ConfigEvidence:
             raise ValueError("Evidence source must not be empty")
         if self.line_number is not None and self.line_number < 1:
             raise ValueError("Evidence line_number must be positive")
+
+
+@dataclass(frozen=True)
+class EvidenceContext:
+    """Parser-owned sanitized excerpt, never a report-side raw-file window."""
+
+    title: str
+    lines: Tuple[ConfigEvidence, ...]
+    notes: Tuple[str, ...] = ()
+    omitted_line_count: int = 0
+
+    def __post_init__(self):
+        if not self.title.strip() or not self.lines:
+            raise ValueError("Evidence context needs a title and located statements")
+        if self.omitted_line_count < 0:
+            raise ValueError("Omitted context line count must not be negative")
+        if any(line.context is not None for line in self.lines):
+            raise ValueError("Evidence contexts cannot contain nested contexts")
 
 
 @dataclass(frozen=True)
@@ -295,6 +314,7 @@ class NormalizedConfig:
 
 __all__ = [
     "ConfigEvidence",
+    "EvidenceContext",
     "BlocklistCredentialAssessment",
     "ConfigurationState",
     "CredentialMetadata",

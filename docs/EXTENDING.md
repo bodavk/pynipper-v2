@@ -27,6 +27,11 @@ Prefer a typed parser method or normalized record over regex inside the plugin. 
 - Apply negation/removal/disablement semantics.
 - Guard numeric and structured conversions.
 - Redact passwords, keys, communities, and tokens before returning evidence.
+- For block-oriented evidence, optionally attach `EvidenceContext` to
+  `ConfigEvidence`. Select statements from the same effective parser-owned object
+  and tenant, retain exact locations, mask unknown/free-form sensitive values,
+  and declare truncation. Do not gather arbitrary neighboring raw lines in the
+  report. Test ordering/removal, redaction and tenant isolation for the excerpt.
 - Return explicit unknown or parse-error state when the export is insufficient.
 - Gate documented defaults and legacy command aliases to the exact verified release family; an OS name alone is not applicability evidence.
 
