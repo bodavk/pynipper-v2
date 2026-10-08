@@ -12,6 +12,7 @@ owns security-task priorities, verified scope and evidence gates.
 - [Export evidence](EXPORT_EVIDENCE.md): omitted settings, unknown evidence, scoped outcomes, policy proof and comparison limits.
 - [Assessment policy](ASSESSMENT_POLICY.md): approved deployment context and offline assessment inputs.
 - [Supported devices](SUPPORTED_DEVICES.md): verified formats and support boundaries.
+- [Configuration anonymization](CONFIG_ANONYMIZATION.md): implemented bounded offline sample-preparation utility and remaining vendor/companion stages. Its [plan-refinement tasks](CONFIG_ANONYMIZATION.md#open-plan-refinement-tasks-2026-10-08) retain scoped validation and extension gates.
 - [Security coverage tasks](agent_notes/SECURITY_COVERAGE_TASKS.md): authoritative SC-001–SC-069 backlog.
 - [Practical testing tasks](agent_notes/PRACTICAL_TESTING_TASKS.md): deferred dependency work and practical-testing history.
 - [External validation tasks](agent_notes/REALWORLD_VALIDATION_TASKS.md): remaining RV-008 evidence gate and compact completed-work ledger.
@@ -61,6 +62,12 @@ These are not completed merely because adjacent checks or synthetic tests pass:
 - SC-044 source conflicts and unqualified old-release defaults: preserve the separate register and its open rows.
 
 ## Retained maintainer boundaries and optional work
+
+- **Sample preparation:** the separate anonymizer has bounded FortiOS and Cisco
+  IOS/IOS-XE/ASA adapters. Broader native syntax, Check Point companion exports,
+  other vendors, assessment-policy transformation, synthetic PKI and qualified
+  audit-equivalence checks remain open in its [extension design](CONFIG_ANONYMIZATION.md).
+  This is optional development support, not a new security-task priority.
 
 - Do not grade FortiOS log-administrator rights against a new organization role list; retain bound write-capable-role checks.
 - Lifecycle data must come from a free external dataset acquired separately; do not maintain a private lifecycle list or fetch during audits.

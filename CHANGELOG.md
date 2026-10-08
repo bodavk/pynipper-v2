@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Add a separate offline configuration sample-preparation utility with bounded
+  FortiOS, Cisco IOS/IOS-XE and ASA grammars. It consistently rewrites scoped
+  identifiers, IPv4/IPv6 address relationships and synthetic credential material,
+  preserving supported source ordering, references and physical line counts.
+  Unknown commands/payloads block output; originals and audit behavior stay
+  unchanged. New private output directories, Windows ACL enforcement, secret-free
+  diagnostics and a final completion marker protect publication. Native grammar
+  validation is not anonymity or full finding-equivalence certification; Check
+  Point, other vendors, companions and synthetic certificates remain open.
+
 - Improve report evidence usability: source-qualified context rows, visible
   decisive-setting previews and omission notes, explicit presentation-origin
   labels, and collapsed long legacy evidence lists. Navigation reveals hidden

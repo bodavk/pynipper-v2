@@ -322,6 +322,21 @@ Unit tests cover parser semantics, individual rules, finding validation, registr
 
 The registry contains both target-baseline and partial devices. Registration guarantees that the CLI can construct and dispatch the implementation; it does not guarantee equal detection depth. [Supported devices](SUPPORTED_DEVICES.md) is the user-facing authority for current maturity and input-dialect limits. Original-Nipper lineage does not imply dialect or check-category parity.
 
+## Separate configuration sample preparation
+
+`scripts/anonymize_config.py` and `python -m src.anonymize` run a separate offline
+pseudonymization utility. Vendor-owned adapters classify native source statements
+and create typed private source-span plans; the common engine allocates consistent
+scoped names, bounded CIDR/range translations and synthetic credential material.
+This does not regenerate exports from normalized/effective state and does not
+change parser, plugin or audit behavior. Unknown syntax and unsupported payloads
+block publication before output creation; native-format files and a secret-free
+completion summary use a new directory with restricted permissions. No mappings,
+original digests or raw input are published. Grammar validation is separate from
+audit-equivalence certification, which is not implemented. See
+[configuration anonymization](CONFIG_ANONYMIZATION.md) for the initial FortiOS
+and Cisco subset and the retained companion/certificate/vendor gates.
+
 ## Architectural invariants
 
 Junos REST listeners are modeled separately from J-Web and SSH. Typed records retain explicit transport, addresses, port, allowed sources and resolution state after native deletion/deactivation processing. The clear-text check requires a validated non-loopback HTTP address and resolved inheritance. Source restrictions do not change HTTP transport security; runtime state and network reachability remain outside the export.

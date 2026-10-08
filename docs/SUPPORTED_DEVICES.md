@@ -20,6 +20,12 @@ This table separates registry support from detection depth. “Target baseline�
 
 The canonical IDs and accepted aliases are defined in `src/devices/registry.py`.
 
+The separate [configuration sample anonymizer](CONFIG_ANONYMIZATION.md) currently
+has **bounded FortiOS, IOS/IOS-XE and ASA text adapters only**. The audit matrix
+above does not describe rewrite support. Unknown sections/commands, certificates,
+scripts and unsupported address proofs block output; Check Point, PIX and the
+other registered families are not anonymizer-supported yet.
+
 Offline accuracy cleanup (SC-064–SC-067) qualifies selected PAN-OS/ASA absence
 checks, FortiOS IPv4 `policy`/IPv6 `policy6` logging and inspection, and effective
 allow remainders for FortiOS/ASA/PAN-OS protective-deny paths. Inactive or proven

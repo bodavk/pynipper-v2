@@ -131,6 +131,28 @@ Reports hide passwords, keys and community strings by default. `--show-secrets` 
 
 ## For developers
 
+### Preparing configuration samples
+
+A separate offline utility can pseudonymize **qualified FortiOS, Cisco IOS/IOS-XE
+and ASA text exports** without changing the original:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\anonymize_config.py -i fgt400.conf -d fortios --output-dir sanitized\sample-001
+```
+
+It replaces supported names, addresses and secrets consistently. Unsupported
+syntax or payloads block output; many full backups need further adapter support.
+Add `--check-only` to check an export without writing files. Review the generated
+`config.conf` and `sanitization-summary.json` and obtain the owner's permission
+before sharing. This is not guaranteed anonymity or identical audit findings;
+never install the synthetic configuration on equipment. Check Point and other
+vendors are not implemented for this utility yet.
+
+See [configuration anonymization](docs/CONFIG_ANONYMIZATION.md) for supported
+scope, privacy boundaries and extension stages.
+
+### Development checks
+
 Run the unit tests and the permanent configuration corpus:
 
 ```powershell
@@ -143,6 +165,7 @@ Where to start:
 - [Architecture](docs/ARCHITECTURE.md): how parsers, analyzers and reports fit together
 - [Extending pynipper-v2](docs/EXTENDING.md): adding checks or a new device
 - [Export evidence](docs/EXPORT_EVIDENCE.md): incomplete exports, scoped outcomes and policy-proof limits
+- [Configuration anonymization](docs/CONFIG_ANONYMIZATION.md): separate sample-preparation utility, supported subset and extension design
 - [Parser guide](src/devices/README.md) and [analyzer guide](src/analyze/README.md)
 - [Contributing](CONTRIBUTING.md), [Security](SECURITY.md), [open work](docs/TODO.md), [changelog](CHANGELOG.md)
 
